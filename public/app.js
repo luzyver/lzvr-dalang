@@ -492,7 +492,8 @@ async function showApp() {
           h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct' }, c.title || 'New chat')))
           : h('div', { class: 'small hint' }, 'No chats yet'));
     });
-    sidebar.replaceChildren(...[loginSlot, usersSlot, approvalsBox, adoptSlot, ...blocks, isAdmin ? addForm : null].filter(Boolean));
+    sidebar.replaceChildren(...[loginSlot, usersSlot, approvalsBox, adoptSlot,
+      blocks.length ? h('div', { class: 'side-label' }, 'Projects') : null, ...blocks, isAdmin ? addForm : null].filter(Boolean));
   }
 
   async function adoptDialog(project) {
@@ -524,6 +525,13 @@ async function showApp() {
         h('button', { class: 'primary mobonly', onclick: () => document.body.classList.add('nav') }, 'Open chats')));
       return;
     }
+    const project = state.projects.find((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
+    const initial = (state.convs.get(project?.id) || []).find((c) => c.id === id);
+    const chatTitle = h('strong', { class: 'chat-title' }, initial?.title || 'New conversation');
+    const chatProject = h('span', { class: 'chat-project' }, project?.name || 'Project');
+    const chatState = h('span', { class: `chat-state ${initial?.status || 'idle'}` }, initial?.status || 'idle');
+    const chatHead = h('div', { class: 'chathead' },
+      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle), chatState);
     const log = h('div', { class: 'log' });
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
@@ -553,6 +561,9 @@ async function showApp() {
       const known = list.find((x) => x.id === id);
       stop.hidden = c.status !== 'running';
       const title = c.turns && c.turns[0] ? c.turns[0].prompt.slice(0, 80) : null;
+      chatTitle.textContent = title || 'New conversation';
+      chatState.textContent = c.status;
+      chatState.className = `chat-state ${c.status}`;
       if (known && (known.status !== c.status || (title && known.title !== title))) { known.status = c.status; if (title) known.title = title; drawSidebar(); }
     }
 
@@ -595,7 +606,7 @@ async function showApp() {
     const stop = h('button', { class: 'stop', hidden: true, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
       const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
     }) }, '■');
-    main.replaceChildren(log, h('div', { class: 'composer' },
+    main.replaceChildren(chatHead, log, h('div', { class: 'composer' },
       queueBox,
       h('div', { class: 'box' },
         h('div', { class: 'inputrow' },
