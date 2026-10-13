@@ -381,9 +381,9 @@ export function buildApp(
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.flushHeaders(); // otherwise headers wait for the first event and an idle stream looks hung
-    const send = (e: { id: number; type: string; payload: string }) => {
+    const send = (e: { id: number; type: string; payload: string; created_at: string }) => {
       if (res.writableLength > 1_000_000) { res.destroy(); return; } // reader stopped reading; it reconnects with Last-Event-ID
-      res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${e.payload}\n\n`);
+      res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${e.payload}\ntimestamp: ${e.created_at}\n\n`);
     };
     // Replay and subscribe in the same tick so no event can slip between them.
     for (const e of store.eventsAfter(id, after)) send(e);

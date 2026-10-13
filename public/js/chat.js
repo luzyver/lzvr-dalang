@@ -8,11 +8,12 @@ function parseSSE(buf) {
   for (let i = rest.indexOf('\n\n'); i !== -1; i = rest.indexOf('\n\n')) {
     const block = rest.slice(0, i);
     rest = rest.slice(i + 2);
-    const ev = { id: 0, type: 'message', data: null };
+    const ev = { id: 0, type: 'message', data: null, timestamp: null };
     for (const line of block.split('\n')) {
       if (line.startsWith('id:')) ev.id = Number(line.slice(3).trim()) || 0;
       else if (line.startsWith('event:')) ev.type = line.slice(6).trim();
       else if (line.startsWith('data:')) { try { ev.data = JSON.parse(line.slice(5).trim()); } catch { ev.data = null; } }
+      else if (line.startsWith('timestamp:')) ev.timestamp = line.slice(10).trim();
     }
     if (ev.data !== null) events.push(ev);
   }
@@ -103,7 +104,14 @@ function markdown(src) {
 
 // ---------- event rendering ----------
 const note = (text, cls) => h('div', { class: `note ${cls || ''}` }, text);
-const bubble = (cls, text) => h('div', { class: `msg ${cls}` }, text);
+function messageTime(value) {
+  if (!value) return null;
+  const date = new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(date.getTime())) return null;
+  return h('time', { class: 'msg-time', datetime: date.toISOString(), title: date.toLocaleString() },
+    new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date));
+}
+const bubble = (cls, text, timestamp) => h('div', { class: `msg ${cls}` }, text, messageTime(timestamp));
 
 function renderItem(item) {
   if (!item) return null;
@@ -134,7 +142,7 @@ function renderItem(item) {
 export function renderEvent(e) {
   const d = e.data || {};
   switch (e.type) {
-    case 'user.prompt': return bubble('user', d.text || '');
+    case 'user.prompt': return bubble('user', d.text || '', e.timestamp);
     case 'item.completed': return renderItem(d.item);
     case 'turn.completed': {
       const u = d.usage || {};

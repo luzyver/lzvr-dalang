@@ -8,7 +8,7 @@ import type { QueueItem, Store } from './store.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
-export interface LiveEvent { id: number; type: string; payload: string }
+export interface LiveEvent { id: number; type: string; payload: string; created_at: string }
 
 
 export interface DispatcherOpts {
@@ -112,7 +112,8 @@ export class Dispatcher {
   private emit(convId: string, turnId: number, ev: CodexEvent | { type: 'turn.status'; status: 'idle' | 'failed' }): void {
     const payload = (ev as { [RAW]?: string })[RAW] ?? JSON.stringify(ev);
     const id = this.store.addEvent(turnId, ev.type, payload);
-    this.bus.emit(convId, { id, type: ev.type, payload } satisfies LiveEvent);
+    const created_at = this.store.eventCreatedAt(id) ?? new Date().toISOString();
+    this.bus.emit(convId, { id, type: ev.type, payload, created_at } satisfies LiveEvent);
   }
 
   private async run(convId: string, item: QueueItem, ac: AbortController): Promise<void> {

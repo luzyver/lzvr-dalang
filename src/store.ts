@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
-  type TEXT NOT NULL, payload TEXT NOT NULL);
+  type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
   role TEXT NOT NULL CHECK (role IN ('admin','dev')),
@@ -69,7 +69,7 @@ export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
 }
-export interface StoredEvent { id: number; conversation_id: string; type: string; payload: string }
+export interface StoredEvent { id: number; conversation_id: string; type: string; payload: string; created_at: string }
 
 interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
@@ -86,6 +86,8 @@ export class Store {
     this.ensureColumn('passkeys', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('events', 'created_at', 'TEXT');
+    this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
   private ensureColumn(table: string, column: string, ddl: string): void {
@@ -226,11 +228,12 @@ export class Store {
   listTurns(convId: string): Turn[] { return this.all('SELECT * FROM turns WHERE conversation_id=? ORDER BY id', convId); }
 
   addEvent(turnId: number, type: string, payload: string): number {
-    return Number(this.run('INSERT INTO events (turn_id,type,payload) VALUES (?,?,?)', turnId, type, payload).lastInsertRowid);
+    return Number(this.run('INSERT INTO events (turn_id,type,payload,created_at) VALUES (?,?,?,?)', turnId, type, payload, new Date().toISOString()).lastInsertRowid);
   }
+  eventCreatedAt(id: number): string | null { return this.get<{ created_at: string }>('SELECT created_at FROM events WHERE id=?', id)?.created_at ?? null; }
   eventsAfter(convId: string, afterId: number): StoredEvent[] {
     return this.all(
-      `SELECT e.id, t.conversation_id, e.type, e.payload FROM events e
+      `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
        JOIN turns t ON t.id = e.turn_id
        WHERE t.conversation_id=? AND e.id>? ORDER BY e.id`, convId, afterId);
   }
@@ -238,9 +241,9 @@ export class Store {
   /** Mark rows left `running` by a crash as failed; return conversations that still have queued prompts. */
   resetRunning(): string[] {
     // Close each stale turn in the event stream too, or a replaying client would show it as still live.
-    this.run(`INSERT INTO events (turn_id,type,payload) SELECT id, 'turn.failed',
-      '{"type":"turn.failed","error":{"message":"gateway restarted while this turn was running"}}'
-      FROM turns WHERE status='running'`);
+    this.run(`INSERT INTO events (turn_id,type,payload,created_at) SELECT id, 'turn.failed',
+      '{"type":"turn.failed","error":{"message":"gateway restarted while this turn was running"}}', ?
+      FROM turns WHERE status='running'`, new Date().toISOString());
     this.run(`UPDATE turns SET status='failed', ended_at=CURRENT_TIMESTAMP WHERE status='running'`);
     this.run(`UPDATE conversations SET status='failed' WHERE status='running'`);
     return this.all<{ conversation_id: string }>('SELECT DISTINCT conversation_id FROM queue').map((r) => r.conversation_id);
