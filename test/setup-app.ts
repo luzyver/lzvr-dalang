@@ -37,7 +37,7 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   mkdirSync(join(root, 'proj'), { recursive: true });
   const cfg: Config = {
     token: TOKEN, workspaceRoot: root, limitBlockMs: 3_600_000,
-    stateDir: join(base, 'state'), port: 0, host: '127.0.0.1', trustProxy: [], codexCommand: FAKE,
+    stateDir: join(base, 'state'), port: 0, host: '127.0.0.1', trustProxy: [], codexCommand: FAKE, claudeCommand: FAKE,
     rpId: 'localhost', origin: 'http://localhost:9876', mcpCrossSend: 'approve',
     ...extra.cfg,
   };

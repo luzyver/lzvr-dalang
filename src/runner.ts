@@ -6,22 +6,6 @@ export type CodexEvent = { type: string; [k: string]: unknown };
 /** Parsed events carry the exact line Codex printed under this key, so storage can keep it unmodified. */
 export const RAW = Symbol('raw');
 
-export interface TurnOpts {
-  command?: string[];
-  env?: Record<string, string>;
-  home: string;
-  cwd: string;
-  sandbox: string;
-  threadId?: string | null;
-  prompt: string;
-  images?: string[];
-  /** Extra `codex exec` options (e.g. `-c key=value` config overrides), placed before `resume`. */
-  extraArgs?: string[];
-  signal?: AbortSignal;
-  /** ms to wait after SIGTERM before SIGKILL (default 5000). */
-  killGraceMs?: number;
-}
-
 /** Kill the whole process tree: codex may run shell commands or be launched through a wrapper. */
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) return;
@@ -33,23 +17,24 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-/** `-i` is variadic in the Codex CLI, so images go first and are followed directly by `--json`. */
-export function buildArgs(o: Pick<TurnOpts, 'cwd' | 'sandbox' | 'threadId' | 'images' | 'extraArgs'>): string[] {
-  const a = ['exec'];
-  for (const img of o.images ?? []) a.push('-i', img);
-  a.push('--json', '--skip-git-repo-check', '-C', o.cwd, '-s', o.sandbox, ...(o.extraArgs ?? []));
-  if (o.threadId) a.push('resume', o.threadId);
-  a.push('-'); // prompt is read from stdin
-  return a;
+export interface ProcessOpts {
+  command: string[];
+  args: string[];
+  env?: Record<string, string>;
+  cwd: string;
+  prompt: string;
+  signal?: AbortSignal;
+  killGraceMs?: number;
 }
 
-export async function* runTurn(o: TurnOpts): AsyncGenerator<CodexEvent> {
-  const [cmd, ...pre] = o.command ?? ['codex'];
+/** Run a CLI that reads the prompt on stdin and prints one JSON event per line. Shared by every backend. */
+export async function* runProcess(o: ProcessOpts): AsyncGenerator<CodexEvent> {
+  const [cmd, ...pre] = o.command;
   // The agent runs arbitrary commands, so it must not inherit the gateway's own secrets (LZVR_TOKEN, ...).
   const inherited = Object.entries(process.env).filter(([k]) => !k.startsWith('LZVR_'));
-  const child = spawn(cmd!, [...pre, ...buildArgs(o)], {
+  const child = spawn(cmd!, [...pre, ...o.args], {
     cwd: o.cwd,
-    env: { ...Object.fromEntries(inherited), ...o.env, CODEX_HOME: o.home },
+    env: { ...Object.fromEntries(inherited), ...o.env },
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });

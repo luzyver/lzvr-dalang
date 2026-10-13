@@ -3,8 +3,12 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
-import { RAW, runTurn, type CodexEvent } from './runner.js';
+import { runClaudeTurn } from './claude.js';
+import { runTurn } from './codex.js';
+import { RAW, type CodexEvent } from './runner.js';
+import { codexLimits, type LimitWindow } from './sessions.js';
 import type { QueueItem, Store } from './store.js';
+import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
@@ -15,6 +19,9 @@ export interface DispatcherOpts {
   /** One CODEX_HOME per account, in failover order. */
   homes: string[];
   command?: string[];
+  /** Claude Code accounts (CLAUDE_CONFIG_DIR), in failover order, and how to start the CLI. */
+  claudeHomes?: string[];
+  claudeCommand?: string[];
   env?: Record<string, string>;
   blockMs?: number;
   limitRe?: RegExp;
@@ -28,6 +35,7 @@ export interface ModelInfo { slug: string; name: string; description: string; ef
 
 export class Dispatcher {
   readonly accounts: Accounts;
+  readonly claudeAccounts: Accounts;
   private modelCache: { at: number; list: ModelInfo[] } | null = null;
   private active = new Map<string, AbortController>();
   private bus = new EventEmitter();
@@ -36,7 +44,40 @@ export class Dispatcher {
 
   constructor(private store: Store, private opts: DispatcherOpts) {
     this.accounts = new Accounts([...opts.homes], opts.blockMs); // own copy: accounts can be added while running
+    this.claudeAccounts = new Accounts([...(opts.claudeHomes ?? [])], opts.blockMs);
     this.bus.setMaxListeners(0);
+  }
+
+  private accountsOf(backend: Backend): Accounts { return backend === 'claude' ? this.claudeAccounts : this.accounts; }
+
+  /** Usage windows last seen for an account (null until one of its turns reported them). */
+  limitsFor(backend: Backend, name: string): { windows: LimitWindow[]; at: number } | null {
+    try { return JSON.parse(this.store.getKv(`limits:${backend}:${name}`) ?? 'null'); } catch { return null; }
+  }
+  private recordLimits(backend: Backend, home: string, windows: LimitWindow[]): void {
+    if (windows.length) this.store.setKv(`limits:${backend}:${basename(home)}`, JSON.stringify({ windows, at: Date.now() }));
+  }
+
+  /** Switch an account on or off for new turns. Returns false if there is no such account. */
+  setEnabled(backend: Backend, name: string, enabled: boolean): boolean {
+    const accounts = this.accountsOf(backend);
+    const home = accounts.homes.find((h) => basename(h) === name);
+    if (!home) return false;
+    accounts.setEnabled(home, enabled);
+    const off = new Set(this.disabledList());
+    if (enabled) off.delete(`${backend}:${name}`); else off.add(`${backend}:${name}`);
+    this.store.setKv('disabled_accounts', JSON.stringify([...off]));
+    return true;
+  }
+  private disabledList(): string[] {
+    try { return JSON.parse(this.store.getKv('disabled_accounts') ?? '[]') as string[]; } catch { return []; }
+  }
+  /** Re-apply the saved on/off switches once the accounts are loaded at startup. */
+  loadDisabled(): void {
+    for (const key of this.disabledList()) {
+      const [backend, name] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+      if (backend === 'codex' || backend === 'claude') this.setEnabled(backend, name, false);
+    }
   }
 
   /** Start the next queued prompt if this conversation is idle. Safe to call any time. */
@@ -121,7 +162,11 @@ export class Dispatcher {
     const project = conv && this.store.getProject(conv.project_id);
     if (!conv || !project) return; // deleted while queued
 
-    const images = item.attachments.filter((p) => IMAGE_EXT.has(extname(p).toLowerCase()));
+    const claude = conv.backend === 'claude';
+    const accounts = claude ? this.claudeAccounts : this.accounts;
+    const label = claude ? 'Claude Code' : 'Codex';
+    // Claude Code takes no image flag: it opens attached images itself from the path in the prompt.
+    const images = claude ? [] : item.attachments.filter((p) => IMAGE_EXT.has(extname(p).toLowerCase()));
     const others = item.attachments.filter((p) => !images.includes(p));
     const prompt = others.length
       ? `${item.prompt}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
@@ -136,24 +181,26 @@ export class Dispatcher {
     let workDone = false; // did an earlier attempt of THIS turn already do something (run a command, answer, ...)?
     // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
     const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId) : null;
-    const extraArgs = this.opts.mcpUrl
+    const extraArgs = this.opts.mcpUrl && !claude
       ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"']
       : [];
-    const model = conv.model || this.store.getDefaultModel();
-    if (model) extraArgs.push('-m', model);
-    const effort = conv.effort || this.store.getDefaultEffort();
-    if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
+    const model = conv.model || this.store.getDefaultModel(conv.backend);
+    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
+    if (!claude) {
+      if (model) extraArgs.push('-m', model);
+      if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
+    }
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {
-        const home = this.accounts.pick();
+        const home = accounts.pick();
         if (!home) {
           failed = true;
           this.emit(convId, turnId, {
             type: 'account.exhausted',
-            message: this.accounts.homes.length === 0
-              ? 'no Codex account has been added yet: an admin needs to click "+ Account" in the panel and sign in'
-              : 'all accounts are at their usage limit',
+            message: accounts.homes.length === 0
+              ? `no ${label} account has been added yet: an admin needs to add one in the panel and sign in`
+              : 'every account is switched off or at its usage limit',
           });
           break;
         }
@@ -169,12 +216,18 @@ export class Dispatcher {
           ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
-        for await (const ev of runTurn({
-          command: this.opts.command, home, extraArgs,
-          env: mcpToken ? { ...this.opts.env, LZVR_MCP_TOKEN: mcpToken } : this.opts.env,
-          cwd: project.path, sandbox: project.sandbox, threadId,
-          prompt: attemptPrompt, images, signal: ac.signal,
-        })) {
+        const env = mcpToken ? { ...this.opts.env, LZVR_MCP_TOKEN: mcpToken } : this.opts.env;
+        const events = claude
+          ? runClaudeTurn({
+            command: this.opts.claudeCommand, home, env, cwd: project.path, sandbox: project.sandbox, threadId,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, signal: ac.signal,
+          })
+          : runTurn({
+            command: this.opts.command, home, extraArgs, env, cwd: project.path, sandbox: project.sandbox, threadId,
+            prompt: attemptPrompt, images, signal: ac.signal,
+          });
+        for await (const ev of events) {
+          if (ev.type === 'account.limits') { this.recordLimits('claude', home, ev.windows as LimitWindow[]); continue; }
           if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
           if (ev.type.startsWith('item.')) worked = true;
           if (ev.type === 'turn.completed') { usage = ev.usage ?? null; failed = false; completed = true; }
@@ -189,8 +242,13 @@ export class Dispatcher {
           }
           this.emit(convId, turnId, ev);
         }
+        if (!claude) { // Codex only reports usage inside the session file it writes
+          const t = this.store.getConversation(convId)?.thread_id;
+          const sessionsHome = this.accounts.primary();
+          if (t && sessionsHome) this.recordLimits('codex', home, codexLimits(sessionsHome, t));
+        }
         if (limited && !completed && !ac.signal.aborted) {
-          this.accounts.block(home, limitMs);
+          accounts.block(home, limitMs);
           this.emit(convId, turnId, { type: 'account.switched', from: basename(home) });
           workDone ||= worked;
           continue;

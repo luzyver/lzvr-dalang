@@ -54,7 +54,7 @@ describe('accounts', () => {
     const home = t.dispatcher.accounts.homes[0]!;
     t.dispatcher.accounts.block(home);
     const list = await t.app.inject({ url: '/api/accounts', headers: AUTH });
-    expect(list.json()).toEqual([{ name: expect.any(String), blockedUntil: expect.any(Number), loggedIn: false }]);
+    expect(list.json()).toEqual([{ name: expect.any(String), blockedUntil: expect.any(Number), loggedIn: false, enabled: true, limits: null }]);
     expect((await t.app.inject({ method: 'POST', url: '/api/accounts/unblock', headers: AUTH })).statusCode).toBe(204);
     expect((await t.app.inject({ url: '/api/accounts', headers: AUTH })).json()[0].blockedUntil).toBeNull();
   });
@@ -105,7 +105,7 @@ describe('with no Codex account yet', () => {
     expect(started.statusCode).toBe(202);
     await until(() => t.logins.get(started.json().id)!.status === 'success');
     const list = (await t.app.inject({ url: '/api/accounts', headers: AUTH })).json();
-    expect(list).toEqual([{ name: 'main', blockedUntil: null, loggedIn: true }]);
+    expect(list).toEqual([{ name: 'main', blockedUntil: null, loggedIn: true, enabled: true, limits: null }]);
   });
 });
 

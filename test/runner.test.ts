@@ -2,7 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildArgs, runTurn, type CodexEvent, type TurnOpts } from '../src/runner.js';
+import { buildArgs, runTurn, type TurnOpts } from '../src/codex.js';
+import type { CodexEvent } from '../src/runner.js';
 import { FAKE } from './helpers.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'lzvr-run-'));

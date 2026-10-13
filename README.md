@@ -14,6 +14,11 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   fails or needs input.
 - **MCP gateway** at `/mcp` (17 tools) so other agents can drive chats; messages between chats can require approval.
 
+- **Claude Code too**: a chat can run on Claude Code instead of Codex (the `CC` button next to a project's `+`). Needs the
+  `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added from the panel menu ("Claude Code accounts"), each with its own
+  `CLAUDE_CONFIG_DIR`, with the same failover. Claude Code has no OS sandbox: `read-only` runs in plan mode,
+  `workspace-write` allows edits and Bash unrestricted, `danger-full-access` bypasses all permission checks.
+
 Not included: running project tests in an isolated Docker-in-Docker sandbox (dropped; see "Scope").
 
 ## Install on the VM (no Docker)
@@ -111,7 +116,7 @@ Every Codex account is added from the panel, including the first one. Dalang sta
 press **Start login**. The gateway runs `codex login --device-auth` on the VM and shows a sign-in link and a code. Open the
 link on any device, enter the code and approve with the Codex/ChatGPT account you want to add. When Codex reports that
 account as logged in it joins the failover list (in the order added), survives restarts, and its folder is
-`<STATE_DIR>/accounts/<name>`, so backing up `STATE_DIR` backs up all of them. Admins only. The first account's `sessions`
+`<STATE_DIR>/codex-accounts/<name>`, so backing up `STATE_DIR` backs up all of them. Admins only. The first account's `sessions`
 folder is shared with the later ones so a chat can move between accounts. Until an account exists, chats fail with a
 message telling an admin to add one.
 

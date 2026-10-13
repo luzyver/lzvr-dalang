@@ -135,6 +135,7 @@ function renderItem(item) {
       const files = (item.changes || []).map((c) => `${c.kind || 'change'} ${c.path || ''}`).join('\n');
       return bubble('cmd', files || 'file change');
     }
+    case 'tool_call': return note(`${item.tool || 'tool'} ${item.text || ''}`);
     case 'reasoning': return item.text ? note(`thinking: ${String(item.text).slice(0, 300)}`) : null;
     default: return note(`${item.type || 'item'}`);
   }

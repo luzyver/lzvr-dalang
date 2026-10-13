@@ -13,7 +13,7 @@ import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
 import { listSessions } from './sessions.js';
-import { type AuthUser, SANDBOXES, UUID_RE } from './util.js';
+import { type AuthUser, type Backend, BACKENDS, SANDBOXES, UUID_RE } from './util.js';
 import { realWebAuthn, type WebAuthn } from './webauthn.js';
 import type { Store } from './store.js';
 
@@ -38,13 +38,24 @@ function safeName(raw: string): string {
   return n && n !== '.' && n !== '..' ? n : 'file';
 }
 
+// Claude Code accepts these aliases and always maps them to the newest model of that family.
+const CLAUDE_MODELS = ['opus', 'sonnet', 'haiku'].map((slug) => ({
+  slug, name: slug[0]!.toUpperCase() + slug.slice(1), description: '', efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+}));
+
 export function buildApp(
   deps: {
-    cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; webauthn?: WebAuthn;
+    cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins; webauthn?: WebAuthn;
     maxUploadBytes?: number; authMaxFailures?: number;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
+  const backendOf = (v: unknown): Backend => (v === 'claude' ? 'claude' : 'codex');
+  /** The accounts and sign-in flow of one backend. Claude's exist only when the server was wired with them. */
+  const forBackend = (b: Backend) => (b === 'claude' && deps.claudeLogins
+    ? { logins: deps.claudeLogins, accounts: dispatcher.claudeAccounts }
+    : { logins, accounts: dispatcher.accounts });
+  const loginFlows = () => [logins, deps.claudeLogins].filter((l): l is Logins => !!l);
   const maxUpload = deps.maxUploadBytes ?? 50 * 1024 * 1024;
   const maxFailures = deps.authMaxFailures ?? 10;
   const WINDOW_MS = 60_000;
@@ -159,49 +170,60 @@ export function buildApp(
 
   const notFound = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send({ error: 'not found' });
 
-  app.get('/api/accounts', async () => {
-    const homes = dispatcher.accounts.homes;
-    const logged = await Promise.all(homes.map((h) => logins.isLoggedIn(h)));
-    return dispatcher.accounts.list().map((a, i) => ({ ...a, loggedIn: logged[i] ?? null }));
+  app.get<{ Querystring: { backend?: string } }>('/api/accounts', async (req) => {
+    const f = forBackend(backendOf(req.query.backend));
+    const logged = await Promise.all(f.accounts.homes.map((h) => f.logins.isLoggedIn(h)));
+    const backend = backendOf(req.query.backend);
+    return f.accounts.list().map((a, i) => ({ ...a, loggedIn: logged[i] ?? null, limits: dispatcher.limitsFor(backend, a.name) }));
   });
-  app.get('/api/settings/default-model', { onRequest: requireAdmin }, () => ({ model: store.getDefaultModel() }));
-  app.put<{ Body: { model: string } }>('/api/settings/default-model', {
+  app.put<{ Params: { name: string }; Body: { enabled: boolean; backend?: Backend } }>('/api/accounts/:name/enabled', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['enabled'], additionalProperties: false,
+      properties: { enabled: { type: 'boolean' }, backend: { enum: [...BACKENDS] } } } },
+  }, (req, reply) =>
+    dispatcher.setEnabled(backendOf(req.body.backend), req.params.name, req.body.enabled) ? reply.code(204).send() : notFound(reply));
+  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-model', { onRequest: requireAdmin }, (req) =>
+    ({ model: store.getDefaultModel(backendOf(req.query.backend)) }));
+  app.put<{ Body: { model: string; backend?: Backend } }>('/api/settings/default-model', {
     onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
-      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' } } } },
+      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
-    store.setDefaultModel(req.body.model);
+    store.setDefaultModel(req.body.model, backendOf(req.body.backend));
     return reply.code(204).send();
   });
-  app.get('/api/settings/default-effort', { onRequest: requireAdmin }, () => ({ effort: store.getDefaultEffort() }));
-  app.put<{ Body: { effort: string } }>('/api/settings/default-effort', {
+  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-effort', { onRequest: requireAdmin }, (req) =>
+    ({ effort: store.getDefaultEffort(backendOf(req.query.backend)) }));
+  app.put<{ Body: { effort: string; backend?: Backend } }>('/api/settings/default-effort', {
     onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['effort'], additionalProperties: false,
-      properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] } } } },
+      properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
-    store.setDefaultEffort(req.body.effort);
+    store.setDefaultEffort(req.body.effort, backendOf(req.body.backend));
     return reply.code(204).send();
   });
   app.post('/api/accounts/unblock', { onRequest: requireAdmin }, (_req, reply) => {
     dispatcher.accounts.unblockAll();
+    dispatcher.claudeAccounts.unblockAll();
     return reply.code(204).send();
   });
 
   // Adding an account links another ChatGPT/Codex login to this machine: admins only (agent tokens cannot reach /api at all).
-  app.post<{ Body: { name: string } }>('/api/accounts/login', {
+  app.post<{ Body: { name: string; backend?: Backend } }>('/api/accounts/login', {
     onRequest: requireAdmin,
-    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: { type: 'string' } } } },
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false,
+      properties: { name: { type: 'string' }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
     try {
-      return reply.code(202).send({ id: logins.start(req.body.name) });
+      return reply.code(202).send({ id: forBackend(backendOf(req.body.backend)).logins.start(req.body.name) });
     } catch (e) {
       if (e instanceof LoginError) return reply.code(e.code === 'bad-name' ? 400 : 409).send({ error: e.message });
       throw e;
     }
   });
-  app.delete<{ Params: { name: string } }>('/api/accounts/:name', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { name: string }; Querystring: { backend?: string } }>('/api/accounts/:name', { onRequest: requireAdmin }, (req, reply) => {
     try {
-      logins.remove(req.params.name);
+      forBackend(backendOf(req.query.backend)).logins.remove(req.params.name);
       return reply.code(204).send();
     } catch (e) {
       if (e instanceof LoginError) return reply.code(e.code === 'not-found' ? 404 : 409).send({ error: e.message });
@@ -209,9 +231,15 @@ export function buildApp(
     }
   });
   app.get<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
-    logins.get(req.params.id) ?? notFound(reply));
+    loginFlows().map((l) => l.get(req.params.id)).find(Boolean) ?? notFound(reply));
+  app.post<{ Params: { id: string }; Body: { code: string } }>('/api/accounts/login/:id/code', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['code'], additionalProperties: false,
+      properties: { code: { type: 'string', pattern: '^[A-Za-z0-9._#~/+=-]{1,512}$' } } } },
+  }, (req, reply) =>
+    loginFlows().some((l) => l.sendCode(req.params.id, req.body.code)) ? reply.code(204).send() : notFound(reply));
   app.delete<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
-    logins.cancel(req.params.id) ? reply.code(204).send() : notFound(reply));
+    loginFlows().some((l) => l.cancel(req.params.id)) ? reply.code(204).send() : notFound(reply));
 
   app.get('/api/me', (req) => ({ name: req.user!.name, role: req.user!.role, main: req.user!.main }));
 
@@ -250,19 +278,19 @@ export function buildApp(
 
   app.get('/api/projects', () => store.listProjects());
 
-  app.post<{ Body: { name: string; path: string; sandbox?: string } }>('/api/projects', {
+  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend } }>('/api/projects', {
     onRequest: requireAdmin,
     schema: { body: {
       type: 'object', required: ['name', 'path'], additionalProperties: false,
       properties: {
         name: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
-        sandbox: { enum: [...SANDBOXES] },
+        sandbox: { enum: [...SANDBOXES] }, backend: { enum: [...BACKENDS] },
       },
     } },
   }, (req, reply) => {
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
-    return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox));
+    return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox, req.body.backend));
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', { onRequest: requireAdmin }, (req, reply) => {
@@ -280,8 +308,10 @@ export function buildApp(
     store.getProject(req.params.id) ? store.listConversations(req.params.id) : notFound(reply));
 
   app.post<{ Params: { id: string }; Body: { threadId?: string } | undefined }>('/api/projects/:id/conversations', (req, reply) => {
-    if (!store.getProject(req.params.id)) return notFound(reply);
+    const project = store.getProject(req.params.id);
+    if (!project) return notFound(reply);
     const threadId = req.body?.threadId ?? null;
+    if (project.backend === 'claude' && threadId !== null) return reply.code(400).send({ error: 'adopting a session is only supported for Codex projects' });
     // Adopting attaches to a Codex session that already exists on this machine, which may be anyone's: admins only.
     if (threadId !== null && req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
     if (threadId !== null && !UUID_RE.test(threadId)) return reply.code(400).send({ error: 'threadId must be a session UUID' });
@@ -293,7 +323,8 @@ export function buildApp(
     return home ? listSessions(home) : [];
   });
 
-  app.get('/api/models', () => dispatcher.models());
+  app.get<{ Querystring: { backend?: string } }>('/api/models', (req) =>
+    backendOf(req.query.backend) === 'claude' ? CLAUDE_MODELS : dispatcher.models());
 
   // Pattern starts with a letter/digit so the value can never be read as a CLI flag.
   app.put<{ Params: { id: string }; Body: { model: string } }>('/api/conversations/:id/model', {

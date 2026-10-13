@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Accounts, isLimit, linkSessions, retryAfterMs } from '../src/accounts.js';
+import { Accounts, isLimit, linkSessions, migrateCodexAccounts, retryAfterMs } from '../src/accounts.js';
 
 describe('Accounts', () => {
   it('picks the first unblocked account, in configured order', () => {
@@ -42,8 +42,8 @@ describe('Accounts', () => {
     const a = new Accounts(['/h/a', '/h/b'], 500, () => 1000);
     a.block('/h/b');
     expect(a.list()).toEqual([
-      { name: 'a', blockedUntil: null },
-      { name: 'b', blockedUntil: 1500 },
+      { name: 'a', blockedUntil: null, enabled: true },
+      { name: 'b', blockedUntil: 1500, enabled: true },
     ]);
   });
 });
@@ -107,5 +107,34 @@ describe('linkSessions', () => {
     writeFileSync(join(a, 'memories', 'note.md'), 'x');
     expect(existsSync(join(b, 'memories', 'note.md'))).toBe(true);
     expect(linkSessions([a, b, c])).toEqual([c]); // idempotent
+  });
+});
+
+describe('Accounts on/off', () => {
+  it('never picks a switched-off account and reports it', () => {
+    const a = new Accounts(['/x/a', '/x/b']);
+    a.setEnabled('/x/a', false);
+    expect(a.pick()).toBe('/x/b');
+    expect(a.list()).toMatchObject([{ name: 'a', enabled: false }, { name: 'b', enabled: true }]);
+    a.setEnabled('/x/b', false);
+    expect(a.pick()).toBeNull();
+    a.setEnabled('/x/a', true);
+    expect(a.pick()).toBe('/x/a');
+  });
+});
+
+describe('migrateCodexAccounts', () => {
+  it('moves the old accounts folder and rewrites the saved paths once', () => {
+    const state = mkdtempSync(join(tmpdir(), 'lzvr-mig-'));
+    mkdirSync(join(state, 'accounts', 'a'), { recursive: true });
+    writeFileSync(join(state, 'accounts', 'a', 'auth.json'), '{}');
+    const kv = new Map([['extra_homes', JSON.stringify([join(state, 'accounts', 'a')])]]);
+    const store = { get: (k: string) => kv.get(k) ?? null, set: (k: string, v: string) => void kv.set(k, v) };
+    migrateCodexAccounts(state, store);
+    expect(existsSync(join(state, 'codex-accounts', 'a', 'auth.json'))).toBe(true);
+    expect(existsSync(join(state, 'accounts'))).toBe(false);
+    expect(JSON.parse(kv.get('extra_homes')!)).toEqual([join(state, 'codex-accounts', 'a')]);
+    migrateCodexAccounts(state, store); // second start: nothing to do
+    expect(JSON.parse(kv.get('extra_homes')!)).toEqual([join(state, 'codex-accounts', 'a')]);
   });
 });

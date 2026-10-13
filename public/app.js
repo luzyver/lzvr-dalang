@@ -49,7 +49,6 @@ async function showApp() {
   const state = { projects: [], convs: new Map(), current: null, queue: [], collapsedProjects: new Set() };
   const sidebar = h('aside');
   const main = h('main');
-  const accounts = h('span', { class: 'accts' });
   const status = h('span', { class: 'small' });
 
   const flash = (msg) => { status.textContent = msg; if (msg) setTimeout(() => { if (status.textContent === msg) status.textContent = ''; }, 5000); };
@@ -61,91 +60,125 @@ async function showApp() {
     h('div', { class: 'pop', onclick: () => { menu.open = false; } },
       h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
       isAdmin && h('button', { onclick: () => addAccountDialog() }, 'Codex accounts'),
+      isAdmin && h('button', { onclick: () => addAccountDialog('claude') }, 'Claude Code accounts'),
       isAdmin && h('button', { onclick: () => defaultModelDialog() }, 'Model & effort defaults'),
       isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
       h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
       h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
   document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
+  const approvalsBox = h('div', { class: 'modal-body' });
+  const approvalsBtn = h('button', { class: 'badge warn', hidden: true, onclick: () => openModal(approvalsBox) });
   const header = h('header', {},
     h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, icon('panel-left')),
-    h('span', { class: 'title' }, 'Dalang'), accounts,
+    h('span', { class: 'title' }, 'Dalang'), approvalsBtn,
     h('span', { class: 'spacer' }), status, menu);
   root.replaceChildren(h('div', { class: 'shell' }, header, sidebar, main));
   notificationOpensChat = (id) => openConv(id);
 
-  async function refreshAccounts() {
-    try {
-      const list = await api('/api/accounts');
-      if (!list.length) {
-        accounts.replaceChildren(h('span', { class: 'badge warn' },
-          isAdmin ? 'no Codex account yet: click + Account' : 'no Codex account yet: ask an admin'));
-        return list;
-      }
-      accounts.replaceChildren(...list.map((a) => h('span', {
-        class: `badge ${a.blockedUntil ? 'blocked' : ''} ${a.loggedIn === false ? 'warn' : ''}`,
-        title: a.loggedIn === false ? 'not logged in on this machine (run codex login for it, or re-add it)'
-          : a.blockedUntil ? 'at usage limit, click to unblock' : 'available',
-        onclick: a.blockedUntil && isAdmin ? guarded(async () => { await api('/api/accounts/unblock', { method: 'POST' }); refreshAccounts(); }) : null,
-      }, a.loggedIn === false ? `⚠ ${a.name}` : a.name)));
-      return list;
-    } catch { return null; /* shown on next tick */ }
+  const resetIn = (ts) => {
+    const m = Math.max(0, Math.round((ts * 1000 - Date.now()) / 60000));
+    return m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+  };
+  // One bar per usage window (the share still left) as last reported by the CLI during a turn. A window past its reset counts as full.
+  function limitBars(l) {
+    if (!l) return h('div', { class: 'small' }, 'Usage appears after this account runs its first turn.');
+    return h('div', { class: 'meters' }, l.windows.map((w) => {
+      const over = w.resetsAt * 1000 < Date.now();
+      const left = over ? 100 : Math.max(0, 100 - Math.round(w.usedPercent));
+      return h('div', { class: 'meter', title: limitsTitle(l) },
+        h('span', { class: 'meter-label' }, w.label),
+        h('div', { class: 'meter-track' }, h('div', { class: `meter-fill ${left <= 10 ? 'hot' : left <= 30 ? 'warm' : ''}`, style: `width:${left}%` })),
+        h('span', { class: 'meter-pct' }, `${left}%`),
+        h('span', { class: 'meter-reset small' }, over ? 'reset' : `resets in ${resetIn(w.resetsAt)}`));
+    }));
+  }
+  function limitsTitle(l) {
+    return l ? l.windows.map((w) => `${w.label}: ${Math.max(0, 100 - Math.round(w.usedPercent))}% left, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`).join('\n') : '';
   }
 
   // Add another Codex account: runs `codex login --device-auth` on the server and shows its link and code here.
-  const loginSlot = h('div');
-  const defaultModelSlot = h('div');
-  function defaultModelDialog() {
-    const model = h('select');
-    const effort = h('select', {}, [['', 'Codex default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])]
-      .map(([value, label]) => h('option', { value }, label)));
-    const msg = h('div', { class: 'small' });
-    let modelList = [];
-    let savedModel = '';
-    const updateModels = () => {
-      const options = [h('option', { value: '' }, 'Codex default'), ...modelList.map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
-      if (savedModel && !modelList.some((m) => m.slug === savedModel)) options.push(h('option', { value: savedModel }, savedModel));
-      model.replaceChildren(...options);
-      model.value = savedModel;
-    };
-    const close = () => defaultModelSlot.replaceChildren();
-    const save = guarded(async () => {
-      await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value } });
-      await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value } });
-      flash('Global model and effort defaults saved');
-      close();
-    });
-    document.body.classList.add('nav');
-    defaultModelSlot.replaceChildren(h('div', { class: 'msg model-settings' },
-      h('strong', {}, 'Global defaults'),
-      h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on Codex default to let Codex choose.'),
-      h('label', {}, 'Model', model),
-      h('label', {}, 'Reasoning effort', effort),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: close }, 'Cancel')),
-      msg));
-    Promise.all([api('/api/settings/default-model'), api('/api/settings/default-effort')]).then(([m, e]) => {
-      savedModel = m.model;
-      effort.value = e.effort;
-      updateModels();
-    }).catch((e) => { msg.textContent = e.message; });
-    api('/api/models').then((models) => { modelList = models; updateModels(); }).catch(() => {});
+  // Every menu action opens in this one modal instead of the sidebar.
+  const modal = h('dialog', { class: 'modal' });
+  let onModalClose = null;
+  modal.addEventListener('close', () => { const f = onModalClose; onModalClose = null; modal.replaceChildren(); f?.(); });
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); }); // click on the backdrop
+  root.append(modal);
+  const closeModal = () => modal.close();
+  function openModal(content, onClose) {
+    if (modal.open) modal.close();
+    onModalClose = onClose || null;
+    modal.replaceChildren(content);
+    modal.showModal();
   }
-  function addAccountDialog() {
+  // Global model/effort defaults, one section per backend (a Codex model name means nothing to Claude Code).
+  function defaultModelDialog() {
+    const msg = h('div', { class: 'small' });
+    const section = (backend, title) => {
+      const q = backend === 'claude' ? '?backend=claude' : '';
+      const model = h('select');
+      const effort = h('select', {}, [['', `${title} default`], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])]
+        .map(([value, label]) => h('option', { value }, label)));
+      let modelList = [];
+      let savedModel = '';
+      const updateModels = () => {
+        const options = [h('option', { value: '' }, `${title} default`), ...modelList.map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
+        if (savedModel && !modelList.some((m) => m.slug === savedModel)) options.push(h('option', { value: savedModel }, savedModel));
+        model.replaceChildren(...options);
+        model.value = savedModel;
+      };
+      Promise.all([api(`/api/settings/default-model${q}`), api(`/api/settings/default-effort${q}`)]).then(([m, e]) => {
+        savedModel = m.model;
+        effort.value = e.effort;
+        updateModels();
+      }).catch((e) => { msg.textContent = e.message; });
+      api(`/api/models${q}`).then((models) => { modelList = models; updateModels(); }).catch(() => {});
+      return {
+        el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('label', {}, 'Model', model), h('label', {}, 'Reasoning effort', effort)),
+        save: async () => {
+          await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value, backend } });
+          await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value, backend } });
+        },
+      };
+    };
+    const sections = [section('codex', 'Codex'), section('claude', 'Claude Code')];
+    const save = guarded(async () => {
+      for (const s of sections) await s.save();
+      flash('Global model and effort defaults saved');
+      closeModal();
+    });
+    openModal(h('div', { class: 'modal-body' },
+      h('strong', {}, 'Global defaults'),
+      h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on its default to let the CLI choose.'),
+      ...sections.map((s) => s.el),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closeModal }, 'Cancel')),
+      msg));
+  }
+  function addAccountDialog(backend = 'codex') {
+    const label = backend === 'claude' ? 'Claude Code' : 'Codex';
+    const q = backend === 'claude' ? '?backend=claude' : '';
     const nameIn = h('input', { placeholder: 'account name (a-z, 0-9, - or _)' });
     const list = h('div', { class: 'acctlist' });
     const loadList = async () => {
       try {
-        const accts = await api('/api/accounts');
-        list.replaceChildren(...accts.map((a) => h('div', { class: 'row' }, h('strong', {}, a.name),
-          h('span', { class: 'small' }, a.loggedIn === false ? 'not logged in' : a.blockedUntil ? 'at limit' : 'ready'),
+        const accts = await api(`/api/accounts${q}`);
+        list.replaceChildren(...accts.map((a) => h('div', { class: 'acct' }, h('div', { class: 'acct-head' },
+          h('label', { class: 'switch', title: 'Use this account for new turns' },
+            h('input', { type: 'checkbox', checked: a.enabled, onchange: guarded(async (e) => {
+              await api(`/api/accounts/${encodeURIComponent(a.name)}/enabled`, { method: 'PUT', body: { enabled: e.target.checked, backend } });
+              loadList();
+            }) })),
+          h('strong', {}, a.name),
+          h('span', { class: 'small' }, !a.enabled ? 'off' : a.loggedIn === false ? 'not logged in' : a.blockedUntil ? 'at limit' : 'ready'),
           h('span', { class: 'spacer' }),
+          a.blockedUntil && h('button', { onclick: guarded(async () => { await api('/api/accounts/unblock', { method: 'POST' }); loadList(); }) }, 'Unblock'),
           h('button', { class: 'danger', onclick: guarded(async () => {
-            if (!confirm(`Remove account "${a.name}"? Its Codex login is deleted from this server. Chats and projects stay.`)) return;
-            await api(`/api/accounts/${encodeURIComponent(a.name)}`, { method: 'DELETE' });
+            if (!confirm(`Remove account "${a.name}"? Its ${label} login is deleted from this server. Chats and projects stay.`)) return;
+            await api(`/api/accounts/${encodeURIComponent(a.name)}${q}`, { method: 'DELETE' });
             flash(`removed ${a.name}`);
             loadList();
-            refreshAccounts();
-          }) }, 'Remove'))));
+          }) }, 'Remove')),
+          limitBars(a.limits))));
       } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
     };
     const out = h('pre', { class: 'loginlog' });
@@ -153,7 +186,7 @@ async function showApp() {
     const msg = h('div', { class: 'small' });
     let id = null;
     let timer = null;
-    const close = () => { clearInterval(timer); loginSlot.replaceChildren(); };
+    const close = closeModal;
     const poll = async () => {
       try {
         const s = await api(`/api/accounts/login/${id}`);
@@ -166,14 +199,13 @@ async function showApp() {
           msg.textContent = s.status === 'success' ? `Account "${s.name}" added.` : s.status === 'cancelled' ? 'Cancelled.' : `Failed: ${s.error || 'unknown error'}`;
           startBtn.disabled = false;
           cancelBtn.hidden = true;
-          refreshAccounts();
           loadList();
         }
       } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
     };
     const startBtn = h('button', { class: 'primary', onclick: guarded(async () => {
       msg.textContent = '';
-      const r = await api('/api/accounts/login', { method: 'POST', body: { name: nameIn.value.trim() } });
+      const r = await api('/api/accounts/login', { method: 'POST', body: { name: nameIn.value.trim(), backend } });
       id = r.id;
       startBtn.disabled = true;
       cancelBtn.hidden = false;
@@ -181,28 +213,34 @@ async function showApp() {
       timer = setInterval(poll, 1500);
       poll();
     }) }, 'Start login');
+    const codeIn = h('input', { placeholder: 'code from the sign-in page' });
+    const codeRow = backend === 'claude' ? h('div', { class: 'row' }, codeIn, h('button', { onclick: guarded(async () => {
+      await api(`/api/accounts/login/${id}/code`, { method: 'POST', body: { code: codeIn.value.trim() } });
+      codeIn.value = '';
+      poll();
+    }) }, 'Send code')) : null;
     const cancelBtn = h('button', { class: 'danger', hidden: true, onclick: guarded(async () => {
       await api(`/api/accounts/login/${id}`, { method: 'DELETE' });
       poll();
     }) }, 'Cancel');
-    document.body.classList.add('nav');
     loadList();
-    loginSlot.replaceChildren(h('div', { class: 'msg' },
-      h('strong', {}, 'Codex accounts'), list,
+    openModal(h('div', { class: 'modal-body' },
+      h('strong', {}, `${label} accounts`), list,
       h('strong', {}, 'Add an account'),
-      h('div', { class: 'small' }, 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
+      h('div', { class: 'small' }, backend === 'claude'
+        ? 'Runs "claude auth login" on the server. A browser window opens on that machine; sign in with the account you want to add (or open the link below). If the page shows a code instead of finishing, paste it here.'
+        : 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
       h('div', { class: 'row' }, nameIn, startBtn, cancelBtn, h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: close }, icon('x'))),
-      link, out, msg));
+      link, codeRow, out, msg), () => clearInterval(timer));
   }
 
   // User management (admins): create users with a role, change roles, issue a new token, delete.
-  const usersSlot = h('div');
   function usersDialog() {
     const list = h('div');
     const reveal = h('div');
     const nameIn = h('input', { placeholder: 'user name (a-z, 0-9, - or _)' });
     const roleSel = h('select', {}, ['dev', 'admin'].map((v) => h('option', { value: v }, v)));
-    const close = () => usersSlot.replaceChildren();
+    const close = closeModal;
 
     function showToken(who, token) {
       const field = h('input', { readonly: true, value: token });
@@ -235,8 +273,7 @@ async function showApp() {
       showToken(r.name, r.token);
       reload();
     });
-    document.body.classList.add('nav');
-    usersSlot.replaceChildren(h('div', { class: 'msg' },
+    openModal(h('div', { class: 'modal-body' },
       h('strong', {}, 'Users'),
       h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects.'),
       list,
@@ -246,12 +283,14 @@ async function showApp() {
   }
 
   // Sends one chat wants to make into another (via MCP) wait here until a human decides.
-  const approvalsBox = h('div');
   async function refreshApprovals() {
     try {
       const list = await api('/api/approvals');
       const decide = (a, verb) => guarded(async () => { await api(`/api/approvals/${a.id}/${verb}`, { method: 'POST' }); refreshApprovals(); });
-      approvalsBox.replaceChildren(...list.map((a) => h('div', { class: 'msg' },
+      approvalsBtn.hidden = !list.length;
+      approvalsBtn.textContent = `Approvals (${list.length})`;
+      if (!list.length && approvalsBox.isConnected) closeModal();
+      approvalsBox.replaceChildren(h('strong', {}, 'Approvals'), ...list.map((a) => h('div', { class: 'msg' },
         `Approval needed: chat ${a.from_conv.slice(0, 8)} wants to message chat ${a.to_conv.slice(0, 8)}:\n${a.prompt}`,
         h('div', { class: 'row' },
           h('button', { class: 'primary', onclick: decide(a, 'approve') }, 'Approve'),
@@ -265,19 +304,30 @@ async function showApp() {
     drawSidebar();
   }
 
-  // Built once: the sidebar is redrawn on every status change, which must not wipe what is being typed.
-  const nameIn = h('input', { placeholder: 'name' });
-  const pathIn = h('input', { placeholder: 'path (absolute or under the root)' });
-  const sbSel = h('select', {}, ['workspace-write', 'read-only', 'danger-full-access'].map((v) => h('option', { value: v }, v)));
-  const addForm = h('details', { class: 'add-project' },
-    h('summary', {}, icon('plus'), 'Add project'),
-    h('div', { class: 'row' }, nameIn), h('div', { class: 'row' }, pathIn), h('div', { class: 'row' }, sbSel),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guarded(async () => {
-      await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value } });
-      nameIn.value = ''; pathIn.value = '';
-      await loadProjects();
-    }) }, 'Create')));
-  const adoptSlot = h('div');
+  function addProjectDialog() {
+    const nameIn = h('input', { placeholder: 'name' });
+    const pathIn = h('input', { placeholder: 'path (absolute or under the root)' });
+    const sbSel = h('select', {}, ['workspace-write', 'read-only', 'danger-full-access'].map((v) => h('option', { value: v }, v)));
+    const backendSel = h('select', {}, [['codex', 'Codex'], ['claude', 'Claude Code']].map(([v, l]) => h('option', { value: v }, l)));
+    const msg = h('div', { class: 'small' });
+    const create = async () => {
+      try {
+        await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value, backend: backendSel.value } });
+        closeModal();
+        await loadProjects();
+      } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
+    };
+    openModal(h('div', { class: 'modal-body' },
+      h('strong', {}, 'Add project'),
+      h('label', {}, 'Name', nameIn),
+      h('label', {}, 'Folder', pathIn),
+      h('label', {}, 'Agent (for every chat in this project)', backendSel),
+      h('label', {}, 'Sandbox', sbSel),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: closeModal }, 'Cancel')),
+      msg));
+    nameIn.focus();
+  }
+  const addProjectBtn = h('button', { class: 'add-project', onclick: addProjectDialog }, icon('plus'), 'Add project');
 
   const newChat = (p) => guarded(async () => { const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: {} }); await loadProjects(); openConv(c.id); });
   const deleteConv = (id) => guarded(async () => {
@@ -303,11 +353,11 @@ async function showApp() {
           } },
             icon(collapsed ? 'chevron-right' : 'chevron-down'),
             icon('folder'),
-            h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: 'small' }, p.sandbox))),
+            h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: `small backend-tag ${p.backend}` }, `${p.backend === 'claude' ? 'Claude Code' : 'Codex'} · ${p.sandbox}`))),
           h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
           isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
             h('div', { class: 'pop' },
-              h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
+              p.backend === 'codex' && h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
               h('button', { class: 'danger', onclick: guarded(async () => {
                 if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
                 await api(`/api/projects/${p.id}`, { method: 'DELETE' });
@@ -328,9 +378,9 @@ async function showApp() {
             h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c.id) }, icon('trash-2')));
         })) : h('div', { class: 'small hint' }, 'No chats yet')));
     });
-    sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,
+    sidebar.replaceChildren(...[
       h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
-      isAdmin ? addForm : null, ...blocks,
+      isAdmin ? addProjectBtn : null, ...blocks,
       !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
   }
 
@@ -341,12 +391,11 @@ async function showApp() {
       `${new Date(s.modified).toLocaleString()} ${s.cwd ? '· ' + s.cwd : ''} · ${s.id.slice(0, 8)}`)));
     const box = h('div', { class: 'row' }, sel, h('button', { class: 'primary', onclick: guarded(async () => {
       const c = await api(`/api/projects/${project.id}/conversations`, { method: 'POST', body: { threadId: sel.value } });
-      adoptSlot.replaceChildren();
+      closeModal();
       await loadProjects();
       openConv(c.id);
-    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: () => adoptSlot.replaceChildren() }, icon('x')));
-    document.body.classList.add('nav');
-    adoptSlot.replaceChildren(box);
+    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: closeModal }, icon('x')));
+    openModal(h('div', { class: 'modal-body' }, h('strong', {}, 'Adopt a Codex session'), box));
   }
 
   async function openConv(id) {
@@ -387,6 +436,7 @@ async function showApp() {
     let currentEffort = '';
     let globalModel = '';
     let globalEffort = '';
+    let backendName = 'Codex';
     const model = h('select', { title: 'Model', onchange: guarded(async () => {
       currentModel = model.value;
       updateEffortOptions();
@@ -399,7 +449,7 @@ async function showApp() {
       flash(currentEffort ? `effort: ${currentEffort}` : 'effort: default');
     }) });
     function updateModelOptions() {
-      const options = [h('option', { value: '' }, globalModel || 'Codex default'), ...modelList.filter((m) => m.slug !== globalModel).map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
+      const options = [h('option', { value: '' }, globalModel || `${backendName} default`), ...modelList.filter((m) => m.slug !== globalModel).map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
       if (currentModel && currentModel !== globalModel && !modelList.some((m) => m.slug === currentModel)) options.push(h('option', { value: currentModel }, currentModel));
       model.replaceChildren(...options);
       model.value = currentModel === globalModel ? '' : currentModel;
@@ -409,16 +459,21 @@ async function showApp() {
       const choices = (supported?.length ? supported : ['low', 'medium', 'high', 'xhigh', 'max']).filter((v) => v !== globalEffort);
       const selectedEffort = currentEffort === globalEffort ? '' : currentEffort;
       const values = [...new Set(['', ...choices, ...(selectedEffort && !choices.includes(selectedEffort) ? [selectedEffort] : [])])];
-      effort.replaceChildren(...values.map((v) => h('option', { value: v }, v || globalEffort || 'Codex default')));
+      effort.replaceChildren(...values.map((v) => h('option', { value: v }, v || globalEffort || `${backendName} default`)));
       effort.value = selectedEffort;
     }
     updateModelOptions();
     updateEffortOptions();
-    Promise.all([
-      api('/api/models'),
-      api('/api/settings/default-model').catch(() => ({ model: '' })),
-      api('/api/settings/default-effort').catch(() => ({ effort: '' })),
-    ]).then(([list, m, e]) => {
+    api(`/api/conversations/${id}`).then((c) => {
+      const claude = c.backend === 'claude';
+      backendName = claude ? 'Claude Code' : 'Codex';
+      text.placeholder = `Message ${backendName}…`;
+      return Promise.all([
+        api(`/api/models${claude ? '?backend=claude' : ''}`),
+        api(`/api/settings/default-model${claude ? '?backend=claude' : ''}`).catch(() => ({ model: '' })),
+        api(`/api/settings/default-effort${claude ? '?backend=claude' : ''}`).catch(() => ({ effort: '' })),
+      ]);
+    }).then(([list, m, e]) => {
       modelList = list;
       globalModel = m.model;
       globalEffort = e.effort;
@@ -512,9 +567,9 @@ async function showApp() {
 
   drawMain(null);
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) flash(e.message); return; }
-  const tick = () => { refreshAccounts(); if (isAdmin) refreshApprovals(); };
+  const tick = () => { if (isAdmin) refreshApprovals(); };
   // First run: nothing works until an account exists, so an admin lands straight in the sign-in step.
-  refreshAccounts().then((list) => { if (isAdmin && list && !list.length) addAccountDialog(); });
+  if (isAdmin) Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')]).then(([a, c]) => { if (!a.length && !c.length) addAccountDialog(); }).catch(() => {});
   if (isAdmin) refreshApprovals();
   clearInterval(accountTimer);
   accountTimer = setInterval(tick, 15000);

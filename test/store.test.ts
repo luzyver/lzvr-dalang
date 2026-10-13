@@ -114,3 +114,24 @@ describe('Store', () => {
     expect(store.eventsAfter(conv.id, 0)).toHaveLength(2);
   });
 });
+
+describe('project backend', () => {
+  it('gives every chat of a project the project\'s backend', () => {
+    const store = new Store();
+    const claude = store.createProject('c', '/w/c', 'read-only', 'claude');
+    expect(store.getProject(claude.id)!.backend).toBe('claude');
+    expect(store.createConversation(claude.id).backend).toBe('claude');
+    expect(store.createConversation(store.createProject('x', '/w/x').id).backend).toBe('codex');
+  });
+});
+
+describe('global defaults per backend', () => {
+  it('keeps Codex and Claude Code defaults apart', () => {
+    const store = new Store();
+    store.setDefaultModel('gpt-x');
+    store.setDefaultModel('opus', 'claude');
+    store.setDefaultEffort('high', 'claude');
+    expect([store.getDefaultModel(), store.getDefaultModel('claude')]).toEqual(['gpt-x', 'opus']);
+    expect([store.getDefaultEffort(), store.getDefaultEffort('claude')]).toEqual(['', 'high']);
+  });
+});

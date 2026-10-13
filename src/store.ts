@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import type { Backend } from './util.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
-  sandbox TEXT NOT NULL DEFAULT 'workspace-write');
+  sandbox TEXT NOT NULL DEFAULT 'workspace-write', backend TEXT NOT NULL DEFAULT 'codex');
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   thread_id TEXT, status TEXT NOT NULL DEFAULT 'idle', draft TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '');
+  model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '', backend TEXT NOT NULL DEFAULT 'codex');
 CREATE TABLE IF NOT EXISTS queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -53,7 +54,8 @@ export type Role = 'admin' | 'dev';
 export interface User { id: string; name: string; role: Role; created_at: string }
 export interface UserSummary { id: string; name: string; role: Role; createdAt: string; passkeys: number }
 
-export interface Project { id: string; name: string; path: string; sandbox: string }
+/** `backend` is the agent CLI every chat in the project runs on. */
+export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
   /** First prompt of the chat (list only), for display. */
@@ -63,6 +65,8 @@ export interface Conversation {
   model: string;
   /** Reasoning effort (low|medium|high|xhigh|max); empty = Codex's default for the model. */
   effort: string;
+  /** Which agent CLI runs this chat. */
+  backend: Backend;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
@@ -86,6 +90,8 @@ export class Store {
     this.ensureColumn('passkeys', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
+    this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('events', 'created_at', 'TEXT');
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
@@ -174,14 +180,16 @@ export class Store {
 
   getKv(key: string): string | null { return this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null; }
   setKv(key: string, value: string): void { this.run('INSERT OR REPLACE INTO kv (key,value) VALUES (?,?)', key, value); }
-  getDefaultModel(): string { return this.getKv('default_model') ?? ''; }
-  setDefaultModel(model: string): void { this.setKv('default_model', model); }
-  getDefaultEffort(): string { return this.getKv('default_effort') ?? ''; }
-  setDefaultEffort(effort: string): void { this.setKv('default_effort', effort); }
+  // Global model/effort defaults are kept per backend: a Codex model name means nothing to Claude Code.
+  private defaultKey(name: string, backend: Backend): string { return backend === 'claude' ? `${name}_claude` : name; }
+  getDefaultModel(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_model', backend)) ?? ''; }
+  setDefaultModel(model: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_model', backend), model); }
+  getDefaultEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_effort', backend)) ?? ''; }
+  setDefaultEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_effort', backend), effort); }
 
-  createProject(name: string, path: string, sandbox = 'workspace-write'): Project {
-    const p = { id: randomUUID(), name, path, sandbox };
-    this.run('INSERT INTO projects (id,name,path,sandbox) VALUES (?,?,?,?)', p.id, name, path, sandbox);
+  createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex'): Project {
+    const p = { id: randomUUID(), name, path, sandbox, backend };
+    this.run('INSERT INTO projects (id,name,path,sandbox,backend) VALUES (?,?,?,?,?)', p.id, name, path, sandbox, backend);
     return p;
   }
   listProjects(): Project[] { return this.all('SELECT * FROM projects ORDER BY name'); }
@@ -189,10 +197,11 @@ export class Store {
   deleteConversation(id: string): boolean { return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0; }
   deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
 
-  /** `threadId` adopts an existing Codex session instead of starting a new one. */
-  createConversation(projectId: string, threadId: string | null = null): Conversation {
+  /** `threadId` adopts an existing Codex session instead of starting a new one. The chat runs on the project's backend unless told otherwise. */
+  createConversation(projectId: string, threadId: string | null = null, backend?: Backend): Conversation {
     const id = randomUUID();
-    this.run('INSERT INTO conversations (id,project_id,thread_id) VALUES (?,?,?)', id, projectId, threadId);
+    backend ??= this.getProject(projectId)?.backend ?? 'codex';
+    this.run('INSERT INTO conversations (id,project_id,thread_id,backend) VALUES (?,?,?,?)', id, projectId, threadId, backend);
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {

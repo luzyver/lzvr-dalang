@@ -13,6 +13,7 @@ export interface Config {
    */
   trustProxy: string[];
   codexCommand: string[];
+  claudeCommand: string[];
   /** How long an account stays skipped after hitting its usage limit. */
   limitBlockMs: number;
   /** Overrides the built-in usage-limit detection regex. */
@@ -57,6 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: env.HOST ?? '127.0.0.1',
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     codexCommand: [env.CODEX_BIN ?? 'codex'],
+    claudeCommand: [env.CLAUDE_BIN ?? 'claude'],
     limitBlockMs: blockMinutes * 60_000,
     mcpUrl: env.MCP_INJECT === '1' ? env.MCP_URL || `http://127.0.0.1:${port}/mcp` : undefined,
     limitRegex: env.LIMIT_REGEX ? new RegExp(env.LIMIT_REGEX, 'i') : undefined,

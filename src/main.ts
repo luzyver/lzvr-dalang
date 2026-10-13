@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { linkSessions } from './accounts.js';
+import { CLAUDE_SHARED_DIRS, linkSessions, migrateCodexAccounts } from './accounts.js';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { Dispatcher } from './dispatcher.js';
@@ -14,23 +14,32 @@ const store = new Store(join(cfg.stateDir, 'lzvr.db'));
 const push = new Push(store, { subject: cfg.vapidSubject ?? (cfg.origin ? cfg.origin : undefined) });
 const dispatcher = new Dispatcher(store, {
   homes: [], // no account exists until an admin adds one in the panel; they are loaded from the database just below
-  command: cfg.codexCommand, blockMs: cfg.limitBlockMs, limitRe: cfg.limitRegex, mcpUrl: cfg.mcpUrl,
+  command: cfg.codexCommand, claudeCommand: cfg.claudeCommand, blockMs: cfg.limitBlockMs, limitRe: cfg.limitRegex, mcpUrl: cfg.mcpUrl,
   onTurnEnd: (e) => push.notifyTurn(e),
 });
 
+migrateCodexAccounts(cfg.stateDir, { get: (k) => store.getKv(k), set: (k, v) => store.setKv(k, v) });
+
 // Accounts added from the panel in earlier runs come after the configured ones.
 const logins = new Logins({
-  command: cfg.codexCommand, baseDir: join(cfg.stateDir, 'accounts'), accounts: dispatcher.accounts, store,
+  command: cfg.codexCommand, baseDir: join(cfg.stateDir, 'codex-accounts'), accounts: dispatcher.accounts, store,
 });
+const claudeLogins = new Logins({
+  backend: 'claude', command: cfg.claudeCommand, baseDir: join(cfg.stateDir, 'claude-accounts'), accounts: dispatcher.claudeAccounts, store,
+});
+for (const h of claudeLogins.loadExtras()) dispatcher.claudeAccounts.add(h);
+linkSessions(dispatcher.claudeAccounts.homes, CLAUDE_SHARED_DIRS);
 for (const h of logins.loadExtras()) dispatcher.accounts.add(h);
 for (const h of linkSessions(dispatcher.accounts.homes)) {
   console.warn(`${h}/sessions already exists and was not linked; sessions will not resume across accounts for it`);
 }
 
+dispatcher.loadDisabled();
+
 // A crash can leave turns `running`; fail them and restart any leftover queues.
 for (const id of store.resetRunning()) dispatcher.kick(id);
 
-const app = buildApp({ cfg, store, dispatcher, push, logins });
+const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins });
 await app.listen({ host: cfg.host, port: cfg.port });
 
 // systemd sends SIGTERM on stop/restart: kill running turns cleanly.

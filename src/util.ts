@@ -9,4 +9,7 @@ export interface AuthUser {
   main: boolean;
 }
 
+export const BACKENDS = ['codex', 'claude'] as const;
+export type Backend = (typeof BACKENDS)[number];
+
 export const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
