@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   thread_id TEXT, status TEXT NOT NULL DEFAULT 'idle', draft TEXT NOT NULL DEFAULT '',
   autopilot INTEGER NOT NULL DEFAULT 0, autopilot_left INTEGER NOT NULL DEFAULT 0,
-  autopilot_prompt TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '');
+  autopilot_prompt TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -57,10 +57,14 @@ export interface UserSummary { id: string; name: string; role: Role; createdAt: 
 export interface Project { id: string; name: string; path: string; sandbox: string }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
+  /** First prompt of the chat (list only), for display. */
+  title?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
   autopilot: number; autopilot_left: number; autopilot_prompt: string;
   /** Codex model for this chat; empty = Codex's own default. */
   model: string;
+  /** Reasoning effort (low|medium|high|xhigh|max); empty = Codex's default for the model. */
+  effort: string;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
@@ -86,6 +90,7 @@ export class Store {
     this.ensureColumn('conversations', 'autopilot_left', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('conversations', 'autopilot_prompt', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
   }
 
   private ensureColumn(table: string, column: string, ddl: string): void {
@@ -190,13 +195,14 @@ export class Store {
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
-    return this.all('SELECT * FROM conversations WHERE project_id=? ORDER BY rowid', projectId);
+    return this.all('SELECT c.*, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1) AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid', projectId);
   }
   getConversation(id: string): Conversation | null { return this.get('SELECT * FROM conversations WHERE id=?', id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
+  setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
   setAutopilot(id: string, enabled: boolean, left: number, prompt: string): void {
     this.run('UPDATE conversations SET autopilot=?, autopilot_left=?, autopilot_prompt=? WHERE id=?', enabled ? 1 : 0, left, prompt, id);
   }

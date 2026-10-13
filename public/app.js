@@ -274,24 +274,27 @@ async function showApp() {
   const state = { projects: [], convs: new Map(), current: null, queue: [] };
   const sidebar = h('aside');
   const main = h('main');
-  const accounts = h('span');
+  const accounts = h('span', { class: 'accts' });
   const status = h('span', { class: 'small' });
 
   const flash = (msg) => { status.textContent = msg; if (msg) setTimeout(() => { if (status.textContent === msg) status.textContent = ''; }, 5000); };
   const guarded = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof Unauthorized)) flash(e.message); } };
 
   document.body.classList.remove('nav');
+  const menu = h('details', { class: 'menu' },
+    h('summary', {}, h('span', { class: 'avatar' }, me.name.slice(0, 1).toUpperCase()), h('span', { class: 'uname' }, me.name)),
+    h('div', { class: 'pop', onclick: () => { menu.open = false; } },
+      h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
+      isAdmin && h('button', { onclick: () => addAccountDialog() }, '+ Codex account'),
+      isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
+      h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
+      h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
+      h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
+  document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
   const header = h('header', {},
     h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, '☰'),
     h('span', { class: 'title' }, 'Dalang'), accounts,
-    h('span', { class: 'spacer' }), status,
-    h('div', { class: 'actions' },
-      isAdmin && h('button', { onclick: () => addAccountDialog() }, '+ Account'),
-      isAdmin && h('button', { onclick: () => usersDialog() }, 'Users'),
-      h('span', { class: 'small' }, `${me.name} · ${me.role}`),
-      h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Notifications'),
-      h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
-      h('button', { onclick: signOut }, 'Sign out')));
+    h('span', { class: 'spacer' }), status, menu);
   root.replaceChildren(h('div', { class: 'shell' }, header, sidebar, main));
   notificationOpensChat = (id) => openConv(id);
 
@@ -445,28 +448,32 @@ async function showApp() {
     }) }, 'Create')));
   const adoptSlot = h('div');
 
+  const newChat = (p) => guarded(async () => { const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: {} }); await loadProjects(); openConv(c.id); });
   function drawSidebar() {
     const blocks = state.projects.map((p) => {
       const convs = state.convs.get(p.id) || [];
-      return h('details', { open: convs.some((c) => c.id === state.current) || state.projects.length === 1 },
-        h('summary', {}, p.name, ' ', h('span', { class: 'small' }, p.sandbox)),
-        convs.map((c, i) => h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-          h('span', { class: `st ${c.status}` }, c.status), `chat ${i + 1}`)),
-        h('div', { class: 'row' },
-          h('button', { onclick: guarded(async () => { const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: {} }); await loadProjects(); openConv(c.id); }) }, '+ chat'),
-          isAdmin && h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt session'),
-          isAdmin && h('button', { class: 'danger', onclick: guarded(async () => {
-            if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
-            await api(`/api/projects/${p.id}`, { method: 'DELETE' });
-            if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) {
-              if (stopStream) { stopStream(); stopStream = null; } // else it keeps retrying a chat that no longer exists
-              state.current = null;
-              drawMain(null);
-            }
-            await loadProjects();
-          }) }, 'Remove')));
+      return h('section', { class: 'proj' },
+        h('div', { class: 'projhead' },
+          h('div', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: 'small' }, p.sandbox)),
+          h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, '+'),
+          isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, '⋯'),
+            h('div', { class: 'pop' },
+              h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
+              h('button', { class: 'danger', onclick: guarded(async () => {
+                if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
+                await api(`/api/projects/${p.id}`, { method: 'DELETE' });
+                if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) {
+                  if (stopStream) { stopStream(); stopStream = null; } // else it keeps retrying a chat that no longer exists
+                  state.current = null;
+                  drawMain(null);
+                }
+                await loadProjects();
+              }) }, 'Remove project')))),
+        convs.length ? convs.map((c) => h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
+          h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct' }, c.title || 'New chat')))
+          : h('div', { class: 'small hint' }, 'No chats yet'));
     });
-    sidebar.replaceChildren(...[loginSlot, usersSlot, approvalsBox, adoptSlot, isAdmin ? addForm : null, ...blocks].filter(Boolean));
+    sidebar.replaceChildren(...[loginSlot, usersSlot, approvalsBox, adoptSlot, ...blocks, isAdmin ? addForm : null].filter(Boolean));
   }
 
   async function adoptDialog(project) {
@@ -493,16 +500,24 @@ async function showApp() {
   }
 
   function drawMain(id) {
-    if (!id) { main.replaceChildren(h('div', { class: 'empty' }, 'Select or create a chat')); return; }
+    if (!id) {
+      main.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Dalang'), h('p', {}, 'Pick a chat, or start a new one with the + next to a project.'),
+        h('button', { class: 'primary mobonly', onclick: () => document.body.classList.add('nav') }, 'Open chats')));
+      return;
+    }
     const log = h('div', { class: 'log' });
     const queueBox = h('div', { class: 'queue' });
-    const text = h('textarea', { placeholder: 'Message Codex…  (Ctrl+Enter to send)' });
+    const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
     const files = h('input', { type: 'file', multiple: true });
     const ap = h('input', { type: 'checkbox' });
     const model = h('input', { list: 'models', placeholder: 'model (default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
       await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
       flash(model.value.trim() ? `model: ${model.value.trim()}` : 'model: default');
     }) });
+    const effort = h('select', { title: 'reasoning effort', onchange: guarded(async () => {
+      await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: effort.value } });
+      flash(effort.value ? `effort: ${effort.value}` : 'effort: default');
+    }) }, [['', 'effort: default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])].map(([v, t]) => h('option', { value: v }, t)));
     const models = h('datalist', { id: 'models' });
     api('/api/models').then((list) => models.replaceChildren(...list.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
     const apTurns = h('input', { type: 'number', min: '1', max: '100', value: '20' });
@@ -516,10 +531,13 @@ async function showApp() {
       const c = await api(`/api/conversations/${id}`);
       ap.checked = c.autopilot === 1;
       if (document.activeElement !== model) model.value = c.model || '';
+      effort.value = c.effort || '';
       if (!text.value && c.draft) text.value = c.draft;
       const list = state.projects.flatMap((p) => state.convs.get(p.id) || []);
       const known = list.find((x) => x.id === id);
-      if (known && known.status !== c.status) { known.status = c.status; drawSidebar(); }
+      stop.hidden = c.status !== 'running';
+      const title = c.turns && c.turns[0] ? c.turns[0].prompt.slice(0, 80) : null;
+      if (known && (known.status !== c.status || (title && known.title !== title))) { known.status = c.status; if (title) known.title = title; drawSidebar(); }
     }
 
     const send = guarded(async () => {
@@ -537,7 +555,9 @@ async function showApp() {
       await api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: '' } });
       refreshQueue();
     });
-    text.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
+    // Desktop: Enter sends, Shift+Enter is a new line. Touch keyboards keep Enter as a new line (the send button sends).
+    const mouse = matchMedia('(pointer: fine)');
+    text.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && (e.ctrlKey || e.metaKey || (mouse.matches && !e.shiftKey))) { e.preventDefault(); send(); } });
     let draftTimer;
     text.addEventListener('input', () => {
       clearTimeout(draftTimer);
@@ -556,22 +576,32 @@ async function showApp() {
     };
     ap.addEventListener('change', setAutopilot);
 
+    const attachCount = h('span', {});
+    files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
+    const settings = h('div', { class: 'settings', hidden: true },
+      h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort),
+      h('label', { class: 'check' }, ap, 'Autopilot'), h('label', {}, 'Max turns', apTurns),
+      h('button', { class: 'danger', onclick: guarded(async () => {
+        if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
+        await api(`/api/conversations/${id}`, { method: 'DELETE' });
+        if (stopStream) { stopStream(); stopStream = null; }
+        state.current = null;
+        drawMain(null);
+        await loadProjects();
+      }) }, 'Delete chat'));
+    const stop = h('button', { class: 'stop', hidden: true, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
+      const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
+    }) }, '■');
     main.replaceChildren(log, h('div', { class: 'composer' },
       queueBox,
-      h('div', { class: 'box' }, text,
-        h('div', { class: 'tools' },
-          h('div', { class: 'opts' }, model, models, files, h('label', {}, ap, 'Autopilot'), h('label', {}, 'max turns', apTurns)),
-          h('div', { class: 'acts' },
-            h('button', { class: 'danger', title: 'delete this chat', onclick: guarded(async () => {
-              if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
-              await api(`/api/conversations/${id}`, { method: 'DELETE' });
-              if (stopStream) { stopStream(); stopStream = null; }
-              state.current = null;
-              drawMain(null);
-              await loadProjects();
-            }) }, 'Delete'),
-            h('button', { class: 'danger', onclick: guarded(async () => { const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running'); }) }, 'Cancel'),
-            h('button', { class: 'primary send', 'aria-label': 'Send', onclick: send }, '↑'))))));
+      h('div', { class: 'box' },
+        h('div', { class: 'inputrow' },
+          h('label', { class: 'iconbtn', title: 'Attach files' }, '📎', attachCount, files),
+          text,
+          h('button', { class: 'iconbtn', title: 'Settings', 'aria-label': 'Settings', onclick: () => { settings.hidden = !settings.hidden; } }, '⚙'),
+          stop,
+          h('button', { class: 'primary send', 'aria-label': 'Send', onclick: send }, '↑')),
+        settings)));
 
     stopStream = startStream(id, (e) => {
       const el = renderEvent(e);

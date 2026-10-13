@@ -298,6 +298,15 @@ export function buildApp(
     return reply.code(204).send();
   });
 
+  app.put<{ Params: { id: string }; Body: { effort: string } }>('/api/conversations/:id/effort', {
+    schema: { body: { type: 'object', required: ['effort'], additionalProperties: false,
+      properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] } } } },
+  }, (req, reply) => {
+    if (!store.getConversation(req.params.id)) return notFound(reply);
+    store.setEffort(req.params.id, req.body.effort);
+    return reply.code(204).send();
+  });
+
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
     return conv ? { ...conv, turns: store.listTurns(conv.id) } : notFound(reply);

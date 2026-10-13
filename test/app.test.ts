@@ -295,3 +295,16 @@ describe('deleting a chat', () => {
     expect(left.map((c: { id: string }) => c.id)).toEqual([other.id]);
   });
 });
+
+describe('reasoning effort', () => {
+  it('stores an effort per chat and refuses unknown values', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    const put = (effort: string) => t.app.inject({ method: 'PUT', url: `/api/conversations/${conv.id}/effort`, headers: AUTH, payload: { effort } });
+    expect((await put('xhigh')).statusCode).toBe(204);
+    expect(t.store.getConversation(conv.id)!.effort).toBe('xhigh');
+    expect((await put('x"y')).statusCode).toBe(400);
+    expect((await put('')).statusCode).toBe(204);
+    expect(t.store.getConversation(conv.id)!.effort).toBe('');
+  });
+});
