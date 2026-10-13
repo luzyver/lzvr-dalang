@@ -365,7 +365,7 @@ async function showApp() {
     }
     const project = state.projects.find((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
     const initial = (state.convs.get(project?.id) || []).find((c) => c.id === id);
-    const chatTitle = h('strong', { class: 'chat-title' }, initial?.title || 'New conversation');
+    const chatTitle = h('strong', { class: 'chat-title', title: initial?.title || 'New conversation' }, initial?.title || 'New conversation');
     const chatProject = h('span', { class: 'chat-project' }, project?.name || 'Project');
     const chatState = h('span', { class: `chat-state ${initial?.status || 'idle'}` }, initial?.status || 'idle');
     const chatHead = h('div', { class: 'chathead' },
@@ -400,6 +400,7 @@ async function showApp() {
       stop.hidden = c.status !== 'running';
       const title = c.turns && c.turns[0] ? c.turns[0].prompt.slice(0, 80) : null;
       chatTitle.textContent = title || 'New conversation';
+      chatTitle.title = title || 'New conversation';
       chatState.textContent = c.status;
       chatState.className = `chat-state ${c.status}`;
       if (known && (known.status !== c.status || (title && known.title !== title))) { known.status = c.status; if (title) known.title = title; drawSidebar(); }

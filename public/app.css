@@ -108,9 +108,9 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; mi
 main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .chathead { min-width: 0; min-height: 58px; padding: 10px clamp(16px, 3vw, 38px); display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .chat-context { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
-.chat-project { color: var(--dim); font-size: 13px; }
+.chat-project { flex: none; max-width: 32%; overflow: hidden; color: var(--dim); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .crumb { color: var(--line); }
-.chat-title { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.chat-title { display: block; flex: 1; min-width: 0; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-state { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); font-size: 12px; text-transform: capitalize; }
 .chat-state.running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 36%, var(--line)); background: color-mix(in srgb, var(--ok) 9%, var(--panel)); }
 .chat-state.running::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.2s ease-in-out infinite; }
