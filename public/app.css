@@ -120,8 +120,16 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .msg { padding: 10px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.agent { background: none; border: 0; padding: 0 4px; border-radius: 0; line-height: 1.65; white-space: normal; }
 .msg.user { background: var(--user); border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--line)); border-radius: 20px; border-bottom-right-radius: 6px; padding: 10px 18px; width: fit-content; max-width: min(85%, 600px); margin-left: auto; margin-right: max(0px, calc((100% - 780px) / 2)); }
-.msg.cmd { background: var(--code); border: 0; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; }
-.msg.cmd .out { color: var(--dim); display: block; margin-top: 6px; max-height: 200px; overflow: auto; }
+.msg.cmd.terminal { min-width: 0; padding: 2px 4px; background: none; border: 0; font: 13px/1.5 system-ui, sans-serif; }
+.terminal > summary { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--dim); }
+.terminal > summary::before { content: '›'; flex: none; color: var(--dim); font-size: 18px; line-height: 1; transition: transform .12s ease; }
+.terminal[open] > summary::before { transform: rotate(90deg); }
+.terminal-label { flex: none; color: var(--text); }
+.terminal-preview { min-width: 0; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+.terminal-exit { flex: none; color: var(--dim); font-size: 11px; }
+.terminal-body { margin: 8px 0 0 18px; padding: 10px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--code); }
+.terminal-command { display: block; margin-bottom: 8px; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.terminal .out { color: var(--dim); display: block; margin: 0; padding: 8px 0 0; max-height: 200px; overflow: auto; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 .note { font-size: 13px; color: var(--dim); padding: 0 4px; overflow-wrap: anywhere; }
 .note.err { color: var(--err); } .note.warn { color: var(--warn); }
 

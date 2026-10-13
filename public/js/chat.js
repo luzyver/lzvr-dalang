@@ -110,9 +110,17 @@ function renderItem(item) {
   switch (item.type) {
     case 'agent_message': return h('div', { class: 'msg agent' }, markdown(item.text || ''));
     case 'command_execution': {
-      const out = h('span', { class: 'out' }, String(item.aggregated_output || '').slice(-2000));
+      const out = h('pre', { class: 'out' }, String(item.aggregated_output || '').slice(-2000));
       const code = item.exit_code == null ? '' : `  [exit ${item.exit_code}]`;
-      return h('div', { class: 'msg cmd' }, `$ ${item.command || ''}${code}`, out);
+      const command = String(item.command || '');
+      return h('details', { class: 'msg cmd terminal' },
+        h('summary', {},
+          h('span', { class: 'terminal-label' }, 'Ran command'),
+          h('code', { class: 'terminal-preview', title: command }, command || 'command'),
+          item.exit_code == null ? null : h('span', { class: 'terminal-exit' }, `exit ${item.exit_code}`)),
+        h('div', { class: 'terminal-body' },
+          h('code', { class: 'terminal-command' }, `$ ${command}${code}`),
+          out));
     }
     case 'file_change': {
       const files = (item.changes || []).map((c) => `${c.kind || 'change'} ${c.path || ''}`).join('\n');
