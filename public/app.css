@@ -29,6 +29,19 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 textarea { resize: none; field-sizing: content; }
 summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }
+.ui-icon { display: inline-block; flex: none; width: 18px; height: 18px; background-color: currentColor; -webkit-mask: var(--icon-mask) center / contain no-repeat; mask: var(--icon-mask) center / contain no-repeat; }
+.icon-panel-left { --icon-mask: url('/icons/panel-left.svg'); }
+.icon-x { --icon-mask: url('/icons/x.svg'); }
+.icon-folder { --icon-mask: url('/icons/folder.svg'); }
+.icon-chevron-right { --icon-mask: url('/icons/chevron-right.svg'); }
+.icon-chevron-down { --icon-mask: url('/icons/chevron-down.svg'); }
+.icon-plus { --icon-mask: url('/icons/plus.svg'); }
+.icon-ellipsis { --icon-mask: url('/icons/ellipsis.svg'); }
+.icon-trash-2 { --icon-mask: url('/icons/trash-2.svg'); }
+.icon-paperclip { --icon-mask: url('/icons/paperclip.svg'); }
+.icon-settings { --icon-mask: url('/icons/settings.svg'); }
+.icon-square { --icon-mask: url('/icons/square.svg'); }
+.icon-arrow-up { --icon-mask: url('/icons/arrow-up.svg'); }
 
 /* ---- login ---- */
 .login { max-width: 380px; margin: 14vh auto 0; padding: 28px 22px; display: grid; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
@@ -66,8 +79,8 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .projhead { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 0 3px 2px; }
 .project-toggle { flex: 1; display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 42px; padding: 4px 7px; text-align: left; border: 0; background: transparent; border-radius: 9px; }
 .project-toggle:hover { background: var(--hover); }
-.project-chevron { width: 13px; color: var(--dim); font-size: 17px; line-height: 1; }
-.project-glyph { color: var(--accent); font-size: 13px; }
+.project-toggle > .ui-icon:first-child { width: 14px; height: 14px; color: var(--dim); }
+.project-toggle > .icon-folder { color: var(--accent); }
 .pname { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .pname strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-sessions { display: grid; gap: 2px; margin: 0 2px 0 17px; padding-left: 8px; border-left: 1px solid var(--line); }
@@ -77,7 +90,7 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .iconbtn input[type=file] { display: none; }
 .iconbtn span { font-size: 14px; }
 .more { position: relative; }
-.more > summary { display: grid; place-items: center; width: 36px; height: 40px; border-radius: 10px; color: var(--dim); font-size: 18px; }
+.more > summary { display: grid; place-items: center; width: 36px; height: 40px; border-radius: 10px; color: var(--dim); }
 .more > summary:hover { background: var(--hover); }
 .more .pop { right: 0; }
 .conv-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
@@ -85,7 +98,7 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .conv:hover { background: var(--hover); }
 .conv.active { background: color-mix(in srgb, var(--accent) 13%, var(--panel)); color: var(--accent); font-weight: 650; }
 .conv .ct { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv-delete { flex: none; width: 34px; min-width: 34px; min-height: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dim); font-size: 14px; opacity: 0; }
+.conv-delete { flex: none; width: 34px; min-width: 34px; min-height: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dim); opacity: 0; }
 .conv-row:hover .conv-delete, .conv-delete:focus-visible { opacity: 1; }
 .conv-delete:hover { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
@@ -98,6 +111,7 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .model-settings label { display: grid; gap: 4px; font-size: 13px; color: var(--dim); }
 aside details:not(.more) { border: 1px solid var(--line); border-radius: 12px; padding: 4px 12px 12px; background: var(--bg); }
 aside details:not(.more) > summary { padding: 8px 0; font-weight: 600; }
+.add-project > summary { display: flex; align-items: center; gap: 8px; }
 .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
 .row > input, .row > select { flex: 1 1 140px; width: auto; }
 .loginlog { margin: 8px 0 0; padding: 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; background: var(--code); border-radius: 8px; }
@@ -128,8 +142,8 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .msg.user { background: var(--user); border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--line)); border-radius: 20px; border-bottom-right-radius: 6px; padding: 10px 18px; width: fit-content; max-width: min(85%, 600px); margin-left: auto; margin-right: max(0px, calc((100% - 780px) / 2)); }
 .msg.cmd.terminal { min-width: 0; padding: 2px 4px; background: none; border: 0; font: 13px/1.5 system-ui, sans-serif; }
 .terminal > summary { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--dim); }
-.terminal > summary::before { content: '›'; flex: none; color: var(--dim); font-size: 18px; line-height: 1; transition: transform .12s ease; }
-.terminal[open] > summary::before { transform: rotate(90deg); }
+.terminal > summary > .ui-icon:first-child { color: var(--dim); width: 16px; height: 16px; transition: transform .12s ease; }
+.terminal[open] > summary > .ui-icon:first-child { transform: rotate(90deg); }
 .terminal-label { flex: none; color: var(--text); }
 .terminal-preview { min-width: 0; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
 .terminal-exit { flex: none; color: var(--dim); font-size: 11px; }
@@ -158,6 +172,8 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .queue:empty { display: none; }
 .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 6px 2px 12px; font-size: 13px; background: var(--code); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip button { border: 0; padding: 0 6px; min-height: 24px; background: none; color: var(--err); }
+.chip .iconbtn { width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; border-radius: 50%; }
+.chip .ui-icon { width: 14px; height: 14px; }
 .box { background: var(--panel); border: 1px solid var(--line); border-radius: 22px; padding: 6px 8px; box-shadow: var(--shadow); }
 .box:focus-within { border-color: color-mix(in srgb, var(--text) 30%, transparent); }
 .inputrow { display: flex; align-items: flex-end; gap: 2px; }

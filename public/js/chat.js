@@ -1,4 +1,4 @@
-import { h } from './dom.js';
+import { h, icon } from './dom.js';
 import { currentToken, handleUnauthorized } from './api.js';
 
 /** Split an SSE text buffer into complete events; returns the unfinished remainder. */
@@ -123,6 +123,7 @@ function renderItem(item) {
       const command = String(item.command || '');
       return h('details', { class: 'msg cmd terminal' },
         h('summary', {},
+          icon('chevron-right'),
           h('span', { class: 'terminal-label' }, 'Ran command'),
           h('code', { class: 'terminal-preview', title: command }, command || 'command'),
           item.exit_code == null ? null : h('span', { class: 'terminal-exit' }, `exit ${item.exit_code}`)),

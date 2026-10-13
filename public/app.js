@@ -1,5 +1,5 @@
 // Dalang panel. Every server-provided string is inserted as text, never parsed as HTML.
-import { h } from './js/dom.js';
+import { h, icon } from './js/dom.js';
 import { api, publicApi, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
 import { startStream, renderEvent } from './js/chat.js';
 import { enableNotifications, registerPasskey, loginWithPasskey } from './js/passkeys.js';
@@ -68,7 +68,7 @@ async function showApp() {
       h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
   document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
   const header = h('header', {},
-    h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, '☰'),
+    h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, icon('panel-left')),
     h('span', { class: 'title' }, 'Dalang'), accounts,
     h('span', { class: 'spacer' }), status, menu);
   root.replaceChildren(h('div', { class: 'shell' }, header, sidebar, main));
@@ -183,7 +183,7 @@ async function showApp() {
       h('strong', {}, 'Codex accounts'), list,
       h('strong', {}, 'Add an account'),
       h('div', { class: 'small' }, 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
-      h('div', { class: 'row' }, nameIn, startBtn, cancelBtn, h('button', { onclick: close }, '×')),
+      h('div', { class: 'row' }, nameIn, startBtn, cancelBtn, h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: close }, icon('x'))),
       link, out, msg));
   }
 
@@ -232,7 +232,7 @@ async function showApp() {
       h('strong', {}, 'Users'),
       h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects.'),
       list,
-      h('div', { class: 'row' }, nameIn, roleSel, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: close }, '×')),
+      h('div', { class: 'row' }, nameIn, roleSel, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: close }, icon('x'))),
       reveal));
     reload().catch((e) => flash(e.message));
   }
@@ -261,8 +261,8 @@ async function showApp() {
   const nameIn = h('input', { placeholder: 'name' });
   const pathIn = h('input', { placeholder: 'path (absolute or under the root)' });
   const sbSel = h('select', {}, ['workspace-write', 'read-only', 'danger-full-access'].map((v) => h('option', { value: v }, v)));
-  const addForm = h('details', {},
-    h('summary', {}, '+ Add project'),
+  const addForm = h('details', { class: 'add-project' },
+    h('summary', {}, icon('plus'), 'Add project'),
     h('div', { class: 'row' }, nameIn), h('div', { class: 'row' }, pathIn), h('div', { class: 'row' }, sbSel),
     h('div', { class: 'row' }, h('button', { class: 'primary', onclick: guarded(async () => {
       await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value } });
@@ -293,11 +293,11 @@ async function showApp() {
             if (collapsed) state.collapsedProjects.delete(p.id); else state.collapsedProjects.add(p.id);
             drawSidebar();
           } },
-            h('span', { class: 'project-chevron', 'aria-hidden': 'true' }, collapsed ? '›' : '⌄'),
-            h('span', { class: 'project-glyph', 'aria-hidden': 'true' }, '▰'),
+            icon(collapsed ? 'chevron-right' : 'chevron-down'),
+            icon('folder'),
             h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: 'small' }, p.sandbox))),
-          h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, '+'),
-          isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, '⋯'),
+          h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
+          isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
             h('div', { class: 'pop' },
               h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
               h('button', { class: 'danger', onclick: guarded(async () => {
@@ -317,7 +317,7 @@ async function showApp() {
           return h('div', { class: 'conv-row' },
             h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
               h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle)),
-            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c.id) }, '🗑'));
+            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c.id) }, icon('trash-2')));
         })) : h('div', { class: 'small hint' }, 'No chats yet')));
     });
     sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,
@@ -336,7 +336,7 @@ async function showApp() {
       adoptSlot.replaceChildren();
       await loadProjects();
       openConv(c.id);
-    }) }, 'Adopt'), h('button', { onclick: () => adoptSlot.replaceChildren() }, '×'));
+    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: () => adoptSlot.replaceChildren() }, icon('x')));
     document.body.classList.add('nav');
     adoptSlot.replaceChildren(box);
   }
@@ -388,7 +388,7 @@ async function showApp() {
     async function refreshQueue() {
       const q = await api(`/api/conversations/${id}/queue`);
       queueBox.replaceChildren(...q.map((item) => h('span', { class: 'chip' }, item.prompt.slice(0, 40),
-        h('button', { title: 'remove', onclick: guarded(async () => { await api(`/api/queue/${item.id}`, { method: 'DELETE' }); refreshQueue(); }) }, '×'))));
+        h('button', { class: 'iconbtn', title: 'Remove from queue', 'aria-label': 'Remove from queue', onclick: guarded(async () => { await api(`/api/queue/${item.id}`, { method: 'DELETE' }); refreshQueue(); }) }, icon('x')))));
     }
     async function refreshConv() {
       const c = await api(`/api/conversations/${id}`);
@@ -439,15 +439,15 @@ async function showApp() {
     const initiallyRunning = initial?.status === 'running';
     const stop = h('button', { class: 'stop', hidden: !initiallyRunning, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
       const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
-    }) }, '■');
-    const sendButton = h('button', { class: 'primary send', hidden: initiallyRunning, 'aria-label': 'Send', onclick: send }, '↑');
+    }) }, icon('square'));
+    const sendButton = h('button', { class: 'primary send', hidden: initiallyRunning, 'aria-label': 'Send', onclick: send }, icon('arrow-up'));
     main.replaceChildren(chatHead, log, h('div', { class: 'composer' },
       queueBox,
       h('div', { class: 'box' },
         h('div', { class: 'inputrow' },
-          h('label', { class: 'iconbtn', title: 'Attach files' }, '📎', attachCount, files),
+          h('label', { class: 'iconbtn', title: 'Attach files' }, icon('paperclip'), attachCount, files),
           text,
-          h('button', { class: 'iconbtn', title: 'Settings', 'aria-label': 'Settings', onclick: () => { settings.hidden = !settings.hidden; } }, '⚙'),
+          h('button', { class: 'iconbtn', title: 'Settings', 'aria-label': 'Settings', onclick: () => { settings.hidden = !settings.hidden; } }, icon('settings')),
           stop,
           sendButton),
         settings)));

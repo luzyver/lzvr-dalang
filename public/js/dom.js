@@ -9,3 +9,7 @@ export function h(tag, props, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
   return el;
 }
+
+export function icon(name) {
+  return h('span', { class: `ui-icon icon-${name}`, 'aria-hidden': 'true' });
+}
