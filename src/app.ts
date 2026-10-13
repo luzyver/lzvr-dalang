@@ -389,7 +389,7 @@ export function buildApp(
     for (const e of store.eventsAfter(id, after)) send(e);
     const off = dispatcher.subscribe(id, send);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
-    req.raw.on('close', () => { off(); clearInterval(ping); });
+    res.on('close', () => { off(); clearInterval(ping); });
   });
 
   return app;
