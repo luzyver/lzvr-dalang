@@ -180,6 +180,7 @@ export class Store {
   }
   listProjects(): Project[] { return this.all('SELECT * FROM projects ORDER BY name'); }
   getProject(id: string): Project | null { return this.get('SELECT * FROM projects WHERE id=?', id); }
+  deleteConversation(id: string): boolean { return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0; }
   deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
 
   /** `threadId` adopts an existing Codex session instead of starting a new one. */

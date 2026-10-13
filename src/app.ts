@@ -243,6 +243,12 @@ export function buildApp(
     return store.deleteProject(req.params.id) ? reply.code(204).send() : notFound(reply);
   });
 
+  // Chats only: the project and the other chats stay. Any signed-in user may, as any may create one.
+  app.delete<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
+    dispatcher.cancel(req.params.id);
+    return store.deleteConversation(req.params.id) ? reply.code(204).send() : notFound(reply);
+  });
+
   app.get<{ Params: { id: string } }>('/api/projects/:id/conversations', (req, reply) =>
     store.getProject(req.params.id) ? store.listConversations(req.params.id) : notFound(reply));
 
@@ -279,6 +285,8 @@ export function buildApp(
     if (enabled) dispatcher.startAutopilot(c.id);
     return reply.code(204).send();
   });
+
+  app.get('/api/models', () => dispatcher.models());
 
   // Pattern starts with a letter/digit so the value can never be read as a CLI flag.
   app.put<{ Params: { id: string }; Body: { model: string } }>('/api/conversations/:id/model', {

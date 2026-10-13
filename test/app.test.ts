@@ -273,3 +273,25 @@ describe('model choice', () => {
     expect(t.store.getConversation(conv.id)!.model).toBe('');
   });
 });
+
+describe('model list', () => {
+  it('answers with a list even when Codex cannot report its models', async () => {
+    const t = setupApp();
+    const r = await t.app.inject({ url: '/api/models', headers: AUTH });
+    expect(r.statusCode).toBe(200);
+    expect(Array.isArray(r.json())).toBe(true);
+  });
+});
+
+describe('deleting a chat', () => {
+  it('removes only that chat, not its project or siblings', async () => {
+    const t = setupApp();
+    const { project, conv } = await makeConv(t);
+    const other = (await t.app.inject({ method: 'POST', url: `/api/projects/${project.id}/conversations`, headers: AUTH })).json();
+    const del = (id: string) => t.app.inject({ method: 'DELETE', url: `/api/conversations/${id}`, headers: AUTH });
+    expect((await del(conv.id)).statusCode).toBe(204);
+    expect((await del(conv.id)).statusCode).toBe(404);
+    const left = (await t.app.inject({ url: `/api/projects/${project.id}/conversations`, headers: AUTH })).json();
+    expect(left.map((c: { id: string }) => c.id)).toEqual([other.id]);
+  });
+});

@@ -103,6 +103,9 @@ describe('linkSessions', () => {
     expect(existsSync(join(b, 'sessions', 'rollout.jsonl'))).toBe(true);
     expect(lstatSync(join(c, 'sessions')).isSymbolicLink()).toBe(false);
     expect(skipped).toEqual([c]);
+    expect(lstatSync(join(b, 'memories')).isSymbolicLink()).toBe(true);
+    writeFileSync(join(a, 'memories', 'note.md'), 'x');
+    expect(existsSync(join(b, 'memories', 'note.md'))).toBe(true);
     expect(linkSessions([a, b, c])).toEqual([c]); // idempotent
   });
 });

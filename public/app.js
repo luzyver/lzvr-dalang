@@ -503,7 +503,8 @@ async function showApp() {
       await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
       flash(model.value.trim() ? `model: ${model.value.trim()}` : 'model: default');
     }) });
-    const models = h('datalist', { id: 'models' }, ['gpt-5-codex', 'gpt-5', 'o3', 'o4-mini'].map((v) => h('option', { value: v })));
+    const models = h('datalist', { id: 'models' });
+    api('/api/models').then((list) => models.replaceChildren(...list.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
     const apTurns = h('input', { type: 'number', min: '1', max: '100', value: '20' });
 
     async function refreshQueue() {
@@ -556,12 +557,21 @@ async function showApp() {
     ap.addEventListener('change', setAutopilot);
 
     main.replaceChildren(log, h('div', { class: 'composer' },
-      queueBox, text,
-      h('div', { class: 'tools' },
-        h('button', { class: 'primary', onclick: send }, 'Send'),
-        h('button', { class: 'danger', onclick: guarded(async () => { const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running'); }) }, 'Cancel'),
-        model, models, files,
-        h('label', {}, ap, 'Autopilot'), h('label', {}, 'max turns', apTurns))));
+      queueBox,
+      h('div', { class: 'box' }, text,
+        h('div', { class: 'tools' },
+          h('div', { class: 'opts' }, model, models, files, h('label', {}, ap, 'Autopilot'), h('label', {}, 'max turns', apTurns)),
+          h('div', { class: 'acts' },
+            h('button', { class: 'danger', title: 'delete this chat', onclick: guarded(async () => {
+              if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
+              await api(`/api/conversations/${id}`, { method: 'DELETE' });
+              if (stopStream) { stopStream(); stopStream = null; }
+              state.current = null;
+              drawMain(null);
+              await loadProjects();
+            }) }, 'Delete'),
+            h('button', { class: 'danger', onclick: guarded(async () => { const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running'); }) }, 'Cancel'),
+            h('button', { class: 'primary send', 'aria-label': 'Send', onclick: send }, '↑'))))));
 
     stopStream = startStream(id, (e) => {
       const el = renderEvent(e);

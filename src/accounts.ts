@@ -67,26 +67,30 @@ export class Accounts {
   }
 }
 
+/** Directories every account shares: `sessions` so a chat can resume on another account, `memories` so memory is global. */
+const SHARED_DIRS = ['sessions', 'memories'];
+
 /**
- * Codex stores resumable sessions under `$CODEX_HOME/sessions`, so a session started on one account can
- * only be resumed on another if they share that directory. Link every other home's `sessions` to the
- * first home's. Returns homes that already had their own `sessions` and were left untouched.
+ * Link every other home's shared directories to the first home's. Returns homes that already had their own
+ * real directory and were left untouched.
  */
 export function linkSessions(homes: string[]): string[] {
   const [primary, ...rest] = homes;
   if (!primary) return [];
-  const target = join(primary, 'sessions');
-  mkdirSync(target, { recursive: true });
-  const skipped: string[] = [];
-  for (const h of rest) {
-    mkdirSync(h, { recursive: true });
-    const link = join(h, 'sessions');
-    try {
-      if (lstatSync(link).isSymbolicLink()) continue;
-      skipped.push(h);
-    } catch {
-      symlinkSync(target, link, 'junction');
+  const skipped = new Set<string>();
+  for (const name of SHARED_DIRS) {
+    const target = join(primary, name);
+    mkdirSync(target, { recursive: true });
+    for (const h of rest) {
+      mkdirSync(h, { recursive: true });
+      const link = join(h, name);
+      try {
+        if (lstatSync(link).isSymbolicLink()) continue;
+        skipped.add(h);
+      } catch {
+        symlinkSync(target, link, 'junction');
+      }
     }
   }
-  return skipped;
+  return [...skipped];
 }

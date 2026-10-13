@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
@@ -25,8 +26,11 @@ export interface DispatcherOpts {
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
 
+export interface ModelInfo { slug: string; name: string; description: string; efforts: string[] }
+
 export class Dispatcher {
   readonly accounts: Accounts;
+  private modelCache: { at: number; list: ModelInfo[] } | null = null;
   private active = new Map<string, AbortController>();
   private bus = new EventEmitter();
   private stopping = false;
@@ -117,6 +121,27 @@ export class Dispatcher {
   subscribe(convId: string, fn: (e: LiveEvent) => void): () => void {
     this.bus.on(convId, fn);
     return () => this.bus.off(convId, fn);
+  }
+
+  /** The models this Codex install offers (`codex debug models`), cached 10 minutes. Empty if Codex cannot say. */
+  models(): Promise<ModelInfo[]> {
+    if (this.modelCache && Date.now() - this.modelCache.at < 600_000) return Promise.resolve(this.modelCache.list);
+    const home = this.accounts.primary();
+    const [cmd, ...pre] = this.opts.command ?? ['codex'];
+    return new Promise((done) => {
+      const child = execFile(cmd!, [...pre, 'debug', 'models'], { env: { ...process.env, ...this.opts.env, ...(home ? { CODEX_HOME: home } : {}) }, timeout: 15_000, maxBuffer: 8e6 }, (err, out) => {
+        let list: ModelInfo[] = [];
+        try {
+          const j = JSON.parse(out) as { models: { slug: string; display_name?: string; description?: string; visibility?: string; supported_reasoning_levels?: { effort: string }[] }[] };
+          list = j.models.filter((m) => m.visibility === 'list').map((m) => ({
+            slug: m.slug, name: m.display_name ?? m.slug, description: m.description ?? '', efforts: (m.supported_reasoning_levels ?? []).map((r) => r.effort),
+          }));
+        } catch { /* not JSON / codex missing: the panel falls back to free text */ }
+        if (!err || list.length) this.modelCache = { at: Date.now(), list };
+        done(list);
+      });
+      child.stdin?.end(); // a command that waits for input must not hang the request
+    });
   }
 
   private emit(convId: string, turnId: number, ev: CodexEvent): void {
