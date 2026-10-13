@@ -295,6 +295,7 @@ async function showApp() {
                 if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) {
                   if (stopStream) { stopStream(); stopStream = null; } // else it keeps retrying a chat that no longer exists
                   state.current = null;
+                  history.replaceState(null, '', `${location.pathname}${location.search}`);
                   drawMain(null);
                 }
                 await loadProjects();
@@ -328,8 +329,16 @@ async function showApp() {
   }
 
   async function openConv(id) {
-    if (stopStream) stopStream();
+    if (stopStream) { stopStream(); stopStream = null; }
+    const exists = state.projects.some((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
+    if (!exists) {
+      state.current = null;
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+      drawMain(null);
+      return;
+    }
     state.current = id;
+    history.replaceState(null, '', `${location.pathname}${location.search}#c=${encodeURIComponent(id)}`);
     document.body.classList.remove('nav');
     drawSidebar();
     drawMain(id);
@@ -416,6 +425,7 @@ async function showApp() {
         await api(`/api/conversations/${id}`, { method: 'DELETE' });
         if (stopStream) { stopStream(); stopStream = null; }
         state.current = null;
+        history.replaceState(null, '', `${location.pathname}${location.search}`);
         drawMain(null);
         await loadProjects();
       }) }, 'Delete chat'));
