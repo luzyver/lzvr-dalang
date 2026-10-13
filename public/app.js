@@ -96,14 +96,21 @@ async function showApp() {
   const loginSlot = h('div');
   const defaultModelSlot = h('div');
   function defaultModelDialog() {
-    const model = h('input', { list: 'global-models', placeholder: 'Codex default', maxlength: '64', autocomplete: 'off' });
+    const model = h('select');
     const effort = h('select', {}, [['', 'Codex default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])]
       .map(([value, label]) => h('option', { value }, label)));
-    const options = h('datalist', { id: 'global-models' });
     const msg = h('div', { class: 'small' });
+    let modelList = [];
+    let savedModel = '';
+    const updateModels = () => {
+      const options = [h('option', { value: '' }, 'Codex default'), ...modelList.map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
+      if (savedModel && !modelList.some((m) => m.slug === savedModel)) options.push(h('option', { value: savedModel }, savedModel));
+      model.replaceChildren(...options);
+      model.value = savedModel;
+    };
     const close = () => defaultModelSlot.replaceChildren();
     const save = guarded(async () => {
-      await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value.trim() } });
+      await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value } });
       await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value } });
       flash('Global model and effort defaults saved');
       close();
@@ -112,15 +119,16 @@ async function showApp() {
     defaultModelSlot.replaceChildren(h('div', { class: 'msg model-settings' },
       h('strong', {}, 'Global defaults'),
       h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on Codex default to let Codex choose.'),
-      h('label', {}, 'Model', model, options),
+      h('label', {}, 'Model', model),
       h('label', {}, 'Reasoning effort', effort),
       h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: close }, 'Cancel')),
       msg));
     Promise.all([api('/api/settings/default-model'), api('/api/settings/default-effort')]).then(([m, e]) => {
-      model.value = m.model;
+      savedModel = m.model;
       effort.value = e.effort;
+      updateModels();
     }).catch((e) => { msg.textContent = e.message; });
-    api('/api/models').then((models) => options.replaceChildren(...models.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
+    api('/api/models').then((models) => { modelList = models; updateModels(); }).catch(() => {});
   }
   function addAccountDialog() {
     const nameIn = h('input', { placeholder: 'account name (a-z, 0-9, - or _)' });
@@ -374,16 +382,49 @@ async function showApp() {
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
     const files = h('input', { type: 'file', multiple: true });
-    const model = h('input', { list: 'models', placeholder: 'model (global default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
-      await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
-      flash(model.value.trim() ? `model: ${model.value.trim()}` : 'using global model default');
+    let modelList = [];
+    let currentModel = '';
+    let currentEffort = '';
+    let globalModel = '';
+    let globalEffort = '';
+    const model = h('select', { title: 'Model', onchange: guarded(async () => {
+      currentModel = model.value;
+      updateEffortOptions();
+      await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: currentModel } });
+      flash(currentModel ? `model: ${currentModel}` : 'using global model default');
     }) });
-    const effort = h('select', { title: 'reasoning effort', onchange: guarded(async () => {
-      await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: effort.value } });
-      flash(effort.value ? `effort: ${effort.value}` : 'effort: default');
-    }) }, [['', 'effort: default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])].map(([v, t]) => h('option', { value: v }, t)));
-    const models = h('datalist', { id: 'models' });
-    api('/api/models').then((list) => models.replaceChildren(...list.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
+    const effort = h('select', { title: 'Reasoning effort', onchange: guarded(async () => {
+      currentEffort = effort.value;
+      await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: currentEffort } });
+      flash(currentEffort ? `effort: ${currentEffort}` : 'effort: default');
+    }) });
+    function updateModelOptions() {
+      const options = [h('option', { value: '' }, globalModel || 'Codex default'), ...modelList.filter((m) => m.slug !== globalModel).map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
+      if (currentModel && currentModel !== globalModel && !modelList.some((m) => m.slug === currentModel)) options.push(h('option', { value: currentModel }, currentModel));
+      model.replaceChildren(...options);
+      model.value = currentModel === globalModel ? '' : currentModel;
+    }
+    function updateEffortOptions() {
+      const supported = modelList.find((m) => m.slug === (model.value || globalModel))?.efforts;
+      const choices = (supported?.length ? supported : ['low', 'medium', 'high', 'xhigh', 'max']).filter((v) => v !== globalEffort);
+      const selectedEffort = currentEffort === globalEffort ? '' : currentEffort;
+      const values = [...new Set(['', ...choices, ...(selectedEffort && !choices.includes(selectedEffort) ? [selectedEffort] : [])])];
+      effort.replaceChildren(...values.map((v) => h('option', { value: v }, v || globalEffort || 'Codex default')));
+      effort.value = selectedEffort;
+    }
+    updateModelOptions();
+    updateEffortOptions();
+    Promise.all([
+      api('/api/models'),
+      api('/api/settings/default-model').catch(() => ({ model: '' })),
+      api('/api/settings/default-effort').catch(() => ({ effort: '' })),
+    ]).then(([list, m, e]) => {
+      modelList = list;
+      globalModel = m.model;
+      globalEffort = e.effort;
+      updateModelOptions();
+      updateEffortOptions();
+    }).catch(() => {});
 
     async function refreshQueue() {
       const q = await api(`/api/conversations/${id}/queue`);
@@ -392,8 +433,10 @@ async function showApp() {
     }
     async function refreshConv() {
       const c = await api(`/api/conversations/${id}`);
-      if (document.activeElement !== model) model.value = c.model || '';
-      effort.value = c.effort || '';
+      currentModel = c.model || '';
+      currentEffort = c.effort || '';
+      if (document.activeElement !== model) updateModelOptions();
+      updateEffortOptions();
       if (!text.value && c.draft) text.value = c.draft;
       const list = state.projects.flatMap((p) => state.convs.get(p.id) || []);
       const known = list.find((x) => x.id === id);
@@ -434,8 +477,8 @@ async function showApp() {
 
     const attachCount = h('span', {});
     files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
-    const settings = h('div', { class: 'settings', hidden: true },
-      h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort));
+    const settings = h('div', { class: 'settings' },
+      h('label', {}, 'Model', model), h('label', {}, 'Effort', effort));
     const initiallyRunning = initial?.status === 'running';
     const stop = h('button', { class: 'stop', hidden: !initiallyRunning, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
       const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
@@ -447,7 +490,6 @@ async function showApp() {
         h('div', { class: 'inputrow' },
           h('label', { class: 'iconbtn', title: 'Attach files' }, icon('paperclip'), attachCount, files),
           text,
-          h('button', { class: 'iconbtn', title: 'Settings', 'aria-label': 'Settings', onclick: () => { settings.hidden = !settings.hidden; } }, icon('settings')),
           stop,
           sendButton),
         settings)));

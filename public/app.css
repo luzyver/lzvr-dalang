@@ -210,6 +210,6 @@ button.stop { color: var(--err); border-color: var(--err); font-size: 14px; }
   .chat-project { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .composer { padding: 4px 10px 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .msg.user { max-width: 90%; }
-  .settings { grid-template-columns: minmax(0, 1fr); }
+  .settings { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 }
 aside > div:empty { display: none; }
