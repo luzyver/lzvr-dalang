@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { buildClaudeArgs, ClaudeEvents } from '../src/claude.js';
+import { parseClaudeModels } from '../src/dispatcher.js';
+
+describe('parseClaudeModels', () => {
+  it('reads the /model list from the initialize reply, minus the "default" entry', () => {
+    const reply = { type: 'control_response', response: { subtype: 'success', request_id: 'models', response: { models: [
+      { value: 'default', displayName: 'Default (recommended)', supportedEffortLevels: ['low'] },
+      { value: 'opus', displayName: 'Opus 5.5', description: 'Most capable', supportedEffortLevels: ['low', 'max'] },
+      { value: 'claude-haiku-4-5', displayName: 'Haiku 4.5', supportedEffortLevels: null },
+    ] } } };
+    expect(parseClaudeModels(`{"type":"system"}\nnot json\n${JSON.stringify(reply)}\n`)).toEqual([
+      { slug: 'opus', name: 'Opus 5.5', description: 'Most capable', efforts: ['low', 'max'] },
+      { slug: 'claude-haiku-4-5', name: 'Haiku 4.5', description: '', efforts: [] },
+    ]);
+    expect(parseClaudeModels('')).toEqual([]);
+  });
+});
 
 const run = (events: Record<string, unknown>[]) => {
   const c = new ClaudeEvents();

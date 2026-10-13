@@ -33,10 +33,32 @@ export interface DispatcherOpts {
 
 export interface ModelInfo { slug: string; name: string; description: string; efforts: string[] }
 
+export function parseCodexModels(out: string): ModelInfo[] {
+  const j = JSON.parse(out) as { models: { slug: string; display_name?: string; description?: string; visibility?: string; supported_reasoning_levels?: { effort: string }[] }[] };
+  return j.models.filter((m) => m.visibility === 'list').map((m) => ({
+    slug: m.slug, name: m.display_name ?? m.slug, description: m.description ?? '', efforts: (m.supported_reasoning_levels ?? []).map((r) => r.effort),
+  }));
+}
+
+/** The model list from Claude Code's reply to an `initialize` control request, one JSON object per line. */
+export function parseClaudeModels(out: string): ModelInfo[] {
+  type M = { value: string; displayName?: string; description?: string; supportedEffortLevels?: string[] | null };
+  for (const line of out.split('\n')) {
+    let j: { type?: string; response?: { response?: { models?: M[] } } };
+    try { j = JSON.parse(line); } catch { continue; }
+    const models = j.type === 'control_response' ? j.response?.response?.models : undefined;
+    // "default" is the CLI's own fallback, not a --model value; leaving the model unset already means that.
+    if (models) return models.filter((m) => m.value !== 'default').map((m) => ({
+      slug: m.value, name: m.displayName ?? m.value, description: m.description ?? '', efforts: m.supportedEffortLevels ?? [],
+    }));
+  }
+  return [];
+}
+
 export class Dispatcher {
   readonly accounts: Accounts;
   readonly claudeAccounts: Accounts;
-  private modelCache: { at: number; list: ModelInfo[] } | null = null;
+  private modelCache = new Map<Backend, { at: number; list: ModelInfo[] }>();
   private active = new Map<string, AbortController>();
   private bus = new EventEmitter();
   private stopping = false;
@@ -129,24 +151,28 @@ export class Dispatcher {
     return () => this.bus.off(convId, fn);
   }
 
-  /** The models this Codex install offers (`codex debug models`), cached 10 minutes. Empty if Codex cannot say. */
-  models(): Promise<ModelInfo[]> {
-    if (this.modelCache && Date.now() - this.modelCache.at < 600_000) return Promise.resolve(this.modelCache.list);
-    const home = this.accounts.primary();
-    const [cmd, ...pre] = this.opts.command ?? ['codex'];
+  /**
+   * The models the CLI offers, cached 10 minutes. Empty if it cannot say (the panel falls back to free text).
+   * Codex: `codex debug models`. Claude Code: the `initialize` reply of its stream-json control protocol (what /model lists).
+   */
+  models(backend: Backend = 'codex'): Promise<ModelInfo[]> {
+    const cached = this.modelCache.get(backend);
+    if (cached && Date.now() - cached.at < 600_000) return Promise.resolve(cached.list);
+    const claude = backend === 'claude';
+    const home = this.accountsOf(backend).primary();
+    const [cmd, ...pre] = (claude ? this.opts.claudeCommand : this.opts.command) ?? [claude ? 'claude' : 'codex'];
+    const args = claude ? ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['debug', 'models'];
+    const homeEnv = home ? { [claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: home } : {};
     return new Promise((done) => {
-      const child = execFile(cmd!, [...pre, 'debug', 'models'], { env: { ...process.env, ...this.opts.env, ...(home ? { CODEX_HOME: home } : {}) }, timeout: 15_000, maxBuffer: 8e6 }, (err, out) => {
+      const child = execFile(cmd!, [...pre, ...args], { env: { ...process.env, ...this.opts.env, ...homeEnv }, timeout: 30_000, maxBuffer: 8e6 }, (err, out) => {
         let list: ModelInfo[] = [];
-        try {
-          const j = JSON.parse(out) as { models: { slug: string; display_name?: string; description?: string; visibility?: string; supported_reasoning_levels?: { effort: string }[] }[] };
-          list = j.models.filter((m) => m.visibility === 'list').map((m) => ({
-            slug: m.slug, name: m.display_name ?? m.slug, description: m.description ?? '', efforts: (m.supported_reasoning_levels ?? []).map((r) => r.effort),
-          }));
-        } catch { /* not JSON / codex missing: the panel falls back to free text */ }
-        if (!err || list.length) this.modelCache = { at: Date.now(), list };
+        try { list = claude ? parseClaudeModels(out) : parseCodexModels(out); } catch { /* not JSON / CLI missing */ }
+        if (!err || list.length) this.modelCache.set(backend, { at: Date.now(), list });
         done(list);
       });
-      child.stdin?.end(); // a command that waits for input must not hang the request
+      // Claude answers `initialize` and exits at end of input; Codex reads nothing, so it must not wait on stdin either.
+      if (claude) child.stdin?.write(`${JSON.stringify({ type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } })}\n`);
+      child.stdin?.end();
     });
   }
 

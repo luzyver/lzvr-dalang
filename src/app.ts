@@ -38,11 +38,6 @@ function safeName(raw: string): string {
   return n && n !== '.' && n !== '..' ? n : 'file';
 }
 
-// Claude Code accepts these aliases and always maps them to the newest model of that family.
-const CLAUDE_MODELS = ['opus', 'sonnet', 'haiku'].map((slug) => ({
-  slug, name: slug[0]!.toUpperCase() + slug.slice(1), description: '', efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-}));
-
 export function buildApp(
   deps: {
     cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins; webauthn?: WebAuthn;
@@ -187,7 +182,7 @@ export function buildApp(
   app.put<{ Body: { model: string; backend?: Backend } }>('/api/settings/default-model', {
     onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
-      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' }, backend: { enum: [...BACKENDS] } } } },
+      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63})?$' }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
     store.setDefaultModel(req.body.model, backendOf(req.body.backend));
     return reply.code(204).send();
@@ -323,13 +318,12 @@ export function buildApp(
     return home ? listSessions(home) : [];
   });
 
-  app.get<{ Querystring: { backend?: string } }>('/api/models', (req) =>
-    backendOf(req.query.backend) === 'claude' ? CLAUDE_MODELS : dispatcher.models());
+  app.get<{ Querystring: { backend?: string } }>('/api/models', (req) => dispatcher.models(backendOf(req.query.backend)));
 
   // Pattern starts with a letter/digit so the value can never be read as a CLI flag.
   app.put<{ Params: { id: string }; Body: { model: string } }>('/api/conversations/:id/model', {
     schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
-      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' } } } },
+      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63})?$' } } } },
   }, (req, reply) => {
     if (!store.getConversation(req.params.id)) return notFound(reply);
     store.setModel(req.params.id, req.body.model);
