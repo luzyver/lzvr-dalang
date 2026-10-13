@@ -102,6 +102,57 @@ function startStream(convId, onEvent) {
   return () => ac.abort();
 }
 
+// ---------- markdown (DOM-built, never innerHTML: the CSP and the textContent rule both hold) ----------
+const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+function inline(text) {
+  const out = [];
+  let last = 0;
+  for (const m of text.matchAll(INLINE)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] != null) out.push(h('code', {}, m[1]));
+    else if (m[2] != null) out.push(h('strong', {}, inline(m[2])));
+    else if (m[3] != null) out.push(h('em', {}, inline(m[3])));
+    else out.push(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer' }, m[4]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+const LIST_ITEM = /^\s*([-*+]|\d+\.)\s/;
+function markdown(src) {
+  const root = h('div', { class: 'md' });
+  const lines = String(src).replace(/\r/g, '').split('\n');
+  const isBlock = (l) => /^(```|#{1,6}\s|>\s?)/.test(l) || LIST_ITEM.test(l);
+  for (let i = 0; i < lines.length;) {
+    const l = lines[i];
+    let m;
+    if (!l.trim()) { i++; continue; }
+    if (l.startsWith('```')) {
+      const code = [];
+      for (i++; i < lines.length && !lines[i].startsWith('```'); i++) code.push(lines[i]);
+      i++;
+      root.append(h('pre', {}, h('code', {}, code.join('\n'))));
+    } else if ((m = /^(#{1,6})\s+(.*)/.exec(l))) {
+      root.append(h(`h${Math.min(m[1].length + 2, 6)}`, {}, inline(m[2]))); i++;
+    } else if (/^>\s?/.test(l)) {
+      const q = [];
+      for (; i < lines.length && /^>\s?/.test(lines[i]); i++) q.push(lines[i].replace(/^>\s?/, ''));
+      root.append(h('blockquote', {}, inline(q.join(' '))));
+    } else if (LIST_ITEM.test(l)) {
+      const ordered = /^\s*\d+\./.test(l);
+      const items = [];
+      for (; i < lines.length && LIST_ITEM.test(lines[i]); i++) items.push(h('li', {}, inline(lines[i].replace(LIST_ITEM, ''))));
+      root.append(h(ordered ? 'ol' : 'ul', {}, items));
+    } else {
+      const p = [];
+      for (; i < lines.length && lines[i].trim() && (!p.length || !isBlock(lines[i])); i++) p.push(lines[i]);
+      root.append(h('p', {}, p.flatMap((x, j) => (j ? [h('br'), ...inline(x)] : inline(x)))));
+    }
+  }
+  return root;
+}
+
 // ---------- event rendering ----------
 const note = (text, cls) => h('div', { class: `note ${cls || ''}` }, text);
 const bubble = (cls, text) => h('div', { class: `msg ${cls}` }, text);
@@ -109,7 +160,7 @@ const bubble = (cls, text) => h('div', { class: `msg ${cls}` }, text);
 function renderItem(item) {
   if (!item) return null;
   switch (item.type) {
-    case 'agent_message': return bubble('agent', item.text || '');
+    case 'agent_message': return h('div', { class: 'msg agent' }, markdown(item.text || ''));
     case 'command_execution': {
       const out = h('span', { class: 'out' }, String(item.aggregated_output || '').slice(-2000));
       const code = item.exit_code == null ? '' : `  [exit ${item.exit_code}]`;
@@ -229,14 +280,18 @@ async function showApp() {
   const flash = (msg) => { status.textContent = msg; if (msg) setTimeout(() => { if (status.textContent === msg) status.textContent = ''; }, 5000); };
   const guarded = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof Unauthorized)) flash(e.message); } };
 
+  document.body.classList.remove('nav');
   const header = h('header', {},
+    h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, '☰'),
     h('span', { class: 'title' }, 'Dalang'), accounts,
-    isAdmin && h('button', { onclick: () => addAccountDialog() }, '+ Account'),
-    isAdmin && h('button', { onclick: () => usersDialog() }, 'Users'),
-    h('span', { class: 'spacer' }), status, h('span', { class: 'small' }, `${me.name} · ${me.role}`),
-    h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Notifications'),
-    h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
-    h('button', { onclick: signOut }, 'Sign out'));
+    h('span', { class: 'spacer' }), status,
+    h('div', { class: 'actions' },
+      isAdmin && h('button', { onclick: () => addAccountDialog() }, '+ Account'),
+      isAdmin && h('button', { onclick: () => usersDialog() }, 'Users'),
+      h('span', { class: 'small' }, `${me.name} · ${me.role}`),
+      h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Notifications'),
+      h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
+      h('button', { onclick: signOut }, 'Sign out')));
   root.replaceChildren(h('div', { class: 'shell' }, header, sidebar, main));
   notificationOpensChat = (id) => openConv(id);
 
@@ -298,6 +353,7 @@ async function showApp() {
       await api(`/api/accounts/login/${id}`, { method: 'DELETE' });
       poll();
     }) }, 'Cancel');
+    document.body.classList.add('nav');
     loginSlot.replaceChildren(h('div', { class: 'msg' },
       h('strong', {}, 'Add a Codex account'),
       h('div', { class: 'small' }, 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
@@ -345,6 +401,7 @@ async function showApp() {
       showToken(r.name, r.token);
       reload();
     });
+    document.body.classList.add('nav');
     usersSlot.replaceChildren(h('div', { class: 'msg' },
       h('strong', {}, 'Users'),
       h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects, and no autopilot.'),
@@ -423,12 +480,14 @@ async function showApp() {
       await loadProjects();
       openConv(c.id);
     }) }, 'Adopt'), h('button', { onclick: () => adoptSlot.replaceChildren() }, '×'));
+    document.body.classList.add('nav');
     adoptSlot.replaceChildren(box);
   }
 
   async function openConv(id) {
     if (stopStream) stopStream();
     state.current = id;
+    document.body.classList.remove('nav');
     drawSidebar();
     drawMain(id);
   }
@@ -440,6 +499,11 @@ async function showApp() {
     const text = h('textarea', { placeholder: 'Message Codex…  (Ctrl+Enter to send)' });
     const files = h('input', { type: 'file', multiple: true });
     const ap = h('input', { type: 'checkbox' });
+    const model = h('input', { list: 'models', placeholder: 'model (default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
+      await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
+      flash(model.value.trim() ? `model: ${model.value.trim()}` : 'model: default');
+    }) });
+    const models = h('datalist', { id: 'models' }, ['gpt-5-codex', 'gpt-5', 'o3', 'o4-mini'].map((v) => h('option', { value: v })));
     const apTurns = h('input', { type: 'number', min: '1', max: '100', value: '20' });
 
     async function refreshQueue() {
@@ -450,6 +514,7 @@ async function showApp() {
     async function refreshConv() {
       const c = await api(`/api/conversations/${id}`);
       ap.checked = c.autopilot === 1;
+      if (document.activeElement !== model) model.value = c.model || '';
       if (!text.value && c.draft) text.value = c.draft;
       const list = state.projects.flatMap((p) => state.convs.get(p.id) || []);
       const known = list.find((x) => x.id === id);
@@ -495,7 +560,7 @@ async function showApp() {
       h('div', { class: 'tools' },
         h('button', { class: 'primary', onclick: send }, 'Send'),
         h('button', { class: 'danger', onclick: guarded(async () => { const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running'); }) }, 'Cancel'),
-        files,
+        model, models, files,
         h('label', {}, ap, 'Autopilot'), h('label', {}, 'max turns', apTurns))));
 
     stopStream = startStream(id, (e) => {

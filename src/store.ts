@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   thread_id TEXT, status TEXT NOT NULL DEFAULT 'idle', draft TEXT NOT NULL DEFAULT '',
   autopilot INTEGER NOT NULL DEFAULT 0, autopilot_left INTEGER NOT NULL DEFAULT 0,
-  autopilot_prompt TEXT NOT NULL DEFAULT '');
+  autopilot_prompt TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -59,6 +59,8 @@ export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
   autopilot: number; autopilot_left: number; autopilot_prompt: string;
+  /** Codex model for this chat; empty = Codex's own default. */
+  model: string;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
@@ -83,6 +85,7 @@ export class Store {
     this.ensureColumn('conversations', 'autopilot', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('conversations', 'autopilot_left', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('conversations', 'autopilot_prompt', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
   }
 
   private ensureColumn(table: string, column: string, ddl: string): void {
@@ -192,6 +195,7 @@ export class Store {
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
+  setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setAutopilot(id: string, enabled: boolean, left: number, prompt: string): void {
     this.run('UPDATE conversations SET autopilot=?, autopilot_left=?, autopilot_prompt=? WHERE id=?', enabled ? 1 : 0, left, prompt, id);
   }

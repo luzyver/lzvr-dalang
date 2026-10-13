@@ -280,6 +280,16 @@ export function buildApp(
     return reply.code(204).send();
   });
 
+  // Pattern starts with a letter/digit so the value can never be read as a CLI flag.
+  app.put<{ Params: { id: string }; Body: { model: string } }>('/api/conversations/:id/model', {
+    schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
+      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' } } } },
+  }, (req, reply) => {
+    if (!store.getConversation(req.params.id)) return notFound(reply);
+    store.setModel(req.params.id, req.body.model);
+    return reply.code(204).send();
+  });
+
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
     return conv ? { ...conv, turns: store.listTurns(conv.id) } : notFound(reply);

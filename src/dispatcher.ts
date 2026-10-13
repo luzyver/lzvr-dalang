@@ -148,6 +148,7 @@ export class Dispatcher {
     const extraArgs = this.opts.mcpUrl
       ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"']
       : [];
+    if (conv.model) extraArgs.push('-m', conv.model);
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {

@@ -260,3 +260,16 @@ describe('conversations and prompts', () => {
     expect((await t.app.inject({ url, headers: AUTH })).json().draft).toBe('wip');
   });
 });
+
+describe('model choice', () => {
+  it('stores a model per chat and refuses values that could be read as flags', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    const put = (model: string) => t.app.inject({ method: 'PUT', url: `/api/conversations/${conv.id}/model`, headers: AUTH, payload: { model } });
+    expect((await put('gpt-5-codex')).statusCode).toBe(204);
+    expect(t.store.getConversation(conv.id)!.model).toBe('gpt-5-codex');
+    expect((await put('--dangerously-bypass-approvals-and-sandbox')).statusCode).toBe(400);
+    expect((await put('')).statusCode).toBe(204);
+    expect(t.store.getConversation(conv.id)!.model).toBe('');
+  });
+});
