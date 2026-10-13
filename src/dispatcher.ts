@@ -109,7 +109,7 @@ export class Dispatcher {
     });
   }
 
-  private emit(convId: string, turnId: number, ev: CodexEvent): void {
+  private emit(convId: string, turnId: number, ev: CodexEvent | { type: 'turn.status'; status: 'idle' | 'failed' }): void {
     const payload = (ev as { [RAW]?: string })[RAW] ?? JSON.stringify(ev);
     const id = this.store.addEvent(turnId, ev.type, payload);
     this.bus.emit(convId, { id, type: ev.type, payload } satisfies LiveEvent);
@@ -206,7 +206,9 @@ export class Dispatcher {
     const interrupted = cancelled && this.stopping;
     const status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : failed ? 'failed' : 'completed';
     this.store.endTurn(turnId, status, usage);
-    this.store.setStatus(convId, failed && !cancelled ? 'failed' : 'idle');
+    const conversationStatus = failed && !cancelled ? 'failed' : 'idle';
+    this.store.setStatus(convId, conversationStatus);
+    this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
     if (interrupted) return; // shutting down: no notification
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
   }

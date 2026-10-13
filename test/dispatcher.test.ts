@@ -15,7 +15,9 @@ describe('Dispatcher', () => {
     expect(turn!.usage).toContain('input_tokens');
     expect(store.getConversation(conv.id)).toMatchObject({ status: 'idle' });
     expect(store.getConversation(conv.id)!.thread_id).toMatch(/^thread-/);
-    expect(store.eventsAfter(conv.id, 0).map((e) => e.type)).toContain('turn.completed');
+    const events = store.eventsAfter(conv.id, 0);
+    expect(events.map((e) => e.type)).toContain('turn.completed');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.status', payload: JSON.stringify({ type: 'turn.status', status: 'idle' }) });
   });
 
   it('serializes back-to-back prompts in order and resumes the same thread', async () => {
@@ -43,6 +45,9 @@ describe('Dispatcher', () => {
     await until(() => turnsDone(store, conv.id, 1));
     expect(store.listTurns(conv.id)[0]!.status).toBe('failed');
     expect(store.getConversation(conv.id)!.status).toBe('failed');
+    expect(store.eventsAfter(conv.id, 0).at(-1)).toMatchObject({
+      type: 'turn.status', payload: JSON.stringify({ type: 'turn.status', status: 'failed' }),
+    });
   });
 
   it('does not wedge the worker when the binary is missing', async () => {

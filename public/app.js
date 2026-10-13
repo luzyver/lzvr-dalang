@@ -397,7 +397,9 @@ async function showApp() {
       if (!text.value && c.draft) text.value = c.draft;
       const list = state.projects.flatMap((p) => state.convs.get(p.id) || []);
       const known = list.find((x) => x.id === id);
-      stop.hidden = c.status !== 'running';
+      const running = c.status === 'running';
+      stop.hidden = !running;
+      sendButton.hidden = running;
       const title = c.turns && c.turns[0] ? c.turns[0].prompt.slice(0, 80) : null;
       chatTitle.textContent = title || 'New conversation';
       chatTitle.title = title || 'New conversation';
@@ -434,9 +436,11 @@ async function showApp() {
     files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
     const settings = h('div', { class: 'settings', hidden: true },
       h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort));
-    const stop = h('button', { class: 'stop', hidden: true, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
+    const initiallyRunning = initial?.status === 'running';
+    const stop = h('button', { class: 'stop', hidden: !initiallyRunning, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
       const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
     }) }, '■');
+    const sendButton = h('button', { class: 'primary send', hidden: initiallyRunning, 'aria-label': 'Send', onclick: send }, '↑');
     main.replaceChildren(chatHead, log, h('div', { class: 'composer' },
       queueBox,
       h('div', { class: 'box' },
@@ -445,7 +449,7 @@ async function showApp() {
           text,
           h('button', { class: 'iconbtn', title: 'Settings', 'aria-label': 'Settings', onclick: () => { settings.hidden = !settings.hidden; } }, '⚙'),
           stop,
-          h('button', { class: 'primary send', 'aria-label': 'Send', onclick: send }, '↑')),
+          sendButton),
         settings)));
 
     stopStream = startStream(id, (e) => {
@@ -455,7 +459,7 @@ async function showApp() {
         log.append(el);
         if (nearBottom) log.scrollTop = log.scrollHeight;
       }
-      if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'process.exit' || e.type === 'user.prompt') {
+      if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.status' || e.type === 'process.exit' || e.type === 'user.prompt') {
         refreshQueue().catch(() => {});
         refreshConv().catch(() => {});
       }

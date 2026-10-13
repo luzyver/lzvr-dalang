@@ -94,9 +94,9 @@ describe('SSE', () => {
 
     await until(() => turnsDone(t.store, conv.id, 1));
     const all = t.store.eventsAfter(conv.id, 0);
-    const lastId = all.at(-1)!.id;
+    const completedId = all.find((e) => e.type === 'turn.completed')!.id;
     const replay = await fetch(`${base}/api/conversations/${conv.id}/events`, {
-      headers: { ...AUTH, 'last-event-id': String(lastId - 1) },
+      headers: { ...AUTH, 'last-event-id': String(completedId - 1) },
     });
     const replayed = await readUntil(replay, (s) => s.includes('event: turn.completed'));
     expect(replayed).not.toContain('event: thread.started');

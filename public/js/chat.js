@@ -140,6 +140,7 @@ export function renderEvent(e) {
       const u = d.usage || {};
       return note(`done · tokens in ${u.input_tokens ?? '?'} / out ${u.output_tokens ?? '?'}`);
     }
+    case 'turn.status': return null;
     case 'turn.failed':
     case 'error': return note(`error: ${(d.error && d.error.message) || d.message || JSON.stringify(d)}`, 'err');
     case 'process.exit': return note(`process exited (${d.code})${d.stderr ? `: ${String(d.stderr).slice(-300)}` : ''}`, 'err');
