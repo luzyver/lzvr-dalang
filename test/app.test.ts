@@ -294,3 +294,19 @@ describe('reasoning effort', () => {
     expect(t.store.getConversation(conv.id)!.effort).toBe('');
   });
 });
+
+describe('removing an account', () => {
+  it('is admin only, deletes a panel account, and 404s on one that is not', async () => {
+    const t = setupApp();
+    const id = (await t.app.inject({ method: 'POST', url: '/api/accounts/login', headers: AUTH, payload: { name: 'second' } })).json().id;
+    await until(() => t.logins.get(id)!.status === 'success');
+    const del = (name: string, headers = AUTH) => t.app.inject({ method: 'DELETE', url: `/api/accounts/${name}`, headers });
+
+    const dev = { authorization: `Bearer ${(await mkUser(t, 'budi', 'dev')).token}` };
+    expect((await del('second', dev)).statusCode).toBe(403);
+    expect((await del('nope')).statusCode).toBe(404);
+    expect((await del('second')).statusCode).toBe(204);
+    const names = (await t.app.inject({ url: '/api/accounts', headers: AUTH })).json().map((a: { name: string }) => a.name);
+    expect(names).not.toContain('second');
+  });
+});

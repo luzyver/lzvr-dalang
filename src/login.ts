@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { linkSessions, type Accounts } from './accounts.js';
+import { linkSessions, SHARED_DIRS, type Accounts } from './accounts.js';
 import { killTree } from './runner.js';
 import type { Store } from './store.js';
 
@@ -12,7 +12,7 @@ const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
 const STATUS_TTL_MS = 30_000;
 
 export class LoginError extends Error {
-  constructor(readonly code: 'bad-name' | 'exists' | 'busy', message: string) {
+  constructor(readonly code: 'bad-name' | 'exists' | 'busy' | 'not-found' | 'primary', message: string) {
     super(message);
   }
 }
@@ -122,6 +122,29 @@ export class Logins {
       });
     });
     return id;
+  }
+
+  /**
+   * Sign an account out of the gateway and delete its folder (its login included). Only accounts added from the panel.
+   * The first account owns the real `sessions` and `memories` folders the others link to, so it can only go last.
+   * A turn already running on it is not interrupted and may fail when its folder disappears.
+   */
+  remove(name: string): void {
+    const home = join(this.opts.baseDir, name);
+    if (!NAME_RE.test(name) || !this.loadExtras().includes(home) || !this.opts.accounts.homes.includes(home)) {
+      throw new LoginError('not-found', `no panel account named "${name}"`);
+    }
+    if (this.opts.accounts.homes[0] === home && this.opts.accounts.homes.length > 1) {
+      throw new LoginError('primary', 'this is the first account and holds the shared sessions: remove the other accounts first');
+    }
+    this.opts.accounts.remove(home);
+    this.opts.store.setKv('extra_homes', JSON.stringify(this.loadExtras().filter((h) => h !== home)));
+    this.statusCache.delete(home);
+    for (const dir of SHARED_DIRS) { // drop the links first so deleting the folder can never reach the shared data
+      const link = join(home, dir);
+      try { if (lstatSync(link).isSymbolicLink()) unlinkSync(link); } catch { /* absent, or a junction rmSync handles below */ }
+    }
+    rmSync(home, { recursive: true, force: true });
   }
 
   cancel(id: string): boolean {

@@ -285,7 +285,7 @@ async function showApp() {
     h('summary', {}, h('span', { class: 'avatar' }, me.name.slice(0, 1).toUpperCase()), h('span', { class: 'uname' }, me.name)),
     h('div', { class: 'pop', onclick: () => { menu.open = false; } },
       h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
-      isAdmin && h('button', { onclick: () => addAccountDialog() }, '+ Codex account'),
+      isAdmin && h('button', { onclick: () => addAccountDialog() }, 'Codex accounts'),
       isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
       h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
@@ -320,6 +320,22 @@ async function showApp() {
   const loginSlot = h('div');
   function addAccountDialog() {
     const nameIn = h('input', { placeholder: 'account name (a-z, 0-9, - or _)' });
+    const list = h('div', { class: 'acctlist' });
+    const loadList = async () => {
+      try {
+        const accts = await api('/api/accounts');
+        list.replaceChildren(...accts.map((a) => h('div', { class: 'row' }, h('strong', {}, a.name),
+          h('span', { class: 'small' }, a.loggedIn === false ? 'not logged in' : a.blockedUntil ? 'at limit' : 'ready'),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'danger', onclick: guarded(async () => {
+            if (!confirm(`Remove account "${a.name}"? Its Codex login is deleted from this server. Chats and projects stay.`)) return;
+            await api(`/api/accounts/${encodeURIComponent(a.name)}`, { method: 'DELETE' });
+            flash(`removed ${a.name}`);
+            loadList();
+            refreshAccounts();
+          }) }, 'Remove'))));
+      } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
+    };
     const out = h('pre', { class: 'loginlog' });
     const link = h('div');
     const msg = h('div', { class: 'small' });
@@ -339,6 +355,7 @@ async function showApp() {
           startBtn.disabled = false;
           cancelBtn.hidden = true;
           refreshAccounts();
+          loadList();
         }
       } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
     };
@@ -357,8 +374,10 @@ async function showApp() {
       poll();
     }) }, 'Cancel');
     document.body.classList.add('nav');
+    loadList();
     loginSlot.replaceChildren(h('div', { class: 'msg' },
-      h('strong', {}, 'Add a Codex account'),
+      h('strong', {}, 'Codex accounts'), list,
+      h('strong', {}, 'Add an account'),
       h('div', { class: 'small' }, 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
       h('div', { class: 'row' }, nameIn, startBtn, cancelBtn, h('button', { onclick: close }, '×')),
       link, out, msg));

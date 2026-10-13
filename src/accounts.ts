@@ -46,6 +46,13 @@ export class Accounts {
     if (!this.homes.includes(home)) this.homes.push(home);
   }
 
+  /** Forget an account (its folder is the caller's business). */
+  remove(home: string): void {
+    const i = this.homes.indexOf(home);
+    if (i >= 0) this.homes.splice(i, 1);
+    this.blocked.delete(home);
+  }
+
   /** First account (configured order) that is not currently blocked. */
   pick(): string | null {
     return this.homes.find((h) => (this.blocked.get(h) ?? 0) <= this.now()) ?? null;
@@ -68,7 +75,7 @@ export class Accounts {
 }
 
 /** Directories every account shares: `sessions` so a chat can resume on another account, `memories` so memory is global. */
-const SHARED_DIRS = ['sessions', 'memories'];
+export const SHARED_DIRS = ['sessions', 'memories'];
 
 /**
  * Link every other home's shared directories to the first home's. Returns homes that already had their own

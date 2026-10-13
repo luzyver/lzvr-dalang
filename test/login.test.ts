@@ -130,6 +130,42 @@ describe('Logins.start', () => {
   });
 });
 
+describe('Logins.remove', () => {
+  const add = async (t: ReturnType<typeof setup>, name: string) => { const id = t.logins.start(name); await settled(t.logins, id); };
+
+  it('forgets a panel account and deletes its folder, leaving the shared sessions alone', async () => {
+    const t = setup();
+    await add(t, 'second');
+    const home = join(t.base, 'accounts', 'second');
+    writeFileSync(join(t.primary, 'sessions', 'r.jsonl'), 'x');
+    t.logins.remove('second');
+    expect(existsSync(home)).toBe(false);
+    expect(t.accounts.homes).toEqual([t.primary]);
+    expect(JSON.parse(t.store.getKv('extra_homes')!)).toEqual([]);
+    expect(existsSync(join(t.primary, 'sessions', 'r.jsonl'))).toBe(true);
+    await add(t, 'second'); // the name is free again
+    expect(t.accounts.homes).toHaveLength(2);
+  });
+
+  it('only removes accounts added from the panel', () => {
+    const t = setup();
+    expect(() => t.logins.remove('primary')).toThrow(/no panel account/);
+    expect(() => t.logins.remove('../x')).toThrow(/no panel account/);
+    expect(t.accounts.homes).toEqual([t.primary]);
+  });
+
+  it('keeps the first account until the others are gone', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'lzvr-rm-')));
+    const accounts = new Accounts([]);
+    const logins = new Logins({ command: FAKE, baseDir: join(base, 'accounts'), accounts, store: new Store() });
+    for (const n of ['one', 'two']) await settled(logins, logins.start(n));
+    expect(() => logins.remove('one')).toThrow(/remove the other accounts first/);
+    logins.remove('two');
+    logins.remove('one');
+    expect(accounts.homes).toEqual([]);
+  });
+});
+
 describe('Logins.isLoggedIn', () => {
   it('asks Codex, and says unknown when it cannot', async () => {
     const t = setup();

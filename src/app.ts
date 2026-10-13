@@ -181,6 +181,15 @@ export function buildApp(
       throw e;
     }
   });
+  app.delete<{ Params: { name: string } }>('/api/accounts/:name', { onRequest: requireAdmin }, (req, reply) => {
+    try {
+      logins.remove(req.params.name);
+      return reply.code(204).send();
+    } catch (e) {
+      if (e instanceof LoginError) return reply.code(e.code === 'not-found' ? 404 : 409).send({ error: e.message });
+      throw e;
+    }
+  });
   app.get<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
     logins.get(req.params.id) ?? notFound(reply));
   app.delete<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
