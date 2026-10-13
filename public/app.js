@@ -517,8 +517,12 @@ async function showApp() {
                 }
                 await loadProjects();
               }) }, 'Remove project')))),
-        convs.length ? convs.map((c) => h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-          h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct' }, c.title || 'New chat')))
+        convs.length ? convs.map((c) => {
+          const title = c.title || 'New chat';
+          const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
+          return h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
+            h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle));
+        })
           : h('div', { class: 'small hint' }, 'No chats yet'));
     });
     sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,

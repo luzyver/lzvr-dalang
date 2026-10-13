@@ -60,7 +60,7 @@ header .spacer { flex: 1; }
 
 /* ---- sidebar ---- */
 aside { overflow: auto; padding: 16px 12px 20px; background: var(--side); border-right: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; overscroll-behavior: contain; }
-.proj { display: grid; gap: 2px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.proj { display: grid; gap: 2px; min-width: 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .projhead { display: flex; align-items: center; gap: 4px; padding: 6px 2px 6px 8px; }
 .pname { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .pname strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -72,10 +72,10 @@ aside { overflow: auto; padding: 16px 12px 20px; background: var(--side); border
 .more > summary { display: grid; place-items: center; width: 36px; height: 40px; border-radius: 10px; color: var(--dim); font-size: 18px; }
 .more > summary:hover { background: var(--hover); }
 .more .pop { right: 0; }
-.conv { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 10px; min-height: 42px; }
+.conv { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 10px; min-height: 42px; }
 .conv:hover { background: var(--hover); }
 .conv.active { background: color-mix(in srgb, var(--accent) 13%, var(--panel)); color: var(--accent); font-weight: 650; }
-.conv .ct { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv .ct { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .dot.running { background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
 .dot.failed { background: var(--err); }
