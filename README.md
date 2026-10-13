@@ -70,6 +70,15 @@ so it cannot be forged). To use it:
 3. Add to the service environment and restart it: `LZVR_RP_ID=panel.example.com`,
    `LZVR_ORIGIN=https://panel.example.com`, `TRUST_PROXY=1`.
 
+**Only certain IPs can open it.** The `geo $lzvr_allowed { ... }` block at the top of `nginx.conf` is the allowlist: list
+the addresses or CIDR ranges that may reach the panel and API (yours, your office, your VPN) and everyone else gets
+`403`. It ships with example addresses that match nobody, so until you edit it only the machine itself gets in. The check
+sits inside the two app locations, not at server level, so certbot's validation (which comes from Let's Encrypt, any
+address) and its renewals keep working. If another proxy or a CDN (Cloudflare, a load balancer) sits in front of nginx,
+nginx sees that proxy's address instead of the visitor's, so you would need nginx's `realip` module before this list means
+anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw allow from <ip> to any port 443`), but keep
+80 open to everyone until the certificate is issued, and again at renewal time unless you renew with the DNS challenge.
+
 Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), enter the token, then use
 **Add passkey** and **Notifications** in the header. Passkeys, push and "install app" only work over HTTPS (or localhost).
 
