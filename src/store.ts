@@ -172,6 +172,10 @@ export class Store {
 
   getKv(key: string): string | null { return this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null; }
   setKv(key: string, value: string): void { this.run('INSERT OR REPLACE INTO kv (key,value) VALUES (?,?)', key, value); }
+  getDefaultModel(): string { return this.getKv('default_model') ?? ''; }
+  setDefaultModel(model: string): void { this.setKv('default_model', model); }
+  getDefaultEffort(): string { return this.getKv('default_effort') ?? ''; }
+  setDefaultEffort(effort: string): void { this.setKv('default_effort', effort); }
 
   createProject(name: string, path: string, sandbox = 'workspace-write'): Project {
     const p = { id: randomUUID(), name, path, sandbox };

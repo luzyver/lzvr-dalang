@@ -286,6 +286,7 @@ async function showApp() {
     h('div', { class: 'pop', onclick: () => { menu.open = false; } },
       h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
       isAdmin && h('button', { onclick: () => addAccountDialog() }, 'Codex accounts'),
+      isAdmin && h('button', { onclick: () => defaultModelDialog() }, 'Model & effort defaults'),
       isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
       h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
@@ -318,6 +319,34 @@ async function showApp() {
 
   // Add another Codex account: runs `codex login --device-auth` on the server and shows its link and code here.
   const loginSlot = h('div');
+  const defaultModelSlot = h('div');
+  function defaultModelDialog() {
+    const model = h('input', { list: 'global-models', placeholder: 'Codex default', maxlength: '64', autocomplete: 'off' });
+    const effort = h('select', {}, [['', 'Codex default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])]
+      .map(([value, label]) => h('option', { value }, label)));
+    const options = h('datalist', { id: 'global-models' });
+    const msg = h('div', { class: 'small' });
+    const close = () => defaultModelSlot.replaceChildren();
+    const save = guarded(async () => {
+      await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value.trim() } });
+      await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value } });
+      flash('Global model and effort defaults saved');
+      close();
+    });
+    document.body.classList.add('nav');
+    defaultModelSlot.replaceChildren(h('div', { class: 'msg model-settings' },
+      h('strong', {}, 'Global defaults'),
+      h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on Codex default to let Codex choose.'),
+      h('label', {}, 'Model', model, options),
+      h('label', {}, 'Reasoning effort', effort),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: close }, 'Cancel')),
+      msg));
+    Promise.all([api('/api/settings/default-model'), api('/api/settings/default-effort')]).then(([m, e]) => {
+      model.value = m.model;
+      effort.value = e.effort;
+    }).catch((e) => { msg.textContent = e.message; });
+    api('/api/models').then((models) => options.replaceChildren(...models.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
+  }
   function addAccountDialog() {
     const nameIn = h('input', { placeholder: 'account name (a-z, 0-9, - or _)' });
     const list = h('div', { class: 'acctlist' });
@@ -492,7 +521,7 @@ async function showApp() {
           h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct' }, c.title || 'New chat')))
           : h('div', { class: 'small hint' }, 'No chats yet'));
     });
-    sidebar.replaceChildren(...[loginSlot, usersSlot, approvalsBox, adoptSlot,
+    sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,
       blocks.length ? h('div', { class: 'side-label' }, 'Projects') : null, ...blocks, isAdmin ? addForm : null].filter(Boolean));
   }
 
@@ -536,9 +565,9 @@ async function showApp() {
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
     const files = h('input', { type: 'file', multiple: true });
-    const model = h('input', { list: 'models', placeholder: 'model (default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
+    const model = h('input', { list: 'models', placeholder: 'model (global default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
       await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
-      flash(model.value.trim() ? `model: ${model.value.trim()}` : 'model: default');
+      flash(model.value.trim() ? `model: ${model.value.trim()}` : 'using global model default');
     }) });
     const effort = h('select', { title: 'reasoning effort', onchange: guarded(async () => {
       await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: effort.value } });

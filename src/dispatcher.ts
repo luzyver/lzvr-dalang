@@ -138,8 +138,10 @@ export class Dispatcher {
     const extraArgs = this.opts.mcpUrl
       ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"']
       : [];
-    if (conv.model) extraArgs.push('-m', conv.model);
-    if (conv.effort) extraArgs.push('-c', `model_reasoning_effort="${conv.effort}"`);
+    const model = conv.model || this.store.getDefaultModel();
+    if (model) extraArgs.push('-m', model);
+    const effort = conv.effort || this.store.getDefaultEffort();
+    if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {

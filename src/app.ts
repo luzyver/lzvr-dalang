@@ -164,6 +164,24 @@ export function buildApp(
     const logged = await Promise.all(homes.map((h) => logins.isLoggedIn(h)));
     return dispatcher.accounts.list().map((a, i) => ({ ...a, loggedIn: logged[i] ?? null }));
   });
+  app.get('/api/settings/default-model', { onRequest: requireAdmin }, () => ({ model: store.getDefaultModel() }));
+  app.put<{ Body: { model: string } }>('/api/settings/default-model', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
+      properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/-]{0,63})?$' } } } },
+  }, (req, reply) => {
+    store.setDefaultModel(req.body.model);
+    return reply.code(204).send();
+  });
+  app.get('/api/settings/default-effort', { onRequest: requireAdmin }, () => ({ effort: store.getDefaultEffort() }));
+  app.put<{ Body: { effort: string } }>('/api/settings/default-effort', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['effort'], additionalProperties: false,
+      properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] } } } },
+  }, (req, reply) => {
+    store.setDefaultEffort(req.body.effort);
+    return reply.code(204).send();
+  });
   app.post('/api/accounts/unblock', { onRequest: requireAdmin }, (_req, reply) => {
     dispatcher.accounts.unblockAll();
     return reply.code(204).send();
