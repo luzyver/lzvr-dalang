@@ -80,10 +80,14 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .more > summary { display: grid; place-items: center; width: 36px; height: 40px; border-radius: 10px; color: var(--dim); font-size: 18px; }
 .more > summary:hover { background: var(--hover); }
 .more .pop { right: 0; }
-.conv { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 10px; min-height: 42px; }
+.conv-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.conv { flex: 1; display: flex; align-items: center; gap: 10px; width: 0; min-width: 0; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 10px; min-height: 42px; }
 .conv:hover { background: var(--hover); }
 .conv.active { background: color-mix(in srgb, var(--accent) 13%, var(--panel)); color: var(--accent); font-weight: 650; }
 .conv .ct { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-delete { flex: none; width: 34px; min-width: 34px; min-height: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dim); font-size: 14px; opacity: 0; }
+.conv-row:hover .conv-delete, .conv-delete:focus-visible { opacity: 1; }
+.conv-delete:hover { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .dot.running { background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
 .dot.failed { background: var(--err); }
@@ -178,6 +182,7 @@ button.stop { color: var(--err); border-color: var(--err); font-size: 14px; }
   .uname { display: none; }
   .menu > summary { padding: 3px; }
   header .spacer { display: none; }
+  .conv-delete { opacity: .7; }
   aside { position: fixed; z-index: 20; inset: 0 auto 0 0; width: min(86vw, 340px); transform: translateX(-102%); transition: transform .2s ease; box-shadow: var(--shadow); padding-top: max(12px, env(safe-area-inset-top)); }
   body.nav aside { transform: none; }
   body.nav::after { content: ""; position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.45); }

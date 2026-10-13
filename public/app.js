@@ -272,6 +272,17 @@ async function showApp() {
   const adoptSlot = h('div');
 
   const newChat = (p) => guarded(async () => { const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: {} }); await loadProjects(); openConv(c.id); });
+  const deleteConv = (id) => guarded(async () => {
+    if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
+    await api(`/api/conversations/${id}`, { method: 'DELETE' });
+    if (state.current === id) {
+      if (stopStream) { stopStream(); stopStream = null; }
+      state.current = null;
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+      drawMain(null);
+    }
+    await loadProjects();
+  });
   function drawSidebar() {
     const blocks = state.projects.map((p) => {
       const convs = state.convs.get(p.id) || [];
@@ -303,8 +314,10 @@ async function showApp() {
         !collapsed && (convs.length ? h('div', { class: 'project-sessions' }, ...convs.map((c) => {
           const title = c.title || 'New chat';
           const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
-          return h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-            h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle));
+          return h('div', { class: 'conv-row' },
+            h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
+              h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle)),
+            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c.id) }, '🗑'));
         })) : h('div', { class: 'small hint' }, 'No chats yet')));
     });
     sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,
@@ -419,16 +432,7 @@ async function showApp() {
     const attachCount = h('span', {});
     files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
     const settings = h('div', { class: 'settings', hidden: true },
-      h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort),
-      h('button', { class: 'danger', onclick: guarded(async () => {
-        if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
-        await api(`/api/conversations/${id}`, { method: 'DELETE' });
-        if (stopStream) { stopStream(); stopStream = null; }
-        state.current = null;
-        history.replaceState(null, '', `${location.pathname}${location.search}`);
-        drawMain(null);
-        await loadProjects();
-      }) }, 'Delete chat'));
+      h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort));
     const stop = h('button', { class: 'stop', hidden: true, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
       const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
     }) }, '■');
