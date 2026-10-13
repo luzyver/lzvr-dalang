@@ -9,8 +9,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   thread_id TEXT, status TEXT NOT NULL DEFAULT 'idle', draft TEXT NOT NULL DEFAULT '',
-  autopilot INTEGER NOT NULL DEFAULT 0, autopilot_left INTEGER NOT NULL DEFAULT 0,
-  autopilot_prompt TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '');
+  model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -60,7 +59,6 @@ export interface Conversation {
   /** First prompt of the chat (list only), for display. */
   title?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
-  autopilot: number; autopilot_left: number; autopilot_prompt: string;
   /** Codex model for this chat; empty = Codex's own default. */
   model: string;
   /** Reasoning effort (low|medium|high|xhigh|max); empty = Codex's default for the model. */
@@ -86,9 +84,6 @@ export class Store {
     // Databases made by earlier versions lack these columns; CREATE TABLE IF NOT EXISTS does not add them.
     this.ensureColumn('sessions', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
     this.ensureColumn('passkeys', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
-    this.ensureColumn('conversations', 'autopilot', 'INTEGER NOT NULL DEFAULT 0');
-    this.ensureColumn('conversations', 'autopilot_left', 'INTEGER NOT NULL DEFAULT 0');
-    this.ensureColumn('conversations', 'autopilot_prompt', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
   }
@@ -203,11 +198,6 @@ export class Store {
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
-  setAutopilot(id: string, enabled: boolean, left: number, prompt: string): void {
-    this.run('UPDATE conversations SET autopilot=?, autopilot_left=?, autopilot_prompt=? WHERE id=?', enabled ? 1 : 0, left, prompt, id);
-  }
-  autopilotConversations(): Conversation[] { return this.all('SELECT * FROM conversations WHERE autopilot=1'); }
-
   enqueue(convId: string, prompt: string, attachments: string[]): number {
     const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments) VALUES (?,?,?)', convId, prompt, JSON.stringify(attachments));
     return Number(r.lastInsertRowid);

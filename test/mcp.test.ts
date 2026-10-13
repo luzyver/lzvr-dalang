@@ -44,7 +44,7 @@ async function twoConvs(c: C) {
 const ALL_TOOLS = [
   'list_projects', 'create_project', 'delete_project', 'list_conversations', 'create_conversation',
   'adopt_session', 'list_sessions', 'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
-  'cancel_turn', 'set_draft', 'get_events', 'set_autopilot', 'list_accounts', 'unblock_accounts', 'get_approval',
+  'cancel_turn', 'set_draft', 'get_events', 'list_accounts', 'unblock_accounts', 'get_approval',
 ];
 const AGENT_TOOLS = [
   'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
@@ -91,7 +91,7 @@ describe('MCP gateway', () => {
     expect((await call(c, 'adopt_session', { project_id: 'nope', thread_id: '../etc' })).isError).toBe(true);
   });
 
-  it('manages queue, cancel, draft, autopilot and accounts', async () => {
+  it('manages queue, cancel, draft and accounts', async () => {
     const t = await boot();
     const c = await t.connect();
     const { a } = await twoConvs(c);
@@ -99,7 +99,6 @@ describe('MCP gateway', () => {
     expect(t.store.getConversation(a.id)!.draft).toBe('wip');
     expect((await call(c, 'cancel_turn', { conversation_id: a.id })).json).toEqual({ cancelled: false });
     expect((await call(c, 'list_queue', { conversation_id: a.id })).json).toEqual([]);
-    expect((await call(c, 'set_autopilot', { conversation_id: a.id, enabled: false })).isError).toBe(false);
     expect((await call(c, 'list_accounts')).json).toHaveLength(1);
     expect((await call(c, 'unblock_accounts')).isError).toBe(false);
     expect((await call(c, 'list_sessions')).json).toEqual([]);
@@ -137,7 +136,7 @@ describe('MCP for users with a role', () => {
     expect(names.sort()).toEqual([...ALL_TOOLS].sort());
   });
 
-  it('gives a dev user the everyday tools, without project, session, autopilot or account tools', async () => {
+  it('gives a dev user the everyday tools, without project, session or account tools', async () => {
     const t = await boot();
     const dev = await mkUser(t, 'budi', 'dev');
     const c = await t.connect({ authorization: `Bearer ${dev.token}` });
@@ -150,7 +149,7 @@ describe('MCP for users with a role', () => {
 });
 
 describe('agents calling the gateway from inside a conversation', () => {
-  it('get a reduced toolset: no creating projects, no sandbox changes, no autopilot, no approvals', async () => {
+  it('get a reduced toolset: no creating projects, no sandbox changes, no approvals', async () => {
     const t = await boot();
     const { a } = await twoConvs(await t.connect());
     const names = (await (await t.connectAs(a.id)).listTools()).tools.map((x) => x.name);

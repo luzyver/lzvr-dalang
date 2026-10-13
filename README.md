@@ -9,11 +9,10 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Live view**: tool activity, commands and answers stream into the panel over SSE.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
-- **Autopilot**: keeps a chat working turn after turn until the agent replies `AUTOPILOT_DONE`.
 - **Adopt a session**: bring an interactive `codex` session into the panel.
 - **Passkeys + push**: passkey login on top of the access token, installable PWA, Web Push when a turn finishes,
   fails or needs input.
-- **MCP gateway** at `/mcp` (18 tools) so other agents can drive chats; messages between chats can require approval.
+- **MCP gateway** at `/mcp` (17 tools) so other agents can drive chats; messages between chats can require approval.
 
 Not included: running project tests in an isolated Docker-in-Docker sandbox (dropped; see "Scope").
 
@@ -90,8 +89,6 @@ goes wrong. From it (or any admin) open **Users** in the panel to create people:
 | | admin | dev |
 |---|---|---|
 | Use projects and chats: send prompts, queue, cancel, drafts, files, live view, notifications | yes | yes |
-| Turn autopilot **off** | yes | yes |
-| Turn autopilot **on** | yes | no |
 | Create / delete projects (this is where a project's sandbox is chosen) | yes | no |
 | Adopt an existing Codex session, list local sessions | yes | no |
 | Add Codex accounts, unblock accounts at their limit | yes | no |
@@ -170,7 +167,7 @@ All routes need `Authorization: Bearer $LZVR_TOKEN`.
 bash scripts/smoke.sh        # create a project + chat, send a prompt, stream the events (real Codex)
 ```
 
-REST: `/api/projects`, `/api/projects/:id/conversations`, `/api/conversations/:id/{prompts,queue,cancel,draft,autopilot,events}`,
+REST: `/api/projects`, `/api/projects/:id/conversations`, `/api/conversations/:id/{prompts,queue,cancel,draft,events}`,
 `/api/sessions`, `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 
@@ -179,7 +176,7 @@ Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HTTP, stateless). Tools: `list_projects`,
 `create_project`, `delete_project`, `list_conversations`, `create_conversation`, `adopt_session`, `list_sessions`,
 `get_conversation`, `send_prompt`, `list_queue`, `remove_queue_item`, `cancel_turn`, `set_draft`, `get_events`,
-`set_autopilot`, `list_accounts`, `unblock_accounts`, `get_approval`.
+`list_accounts`, `unblock_accounts`, `get_approval`.
 
 **Two kinds of caller.** An outside client using the main token gets all 18 tools. An agent running inside a chat
 (with `MCP_INJECT=1`, each turn gets its own short-lived token bound to that chat, set up through
@@ -189,8 +186,8 @@ Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HT
 it claims to be comes from the token, not from anything it sends. A `send_prompt` from an agent into a *different*
 chat is held until you approve it in the panel (or `POST /api/approvals/:id/approve`).
 
-**What this does and does not protect.** It stops an agent from messaging other chats, widening sandboxes or
-turning on autopilot through the gateway. It is not a wall against a hostile agent on the same machine: an agent that
+**What this does and does not protect.** It stops an agent from messaging other chats or widening sandboxes through the gateway.
+It is not a wall against a hostile agent on the same machine: an agent that
 can read files and runs as root can still read `/etc/systemd/system/lzvr-dalang.service` (which holds the main token)
 or the database. The gateway removes its own `LZVR_*` variables from the environment of every Codex process, but
 keep secrets out of what Codex can read if that matters to you. Agents can also read other chats' events via `get_events`.
@@ -205,7 +202,7 @@ if Codex rejects the config, unset `MCP_INJECT` (everything else keeps working).
 
 ## Scope
 
-Built: core gateway, multi-account failover, panel + PWA + passkeys + Web Push, Autopilot + session adoption, MCP gateway.
+Built: core gateway, multi-account failover, panel + PWA + passkeys + Web Push, session adoption, MCP gateway.
 Dropped: Docker-in-Docker test sandbox (the gateway runs directly on the VM).
 Not verified against the real services in development: the real Codex limit message and cross-account resume, passkeys
 and push in a real browser/phone, and the panel UI in a browser (all were tested with fakes or unit tests).

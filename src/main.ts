@@ -29,12 +29,11 @@ for (const h of linkSessions(dispatcher.accounts.homes)) {
 
 // A crash can leave turns `running`; fail them and restart any leftover queues.
 for (const id of store.resetRunning()) dispatcher.kick(id);
-dispatcher.resumeAutopilot();
 
 const app = buildApp({ cfg, store, dispatcher, push, logins });
 await app.listen({ host: cfg.host, port: cfg.port });
 
-// systemd sends SIGTERM on stop/restart: kill running turns cleanly so autopilot picks up again next start.
+// systemd sends SIGTERM on stop/restart: kill running turns cleanly.
 let closing = false;
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {

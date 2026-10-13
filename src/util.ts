@@ -10,6 +10,3 @@ export interface AuthUser {
 }
 
 export const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
-
-export const DEFAULT_AUTOPILOT_PROMPT =
-  'Continue working on the task. When everything is finished, reply with a line containing only AUTOPILOT_DONE.';

@@ -10,8 +10,6 @@ const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
 export interface LiveEvent { id: number; type: string; payload: string }
 
-// The agent ends autopilot by replying with this marker alone on a line (quoting it mid-sentence does not count).
-const AUTOPILOT_DONE = /^\s*AUTOPILOT_DONE\s*$/m;
 
 export interface DispatcherOpts {
   /** One CODEX_HOME per account, in failover order. */
@@ -69,46 +67,13 @@ export class Dispatcher {
   revokeMcpToken(token: string): void { this.mcpTokens.delete(token); }
 
   /**
-   * Stop for good: kill every running turn (status `interrupted`, autopilot left on so it resumes after the
-   * next start) and refuse to start new ones. Resolves once nothing is running.
+   * Stop for good: kill every running turn (status `interrupted`) and refuse to start new ones. Resolves once nothing is running.
    */
   async shutdown(timeoutMs = 10_000): Promise<void> {
     this.stopping = true;
     for (const ac of this.active.values()) ac.abort();
     const start = Date.now();
     while (this.active.size && Date.now() - start < timeoutMs) await new Promise((r) => setTimeout(r, 25));
-  }
-
-  /** Queue the next autopilot prompt now if the conversation is idle with nothing queued. */
-  startAutopilot(convId: string): void {
-    if (this.active.has(convId)) return; // afterTurn queues the next one when the running turn ends
-    this.queueAutopilot(convId);
-    this.kick(convId);
-  }
-
-  private queueAutopilot(convId: string): void {
-    const c = this.store.getConversation(convId);
-    if (!c?.autopilot || c.autopilot_left <= 0 || this.store.listQueue(convId).length) return;
-    this.store.setAutopilot(convId, true, c.autopilot_left - 1, c.autopilot_prompt);
-    this.store.enqueue(convId, c.autopilot_prompt, []);
-  }
-
-  /** After a restart: continue every conversation that was in autopilot. */
-  resumeAutopilot(): void {
-    for (const c of this.store.autopilotConversations()) {
-      if (c.status === 'failed') this.store.setStatus(c.id, 'idle');
-      this.startAutopilot(c.id);
-    }
-  }
-
-  private afterTurn(convId: string, status: string, lastMessage: string): void {
-    const c = this.store.getConversation(convId);
-    if (!c?.autopilot) return;
-    if (status !== 'completed' || AUTOPILOT_DONE.test(lastMessage) || c.autopilot_left <= 0) {
-      this.store.setAutopilot(convId, false, 0, c.autopilot_prompt);
-      return;
-    }
-    this.queueAutopilot(convId); // no-op while the user still has prompts queued; those run first
   }
 
   cancel(convId: string): boolean {
@@ -240,8 +205,7 @@ export class Dispatcher {
     const status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : failed ? 'failed' : 'completed';
     this.store.endTurn(turnId, status, usage);
     this.store.setStatus(convId, failed && !cancelled ? 'failed' : 'idle');
-    if (interrupted) return; // shutting down: no continuation, no notification; autopilot resumes on the next start
-    this.afterTurn(convId, status, lastMessage);
+    if (interrupted) return; // shutting down: no notification
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
   }
 }

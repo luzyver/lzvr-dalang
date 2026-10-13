@@ -60,7 +60,7 @@ describe('accounts', () => {
   });
 });
 
-describe('autopilot and adoption', () => {
+describe('session adoption', () => {
   const UUID = '33333333-3333-3333-3333-333333333333';
 
   it('adopts an existing Codex session and resumes it on the next prompt', async () => {
@@ -81,20 +81,6 @@ describe('autopilot and adoption', () => {
     const p = await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: 'proj', path: 'proj' } });
     const c = await t.app.inject({ method: 'POST', url: `/api/projects/${p.json().id}/conversations`, headers: AUTH, payload: { threadId: '../../etc/passwd' } });
     expect(c.statusCode).toBe(400);
-  });
-
-  it('turns autopilot on and off', async () => {
-    const t = setupApp();
-    const { conv } = await makeConv(t);
-    const url = `/api/conversations/${conv.id}/autopilot`;
-    const on = await t.app.inject({ method: 'PUT', url, headers: AUTH, payload: { enabled: true, maxTurns: 2, prompt: 'go on' } });
-    expect(on.statusCode).toBe(204);
-    await until(() => turnsDone(t.store, conv.id, 2) && t.store.getConversation(conv.id)!.autopilot === 0);
-    const got = (await t.app.inject({ url: `/api/conversations/${conv.id}`, headers: AUTH })).json();
-    expect(got.turns.map((x: { prompt: string }) => x.prompt)).toEqual(['go on', 'go on']);
-    const off = await t.app.inject({ method: 'PUT', url, headers: AUTH, payload: { enabled: false } });
-    expect(off.statusCode).toBe(204);
-    expect((await t.app.inject({ method: 'PUT', url, headers: AUTH, payload: { enabled: true, maxTurns: 999 } })).statusCode).toBe(400);
   });
 
   it('lists local Codex sessions', async () => {

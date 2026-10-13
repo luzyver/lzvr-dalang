@@ -407,7 +407,7 @@ async function showApp() {
     document.body.classList.add('nav');
     usersSlot.replaceChildren(h('div', { class: 'msg' },
       h('strong', {}, 'Users'),
-      h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects, and no autopilot.'),
+      h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects.'),
       list,
       h('div', { class: 'row' }, nameIn, roleSel, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: close }, '×')),
       reveal));
@@ -509,7 +509,6 @@ async function showApp() {
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
     const files = h('input', { type: 'file', multiple: true });
-    const ap = h('input', { type: 'checkbox' });
     const model = h('input', { list: 'models', placeholder: 'model (default)', maxlength: '64', autocomplete: 'off', onchange: guarded(async () => {
       await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: model.value.trim() } });
       flash(model.value.trim() ? `model: ${model.value.trim()}` : 'model: default');
@@ -520,7 +519,6 @@ async function showApp() {
     }) }, [['', 'effort: default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])].map(([v, t]) => h('option', { value: v }, t)));
     const models = h('datalist', { id: 'models' });
     api('/api/models').then((list) => models.replaceChildren(...list.map((m) => h('option', { value: m.slug }, m.name)))).catch(() => {});
-    const apTurns = h('input', { type: 'number', min: '1', max: '100', value: '20' });
 
     async function refreshQueue() {
       const q = await api(`/api/conversations/${id}/queue`);
@@ -529,7 +527,6 @@ async function showApp() {
     }
     async function refreshConv() {
       const c = await api(`/api/conversations/${id}`);
-      ap.checked = c.autopilot === 1;
       if (document.activeElement !== model) model.value = c.model || '';
       effort.value = c.effort || '';
       if (!text.value && c.draft) text.value = c.draft;
@@ -564,23 +561,10 @@ async function showApp() {
       draftTimer = setTimeout(() => api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: text.value } }).catch(() => {}), 800);
     });
 
-    // Anyone may switch autopilot off; only admins may switch it on. If the server refuses, put the checkbox back.
-    const setAutopilot = async () => {
-      try {
-        await api(`/api/conversations/${id}/autopilot`, { method: 'PUT', body: { enabled: ap.checked, maxTurns: Number(apTurns.value) || 20 } });
-        flash(ap.checked ? 'autopilot on' : 'autopilot off');
-      } catch (e) {
-        ap.checked = !ap.checked;
-        if (!(e instanceof Unauthorized)) flash(e.message);
-      }
-    };
-    ap.addEventListener('change', setAutopilot);
-
     const attachCount = h('span', {});
     files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
     const settings = h('div', { class: 'settings', hidden: true },
       h('label', {}, 'Model', model, models), h('label', {}, 'Effort', effort),
-      h('label', { class: 'check' }, ap, 'Autopilot'), h('label', {}, 'Max turns', apTurns),
       h('button', { class: 'danger', onclick: guarded(async () => {
         if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
         await api(`/api/conversations/${id}`, { method: 'DELETE' });

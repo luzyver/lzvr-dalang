@@ -110,7 +110,6 @@ describe('what a dev may do', () => {
       ['DELETE', `/api/projects/${proj.id}`],
       ['GET', '/api/sessions'],
       ['POST', `/api/projects/${proj.id}/conversations`, { threadId: UUID }],
-      ['PUT', `/api/conversations/${conv.id}/autopilot`, { enabled: true }],
       ['POST', '/api/accounts/unblock'],
       ['POST', '/api/accounts/login', { name: 'x' }],
       ['GET', '/api/accounts/login/abc'],
@@ -150,12 +149,4 @@ describe('what a dev may do', () => {
     expect((await call(t, 'GET', '/api/push/key', dev)).statusCode).toBe(200);
   });
 
-  it('can switch autopilot off but not on', async () => {
-    const { t, dev, admin, conv } = await world();
-    const url = `/api/conversations/${conv.id}/autopilot`;
-    expect((await call(t, 'PUT', url, admin, { enabled: true, maxTurns: 1, prompt: 'x' })).statusCode).toBe(204);
-    expect((await call(t, 'PUT', url, dev, { enabled: false })).statusCode).toBe(204);
-    expect(t.store.getConversation(conv.id)!.autopilot).toBe(0);
-    expect((await call(t, 'PUT', url, dev, { enabled: true })).statusCode).toBe(403);
-  });
 });

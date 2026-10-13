@@ -8,7 +8,7 @@ import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { listSessions } from './sessions.js';
 import type { Store } from './store.js';
-import { DEFAULT_AUTOPILOT_PROMPT, SANDBOXES, UUID_RE } from './util.js';
+import { SANDBOXES, UUID_RE } from './util.js';
 
 type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push };
 
@@ -16,15 +16,15 @@ const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.st
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
 
 // What an agent running inside a conversation may do. It runs in the Codex process, outside Codex's sandbox, so it
-// gets no way to widen its own powers: no new projects or sandbox levels, no autopilot, no approvals, no deleting.
+// gets no way to widen its own powers: no new projects or sandbox levels, no approvals, no deleting.
 const AGENT_TOOLS = new Set([
   'list_projects', 'list_conversations', 'create_conversation', 'get_conversation', 'send_prompt',
   'list_queue', 'get_events', 'list_accounts', 'get_approval',
 ]);
 
 // A dev user connecting from outside gets the everyday tools only: no new projects, no adopting sessions,
-// no autopilot, no unblocking accounts (the same things the REST API keeps for admins).
-const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'adopt_session', 'list_sessions', 'set_autopilot', 'unblock_accounts']);
+// no unblocking accounts (the same things the REST API keeps for admins).
+const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'adopt_session', 'list_sessions', 'unblock_accounts']);
 
 /**
  * `source` is the conversation the calling agent runs in, taken from its per-turn token (never from a header it
@@ -141,16 +141,6 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): Mcp
       return { id: r.id, type: r.type, data };
     });
     return text({ events, next_after_id: rows.length ? rows[rows.length - 1]!.id : (after_id ?? 0) });
-  });
-
-  s.registerTool('set_autopilot', {
-    description: 'Turn autopilot on or off: keep sending continuation prompts until the agent says AUTOPILOT_DONE or max_turns is used.',
-    inputSchema: { conversation_id: z.string(), enabled: z.boolean(), max_turns: z.number().int().min(1).max(100).optional(), prompt: z.string().min(1).optional() },
-  }, async ({ conversation_id, enabled, max_turns, prompt }) => {
-    if (!conv(conversation_id)) return noConv(conversation_id);
-    store.setAutopilot(conversation_id, enabled, enabled ? (max_turns ?? 20) : 0, prompt ?? DEFAULT_AUTOPILOT_PROMPT);
-    if (enabled) dispatcher.startAutopilot(conversation_id);
-    return text({ enabled });
   });
 
   s.registerTool('list_accounts', { description: 'List Codex accounts and whether each is at its usage limit.' }, async () => text(dispatcher.accounts.list()));

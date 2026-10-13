@@ -223,60 +223,6 @@ describe('Dispatcher', () => {
     expect(store.listTurns(conv.id)[0]!.status).toBe('failed');
   });
 
-  it('autopilot keeps going for the allowed number of turns, then stops', async () => {
-    const { store, dispatcher, conv } = setupDispatcher();
-    store.setAutopilot(conv.id, true, 3, 'keep going');
-    dispatcher.startAutopilot(conv.id);
-    await until(() => turnsDone(store, conv.id, 3) && store.getConversation(conv.id)!.autopilot === 0);
-    expect(store.listTurns(conv.id).map((t) => t.prompt)).toEqual(['keep going', 'keep going', 'keep going']);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(store.listTurns(conv.id)).toHaveLength(3);
-  });
-
-  it('autopilot stops when the agent replies AUTOPILOT_DONE on its own line', async () => {
-    const { store, dispatcher, conv } = setupDispatcher(); // the fake echoes the prompt back as its reply
-    store.setAutopilot(conv.id, true, 10, 'wrapping up\nAUTOPILOT_DONE');
-    dispatcher.startAutopilot(conv.id);
-    await until(() => turnsDone(store, conv.id, 1) && store.getConversation(conv.id)!.autopilot === 0);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(store.listTurns(conv.id)).toHaveLength(1);
-  });
-
-  it('autopilot does not trigger on the marker quoted inside a sentence', async () => {
-    const { store, dispatcher, conv } = setupDispatcher();
-    store.setAutopilot(conv.id, true, 2, 'say AUTOPILOT_DONE when finished');
-    dispatcher.startAutopilot(conv.id);
-    await until(() => turnsDone(store, conv.id, 2) && store.getConversation(conv.id)!.autopilot === 0);
-    expect(store.listTurns(conv.id)).toHaveLength(2);
-  });
-
-  it('autopilot turns itself off after a failed turn', async () => {
-    const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'fail' });
-    store.setAutopilot(conv.id, true, 5, 'keep going');
-    dispatcher.startAutopilot(conv.id);
-    await until(() => turnsDone(store, conv.id, 1) && store.getConversation(conv.id)!.autopilot === 0);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(store.listTurns(conv.id)).toHaveLength(1);
-  });
-
-  it('autopilot yields to prompts the user queued', async () => {
-    const { store, dispatcher, conv } = setupDispatcher();
-    store.setAutopilot(conv.id, true, 2, 'auto');
-    store.enqueue(conv.id, 'user prompt', []);
-    dispatcher.kick(conv.id);
-    await until(() => turnsDone(store, conv.id, 3) && store.getConversation(conv.id)!.autopilot === 0);
-    expect(store.listTurns(conv.id).map((t) => t.prompt)).toEqual(['user prompt', 'auto', 'auto']);
-  });
-
-  it('resumeAutopilot restarts conversations that were mid-autopilot when the gateway died', async () => {
-    const { store, dispatcher, conv } = setupDispatcher();
-    store.setAutopilot(conv.id, true, 2, 'auto');
-    store.setStatus(conv.id, 'failed'); // what resetRunning leaves behind
-    dispatcher.resumeAutopilot();
-    await until(() => turnsDone(store, conv.id, 2) && store.getConversation(conv.id)!.autopilot === 0);
-    expect(store.getConversation(conv.id)!.status).toBe('idle');
-  });
-
   it('stores each event exactly as Codex printed it', async () => {
     const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'rawline' });
     store.enqueue(conv.id, 'x', []);
@@ -286,16 +232,15 @@ describe('Dispatcher', () => {
     expect(stored.payload).toContain('12345678901234567890'); // JSON.stringify(JSON.parse(..)) would round this
   });
 
-  it('shutdown interrupts running turns without switching autopilot off', async () => {
+  it('shutdown interrupts running turns', async () => {
     const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'slow' });
-    store.setAutopilot(conv.id, true, 5, 'go on');
     store.enqueue(conv.id, 'long task', []);
     dispatcher.kick(conv.id);
     await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
     await dispatcher.shutdown();
     expect(store.listTurns(conv.id)[0]!.status).toBe('interrupted');
-    expect(store.getConversation(conv.id)).toMatchObject({ status: 'idle', autopilot: 1 });
-    expect(store.listQueue(conv.id)).toEqual([]); // no continuation was queued during shutdown
+    expect(store.getConversation(conv.id)).toMatchObject({ status: 'idle' });
+    expect(store.listQueue(conv.id)).toEqual([]);
     store.enqueue(conv.id, 'after', []);
     dispatcher.kick(conv.id); // a stopped dispatcher starts nothing new
     await new Promise((r) => setTimeout(r, 100));

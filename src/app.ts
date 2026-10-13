@@ -13,7 +13,7 @@ import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
 import { listSessions } from './sessions.js';
-import { type AuthUser, DEFAULT_AUTOPILOT_PROMPT, SANDBOXES, UUID_RE } from './util.js';
+import { type AuthUser, SANDBOXES, UUID_RE } from './util.js';
 import { realWebAuthn, type WebAuthn } from './webauthn.js';
 import type { Store } from './store.js';
 
@@ -264,26 +264,6 @@ export function buildApp(
   app.get('/api/sessions', { onRequest: requireAdmin }, () => {
     const home = dispatcher.accounts.primary();
     return home ? listSessions(home) : [];
-  });
-
-  app.put<{ Params: { id: string }; Body: { enabled: boolean; maxTurns?: number; prompt?: string } }>('/api/conversations/:id/autopilot', {
-    schema: { body: {
-      type: 'object', required: ['enabled'], additionalProperties: false,
-      properties: {
-        enabled: { type: 'boolean' },
-        maxTurns: { type: 'integer', minimum: 1, maximum: 100 },
-        prompt: { type: 'string', minLength: 1 },
-      },
-    } },
-  }, (req, reply) => {
-    const c = store.getConversation(req.params.id);
-    if (!c) return notFound(reply);
-    // Anyone may switch autopilot off; turning it on lets the agent keep working unattended, so admins only.
-    if (req.body.enabled && req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
-    const { enabled, maxTurns = 20, prompt = DEFAULT_AUTOPILOT_PROMPT } = req.body;
-    store.setAutopilot(c.id, enabled, enabled ? maxTurns : 0, prompt);
-    if (enabled) dispatcher.startAutopilot(c.id);
-    return reply.code(204).send();
   });
 
   app.get('/api/models', () => dispatcher.models());
