@@ -1,233 +1,8 @@
-'use strict';
-// Dalang panel. Plain JS, no build step. Every server-provided string goes in via textContent.
-
-// ---------- helpers ----------
-function h(tag, props, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (k === 'class') el.className = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (v === true) el.setAttribute(k, '');
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
-  return el;
-}
-
-const tokenStore = {
-  get() { try { return localStorage.getItem('lzvr_token') || ''; } catch { return ''; } },
-  set(t) { try { localStorage.setItem('lzvr_token', t); } catch { /* private mode: login lasts until reload */ memoryToken = t; } },
-  clear() { try { localStorage.removeItem('lzvr_token'); } catch { /* ignore */ } memoryToken = ''; },
-};
-let memoryToken = '';
-const currentToken = () => tokenStore.get() || memoryToken;
-
-class Unauthorized extends Error {}
-
-async function api(path, { method = 'GET', body, form } = {}) {
-  const headers = { authorization: `Bearer ${currentToken()}` };
-  let payload;
-  if (form) payload = form;
-  else if (body !== undefined) { headers['content-type'] = 'application/json'; payload = JSON.stringify(body); }
-  const res = await fetch(path, { method, headers, body: payload });
-  if (res.status === 401) { showLogin(); throw new Unauthorized(); }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-    throw new Error(msg);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-async function publicApi(path, body) {
-  const res = await fetch(path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-    throw new Error(msg);
-  }
-  return res.json();
-}
-
-/** Split an SSE text buffer into complete events; returns the unfinished remainder. */
-function parseSSE(buf) {
-  const events = [];
-  let rest = buf;
-  for (let i = rest.indexOf('\n\n'); i !== -1; i = rest.indexOf('\n\n')) {
-    const block = rest.slice(0, i);
-    rest = rest.slice(i + 2);
-    const ev = { id: 0, type: 'message', data: null };
-    for (const line of block.split('\n')) {
-      if (line.startsWith('id:')) ev.id = Number(line.slice(3).trim()) || 0;
-      else if (line.startsWith('event:')) ev.type = line.slice(6).trim();
-      else if (line.startsWith('data:')) { try { ev.data = JSON.parse(line.slice(5).trim()); } catch { ev.data = null; } }
-    }
-    if (ev.data !== null) events.push(ev);
-  }
-  return { events, rest };
-}
-
-/** Follow a conversation's event stream, resuming from the last id after a drop. Returns a stop function. */
-function startStream(convId, onEvent) {
-  const ac = new AbortController();
-  let last = 0;
-  (async () => {
-    while (!ac.signal.aborted) {
-      try {
-        const res = await fetch(`/api/conversations/${convId}/events`, {
-          headers: { authorization: `Bearer ${currentToken()}`, 'last-event-id': String(last) },
-          signal: ac.signal,
-        });
-        if (res.status === 401) { showLogin(); return; }
-        if (!res.ok) throw new Error(String(res.status));
-        const reader = res.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          const r = parseSSE(buf);
-          buf = r.rest;
-          for (const e of r.events) { last = Math.max(last, e.id); onEvent(e); }
-        }
-      } catch { if (ac.signal.aborted) return; }
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  })();
-  return () => ac.abort();
-}
-
-// ---------- markdown (DOM-built, never innerHTML: the CSP and the textContent rule both hold) ----------
-const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
-function inline(text) {
-  const out = [];
-  let last = 0;
-  for (const m of text.matchAll(INLINE)) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    if (m[1] != null) out.push(h('code', {}, m[1]));
-    else if (m[2] != null) out.push(h('strong', {}, inline(m[2])));
-    else if (m[3] != null) out.push(h('em', {}, inline(m[3])));
-    else out.push(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer' }, m[4]));
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
-}
-
-const LIST_ITEM = /^\s*([-*+]|\d+\.)\s/;
-function markdown(src) {
-  const root = h('div', { class: 'md' });
-  const lines = String(src).replace(/\r/g, '').split('\n');
-  const isBlock = (l) => /^(```|#{1,6}\s|>\s?)/.test(l) || LIST_ITEM.test(l);
-  for (let i = 0; i < lines.length;) {
-    const l = lines[i];
-    let m;
-    if (!l.trim()) { i++; continue; }
-    if (l.startsWith('```')) {
-      const code = [];
-      for (i++; i < lines.length && !lines[i].startsWith('```'); i++) code.push(lines[i]);
-      i++;
-      root.append(h('pre', {}, h('code', {}, code.join('\n'))));
-    } else if ((m = /^(#{1,6})\s+(.*)/.exec(l))) {
-      root.append(h(`h${Math.min(m[1].length + 2, 6)}`, {}, inline(m[2]))); i++;
-    } else if (/^>\s?/.test(l)) {
-      const q = [];
-      for (; i < lines.length && /^>\s?/.test(lines[i]); i++) q.push(lines[i].replace(/^>\s?/, ''));
-      root.append(h('blockquote', {}, inline(q.join(' '))));
-    } else if (LIST_ITEM.test(l)) {
-      const ordered = /^\s*\d+\./.test(l);
-      const items = [];
-      for (; i < lines.length && LIST_ITEM.test(lines[i]); i++) items.push(h('li', {}, inline(lines[i].replace(LIST_ITEM, ''))));
-      root.append(h(ordered ? 'ol' : 'ul', {}, items));
-    } else {
-      const p = [];
-      for (; i < lines.length && lines[i].trim() && (!p.length || !isBlock(lines[i])); i++) p.push(lines[i]);
-      root.append(h('p', {}, p.flatMap((x, j) => (j ? [h('br'), ...inline(x)] : inline(x)))));
-    }
-  }
-  return root;
-}
-
-// ---------- event rendering ----------
-const note = (text, cls) => h('div', { class: `note ${cls || ''}` }, text);
-const bubble = (cls, text) => h('div', { class: `msg ${cls}` }, text);
-
-function renderItem(item) {
-  if (!item) return null;
-  switch (item.type) {
-    case 'agent_message': return h('div', { class: 'msg agent' }, markdown(item.text || ''));
-    case 'command_execution': {
-      const out = h('span', { class: 'out' }, String(item.aggregated_output || '').slice(-2000));
-      const code = item.exit_code == null ? '' : `  [exit ${item.exit_code}]`;
-      return h('div', { class: 'msg cmd' }, `$ ${item.command || ''}${code}`, out);
-    }
-    case 'file_change': {
-      const files = (item.changes || []).map((c) => `${c.kind || 'change'} ${c.path || ''}`).join('\n');
-      return bubble('cmd', files || 'file change');
-    }
-    case 'reasoning': return item.text ? note(`thinking: ${String(item.text).slice(0, 300)}`) : null;
-    default: return note(`${item.type || 'item'}`);
-  }
-}
-
-function renderEvent(e) {
-  const d = e.data || {};
-  switch (e.type) {
-    case 'user.prompt': return bubble('user', d.text || '');
-    case 'item.completed': return renderItem(d.item);
-    case 'turn.completed': {
-      const u = d.usage || {};
-      return note(`done · tokens in ${u.input_tokens ?? '?'} / out ${u.output_tokens ?? '?'}`);
-    }
-    case 'turn.failed':
-    case 'error': return note(`error: ${(d.error && d.error.message) || d.message || JSON.stringify(d)}`, 'err');
-    case 'process.exit': return note(`process exited (${d.code})${d.stderr ? `: ${String(d.stderr).slice(-300)}` : ''}`, 'err');
-    case 'account.selected': return note(`account: ${d.account}`);
-    case 'account.switched': return note(`usage limit on ${d.from}, switching account`, 'warn');
-    case 'account.exhausted': return note(d.message || 'all accounts are at their limit', 'err');
-    case 'thread.started':
-    case 'turn.started':
-    case 'item.started':
-    case 'item.updated': return null;
-    default: return note(e.type);
-  }
-}
-
-// ---------- web push / passkeys ----------
-function b64urlToBytes(s) {
-  const pad = '='.repeat((4 - (s.length % 4)) % 4);
-  const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
-  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
-}
-
-async function enableNotifications() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('this browser has no Web Push');
-  if ((await Notification.requestPermission()) !== 'granted') throw new Error('notification permission denied');
-  const reg = await navigator.serviceWorker.ready;
-  const { publicKey } = await api('/api/push/key');
-  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(publicKey) });
-  await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
-}
-
-async function registerPasskey() {
-  if (!window.PublicKeyCredential || !PublicKeyCredential.parseCreationOptionsFromJSON) throw new Error('this browser has no passkey support');
-  const opts = await api('/api/passkey/register/options', { method: 'POST', body: {} });
-  const cred = await navigator.credentials.create({ publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(opts) });
-  await api('/api/passkey/register/verify', { method: 'POST', body: { response: cred.toJSON() } });
-}
-
-async function loginWithPasskey() {
-  if (!window.PublicKeyCredential || !PublicKeyCredential.parseRequestOptionsFromJSON) throw new Error('this browser has no passkey support');
-  const opts = await publicApi('/api/auth/passkey/options', {});
-  const cred = await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(opts) });
-  const { token } = await publicApi('/api/auth/passkey/verify', { response: cred.toJSON() });
-  tokenStore.set(token);
-}
+// Dalang panel. Every server-provided string is inserted as text, never parsed as HTML.
+import { h } from './js/dom.js';
+import { api, publicApi, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
+import { startStream, renderEvent } from './js/chat.js';
+import { enableNotifications, registerPasskey, loginWithPasskey } from './js/passkeys.js';
 
 // ---------- views ----------
 const root = document.getElementById('root');
@@ -271,7 +46,7 @@ async function showApp() {
   let me;
   try { me = await api('/api/me'); } catch (e) { if (!(e instanceof Unauthorized)) showLogin(e.message); return; }
   const isAdmin = me.role === 'admin'; // the server enforces this; the panel only hides what would be refused
-  const state = { projects: [], convs: new Map(), current: null, queue: [] };
+  const state = { projects: [], convs: new Map(), current: null, queue: [], collapsedProjects: new Set() };
   const sidebar = h('aside');
   const main = h('main');
   const accounts = h('span', { class: 'accts' });
@@ -500,9 +275,16 @@ async function showApp() {
   function drawSidebar() {
     const blocks = state.projects.map((p) => {
       const convs = state.convs.get(p.id) || [];
+      const collapsed = state.collapsedProjects.has(p.id);
       return h('section', { class: 'proj' },
         h('div', { class: 'projhead' },
-          h('div', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: 'small' }, p.sandbox)),
+          h('button', { class: 'project-toggle', 'aria-expanded': String(!collapsed), onclick: () => {
+            if (collapsed) state.collapsedProjects.delete(p.id); else state.collapsedProjects.add(p.id);
+            drawSidebar();
+          } },
+            h('span', { class: 'project-chevron', 'aria-hidden': 'true' }, collapsed ? '›' : '⌄'),
+            h('span', { class: 'project-glyph', 'aria-hidden': 'true' }, '▰'),
+            h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: 'small' }, p.sandbox))),
           h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, '+'),
           isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, '⋯'),
             h('div', { class: 'pop' },
@@ -517,16 +299,17 @@ async function showApp() {
                 }
                 await loadProjects();
               }) }, 'Remove project')))),
-        convs.length ? convs.map((c) => {
+        !collapsed && (convs.length ? h('div', { class: 'project-sessions' }, ...convs.map((c) => {
           const title = c.title || 'New chat';
           const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
           return h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
             h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle));
-        })
-          : h('div', { class: 'small hint' }, 'No chats yet'));
+        })) : h('div', { class: 'small hint' }, 'No chats yet')));
     });
     sidebar.replaceChildren(...[loginSlot, defaultModelSlot, usersSlot, approvalsBox, adoptSlot,
-      blocks.length ? h('div', { class: 'side-label' }, 'Projects') : null, ...blocks, isAdmin ? addForm : null].filter(Boolean));
+      h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
+      isAdmin ? addForm : null, ...blocks,
+      !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
   }
 
   async function adoptDialog(project) {
@@ -687,4 +470,5 @@ if ('serviceWorker' in navigator) {
     if (m.data && m.data.convId && notificationOpensChat) notificationOpensChat(m.data.convId);
   });
 }
+setUnauthorizedHandler(showLogin);
 if (currentToken()) showApp(); else showLogin();

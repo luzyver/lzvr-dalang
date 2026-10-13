@@ -7,6 +7,10 @@ const dir = new URL('../public/', import.meta.url);
 const FILES: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/js/api.js': ['js/api.js', 'text/javascript; charset=utf-8'],
+  '/js/chat.js': ['js/chat.js', 'text/javascript; charset=utf-8'],
+  '/js/dom.js': ['js/dom.js', 'text/javascript; charset=utf-8'],
+  '/js/passkeys.js': ['js/passkeys.js', 'text/javascript; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'],

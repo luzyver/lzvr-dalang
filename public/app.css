@@ -59,11 +59,19 @@ header .spacer { flex: 1; }
 .pop .who { padding: 6px 12px; }
 
 /* ---- sidebar ---- */
-aside { overflow: auto; padding: 16px 12px 20px; background: var(--side); border-right: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; overscroll-behavior: contain; }
-.proj { display: grid; gap: 2px; min-width: 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.projhead { display: flex; align-items: center; gap: 4px; padding: 6px 2px 6px 8px; }
+aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border-right: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; overscroll-behavior: contain; }
+.explorer-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 9px 10px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 11px; font-weight: 750; letter-spacing: .12em; }
+.explorer-caption { font-size: 10px; font-weight: 600; letter-spacing: .06em; opacity: .75; }
+.proj { display: grid; gap: 2px; min-width: 0; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+.projhead { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 0 3px 2px; }
+.project-toggle { flex: 1; display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 42px; padding: 4px 7px; text-align: left; border: 0; background: transparent; border-radius: 9px; }
+.project-toggle:hover { background: var(--hover); }
+.project-chevron { width: 13px; color: var(--dim); font-size: 17px; line-height: 1; }
+.project-glyph { color: var(--accent); font-size: 13px; }
 .pname { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .pname strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-sessions { display: grid; gap: 2px; margin: 0 2px 0 17px; padding-left: 8px; border-left: 1px solid var(--line); }
+.empty-projects { padding: 10px 9px; }
 .iconbtn { display: inline-grid; place-items: center; grid-auto-flow: column; gap: 2px; min-width: 40px; height: 40px; padding: 0 8px; border: 0; background: none; border-radius: 10px; cursor: pointer; font-size: 18px; color: var(--dim); }
 .iconbtn:hover { background: var(--hover); color: var(--text); }
 .iconbtn input[type=file] { display: none; }
@@ -153,11 +161,15 @@ button.stop { color: var(--err); border-color: var(--err); font-size: 14px; }
 /* ---- mobile ---- */
 @media (max-width: 760px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
-  header { padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top)); gap: 8px; }
-  .navtoggle { display: inline-block; }
+  header { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr) 42px; grid-template-rows: 42px; gap: 0 6px; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); min-height: 58px; }
+  .navtoggle { display: inline-grid; place-items: center; width: 42px; height: 42px; min-height: 42px; padding: 0; grid-column: 1; grid-row: 1; }
+  header .title { display: block; grid-column: 2; grid-row: 1; justify-self: start; align-self: center; max-width: min(90px, calc(50vw - 100px)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; }
+  .accts { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); justify-content: center; width: max-content; max-width: min(125px, calc(50vw - 90px)); min-width: 0; min-height: 28px; align-items: center; }
+  header > .small { display: none; }
+  .menu { grid-column: 3; grid-row: 1; justify-self: end; }
   .uname { display: none; }
   .menu > summary { padding: 3px; }
-  header .spacer { flex: 0; }
+  header .spacer { display: none; }
   aside { position: fixed; z-index: 20; inset: 0 auto 0 0; width: min(86vw, 340px); transform: translateX(-102%); transition: transform .2s ease; box-shadow: var(--shadow); padding-top: max(12px, env(safe-area-inset-top)); }
   body.nav aside { transform: none; }
   body.nav::after { content: ""; position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.45); }
