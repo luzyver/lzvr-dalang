@@ -1,3 +1,4 @@
+import { fromHunks, wholeFile, type FileDiff, type Hunk } from './diff.js';
 import { runProcess, type CodexEvent } from './runner.js';
 
 export interface ClaudeTurnOpts {
@@ -48,12 +49,23 @@ const asText = (c: unknown): string =>
 const summary = (input: Record<string, unknown> = {}): string =>
   String(input.file_path ?? input.path ?? input.pattern ?? input.url ?? input.query ?? input.description ?? '').slice(0, 200);
 
+type EditResult = { type?: string; filePath?: string; content?: string; structuredPatch?: Hunk[] };
+
+/** A finished Edit/Write as a file change, with the patch Claude Code reports in the tool result (`tool_use_result`). */
+function fileDiff(file: string, result: unknown): FileDiff {
+  const r = (result && typeof result === 'object' ? result : {}) as EditResult;
+  const path = r.filePath || file;
+  if (r.type === 'create') return { path, kind: 'add', diff: wholeFile(String(r.content ?? ''), '+') };
+  return { path, kind: 'update', ...(Array.isArray(r.structuredPatch) && r.structuredPatch.length && { diff: fromHunks(r.structuredPatch) }) };
+}
+
 /**
  * Translates Claude Code's stream-json into the Codex-shaped events the dispatcher, store and panel already speak
  * (thread.started, item.*, turn.completed / turn.failed).
  */
 export class ClaudeEvents {
   private commands = new Map<string, string>(); // Bash tool_use id -> command, until its result arrives
+  private edits = new Map<string, string>(); // file tool_use id -> path, until its result (with the patch) arrives
   private started = false;
 
   map(ev: CodexEvent): CodexEvent[] {
@@ -105,9 +117,8 @@ export class ClaudeEvents {
           const command = String(b.input?.command ?? '');
           this.commands.set(b.id, command);
           out.push({ type: 'item.started', item: { id: b.id, type: 'command_execution', command, status: 'in_progress' } });
-        } else if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(name)) {
-          const path = String(b.input?.file_path ?? b.input?.notebook_path ?? '');
-          out.push({ type: 'item.completed', item: { type: 'file_change', changes: [{ kind: name === 'Write' ? 'write' : 'edit', path }] } });
+        } else if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(name) && b.id) {
+          this.edits.set(b.id, String(b.input?.file_path ?? b.input?.notebook_path ?? ''));
         } else {
           out.push({ type: 'item.completed', item: { type: 'tool_call', tool: name, text: summary(b.input) } });
         }
@@ -119,6 +130,12 @@ export class ClaudeEvents {
   private toolResults(ev: CodexEvent): CodexEvent[] {
     const out: CodexEvent[] = [];
     for (const b of this.blocks(ev)) {
+      if (b.type === 'tool_result' && b.tool_use_id && this.edits.has(b.tool_use_id)) {
+        const edit = this.edits.get(b.tool_use_id)!;
+        this.edits.delete(b.tool_use_id);
+        if (!b.is_error) out.push({ type: 'item.completed', item: { type: 'file_change', changes: [fileDiff(edit, ev.tool_use_result)] } });
+        continue;
+      }
       if (b.type !== 'tool_result' || !b.tool_use_id || !this.commands.has(b.tool_use_id)) continue;
       const command = this.commands.get(b.tool_use_id)!;
       this.commands.delete(b.tool_use_id);

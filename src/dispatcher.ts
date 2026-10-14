@@ -5,8 +5,9 @@ import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
+import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { RAW, type CodexEvent } from './runner.js';
-import { codexLimits, type LimitWindow } from './sessions.js';
+import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
 import type { QueueItem, Store } from './store.js';
 import type { Backend } from './util.js';
 
@@ -63,6 +64,7 @@ export class Dispatcher {
   private bus = new EventEmitter();
   private stopping = false;
   private mcpTokens = new Map<string, string>(); // token -> the conversation whose turn it was minted for
+  private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
 
   constructor(private store: Store, private opts: DispatcherOpts) {
     this.accounts = new Accounts([...opts.homes], opts.blockMs); // own copy: accounts can be added while running
@@ -183,6 +185,25 @@ export class Dispatcher {
     this.bus.emit(convId, { id, type: ev.type, payload, created_at } satisfies LiveEvent);
   }
 
+  /**
+   * Codex's exec JSON only names the changed files; the diffs are in the session's rollout, which Codex writes at about
+   * the same moment, so wait for it briefly. Without a match the event goes out as it is.
+   */
+  private async withCodexDiffs(ev: CodexEvent, threadId: string | null, sinceMs: number, used: Set<string>): Promise<CodexEvent> {
+    const item = ev.item as { changes?: FileDiff[] };
+    const home = this.accounts.primary();
+    if (!threadId || !home || !Array.isArray(item.changes) || !item.changes.length) return ev;
+    for (let i = 0; i < 8; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 125));
+      const file = this.rollouts.get(threadId) ?? findRollout(home, threadId);
+      if (!file) continue;
+      this.rollouts.set(threadId, file);
+      const changes = codexDiffs(item.changes, rolloutFileChanges(file, sinceMs), used);
+      if (changes) return { ...ev, item: { ...item, changes } };
+    }
+    return ev;
+  }
+
   private async run(convId: string, item: QueueItem, ac: AbortController): Promise<void> {
     const conv = this.store.getConversation(convId);
     const project = conv && this.store.getProject(conv.project_id);
@@ -237,6 +258,8 @@ export class Dispatcher {
         let limitMs = 0;
         let worked = false;
         const threadId = this.store.getConversation(convId)?.thread_id ?? null;
+        const attemptStart = Date.now() - 1000;
+        const usedDiffs = new Set<string>();
         // After work has already happened, resending the bare request makes the agent redo it (commits, deploys...).
         const attemptPrompt = workDone
           ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
@@ -252,7 +275,10 @@ export class Dispatcher {
             command: this.opts.command, home, extraArgs, env, cwd: project.path, sandbox: project.sandbox, threadId,
             prompt: attemptPrompt, images, signal: ac.signal,
           });
-        for await (const ev of events) {
+        for await (let ev of events) {
+          if (!claude && ev.type === 'item.completed' && (ev.item as { type?: string } | undefined)?.type === 'file_change') {
+            ev = await this.withCodexDiffs(ev, this.store.getConversation(convId)?.thread_id ?? null, attemptStart, usedDiffs);
+          }
           if (ev.type === 'account.limits') { this.recordLimits('claude', home, ev.windows as LimitWindow[]); continue; }
           if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
           if (ev.type.startsWith('item.')) worked = true;

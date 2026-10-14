@@ -48,16 +48,21 @@ export function listSessions(home: string, limit = 100): SessionInfo[] {
 
 export interface LimitWindow { label: string; usedPercent: number; resetsAt: number }
 
-const windowLabel = (minutes: number) => (minutes === 300 ? '5h' : minutes === 10080 ? '7d' : `${minutes}m`);
+/** The rollout file of a Codex session, or null. */
+export function findRollout(home: string, threadId: string): string | null {
+  const files: string[] = [];
+  walk(join(home, 'sessions'), files);
+  return files.find((f) => f.toLowerCase().includes(threadId.toLowerCase())) ?? null;
+}
+
+const windowLabel =(minutes: number) => (minutes === 300 ? '5h' : minutes === 10080 ? '7d' : `${minutes}m`);
 
 /**
  * The usage windows Codex last wrote into a session's rollout (its `token_count` events carry `rate_limits`).
  * ponytail: walks the sessions tree to find the file; index by id if the history gets large.
  */
 export function codexLimits(home: string, threadId: string): LimitWindow[] {
-  const files: string[] = [];
-  walk(join(home, 'sessions'), files);
-  const file = files.find((f) => f.toLowerCase().includes(threadId.toLowerCase()));
+  const file = findRollout(home, threadId);
   if (!file) return [];
   try {
     const size = statSync(file).size;

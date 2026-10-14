@@ -182,7 +182,7 @@ async function showApp() {
       } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
     };
     const out = h('pre', { class: 'loginlog' });
-    const link = h('div');
+    const link = h('div', { class: 'loginlink' });
     const msg = h('div', { class: 'small' });
     let id = null;
     let timer = null;
@@ -190,10 +190,17 @@ async function showApp() {
     const poll = async () => {
       try {
         const s = await api(`/api/accounts/login/${id}`);
-        out.textContent = s.output;
-        link.replaceChildren();
-        if (s.url && /^https:\/\//.test(s.url)) link.append(h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open the sign-in page'));
-        if (s.code) link.append(' code: ', h('strong', {}, s.code));
+        // Only touch the DOM when something changed, so a selection in the log or the code survives polling.
+        if (out.textContent !== s.output) out.textContent = s.output;
+        const linkKey = `${s.url || ''}\n${s.code || ''}`;
+        if (link.dataset.key !== linkKey) {
+          link.dataset.key = linkKey;
+          link.replaceChildren();
+          if (s.url && /^https:\/\//.test(s.url)) link.append(h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open the sign-in page'));
+          if (s.code) link.append(' code: ', h('strong', { class: 'logincode' }, s.code), ' ', h('button', { onclick: async () => {
+            try { await navigator.clipboard.writeText(s.code); flash('copied'); } catch { getSelection().selectAllChildren(link.querySelector('.logincode')); }
+          } }, 'Copy'));
+        }
         if (s.status !== 'pending') {
           clearInterval(timer);
           msg.textContent = s.status === 'success' ? `Account "${s.name}" added.` : s.status === 'cancelled' ? 'Cancelled.' : `Failed: ${s.error || 'unknown error'}`;

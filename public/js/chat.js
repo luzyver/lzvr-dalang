@@ -113,6 +113,32 @@ function messageTime(value) {
 }
 const bubble = (cls, text, timestamp) => h('div', { class: `msg ${cls}` }, text, messageTime(timestamp));
 
+// Codex says add/delete/update; older Claude Code events said write/edit.
+const CHANGE_LABEL = { add: 'Created', write: 'Wrote', delete: 'Deleted', update: 'Edited', edit: 'Edited' };
+
+/** One changed file: a collapsible unified diff (open when short), with +/- counts. */
+function fileChange(c) {
+  const path = String(c.path || '');
+  const name = path.split(/[\\/]/).pop() || path || 'file';
+  const lines = c.diff ? String(c.diff).split('\n') : [];
+  const added = lines.filter((l) => l.startsWith('+')).length;
+  const removed = lines.filter((l) => l.startsWith('-')).length;
+  const lineClass = (l) => (l.startsWith('@@') ? 'hunk' : l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('…') ? 'hunk' : '');
+  const summary = h('summary', {},
+    lines.length ? icon('chevron-right') : null,
+    h('span', { class: 'terminal-label' }, CHANGE_LABEL[c.kind] || 'Changed'),
+    h('code', { class: 'terminal-preview', title: path }, name),
+    c.movePath ? h('code', { class: 'terminal-preview', title: c.movePath }, `→ ${String(c.movePath).split(/[\\/]/).pop()}`) : null,
+    added ? h('span', { class: 'diff-stat add' }, `+${added}`) : null,
+    removed ? h('span', { class: 'diff-stat del' }, `−${removed}`) : null);
+  if (!lines.length) return h('div', { class: 'msg cmd terminal filechange' }, summary);
+  return h('details', { class: 'msg cmd terminal filechange', open: lines.length <= 40 },
+    summary,
+    h('div', { class: 'terminal-body' },
+      h('code', { class: 'terminal-command' }, path),
+      h('pre', { class: 'diff' }, lines.map((l) => h('span', { class: lineClass(l) }, l)))));
+}
+
 function renderItem(item) {
   if (!item) return null;
   switch (item.type) {
@@ -132,8 +158,8 @@ function renderItem(item) {
           out));
     }
     case 'file_change': {
-      const files = (item.changes || []).map((c) => `${c.kind || 'change'} ${c.path || ''}`).join('\n');
-      return bubble('cmd', files || 'file change');
+      const changes = item.changes || [];
+      return changes.length ? h('div', { class: 'filechanges' }, changes.map(fileChange)) : bubble('cmd', 'file change');
     }
     case 'tool_call': return note(`${item.tool || 'tool'} ${item.text || ''}`);
     case 'reasoning': return item.text ? note(`thinking: ${String(item.text).slice(0, 300)}`) : null;

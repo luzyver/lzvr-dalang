@@ -46,9 +46,25 @@ describe('ClaudeEvents', () => {
       { type: 'tool_use', id: 'a', name: 'Edit', input: { file_path: 'x.ts' } },
       { type: 'tool_use', id: 'b', name: 'Read', input: { file_path: 'y.ts' } },
     )]);
-    expect(ev.map((e) => (e.item as { type: string }).type)).toEqual(['reasoning', 'file_change', 'tool_call']);
-    expect(ev[1]).toMatchObject({ item: { changes: [{ kind: 'edit', path: 'x.ts' }] } });
-    expect(ev[2]).toMatchObject({ item: { tool: 'Read', text: 'y.ts' } });
+    expect(ev.map((e) => (e.item as { type: string }).type)).toEqual(['reasoning', 'tool_call']); // the edit waits for its result
+    expect(ev[1]).toMatchObject({ item: { tool: 'Read', text: 'y.ts' } });
+  });
+
+  it('reports a finished edit or write with the patch from its tool result, and skips failed ones', () => {
+    const result = (id: string, tool_use_result: unknown, is_error = false) =>
+      ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error }] }, tool_use_result });
+    const ev = run([
+      assistant({ type: 'tool_use', id: 'e', name: 'Edit', input: { file_path: 'a.txt' } },
+        { type: 'tool_use', id: 'w', name: 'Write', input: { file_path: 'b.txt' } },
+        { type: 'tool_use', id: 'f', name: 'Edit', input: { file_path: 'c.txt' } }),
+      result('e', { filePath: 'a.txt', structuredPatch: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, lines: [' line1', '-line2', '+LINE TWO', ' line3'] }] }),
+      result('w', { type: 'create', filePath: 'b.txt', content: 'hi\nthere\n', structuredPatch: [] }),
+      result('f', 'String to replace not found', true),
+    ]);
+    expect(ev.map((e) => e.item)).toEqual([
+      { type: 'file_change', changes: [{ path: 'a.txt', kind: 'update', diff: '@@ -1,3 +1,3 @@\n line1\n-line2\n+LINE TWO\n line3' }] },
+      { type: 'file_change', changes: [{ path: 'b.txt', kind: 'add', diff: '@@ -0,0 +1,2 @@\n+hi\n+there' }] },
+    ]);
   });
 
   it('reports an errored result as turn.failed and drops the synthetic duplicate', () => {

@@ -116,6 +116,8 @@ aside details:not(.more) > summary { padding: 8px 0; font-weight: 600; }
 .row > input, .row > select { flex: 1 1 140px; width: auto; }
 .loginlog { margin: 8px 0 0; padding: 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; background: var(--code); border-radius: 8px; }
 .loginlog:empty { display: none; }
+.loginlink a { color: var(--link); }
+.loginlink .logincode { font-family: ui-monospace, Menlo, Consolas, monospace; user-select: all; }
 
 /* ---- chat ---- */
 main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--bg); }
@@ -150,6 +152,17 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .terminal-body { margin: 8px 0 0 18px; padding: 10px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--code); }
 .terminal-command { display: block; margin-bottom: 8px; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 .terminal .out { color: var(--dim); display: block; margin: 0; padding: 8px 0 0; max-height: 200px; overflow: auto; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.filechanges { display: flex; flex-direction: column; gap: 2px; }
+.diff-stat { flex: none; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+.diff-stat.add, .diff .add { color: var(--ok); }
+.diff-stat.del, .diff .del { color: var(--err); }
+.filechange .terminal-body { padding: 10px 0 0; }
+.filechange .terminal-command { padding: 0 12px; color: var(--dim); }
+.diff { margin: 0; padding: 6px 0; max-height: 420px; overflow: auto; border-top: 1px solid var(--line); font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.diff > span { display: block; min-height: 1.45em; padding: 0 12px; white-space: pre; width: max-content; min-width: 100%; box-sizing: border-box; }
+.diff .add { background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.diff .del { background: color-mix(in srgb, var(--err) 13%, transparent); }
+.diff .hunk { color: var(--dim); }
 .note { font-size: 13px; color: var(--dim); padding: 0 4px; overflow-wrap: anywhere; }
 .note.err { color: var(--err); } .note.warn { color: var(--warn); }
 
