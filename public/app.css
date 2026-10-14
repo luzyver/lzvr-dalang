@@ -422,13 +422,23 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .diff-scroll { overflow: auto; max-height: 70vh; }
 .diff.compact .diff-scroll { max-height: 420px; }
 .diff-empty { padding: 12px; font-size: var(--fs-sm); color: var(--text-faint); }
+/* a changed file's diff, opened from the Changes tab */
+dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, calc(100dvh - 32px)); }
+.diff-dialog { display: flex; flex-direction: column; height: 100%; outline: none; }
+.diff-dialog-head { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface-2); flex: none; min-width: 0; }
+.diff-dialog-path { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; direction: rtl; text-align: left; }
+.diff-nav { display: flex; align-items: center; gap: 2px; flex: none; font-variant-numeric: tabular-nums; }
+.diff-dialog-body { flex: 1; min-height: 0; overflow: auto; }
+.diff-dialog-body .diff-scroll { max-height: none; overflow: visible; }
+.diff-dialog-body .lines { font-size: 12.5px; }
+.diff-dialog-body .pane-loading { padding: 16px; }
 .lines { width: 100%; border-collapse: collapse; font: 12px/1.65 var(--mono); }
 .lines td { white-space: pre; padding: 0 10px 0 8px; vertical-align: top; }
 .lines td.no { width: 1%; min-width: 34px; color: var(--text-faint); text-align: right; user-select: none; padding: 0 6px; font-size: 11px; }
-.lines td.code { width: 100%; }
+.lines td.src { width: 100%; }
 .lines.split { table-layout: fixed; }
 .lines.split col.no { width: 44px; }
-.lines.split td.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.lines.split td.src { white-space: pre-wrap; overflow-wrap: anywhere; }
 .lines tr.hunk td { color: var(--text-faint); padding: 3px 12px; background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
 .lines tr.note td { color: var(--text-faint); padding: 2px 12px; font-style: italic; }
 .lines tr.add td, .lines td.add { background: color-mix(in srgb, var(--ok-soft) 75%, transparent); }
@@ -542,6 +552,9 @@ dialog.modal[open] { animation: pop .18s var(--ease); }
   .app:not(.no-insp) .scrim { display: block; position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .25); }
 }
 @media (max-width: 900px) {
+  dialog.diff-modal { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
+  .diff-dialog-head { flex-wrap: wrap; padding-top: max(10px, env(safe-area-inset-top)); }
+  .diff-dialog-path { flex-basis: calc(100% - 120px); }
   .app, .app.no-insp, .app.no-side, .app.no-side.no-insp { grid-template-columns: minmax(0, 1fr); }
   .main { grid-column: 1; }
   .sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: min(310px, 86vw); z-index: 50; box-shadow: var(--shadow-lg); transition: translate .25s var(--ease), visibility .25s; visibility: visible !important; }

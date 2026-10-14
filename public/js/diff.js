@@ -55,7 +55,7 @@ function pairs(rows) {
 
 function Code({ text, lang, type }) {
   const hl = highlight(text, lang);
-  const cls = cx('code', type);
+  const cls = cx('src', type);
   return hl == null ? html`<td class=${cls}>${text}</td>` : html`<td class=${cls} dangerouslySetInnerHTML=${{ __html: hl }}></td>`;
 }
 
@@ -74,9 +74,9 @@ export function DiffView({ diff, path, mode = 'unified' }) {
           ? html`<tr class="note"><td colspan="4">${l.text}</td></tr>`
           : html`<tr>
             <td class=${cx('no', l && l.type)}>${l?.old ?? ''}</td>
-            ${l ? html`<${Code} text=${l.text} lang=${lang} type=${l.type} />` : html`<td class="code blank"></td>`}
+            ${l ? html`<${Code} text=${l.text} lang=${lang} type=${l.type} />` : html`<td class="src blank"></td>`}
             <td class=${cx('no', r && r.type)}>${r?.new ?? ''}</td>
-            ${r ? html`<${Code} text=${r.text} lang=${lang} type=${r.type} />` : html`<td class="code blank"></td>`}
+            ${r ? html`<${Code} text=${r.text} lang=${lang} type=${r.type} />` : html`<td class="src blank"></td>`}
           </tr>`))
         : h.rows.map((r) => (r.type === 'note'
           ? html`<tr class="note"><td colspan="3">${r.text}</td></tr>`

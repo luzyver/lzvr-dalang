@@ -127,18 +127,52 @@ function MergeRequest({ id, s, onDone }) {
   </section>`;
 }
 
+/** One file's diff in a dialog, with the previous / next changed file a click (or ← →) away. */
+function DiffDialog({ files, current, diffs, mode, setMode, onPick, onRevert, onClose }) {
+  const i = files.indexOf(current);
+  const [letter, word] = STATUS(current.status);
+  const d = diffs[current.path];
+  const st = d ? diffStats(d) : null;
+  const step = (by) => { const f = files[i + by]; if (f) onPick(f.path); };
+  const onKeyDown = (e) => {
+    if (e.target.closest('input, textarea, select')) return;
+    if (e.key === 'ArrowLeft' || e.key === 'k') { e.preventDefault(); step(-1); }
+    if (e.key === 'ArrowRight' || e.key === 'j') { e.preventDefault(); step(1); }
+  };
+  return html`<div class="diff-dialog" tabindex="-1" onKeyDown=${onKeyDown}>
+    <div class="diff-dialog-head">
+      <span class=${cx('fstat', letter.toLowerCase())} title=${word}>${letter}</span>
+      <code class="diff-dialog-path" title=${current.from ? `${current.from} → ${current.path}` : current.path}>${current.from ? `${current.from} → ` : ''}${current.path}</code>
+      ${st && html`<span class="diffstat">${st.add > 0 && html`<b class="add">+${st.add}</b>`}${st.del > 0 && html`<b class="del">−${st.del}</b>`}</span>`}
+      <div class="spacer"></div>
+      <${Seg} small label="Diff layout" value=${mode} onChange=${setMode} options=${[['unified', 'Unified'], ['split', 'Split']]} />
+      <div class="diff-nav">
+        <button class="icon-btn sm" aria-label="Previous file" title="Previous file (←)" disabled=${i <= 0} onClick=${() => step(-1)}><${Icon} name="chevron-left" /></button>
+        <span class="dim small">${i + 1} / ${files.length}</span>
+        <button class="icon-btn sm" aria-label="Next file" title="Next file (→)" disabled=${i >= files.length - 1} onClick=${() => step(1)}><${Icon} name="chevron-right" /></button>
+      </div>
+      <button class="icon-btn sm danger" aria-label="Revert this file" title=${current.status === '??' ? 'Delete this new file' : 'Undo the changes to this file'} onClick=${onRevert}><${Icon} name="undo-2" /></button>
+      <button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button>
+    </div>
+    <div class="diff-dialog-body">
+      ${d == null ? html`<div class="pane-loading"><${Spinner} /> Loading diff…</div>` : html`<${DiffView} diff=${d} path=${current.path} mode=${mode} />`}
+    </div>
+  </div>`;
+}
+
 export function ChangesPane({ id }) {
   const s = chat.git.value;
   const files = s?.files || [];
   const [unpicked, setUnpicked] = useState(new Set());
   const [selected, setSelected] = useState(null);
-  const [mode, setMode] = useState(innerWidth > 1500 ? 'split' : 'unified');
+  const [mode, setMode] = useState(innerWidth > 1100 ? 'split' : 'unified');
   const [message, setMessage] = useState('');
   const [branching, setBranching] = useState(false);
   const [diffs, loadDiff] = useDiffs(id, files);
 
   useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); setBranching(false); }, [id]);
-  const current = files.find((f) => f.path === selected) || files[0];
+  // The file whose diff is open in the dialog; it closes by itself when that file is no longer changed.
+  const current = files.find((f) => f.path === selected) || null;
   useEffect(() => { if (current) loadDiff(current.path); }, [current?.path]);
 
   if (!s) return html`<div class="pane-loading"><${Spinner} /> Loading…</div>`;
@@ -227,14 +261,10 @@ export function ChangesPane({ id }) {
           </div>`;
         })}
       </section>
-      ${current && html`<section class="diff">
-        <div class="diff-toolbar">
-          <code title=${current.path}>${current.path}</code>
-          <${Seg} small label="Diff layout" value=${mode} onChange=${setMode} options=${[['unified', 'Unified'], ['split', 'Split']]} />
-          <button class="icon-btn sm danger" aria-label="Revert this file" title=${current.status === '??' ? 'Delete this new file' : 'Undo the changes to this file'} onClick=${revert(current)}><${Icon} name="undo-2" /></button>
-        </div>
-        ${diffs[current.path] == null ? html`<div class="pane-loading"><${Spinner} /> Loading diff…</div>` : html`<${DiffView} diff=${diffs[current.path]} path=${current.path} mode=${mode} />`}
-      </section>`}
+      <${Modal} open=${!!current} label="Diff" class="diff-modal" onClose=${() => setSelected(null)}>
+        ${current && html`<${DiffDialog} files=${files} current=${current} diffs=${diffs} mode=${mode} setMode=${setMode}
+          onPick=${setSelected} onRevert=${revert(current)} onClose=${() => setSelected(null)} />`}
+      <//>
       <section class="commit-box">
         <div class="field-head"><span>Commit message</span>
           <${AsyncButton} class="btn ghost sm" icon="sparkles" busyText="Generating…" title="Let the agent write a message for the selected files" onClick=${generate}>Generate<//></div>
