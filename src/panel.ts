@@ -1,35 +1,20 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 
 // public/ sits next to src/ and dist/, so ../public works for both `tsx src/main.ts` and `node dist/main.js`.
 const dir = new URL('../public/', import.meta.url);
 
+/** Every `ext` file in a folder of public/, so a new module or icon is served without being listed here. */
+function folder(sub: string, ext: string, type: string): Record<string, [file: string, type: string]> {
+  return Object.fromEntries(readdirSync(new URL(`${sub}/`, dir)).filter((f) => f.endsWith(ext)).sort()
+    .map((f) => [`/${sub}/${f}`, [`${sub}/${f}`, type]]));
+}
+
 const FILES: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
-  '/js/api.js': ['js/api.js', 'text/javascript; charset=utf-8'],
-  '/js/chat.js': ['js/chat.js', 'text/javascript; charset=utf-8'],
-  '/js/dom.js': ['js/dom.js', 'text/javascript; charset=utf-8'],
-  '/js/git.js': ['js/git.js', 'text/javascript; charset=utf-8'],
-  '/js/passkeys.js': ['js/passkeys.js', 'text/javascript; charset=utf-8'],
-  '/js/schedules.js': ['js/schedules.js', 'text/javascript; charset=utf-8'],
-  '/js/search.js': ['js/search.js', 'text/javascript; charset=utf-8'],
-  '/icons/arrow-up.svg': ['icons/arrow-up.svg', 'image/svg+xml'],
-  '/icons/chevron-down.svg': ['icons/chevron-down.svg', 'image/svg+xml'],
-  '/icons/chevron-right.svg': ['icons/chevron-right.svg', 'image/svg+xml'],
-  '/icons/clock.svg': ['icons/clock.svg', 'image/svg+xml'],
-  '/icons/ellipsis.svg': ['icons/ellipsis.svg', 'image/svg+xml'],
-  '/icons/folder.svg': ['icons/folder.svg', 'image/svg+xml'],
-  '/icons/git-branch.svg': ['icons/git-branch.svg', 'image/svg+xml'],
-  '/icons/git-pull-request.svg': ['icons/git-pull-request.svg', 'image/svg+xml'],
-  '/icons/panel-left.svg': ['icons/panel-left.svg', 'image/svg+xml'],
-  '/icons/paperclip.svg': ['icons/paperclip.svg', 'image/svg+xml'],
-  '/icons/plus.svg': ['icons/plus.svg', 'image/svg+xml'],
-  '/icons/search.svg': ['icons/search.svg', 'image/svg+xml'],
-  '/icons/settings.svg': ['icons/settings.svg', 'image/svg+xml'],
-  '/icons/square.svg': ['icons/square.svg', 'image/svg+xml'],
-  '/icons/trash-2.svg': ['icons/trash-2.svg', 'image/svg+xml'],
-  '/icons/x.svg': ['icons/x.svg', 'image/svg+xml'],
+  ...folder('js', '.js', 'text/javascript; charset=utf-8'),
+  ...folder('icons', '.svg', 'image/svg+xml'),
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'],

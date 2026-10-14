@@ -24,6 +24,28 @@ describe('panel', () => {
     expect((await app.inject({ url: '/icon.svg' })).headers['content-type']).toContain('image/svg+xml');
   });
 
+  it('serves every module the panel imports, with the names it imports', async () => {
+    const { app } = setupApp();
+    const seen = new Set<string>();
+    const queue = ['/app.js'];
+    while (queue.length) {
+      const url = queue.pop()!;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const res = await app.inject({ url });
+      expect(res.statusCode, url).toBe(200);
+      for (const [, names = '', path = ''] of res.body.matchAll(/^import \{([^}]+)\} from '(\.[^']+)';/gm)) {
+        const target = new URL(path, `http://x${url}`).pathname;
+        const src = (await app.inject({ url: target })).body;
+        for (const name of names.split(',').map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean)) {
+          expect(src, `${url} imports ${name} from ${target}`).toMatch(new RegExp(`^export (async )?(function|const|class|let) ${name}\\b`, 'm'));
+        }
+        queue.push(target);
+      }
+    }
+    expect(seen.size).toBeGreaterThan(5);
+  });
+
   it('locks the shell down with a strict CSP', async () => {
     const { app } = setupApp();
     const h = (await app.inject({ url: '/' })).headers;
