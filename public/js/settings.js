@@ -64,7 +64,7 @@ export function promptsPage({ guarded, flash, close }) {
   };
   const sections = [
     section('commit-prompt', 'Commit message', '"Generate message" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.'),
-    section('mr-prompt', 'Merge Request description', '"Generate MR description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the merge commit subject.'),
+    section('mr-prompt', 'Merge Request description', '"Generate MR description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.'),
   ];
   const save = guarded(async () => {
     for (const s of sections) await s.save();

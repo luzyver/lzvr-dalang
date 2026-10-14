@@ -85,7 +85,7 @@ export function sidebar({ state, isAdmin, guarded, reload, openConv, leaveConv, 
         h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
         h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
           h('div', { class: 'pop' },
-            h('button', { title: 'A new git branch and folder for this chat only; merge it back from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
+            h('button', { title: 'A new git branch and folder for this chat only; open a Merge Request for it from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
             isAdmin && h('button', { class: 'danger', onclick: removeProject(p) }, 'Remove project')))),
       !collapsed && (convs.length ? h('div', { class: 'project-sessions' }, ...convs.map(convRow)) : h('div', { class: 'small hint' }, 'No chats yet')));
   }

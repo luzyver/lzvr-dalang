@@ -12,28 +12,29 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
   lost) and the branch too, locally and on the remote, unless it has commits that were never merged.
 - **Changes**: the branch button in a chat's header lists what git sees in the folder that chat works in, with each
-  file's diff. Commit all or selected files, revert one file, discard everything, and for a worktree chat merge its branch
-  into whatever the project folder has checked out (a conflict aborts the merge and leaves the folder as it was). These
-  actions are refused while an agent is running in the same folder, and in `read-only` projects they are admin only.
+  file's diff. Commit all or selected files, revert one file, discard everything, and for a worktree chat open a Merge
+  Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
+  a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
+  `read-only` projects they are admin only.
   A commit is **pushed right away** (to the branch's upstream, or to `origin` under the same name, which becomes its
-  upstream; a worktree chat's `dalang/<id>` branch thus appears on the remote, ready for a Merge Request), and so is the
-  target branch after a merge. Without a remote nothing is pushed; a failed push (credentials, rejected) is shown and the
+  upstream; a worktree chat's `dalang/<id>` branch thus appears on the remote, ready for a Merge Request). Without a
+  remote nothing is pushed; a failed push (credentials, rejected) is shown and the
   local commit stays. The push uses the VM's own git credentials (SSH key or credential helper of the user Dalang runs as)
   and never prompts. Deleting a worktree chat also deletes its branch on the remote, but only when it is merged into the
   project folder's branch and nobody pushed more to it since; an unmerged branch stays there and locally.
   Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate message** asks
   the chat's own agent (same CLI and model) for a one-line Conventional Commit subject (`feat: Add ...`), given the
   selected diffs, the repo's recent commit subjects and the chat's last requests. For a worktree chat with commits to
-  merge, **Generate MR description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
+  propose, **Generate MR description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
   the branch's commits and its diff against the branch it merges into. **Copy MR description** copies the Markdown for
-  GitLab/GitHub, and the merge commit uses it as its message (the Title line as subject, the other sections as body;
-  editable before merging, empty = git's "Merge branch ..."). Admins can change both instructions in **Generate prompts**
+  GitLab/GitHub, and the Merge Request text box gets it too (the Title line as title, the other sections as description;
+  editable before creating it). Admins can change both instructions in **Generate prompts**
   (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
   (`codex exec --ephemeral`, `claude --no-session-persistence`) and use the same account failover; they do count against
   the account's usage.
 - **Create Merge Request**: for a worktree chat with commits, **Create Merge Request** on the Changes page pushes its
   branch and opens a Merge Request (GitLab, through `glab`) or pull request (GitHub, through `gh`) into the branch the chat
-  started from. The merge message box is its text: first line the title (empty: the last commit's subject), the rest the
+  started from. The text box above it is its text: first line the title (empty: the last commit's subject), the rest the
   description, so **Generate MR description** fills both. The CLI runs with the server's own login (`gh auth login` /
   `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
   remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept and shown on the Changes page;
@@ -251,7 +252,7 @@ bash scripts/smoke.sh        # create a project + chat, send a prompt, stream th
 ```
 
 REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
-`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,merge,pull-request}`,
+`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,pull-request}`,
 `/api/search?q=`, `/api/conversations/:id/schedules`, `/api/schedules` (`/:id`, `/:id/run`, `/preview?cron=`),
 `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.

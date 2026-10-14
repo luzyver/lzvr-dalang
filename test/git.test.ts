@@ -57,23 +57,20 @@ describe('worktree chats', () => {
     expect(t.store.listConversations(p.id)).toEqual([]);
   });
 
-  it('commits in the worktree, then merges into the project branch', async () => {
+  it('commits in the worktree and leaves the project branch alone', async () => {
     const t = await gitProject();
     const conv = (await t.chat(true)).json();
     writeFileSync(join(conv.worktree, 'b.txt'), 'new\n');
 
-    expect((await t.call('POST', `/api/conversations/${conv.id}/git/merge`)).statusCode).toBe(409); // uncommitted
     const c = await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'add b' });
     expect(c.statusCode).toBe(200);
     expect(sh(conv.worktree, 'log', '-1', '--format=%s')).toBe('add b');
 
     const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
     expect(s.files).toEqual([]);
-    expect(s.worktree).toMatchObject({ branch: conv.branch, base: 'main', ahead: 1, into: 'main' });
-
-    const m = await t.call('POST', `/api/conversations/${conv.id}/git/merge`);
-    expect(m.json()).toEqual({ into: 'main', push: { pushed: null } });
-    expect(readFileSync(join(t.repo, 'b.txt'), 'utf8')).toBe('new\n');
+    expect(s.worktree).toMatchObject({ branch: conv.branch, base: 'main', ahead: 1 });
+    expect(existsSync(join(t.repo, 'b.txt'))).toBe(false);
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/merge`)).statusCode).toBe(404); // only via a Merge Request
   });
 
   it('removes the worktree and the merged branch when the chat is deleted', async () => {
@@ -282,13 +279,6 @@ describe('Merge Request descriptions', () => {
     expect(prompt.startsWith('Describe it briefly.')).toBe(true);
   });
 
-  it('merges with the given message, Markdown headings included', async () => {
-    const { t, conv } = await aheadChat();
-    const message = 'feat: Add b file\n\n## Summary\n- Adds b';
-    expect((await t.call('POST', `/api/conversations/${conv.id}/git/merge`, { message })).json()).toEqual({ into: 'main', push: { pushed: null } });
-    expect(sh(t.repo, 'log', '-1', '--format=%B')).toBe(message);
-  });
-
   it('turns a description into a commit message: Title as subject, the rest as body', () => {
     const md = '## Title\n`feat: Add merge descriptions`\n\n## Summary\n- Why it matters\n\n## Changes\n- **`a.ts`**: x';
     expect(toCommitMessage(md)).toBe('feat: Add merge descriptions\n\n## Summary\n- Why it matters\n\n## Changes\n- **`a.ts`**: x');
@@ -296,7 +286,7 @@ describe('Merge Request descriptions', () => {
   });
 });
 
-describe('push after commit and merge', () => {
+describe('push after commit', () => {
   /** A bare repo next to the project, as its `origin`, with `main` already pushed and tracked. */
   function addRemote(t: Awaited<ReturnType<typeof gitProject>>) {
     const bare = join(t.base, 'remote.git');
@@ -305,6 +295,9 @@ describe('push after commit and merge', () => {
     sh(t.repo, 'push', '-q', '-u', 'origin', 'main');
     return bare;
   }
+
+  /** What merging the chat's Merge Request and pulling it into the project folder leaves behind. */
+  const mergeByHand = (t: Awaited<ReturnType<typeof gitProject>>, branch: string) => sh(t.repo, 'merge', '-q', '--no-ff', '--no-edit', branch);
 
   it('pushes a commit to the branch upstream', async () => {
     const t = await gitProject();
@@ -316,7 +309,7 @@ describe('push after commit and merge', () => {
     expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('fix: Change a');
   });
 
-  it('gives a worktree chat its branch on the remote, then pushes the merge', async () => {
+  it('gives a worktree chat its branch on the remote', async () => {
     const t = await gitProject();
     const bare = addRemote(t);
     const conv = (await t.chat(true)).json();
@@ -325,10 +318,7 @@ describe('push after commit and merge', () => {
     expect(c.push).toEqual({ pushed: `origin/${conv.branch}` });
     expect(sh(bare, 'log', '-1', '--format=%s', conv.branch)).toBe('feat: Add b');
     expect(sh(conv.worktree, 'rev-parse', '--abbrev-ref', '@{u}')).toBe(`origin/${conv.branch}`); // tracked from now on
-
-    const m = (await t.call('POST', `/api/conversations/${conv.id}/git/merge`, { message: 'feat: Merge b' })).json();
-    expect(m).toEqual({ into: 'main', push: { pushed: 'origin/main' } });
-    expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('feat: Merge b');
+    expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('init'); // main only changes through a Merge Request
   });
 
   it('deletes a merged branch on the remote with the chat, and keeps an unmerged one', async () => {
@@ -351,7 +341,7 @@ describe('push after commit and merge', () => {
     expect(sh(t.repo, 'branch', '--list', unmerged.branch)).toContain(unmerged.branch); // and here
 
     const merged = await pushed();
-    await t.call('POST', `/api/conversations/${merged.id}/git/merge`);
+    mergeByHand(t, merged.branch);
     await del(merged.id);
     await until(() => !branches().includes(merged.branch));
     expect(sh(t.repo, 'branch', '--list', merged.branch)).toBe('');
@@ -364,7 +354,7 @@ describe('push after commit and merge', () => {
     const conv = (await t.chat(true)).json();
     writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
     await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add b' });
-    await t.call('POST', `/api/conversations/${conv.id}/git/merge`);
+    mergeByHand(t, conv.branch);
     // another clone adds a commit to the same remote branch
     const other = join(t.base, 'other');
     execFileSync('git', ['clone', '-q', '-b', conv.branch, bare, other]);

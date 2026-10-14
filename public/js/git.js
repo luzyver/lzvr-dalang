@@ -1,11 +1,11 @@
-// The "Changes" page of a chat: what git sees in the folder its agent works in, with commit / revert / merge.
+// The "Changes" page of a chat: what git sees in the folder its agent works in, with commit / revert / Merge Request.
 import { h, icon } from './dom.js';
 import { api } from './api.js';
 import { fileChange } from './chat.js';
 
 const MAX_DIFFS = 50; // more files than this are listed without their diff
 
-/** How the push after a commit or merge went, for the status line. */
+/** How the push after a commit or Merge Request went, for the status line. */
 const pushNote = (p) => (!p ? '' : p.error ? ` · push failed: ${p.error}` : p.pushed ? ` · pushed to ${p.pushed}` : ' · not pushed (no remote)');
 
 /** git's two-letter status as the change kinds the diff view already labels. */
@@ -71,8 +71,8 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
     }, 'changes discarded');
 
     const w = s.worktree;
-    // The merge commit's message; "Generate MR description" fills it from the description's Title and sections.
-    const mergeMessage = h('textarea', { rows: '6', placeholder: `Merge commit message (empty: git's "Merge branch '${w?.branch}'")` });
+    // The Merge Request's text; "Generate MR description" fills it from the description's Title and sections.
+    const mrText = h('textarea', { rows: '6', placeholder: 'Merge Request title on the first line, description below (empty title: the last commit\'s subject)' });
     let mrDescription = '';
     const copyMr = h('button', { hidden: true, title: 'Copy the Merge Request description as Markdown', onclick: async () => {
       try { await navigator.clipboard.writeText(mrDescription); flash('MR description copied'); } catch { flash('copy failed'); }
@@ -83,7 +83,7 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
       try {
         const r = await api(`/api/conversations/${id}/git/mr-description`, { method: 'POST' });
         mrDescription = r.description;
-        mergeMessage.value = r.message;
+        mrText.value = r.message;
         copyMr.hidden = false;
       } finally {
         generateMr.disabled = false;
@@ -91,17 +91,12 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
       }
     }) }, 'Generate MR description');
     // Pushes the branch and opens a Merge Request (GitLab) or pull request (GitHub) into the branch the chat started from.
-    // The merge message above doubles as its text: the first line is the title, the rest the description.
+    // The text above: the first line is the title, the rest the description.
     const createMr = w && after(async () => {
       if (!confirm(`Push ${w.branch} and open a Merge Request into ${w.base}?`)) return false;
-      const [title = '', ...rest] = mergeMessage.value.trim().split('\n');
+      const [title = '', ...rest] = mrText.value.trim().split('\n');
       const r = await api(`/api/conversations/${id}/git/pull-request`, { method: 'POST', body: { title: title.trim(), body: rest.join('\n').trim() } });
       flash(r.existed ? 'a Merge Request was already open for this branch' : `Merge Request opened${pushNote(r.push)}`);
-    });
-    const merge = w && after(async () => {
-      if (!confirm(`Merge ${w.branch} into ${w.into} in the project folder?`)) return false;
-      const r = await api(`/api/conversations/${id}/git/merge`, { method: 'POST', body: { message: mergeMessage.value } });
-      flash(`merged into ${r.into}${pushNote(r.push)}`);
     });
 
     body.replaceChildren(
@@ -112,11 +107,10 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
         s.head ? ` · last commit ${s.head.hash} ${s.head.subject}` : ' · no commits yet'),
       w && h('div', { class: 'gitbox' },
         h('div', { class: 'small' }, `This chat works in its own worktree, branched from ${w.base || 'a detached HEAD'}. `,
-          w.ahead ? `${w.ahead} commit${w.ahead === 1 ? '' : 's'} not in ${w.base || 'the project folder'} yet.` : 'Nothing to merge yet.'),
-        w.ahead > 0 && mergeMessage,
+          w.ahead ? `${w.ahead} commit${w.ahead === 1 ? '' : 's'} not in ${w.base || 'the project folder'} yet.` : 'Nothing to propose yet.'),
+        w.ahead > 0 && mrText,
         w.ahead > 0 && h('div', { class: 'row' },
-          h('button', { class: 'primary', onclick: merge }, `Merge into ${w.into || 'project branch'}`),
-          !w.pr && w.base && h('button', { title: `Push ${w.branch} and open a Merge Request / pull request into ${w.base}; the message above is its title and description`, onclick: createMr },
+          !w.pr && w.base && h('button', { class: 'primary', title: `Push ${w.branch} and open a Merge Request / pull request into ${w.base}; the text above is its title and description`, onclick: createMr },
             icon('git-pull-request'), ' Create Merge Request'),
           generateMr, copyMr),
         w.pr && h('a', { class: 'pr-link small', href: w.pr, target: '_blank', rel: 'noopener noreferrer' }, icon('git-pull-request'), ' View Merge Request: ', w.pr)),

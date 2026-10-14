@@ -229,8 +229,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     // Commits on the chat's branch that its base (or, if it had none, the project folder's HEAD) does not have yet.
     const base = c.conv.base_branch ?? 'HEAD';
     const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `${base}..${c.conv.branch}`]).catch(() => '0')).trim()) || 0;
-    const into = await git.currentBranch(c.project.path);
-    return { ...s, worktree: { branch: c.conv.branch, base: c.conv.base_branch, ahead, into, pr: c.conv.pr_url } };
+    return { ...s, worktree: { branch: c.conv.branch, base: c.conv.base_branch, ahead, pr: c.conv.pr_url } };
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>('/api/conversations/:id/git/diff', {
@@ -295,7 +294,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     try {
       const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd, model: c.conv.model, effort: c.conv.effort });
       const description = cleanMessage(answer);
-      // `description` is for pasting into a Merge Request; `message` is the same as a merge commit message.
+      // `description` is for pasting into a Merge Request; `message` is the same as title line + body, for Create Merge Request.
       return description ? { description, message: toCommitMessage(description) } : reply.code(502).send({ error: 'the agent gave an empty answer' });
     } catch (e) {
       return reply.code(502).send({ error: `could not draft a description: ${(e as Error).message}` });
@@ -304,7 +303,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
 
   // Push a worktree chat's branch and open a Merge Request (GitLab, via `glab`) or pull request (GitHub, via `gh`) from
   // it into the branch it was started from, with the server's own CLI login. Without a title, the last commit's subject.
-  // The body is optional, so it is checked here rather than by a schema (like merge).
+  // The body is optional, so it is checked here rather than by a schema.
   app.post<{ Params: { id: string }; Body: { title?: unknown; body?: unknown } | undefined }>('/api/conversations/:id/git/pull-request', async (req, reply) => {
     const { title: rawTitle = '', body: rawBody = '' } = req.body ?? {};
     if (typeof rawTitle !== 'string' || rawTitle.length > 300) return reply.code(400).send({ error: 'title must be a string of at most 300 characters' });
@@ -357,23 +356,6 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     try {
       await git.discardAll(c.cwd);
       return reply.code(204).send();
-    } catch (e) { return gitFailed(reply, e); }
-  });
-
-  // Bring a worktree chat's commits into the project folder's current branch.
-  // The body is optional (no message: git's own "Merge branch ..."), so it is checked here rather than by a schema.
-  app.post<{ Params: { id: string }; Body: { message?: unknown } | undefined }>('/api/conversations/:id/git/merge', async (req, reply) => {
-    const message = req.body?.message ?? '';
-    if (typeof message !== 'string' || message.length > 20_000) return reply.code(400).send({ error: 'message must be a string of at most 20000 characters' });
-    const c = load(req.params.id, reply);
-    if (!c) return;
-    if (!c.conv.worktree || !c.conv.branch) return reply.code(400).send({ error: 'this chat has no worktree of its own' });
-    if (!mayWrite(req, reply, c.project, [c.cwd, c.project.path])) return;
-    const s = await git.status(c.cwd);
-    if (s.repo && s.files.length) return reply.code(409).send({ error: 'the chat has uncommitted changes: commit or discard them first' });
-    try {
-      const into = await git.merge(c.project.path, c.conv.branch, message);
-      return { into, push: await git.push(c.project.path) };
     } catch (e) { return gitFailed(reply, e); }
   });
 }

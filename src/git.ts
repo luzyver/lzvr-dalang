@@ -166,21 +166,3 @@ export async function discardAll(cwd: string): Promise<void> {
   await git(cwd, ['reset', '--hard', 'HEAD']);
   await git(cwd, ['clean', '-fd']);
 }
-
-/**
- * Merge `branch` into whatever `repo` has checked out, with `message` as the merge commit's message (git's own
- * "Merge branch ..." when empty). A conflict aborts the merge, so the repo is left as it was. Returns the branch merged into.
- */
-export async function merge(repo: string, branch: string, message = ''): Promise<string> {
-  const into = await currentBranch(repo);
-  if (!into) throw new GitError('the project folder is on a detached HEAD: check out a branch there first');
-  try {
-    // --cleanup=whitespace keeps `## Heading` lines of a Markdown body, whatever commit.cleanup says.
-    const msg = message.trim() ? ['--cleanup=whitespace', '-m', message.trim()] : ['--no-edit'];
-    await git(repo, [...(await identity(repo)), 'merge', '--no-ff', ...msg, branch]);
-  } catch (e) {
-    await git(repo, ['merge', '--abort']).catch(() => '');
-    throw new GitError(`merge into ${into} failed and was undone: ${(e as Error).message}`);
-  }
-  return into;
-}
