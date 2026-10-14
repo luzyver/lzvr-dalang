@@ -60,42 +60,10 @@ describe('accounts', () => {
   });
 });
 
-describe('session adoption', () => {
-  const UUID = '33333333-3333-3333-3333-333333333333';
-
-  it('adopts an existing Codex session and resumes it on the next prompt', async () => {
-    const t = setupApp();
-    const p = await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: 'proj', path: 'proj' } });
-    const c = await t.app.inject({ method: 'POST', url: `/api/projects/${p.json().id}/conversations`, headers: AUTH, payload: { threadId: UUID } });
-    expect(c.statusCode).toBe(201);
-    expect(c.json().thread_id).toBe(UUID);
-    await t.app.inject({ method: 'POST', url: `/api/conversations/${c.json().id}/prompts`, headers: AUTH, payload: { prompt: 'hi' } });
-    await until(() => turnsDone(t.store, c.json().id, 1));
-    const ev = t.store.eventsAfter(c.json().id, 0).find((e) => e.type === 'item.completed')!;
-    const { item } = JSON.parse(ev.payload) as { item: { args: string[] } };
-    expect(item.args.slice(item.args.indexOf('resume'), item.args.indexOf('resume') + 2)).toEqual(['resume', UUID]);
-  });
-
-  it('rejects a malformed thread id', async () => {
-    const t = setupApp();
-    const p = await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: 'proj', path: 'proj' } });
-    const c = await t.app.inject({ method: 'POST', url: `/api/projects/${p.json().id}/conversations`, headers: AUTH, payload: { threadId: '../../etc/passwd' } });
-    expect(c.statusCode).toBe(400);
-  });
-
-  it('lists local Codex sessions', async () => {
-    const t = setupApp();
-    const r = await t.app.inject({ url: '/api/sessions', headers: AUTH });
-    expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual([]);
-  });
-});
-
 describe('with no Codex account yet', () => {
   it('lists nothing instead of failing', async () => {
     const t = setupApp({}, { homes: [] });
     expect((await t.app.inject({ url: '/api/accounts', headers: AUTH })).json()).toEqual([]);
-    expect((await t.app.inject({ url: '/api/sessions', headers: AUTH })).json()).toEqual([]);
     expect((await t.app.inject({ method: 'POST', url: '/api/accounts/unblock', headers: AUTH })).statusCode).toBe(204);
   });
 

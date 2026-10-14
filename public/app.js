@@ -402,7 +402,6 @@ async function showApp() {
           h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
             h('div', { class: 'pop' },
               h('button', { title: 'A new git branch and folder for this chat only; merge it back from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
-              isAdmin && p.backend === 'codex' && h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
               isAdmin && h('button', { class: 'danger', onclick: guarded(async () => {
                 if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
                 await api(`/api/projects/${p.id}`, { method: 'DELETE' });
@@ -428,20 +427,6 @@ async function showApp() {
       h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
       isAdmin ? addProjectBtn : null, ...blocks,
       !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
-  }
-
-  async function adoptDialog(project) {
-    const sessions = await api('/api/sessions');
-    if (!sessions.length) { flash('no Codex sessions found'); return; }
-    const sel = h('select', {}, sessions.map((s) => h('option', { value: s.id },
-      `${new Date(s.modified).toLocaleString()} ${s.cwd ? '· ' + s.cwd : ''} · ${s.id.slice(0, 8)}`)));
-    const box = h('div', { class: 'row' }, sel, h('button', { class: 'primary', onclick: guarded(async () => {
-      const c = await api(`/api/projects/${project.id}/conversations`, { method: 'POST', body: { threadId: sel.value } });
-      closePage();
-      await loadProjects();
-      openConv(c.id);
-    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: closePage }, icon('x')));
-    openPage(h('div', { class: 'page-body' }, h('strong', {}, 'Adopt a Codex session'), box));
   }
 
   async function openConv(id) {

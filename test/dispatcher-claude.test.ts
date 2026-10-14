@@ -13,7 +13,7 @@ function setup(env: Record<string, string> = {}, homeNames = ['a']) {
   const dir = mkdtempSync(join(tmpdir(), 'lzvr-claude-'));
   const store = new Store();
   const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: homeNames.map((n) => join(dir, n)), claudeCommand: FAKE_CLAUDE, env });
-  const conv = store.createConversation(store.createProject('p', dir).id, null, 'claude');
+  const conv = store.createConversation(store.createProject('p', dir).id, 'claude');
   return { store, dispatcher, conv };
 }
 

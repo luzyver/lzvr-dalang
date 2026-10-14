@@ -165,8 +165,8 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .diff-stat.del, .diff .del { color: var(--err); }
 .filechange .terminal-body { padding: 10px 0 0; }
 .filechange .terminal-command { padding: 0 12px; color: var(--dim); }
-.diff { margin: 0; padding: 6px 0; max-height: 420px; overflow: auto; border-top: 1px solid var(--line); font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
-.diff > span { display: block; min-height: 1.45em; padding: 0 12px; white-space: pre; width: max-content; min-width: 100%; box-sizing: border-box; }
+.diff { margin: 0; padding: 6px 0; max-height: 420px; overflow: hidden auto; border-top: 1px solid var(--line); font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.diff > span { display: block; min-height: 1.45em; padding: 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff .add { background: color-mix(in srgb, var(--ok) 13%, transparent); }
 .diff .del { background: color-mix(in srgb, var(--err) 13%, transparent); }
 .diff .hunk { color: var(--dim); }

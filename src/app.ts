@@ -14,8 +14,7 @@ import { passkeyRoutes, sessionHash } from './passkeys.js';
 import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
-import { listSessions } from './sessions.js';
-import { type AuthUser, type Backend, BACKENDS, SANDBOXES, UUID_RE } from './util.js';
+import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
 import { realWebAuthn, type WebAuthn } from './webauthn.js';
 import type { Store } from './store.js';
 
@@ -328,12 +327,10 @@ export function buildApp(
   app.get<{ Params: { id: string } }>('/api/projects/:id/conversations', (req, reply) =>
     store.getProject(req.params.id) ? store.listConversations(req.params.id) : notFound(reply));
 
-  app.post<{ Params: { id: string }; Body: { threadId?: string; worktree?: boolean } | undefined }>('/api/projects/:id/conversations', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { worktree?: boolean } | undefined }>('/api/projects/:id/conversations', async (req, reply) => {
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
-    const threadId = req.body?.threadId ?? null;
     if (req.body?.worktree) {
-      if (threadId !== null) return reply.code(400).send({ error: 'an adopted session cannot get a worktree' });
       try {
         return reply.code(201).send(await createWorktreeChat(store, cfg, project));
       } catch (e) {
@@ -341,17 +338,9 @@ export function buildApp(
         throw e;
       }
     }
-    if (project.backend === 'claude' && threadId !== null) return reply.code(400).send({ error: 'adopting a session is only supported for Codex projects' });
-    // Adopting attaches to a Codex session that already exists on this machine, which may be anyone's: admins only.
-    if (threadId !== null && req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
-    if (threadId !== null && !UUID_RE.test(threadId)) return reply.code(400).send({ error: 'threadId must be a session UUID' });
-    return reply.code(201).send(store.createConversation(req.params.id, threadId));
+    return reply.code(201).send(store.createConversation(req.params.id));
   });
 
-  app.get('/api/sessions', { onRequest: requireAdmin }, () => {
-    const home = dispatcher.accounts.primary();
-    return home ? listSessions(home) : [];
-  });
 
   app.get<{ Querystring: { backend?: string } }>('/api/models', (req) => dispatcher.models(backendOf(req.query.backend)));
 

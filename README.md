@@ -33,10 +33,9 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   the account's usage.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
-- **Adopt a session**: bring an interactive `codex` session into the panel.
 - **Passkeys + push**: passkey login on top of the access token, installable PWA, Web Push when a turn finishes,
   fails or needs input.
-- **MCP gateway** at `/mcp` (17 tools) so other agents can drive chats; messages between chats can require approval.
+- **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (the `CC` button next to a project's `+`). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added from the panel menu ("Claude Code accounts"), each with its own
@@ -119,7 +118,6 @@ goes wrong. From it (or any admin) open **Users** in the panel to create people:
 |---|---|---|
 | Use projects and chats: send prompts, queue, cancel, drafts, files, live view, notifications | yes | yes |
 | Create / delete projects (this is where a project's sandbox is chosen) | yes | no |
-| Adopt an existing Codex session, list local sessions | yes | no |
 | Add Codex accounts, unblock accounts at their limit | yes | no |
 | Approve or reject chat-to-chat sends from MCP | yes | no |
 | Create / delete users, change roles, issue new tokens | yes | no |
@@ -199,17 +197,17 @@ bash scripts/smoke.sh        # create a project + chat, send a prompt, stream th
 
 REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
 `/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,merge}`,
-`/api/sessions`, `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
+`/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 
 ### MCP
 
 Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HTTP, stateless). Tools: `list_projects`,
-`create_project`, `delete_project`, `list_conversations`, `create_conversation`, `adopt_session`, `list_sessions`,
-`get_conversation`, `send_prompt`, `list_queue`, `remove_queue_item`, `cancel_turn`, `set_draft`, `get_events`,
-`list_accounts`, `unblock_accounts`, `get_approval`.
+`create_project`, `delete_project`, `list_conversations`, `create_conversation`, `get_conversation`,
+`send_prompt`, `list_queue`, `remove_queue_item`, `cancel_turn`, `set_draft`, `get_events`, `list_accounts`,
+`unblock_accounts`, `get_approval`.
 
-**Two kinds of caller.** An outside client using the main token gets all 18 tools. An agent running inside a chat
+**Two kinds of caller.** An outside client using the main token gets all 15 tools. An agent running inside a chat
 (with `MCP_INJECT=1`, each turn gets its own short-lived token bound to that chat, set up through
 `-c mcp_servers.dalang.url=... -c mcp_servers.dalang.bearer_token_env_var=LZVR_MCP_TOKEN`) gets only
 `list_projects`, `list_conversations`, `create_conversation`, `get_conversation`, `send_prompt`, `list_queue`,
@@ -233,7 +231,7 @@ if Codex rejects the config, unset `MCP_INJECT` (everything else keeps working).
 
 ## Scope
 
-Built: core gateway, multi-account failover, panel + PWA + passkeys + Web Push, session adoption, MCP gateway.
+Built: core gateway, multi-account failover, panel + PWA + passkeys + Web Push, MCP gateway.
 Dropped: Docker-in-Docker test sandbox (the gateway runs directly on the VM).
 Not verified against the real services in development: the real Codex limit message and cross-account resume, passkeys
 and push in a real browser/phone, and the panel UI in a browser (all were tested with fakes or unit tests).

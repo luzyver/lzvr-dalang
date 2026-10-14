@@ -7,9 +7,8 @@ import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
-import { listSessions } from './sessions.js';
 import type { Store } from './store.js';
-import { SANDBOXES, UUID_RE } from './util.js';
+import { SANDBOXES } from './util.js';
 
 type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push };
 
@@ -23,9 +22,9 @@ const AGENT_TOOLS = new Set([
   'list_queue', 'get_events', 'list_accounts', 'get_approval',
 ]);
 
-// A dev user connecting from outside gets the everyday tools only: no new projects, no adopting sessions,
-// no unblocking accounts (the same things the REST API keeps for admins).
-const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'adopt_session', 'list_sessions', 'unblock_accounts']);
+// A dev user connecting from outside gets the everyday tools only: no new projects, no unblocking
+// accounts (the same things the REST API keeps for admins).
+const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'unblock_accounts']);
 
 /**
  * `source` is the conversation the calling agent runs in, taken from its per-turn token (never from a header it
@@ -82,21 +81,6 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): Mcp
     try { return text(await createWorktreeChat(store, cfg, project)); } catch (e) { return fail((e as Error).message); }
   });
 
-  s.registerTool('list_sessions', {
-    description: 'List Codex sessions found on this machine that can be adopted.', inputSchema: { limit: z.number().int().min(1).max(500).optional() },
-  }, async ({ limit }) => {
-    const home = dispatcher.accounts.primary();
-    return text(home ? listSessions(home, limit ?? 100) : []);
-  });
-
-  s.registerTool('adopt_session', {
-    description: 'Create a conversation that continues an existing Codex session (by its UUID).',
-    inputSchema: { project_id: z.string(), thread_id: z.string() },
-  }, async ({ project_id, thread_id }) => {
-    if (!store.getProject(project_id)) return fail(`no such project: ${project_id}`);
-    if (!UUID_RE.test(thread_id)) return fail('thread_id must be a session UUID');
-    return text(store.createConversation(project_id, thread_id));
-  });
 
   s.registerTool('get_conversation', {
     description: 'Get a conversation with its most recent turns.',

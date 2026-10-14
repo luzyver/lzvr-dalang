@@ -43,7 +43,7 @@ async function twoConvs(c: C) {
 
 const ALL_TOOLS = [
   'list_projects', 'create_project', 'delete_project', 'list_conversations', 'create_conversation',
-  'adopt_session', 'list_sessions', 'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
+  'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
   'cancel_turn', 'set_draft', 'get_events', 'list_accounts', 'unblock_accounts', 'get_approval',
 ];
 const AGENT_TOOLS = [
@@ -88,7 +88,6 @@ describe('MCP gateway', () => {
     const c = await t.connect();
     expect((await call(c, 'create_project', { name: 'x', path: '../..' })).isError).toBe(true);
     expect((await call(c, 'get_conversation', { conversation_id: 'nope' })).isError).toBe(true);
-    expect((await call(c, 'adopt_session', { project_id: 'nope', thread_id: '../etc' })).isError).toBe(true);
   });
 
   it('manages queue, cancel, draft and accounts', async () => {
@@ -101,14 +100,12 @@ describe('MCP gateway', () => {
     expect((await call(c, 'list_queue', { conversation_id: a.id })).json).toEqual([]);
     expect((await call(c, 'list_accounts')).json).toHaveLength(1);
     expect((await call(c, 'unblock_accounts')).isError).toBe(false);
-    expect((await call(c, 'list_sessions')).json).toEqual([]);
   });
 
   it('copes with having no Codex account yet', async () => {
     const t = await boot({ homes: [] });
     const c = await t.connect();
     expect((await call(c, 'list_accounts')).json).toEqual([]);
-    expect((await call(c, 'list_sessions')).json).toEqual([]);
   });
 
   it('rejects requests without the token and non-POST methods', async () => {

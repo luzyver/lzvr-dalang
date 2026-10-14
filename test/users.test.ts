@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
-const UUID = '33333333-3333-3333-3333-333333333333';
 type T = ReturnType<typeof setupApp>;
 const call = (t: T, method: string, url: string, headers: Record<string, string>, payload?: unknown) =>
   t.app.inject({ method: method as 'GET', url, headers, payload: payload as object | undefined });
@@ -108,8 +107,6 @@ describe('what a dev may do', () => {
     const adminOnly: [string, string, unknown?][] = [
       ['POST', '/api/projects', { name: 'x', path: 'proj' }],
       ['DELETE', `/api/projects/${proj.id}`],
-      ['GET', '/api/sessions'],
-      ['POST', `/api/projects/${proj.id}/conversations`, { threadId: UUID }],
       ['POST', '/api/accounts/unblock'],
       ['POST', '/api/accounts/login', { name: 'x' }],
       ['GET', '/api/accounts/login/abc'],

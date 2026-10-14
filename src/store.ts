@@ -210,11 +210,11 @@ export class Store {
   deleteConversation(id: string): boolean { return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0; }
   deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
 
-  /** `threadId` adopts an existing Codex session instead of starting a new one. The chat runs on the project's backend unless told otherwise. */
-  createConversation(projectId: string, threadId: string | null = null, backend?: Backend): Conversation {
+  /** The chat runs on the project's backend unless told otherwise. */
+  createConversation(projectId: string, backend?: Backend): Conversation {
     const id = randomUUID();
     backend ??= this.getProject(projectId)?.backend ?? 'codex';
-    this.run('INSERT INTO conversations (id,project_id,thread_id,backend) VALUES (?,?,?,?)', id, projectId, threadId, backend);
+    this.run('INSERT INTO conversations (id,project_id,thread_id,backend) VALUES (?,?,NULL,?)', id, projectId, backend);
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
