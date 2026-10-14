@@ -433,6 +433,9 @@ dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, c
 .diff-dialog-body .diff-scroll { max-height: none; overflow: visible; }
 .diff-dialog-body .lines { font-size: 12.5px; }
 .diff-dialog-body .pane-loading { padding: 16px; }
+.diff-dialog-path.cmd { direction: ltr; }
+.cmd-body { display: grid; align-content: start; gap: 10px; padding: 14px 16px; }
+.cmd-body .output { max-height: none; overflow: visible; }
 .lines { width: 100%; border-collapse: collapse; font: 12px/1.65 var(--mono); }
 .lines td { white-space: pre; padding: 0 10px 0 8px; vertical-align: top; }
 .lines td.no { width: 1%; min-width: 34px; color: var(--text-faint); text-align: right; user-select: none; padding: 0 6px; font-size: 11px; }
