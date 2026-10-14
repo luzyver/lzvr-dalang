@@ -388,6 +388,129 @@ describe('push after commit', () => {
   });
 });
 
+describe('pull and branches', () => {
+  /** A project with a bare `origin` and a second clone of it, for commits that arrive from elsewhere. */
+  async function cloned() {
+    const t = await gitProject();
+    const bare = join(t.base, 'remote.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+    sh(t.repo, 'remote', 'add', 'origin', bare);
+    sh(t.repo, 'push', '-q', '-u', 'origin', 'main');
+    const other = join(t.base, 'other');
+    execFileSync('git', ['clone', '-q', bare, other]);
+    const commitThere = (file: string, msg: string) => {
+      writeFileSync(join(other, file), `${msg}\n`);
+      sh(other, 'add', '.');
+      sh(other, '-c', 'user.name=O', '-c', 'user.email=o@o', 'commit', '-q', '-m', msg);
+    };
+    const conv = (await t.chat(false)).json();
+    return { ...t, bare, other, commitThere, conv };
+  }
+
+  it('fast-forwards from the remote, and refuses when the branches went apart', async () => {
+    const t = await cloned();
+    t.commitThere('o.txt', 'feat: From elsewhere');
+    sh(t.other, 'push', '-q');
+    const r = await t.call('POST', `/api/conversations/${t.conv.id}/git/pull`);
+    expect(r.json()).toEqual({ from: 'origin/main', commits: 1 });
+    expect(readFileSync(join(t.repo, 'o.txt'), 'utf8')).toBe('feat: From elsewhere\n');
+    expect((await t.call('POST', `/api/conversations/${t.conv.id}/git/pull`)).json()).toEqual({ from: 'origin/main', commits: 0 });
+
+    t.commitThere('p.txt', 'feat: There');
+    sh(t.other, 'push', '-q');
+    writeFileSync(join(t.repo, 'q.txt'), 'here\n');
+    sh(t.repo, 'add', '.');
+    sh(t.repo, 'commit', '-q', '-m', 'feat: Here');
+    const apart = await t.call('POST', `/api/conversations/${t.conv.id}/git/pull`);
+    expect(apart.statusCode).toBe(400);
+    expect(apart.json().error).toMatch(/pull from origin\/main failed/);
+    expect(sh(t.repo, 'log', '-1', '--format=%s')).toBe('feat: Here'); // no merge commit
+  });
+
+  it('lists local and remote branches, fetching on request', async () => {
+    const t = await cloned();
+    sh(t.repo, 'branch', 'local-only');
+    sh(t.other, 'checkout', '-q', '-b', 'feature/remote');
+    sh(t.other, 'push', '-q', '-u', 'origin', 'feature/remote');
+    const list = (fetch: boolean) => t.call('GET', `/api/conversations/${t.conv.id}/git/branches${fetch ? '?fetch=1' : ''}`).then((r) => r.json());
+    expect(await list(false)).toEqual({ current: 'main', local: ['local-only', 'main'], remote: [] });
+    expect(await list(true)).toEqual({ current: 'main', local: ['local-only', 'main'], remote: ['feature/remote'] });
+  });
+
+  it('creates a branch from HEAD, switches back, and checks out a remote one', async () => {
+    const t = await cloned();
+    const branch = (body: Record<string, unknown>) => t.call('POST', `/api/conversations/${t.conv.id}/git/branch`, body);
+    writeFileSync(join(t.repo, 'wip.txt'), 'wip\n'); // uncommitted work comes along
+
+    expect((await branch({ name: 'feature/new', create: true })).json()).toEqual({ branch: 'feature/new' });
+    expect(sh(t.repo, 'branch', '--show-current')).toBe('feature/new');
+    expect(existsSync(join(t.repo, 'wip.txt'))).toBe(true);
+    // not tracking main: its first commit gets its own branch on the remote
+    const c = (await t.call('POST', `/api/conversations/${t.conv.id}/git/commit`, { message: 'feat: Wip' })).json();
+    expect(c.push).toEqual({ pushed: 'origin/feature/new' });
+
+    expect((await branch({ name: 'main' })).statusCode).toBe(200);
+    expect(sh(t.repo, 'branch', '--show-current')).toBe('main');
+
+    t.commitThere('r.txt', 'feat: Remote work');
+    sh(t.other, 'push', '-q', 'origin', 'HEAD:refs/heads/feature/remote');
+    sh(t.repo, 'fetch', '-q');
+    expect((await branch({ name: 'feature/remote' })).statusCode).toBe(200);
+    expect(sh(t.repo, 'rev-parse', '--abbrev-ref', '@{u}')).toBe('origin/feature/remote');
+  });
+
+  it('refuses bad names, unknown branches and worktree chats', async () => {
+    const t = await cloned();
+    const branch = (id: string, body: Record<string, unknown>) => t.call('POST', `/api/conversations/${id}/git/branch`, body);
+    expect((await branch(t.conv.id, { name: 'bad..name', create: true })).json().error).toMatch(/not a valid branch name/);
+    expect((await branch(t.conv.id, { name: '-f', create: true })).json().error).toMatch(/not a valid branch name/);
+    expect((await branch(t.conv.id, { name: 'x', create: true, from: '--orphan' })).json().error).toMatch(/no such branch or commit/);
+    expect((await branch(t.conv.id, { name: 'nope' })).json().error).toMatch(/no such branch/);
+    expect((await branch(t.conv.id, { name: 'main', create: true })).statusCode).toBe(400); // already exists
+    const wt = (await t.chat(true)).json();
+    expect((await branch(wt.id, { name: 'x', create: true })).json().error).toMatch(/worktree chat/);
+    expect(sh(t.repo, 'branch', '--show-current')).toBe('main');
+  });
+
+  it('deletes a local branch, asking for force when its commits are nowhere else', async () => {
+    const t = await cloned();
+    const del = (body: Record<string, unknown>, id = t.conv.id) => t.call('POST', `/api/conversations/${id}/git/branch/delete`, body);
+    const has = (b: string) => sh(t.repo, 'branch', '--list', b) !== '';
+
+    sh(t.repo, 'branch', 'merged'); // same commit as main
+    expect((await del({ name: 'merged' })).statusCode).toBe(204);
+    expect(has('merged')).toBe(false);
+
+    sh(t.repo, 'checkout', '-q', '-b', 'pushed');
+    writeFileSync(join(t.repo, 'p.txt'), 'p\n');
+    await t.call('POST', `/api/conversations/${t.conv.id}/git/commit`, { message: 'feat: P' }); // pushed: on its upstream
+    sh(t.repo, 'checkout', '-q', '-b', 'local-work');
+    writeFileSync(join(t.repo, 'l.txt'), 'l\n');
+    sh(t.repo, 'add', '.');
+    sh(t.repo, 'commit', '-q', '-m', 'feat: Only here');
+    sh(t.repo, 'checkout', '-q', 'main');
+
+    expect((await del({ name: 'pushed' })).statusCode).toBe(204);
+    expect(sh(t.bare, 'branch', '--list', 'pushed')).toContain('pushed'); // the remote keeps it
+
+    const refused = await del({ name: 'local-work' });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ unmerged: true, error: expect.stringMatching(/would be lost/) });
+    expect(has('local-work')).toBe(true);
+    expect((await del({ name: 'local-work', force: true })).statusCode).toBe(204);
+    expect(has('local-work')).toBe(false);
+
+    expect((await del({ name: 'main' })).json().error).toMatch(/checked out/);
+    sh(t.repo, 'checkout', '-q', '-b', 'side');
+    expect((await del({ name: 'main', force: true })).json().error).toMatch(/default branch/);
+    expect((await del({ name: 'nope' })).json().error).toMatch(/no such branch/);
+    const wt = (await t.chat(true)).json();
+    expect((await del({ name: wt.branch, force: true })).statusCode).toBe(400); // checked out in its worktree
+    expect(has(wt.branch)).toBe(true);
+    expect((await del({ name: 'side' }, wt.id)).json().error).toMatch(/project folder/);
+  });
+});
+
 describe('Merge Requests on GitHub / GitLab', () => {
   const fakeGh = fileURLToPath(new URL('./fake-gh.mjs', import.meta.url));
 

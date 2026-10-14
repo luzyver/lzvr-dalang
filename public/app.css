@@ -386,6 +386,17 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .pane-stack > p { margin: 0; }
 .head-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; min-width: 0; }
 .head-row > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.head-row > div > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.branch-btn { height: 24px; padding: 0 6px; max-width: 60%; flex: none; color: var(--text); }
+.branch-btn .mono { overflow: hidden; text-overflow: ellipsis; }
+.branch-list { padding: 0; max-height: min(50vh, 380px); }
+.branch-row { display: flex; align-items: center; gap: 4px; }
+.branch-row > .palette-item { flex: 1; min-width: 0; }
+.branch-row > .palette-item .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-row > .icon-btn { opacity: 0; }
+.branch-row:hover > .icon-btn, .branch-row > .icon-btn:focus-visible { opacity: 1; }
+@media (hover: none) { .branch-row > .icon-btn { opacity: 1; } }
+.branch-list .palette-item:disabled { opacity: 1; color: var(--accent-text); }
 .branch-card { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
 .branch-line { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); min-width: 0; }
 .branch-line code { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

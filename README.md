@@ -16,6 +16,14 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
   a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
   `read-only` projects they are admin only.
+  **Pull** (the arrow next to Refresh) fast-forwards the checked-out branch from its upstream (or the same name on
+  `origin`); a branch that has gone its own way is refused rather than merged. In a chat on the project folder, the
+  branch name opens **Branches**: switch to a local branch, check out a remote one (it becomes a local branch tracking
+  it), or type a new name to create a branch from the current HEAD (it gets its own branch on the remote with its first
+  commit). Uncommitted changes come along; git refuses a switch that would overwrite them. The bin next to a local
+  branch deletes it here only (the remote keeps its copy); not the checked-out or the default branch, and one with
+  commits that are neither in the current branch nor on its remote only after a second confirmation. A worktree chat
+  stays on its own branch.
   A commit is **pushed right away** (to the branch's upstream, or to `origin` under the same name, which becomes its
   upstream; a worktree chat's `dalang/<id>` branch thus appears on the remote, ready for a Merge Request). Without a
   remote nothing is pushed; a failed push (credentials, rejected) is shown and the
@@ -256,7 +264,7 @@ bash scripts/smoke.sh        # create a project + chat, send a prompt, stream th
 ```
 
 REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
-`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,pull-request}`,
+`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,pull,branches,branch,branch/delete,pull-request}`,
 `/api/search?q=`, `/api/conversations/:id/schedules`, `/api/schedules` (`/:id`, `/:id/run`, `/preview?cron=`),
 `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.

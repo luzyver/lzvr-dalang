@@ -1,9 +1,9 @@
 // The Changes tab: what git sees in the folder the chat's agent works in. Pick files, read their diffs, commit and push,
-// revert, discard, and open a Merge Request for the chat's branch.
+// revert, discard, pull, switch or create a branch, and open a Merge Request for the chat's branch.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Empty, Icon, Seg, Spinner } from './ui.js';
+import { AsyncButton, Empty, Icon, Modal, Seg, Spinner } from './ui.js';
 import { guarded, loadProjects, toast } from './store.js';
 import { chat, refreshGit } from './chat-view.js';
 import { DiffView, diffStats } from './diff.js';
@@ -36,6 +36,61 @@ function useDiffs(id, files) {
     files.slice(0, MAX_DIFFS).forEach((f) => fetchOne(f.path));
   }, [id, key]);
   return [diffs, (path) => { if (!(path in diffs)) fetchOne(path); }];
+}
+
+/**
+ * Switch the project folder to another branch, or create one from the current HEAD. The box filters the list and is the
+ * new branch's name. Remote branches without a local one are listed too: picking one creates it, tracking the remote.
+ */
+function Branches({ id, current, onClose, onDone }) {
+  const [list, setList] = useState(null);
+  const [q, setQ] = useState('');
+  const [error, setError] = useState('');
+  const load = (fetch) => api(`/api/conversations/${id}/git/branches${fetch ? '?fetch=1' : ''}`).then(setList, (e) => setError(e.message));
+  useEffect(() => { load(false).then(() => load(true)); }, [id]); // the local list at once, then again after a fetch
+  const go = (name, create) => async () => {
+    setError('');
+    try {
+      await api(`/api/conversations/${id}/git/branch`, { method: 'POST', body: { name, ...(create && { create }) } });
+      onClose();
+      await onDone(create ? `Created and switched to ${name}` : `Switched to ${name}`);
+    } catch (e) { setError(e.message); }
+  };
+  // Local only; the remote keeps its copy. A branch with commits found nowhere else is deleted only after a second ask.
+  const remove = (b) => async () => {
+    if (!confirm(`Delete the local branch ${b}? The remote keeps its copy.`)) return;
+    setError('');
+    const del = (force) => api(`/api/conversations/${id}/git/branch/delete`, { method: 'POST', body: { name: b, ...(force && { force }) } });
+    try {
+      try { await del(false); } catch (e) {
+        if (e.status !== 409) throw e;
+        if (!confirm(`${e.message}. Delete ${b} anyway?`)) return;
+        await del(true);
+      }
+      toast(`Deleted ${b}`);
+      await load(false);
+    } catch (e) { setError(e.message); }
+  };
+  const name = q.trim();
+  const match = (b) => b.toLowerCase().includes(name.toLowerCase());
+  const known = list && [...list.local, ...list.remote].includes(name);
+  const item = (b, remote) => html`<div key=${(remote ? 'r:' : 'l:') + b} class="branch-row">
+    <button class="palette-item" disabled=${b === current} onClick=${go(b)}>
+      <${Icon} name=${b === current ? 'check' : 'git-branch'} /><span class="mono">${b}</span>${remote && html`<span class="dim small">remote</span>`}</button>
+    ${!remote && b !== current && html`<button class="icon-btn sm danger" aria-label=${`Delete ${b}`} title="Delete this local branch" onClick=${remove(b)}><${Icon} name="trash-2" /></button>`}
+  </div>`;
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Branches</h2><button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button></div>
+    <input class="mono" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} autofocus placeholder="Find a branch, or name a new one" />
+    ${name && list && !known && html`<${AsyncButton} class="btn primary sm" icon="plus" onClick=${go(name, true)}>Create branch ${name} from ${current || 'HEAD'}<//>`}
+    ${error && html`<div class="form-error">${error}</div>`}
+    <div class="palette-list branch-list">
+      ${!list ? html`<div class="dim small"><${Spinner} /> Loading…</div>` : html`
+        ${list.local.filter(match).map((b) => item(b, false))}
+        ${list.remote.filter(match).map((b) => item(b, true))}`}
+    </div>
+    <div class="dim small">Uncommitted changes come along to the other branch; git refuses the switch if they would be overwritten.</div>
+  </div>`;
 }
 
 /** The chat's branch and where its Merge Request goes: a worktree chat's own branch, or the project folder's feature branch. */
@@ -79,9 +134,10 @@ export function ChangesPane({ id }) {
   const [selected, setSelected] = useState(null);
   const [mode, setMode] = useState(innerWidth > 1500 ? 'split' : 'unified');
   const [message, setMessage] = useState('');
+  const [branching, setBranching] = useState(false);
   const [diffs, loadDiff] = useDiffs(id, files);
 
-  useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); }, [id]);
+  useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); setBranching(false); }, [id]);
   const current = files.find((f) => f.path === selected) || files[0];
   useEffect(() => { if (current) loadDiff(current.path); }, [current?.path]);
 
@@ -95,6 +151,11 @@ export function ChangesPane({ id }) {
     setUnpicked(next);
   };
   const after = async (done) => { if (done) toast(done); loadProjects().catch(() => {}); await refreshGit(id); };
+  // Fast-forward only, so a pull never makes a merge commit.
+  const pull = guarded(async () => {
+    const r = await api(`/api/conversations/${id}/git/pull`, { method: 'POST' });
+    await after(r.commits ? `Pulled ${plural(r.commits, 'commit')} from ${r.from}` : `Already up to date with ${r.from}`);
+  });
 
   const generate = guarded(async () => {
     if (!picked.length) throw new Error('Pick at least one file');
@@ -130,10 +191,22 @@ export function ChangesPane({ id }) {
 
   return html`<div class="changes">
     <div class="head-row">
-      <div class="dim small"><${Icon} name="git-branch" class="tiny" /> ${s.branch || 'detached HEAD'}${s.head ? ` · ${s.head.hash} ${s.head.subject}` : ' · no commits yet'}</div>
-      <button class="icon-btn sm" aria-label="Refresh" title="Refresh" onClick=${guarded(() => refreshGit(id))}><${Icon} name="refresh-cw" /></button>
+      <div class="dim small">
+        ${s.worktree
+          ? html`<span title="A worktree chat stays on its own branch"><${Icon} name="git-branch" class="tiny" /> ${s.branch}</span>`
+          : html`<button class="btn ghost sm branch-btn" title="Switch or create a branch" onClick=${() => setBranching(true)}>
+              <${Icon} name="git-branch" class="tiny" /><span class="mono">${s.branch || 'detached HEAD'}</span><${Icon} name="chevron-down" class="tiny" /></button>`}
+        <span>${s.head ? `${s.head.hash} ${s.head.subject}` : 'no commits yet'}</span>
+      </div>
+      <div>
+        <${AsyncButton} class="icon-btn sm" icon="arrow-down-to-line" title="Pull: fast-forward this branch from the remote" onClick=${pull} />
+        <button class="icon-btn sm" aria-label="Refresh" title="Refresh" onClick=${guarded(() => refreshGit(id))}><${Icon} name="refresh-cw" /></button>
+      </div>
     </div>
-    ${s.mr && html`<${MergeRequest} id=${id} s=${s} onDone=${() => after()} />`}
+    <${Modal} open=${branching} label="Branches" class="dialog" onClose=${() => setBranching(false)}>
+      <${Branches} id=${id} current=${s.branch} onClose=${() => setBranching(false)} onDone=${after} />
+    <//>
+    ${s.mr && html`<${MergeRequest} key=${s.mr.branch} id=${id} s=${s} onDone=${() => after()} />`}
     ${!files.length ? html`<${Empty} icon="circle-check" title="No uncommitted changes">Everything in this folder is committed.<//>` : html`
       <section class="file-list">
         <div class="file-list-head">

@@ -380,4 +380,59 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       return reply.code(204).send();
     } catch (e) { return gitFailed(reply, e); }
   });
+
+  // Fast-forward the chat's folder from the remote. Never merges: a branch that has gone its own way is refused.
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/git/pull', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    try {
+      return await git.pull(c.cwd);
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // `?fetch=1` asks the remote for its branches first.
+  app.get<{ Params: { id: string }; Querystring: { fetch?: string } }>('/api/conversations/:id/git/branches', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    return git.branches(c.cwd, req.query.fetch === '1');
+  });
+
+  // Switch the project folder to another branch, or create one (from `from`, default the current HEAD) and switch to it.
+  // A worktree chat stays on its own branch: that is what its Merge Request and its cleanup are about.
+  app.post<{ Params: { id: string }; Body: { name: string; create?: boolean; from?: string } }>('/api/conversations/:id/git/branch', {
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 }, create: { type: 'boolean' }, from: { type: 'string', minLength: 1, maxLength: 200 } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (c.conv.worktree) return reply.code(400).send({ error: 'a worktree chat stays on its own branch: use a chat in the project folder to switch branches' });
+    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    const name = req.body.name.trim();
+    try {
+      await git.switchBranch(c.cwd, name, { create: req.body.create, from: req.body.from?.trim() || undefined });
+      return { branch: name };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Delete a local branch; the remote keeps its copy. One with commits found nowhere else needs `force` (409 without).
+  app.post<{ Params: { id: string }; Body: { name: string; force?: boolean } }>('/api/conversations/:id/git/branch/delete', {
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 }, force: { type: 'boolean' } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (c.conv.worktree) return reply.code(400).send({ error: 'manage branches from a chat in the project folder' });
+    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    try {
+      await git.deleteBranch(c.cwd, req.body.name.trim(), req.body.force);
+      return reply.code(204).send();
+    } catch (e) {
+      if (e instanceof git.UnmergedError) return reply.code(409).send({ error: e.message, unmerged: true });
+      return gitFailed(reply, e);
+    }
+  });
 }
