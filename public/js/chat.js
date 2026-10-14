@@ -117,7 +117,7 @@ const bubble = (cls, text, timestamp) => h('div', { class: `msg ${cls}` }, text,
 const CHANGE_LABEL = { add: 'Created', write: 'Wrote', delete: 'Deleted', update: 'Edited', edit: 'Edited' };
 
 /** One changed file: a collapsible unified diff (open when short), with +/- counts. */
-function fileChange(c) {
+export function fileChange(c) {
   const path = String(c.path || '');
   const name = path.split(/[\\/]/).pop() || path || 'file';
   const lines = c.diff ? String(c.diff).split('\n') : [];

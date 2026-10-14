@@ -7,6 +7,24 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Projects and chats**: register folders as projects; each project has parallel chats, each with its own Codex
   session, draft and prompt queue.
 - **Live view**: tool activity, commands and answers stream into the panel over SSE.
+- **Worktree per chat** (optional, git projects): "New chat in own worktree" in a project's `⋯` menu gives the chat a
+  branch `dalang/<id>` from the project's HEAD, checked out under `<STATE_DIR>/worktrees/<chat id>`. Its agent works only
+  there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
+  lost) and the branch too, unless it has commits that were never merged.
+- **Changes**: the branch button in a chat's header lists what git sees in the folder that chat works in, with each
+  file's diff. Commit all or selected files, revert one file, discard everything, and for a worktree chat merge its branch
+  into whatever the project folder has checked out (a conflict aborts the merge and leaves the folder as it was). These
+  actions are refused while an agent is running in the same folder, and in `read-only` projects they are admin only.
+  Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate message** asks
+  the chat's own agent (same CLI and model) for a one-line Conventional Commit subject (`feat: Add ...`), given the
+  selected diffs, the repo's recent commit subjects and the chat's last requests. For a worktree chat with commits to
+  merge, **Generate MR description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
+  the branch's commits and its diff against the branch it merges into. **Copy MR description** copies the Markdown for
+  GitLab/GitHub, and the merge commit uses it as its message (the Title line as subject, the other sections as body;
+  editable before merging, empty = git's "Merge branch ..."). Admins can change both instructions in **Generate prompts**
+  (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
+  (`codex exec --ephemeral`, `claude --no-session-persistence`) and use the same account failover; they do count against
+  the account's usage.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
 - **Adopt a session**: bring an interactive `codex` session into the panel.
@@ -172,7 +190,8 @@ All routes need `Authorization: Bearer $LZVR_TOKEN`.
 bash scripts/smoke.sh        # create a project + chat, send a prompt, stream the events (real Codex)
 ```
 
-REST: `/api/projects`, `/api/projects/:id/conversations`, `/api/conversations/:id/{prompts,queue,cancel,draft,events}`,
+REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
+`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,merge}`,
 `/api/sessions`, `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 

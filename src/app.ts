@@ -6,6 +6,8 @@ import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
+import { GitError } from './git.js';
+import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
 import { passkeyRoutes, sessionHash } from './passkeys.js';
@@ -122,6 +124,7 @@ export function buildApp(
   panelRoutes(app);
   passkeyRoutes(app, { cfg, store, webauthn: deps.webauthn ?? realWebAuthn, noteFailure });
   mcpRoutes(app, { cfg, store, dispatcher, push });
+  gitRoutes(app, { store, dispatcher });
 
   // Sends that one conversation (via MCP) wants to make into another wait here for a human decision.
   app.get('/api/approvals', { onRequest: requireAdmin }, () => store.listApprovals('pending'));
@@ -197,6 +200,18 @@ export function buildApp(
     store.setDefaultEffort(req.body.effort, backendOf(req.body.backend));
     return reply.code(204).send();
   });
+  // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.
+  // Empty = the built-in prompt.
+  for (const [path, key, builtIn] of [['commit-prompt', 'commit_prompt', DEFAULT_COMMIT_PROMPT], ['mr-prompt', 'mr_prompt', DEFAULT_MR_PROMPT]] as const) {
+    app.get(`/api/settings/${path}`, { onRequest: requireAdmin }, () => ({ prompt: store.getKv(key) ?? '', default: builtIn }));
+    app.put<{ Body: { prompt: string } }>(`/api/settings/${path}`, {
+      onRequest: requireAdmin,
+      schema: { body: { type: 'object', required: ['prompt'], additionalProperties: false, properties: { prompt: { type: 'string', maxLength: 20_000 } } } },
+    }, (req, reply) => {
+      store.setKv(key, req.body.prompt.trim());
+      return reply.code(204).send();
+    });
+  }
   app.post('/api/accounts/unblock', { onRequest: requireAdmin }, (_req, reply) => {
     dispatcher.accounts.unblockAll();
     dispatcher.claudeAccounts.unblockAll();
@@ -289,23 +304,43 @@ export function buildApp(
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', { onRequest: requireAdmin }, (req, reply) => {
-    for (const c of store.listConversations(req.params.id)) dispatcher.cancel(c.id);
-    return store.deleteProject(req.params.id) ? reply.code(204).send() : notFound(reply);
+    const project = store.getProject(req.params.id);
+    if (!project) return notFound(reply);
+    const convs = store.listConversations(project.id);
+    for (const c of convs) dispatcher.cancel(c.id);
+    store.deleteProject(project.id);
+    void dropWorktrees(dispatcher, project, convs);
+    return reply.code(204).send();
   });
 
   // Chats only: the project and the other chats stay. Any signed-in user may, as any may create one.
+  // A chat's own worktree goes with it (uncommitted work there is lost; its branch stays if not merged).
   app.delete<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
-    dispatcher.cancel(req.params.id);
-    return store.deleteConversation(req.params.id) ? reply.code(204).send() : notFound(reply);
+    const conv = store.getConversation(req.params.id);
+    const project = conv && store.getProject(conv.project_id);
+    if (!conv) return notFound(reply);
+    dispatcher.cancel(conv.id);
+    store.deleteConversation(conv.id);
+    if (project) void dropWorktrees(dispatcher, project, [conv]);
+    return reply.code(204).send();
   });
 
   app.get<{ Params: { id: string } }>('/api/projects/:id/conversations', (req, reply) =>
     store.getProject(req.params.id) ? store.listConversations(req.params.id) : notFound(reply));
 
-  app.post<{ Params: { id: string }; Body: { threadId?: string } | undefined }>('/api/projects/:id/conversations', (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { threadId?: string; worktree?: boolean } | undefined }>('/api/projects/:id/conversations', async (req, reply) => {
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
     const threadId = req.body?.threadId ?? null;
+    if (req.body?.worktree) {
+      if (threadId !== null) return reply.code(400).send({ error: 'an adopted session cannot get a worktree' });
+      try {
+        return reply.code(201).send(await createWorktreeChat(store, cfg, project));
+      } catch (e) {
+        if (e instanceof GitError) return reply.code(400).send({ error: e.message });
+        throw e;
+      }
+    }
     if (project.backend === 'claude' && threadId !== null) return reply.code(400).send({ error: 'adopting a session is only supported for Codex projects' });
     // Adopting attaches to a Codex session that already exists on this machine, which may be anyone's: admins only.
     if (threadId !== null && req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });

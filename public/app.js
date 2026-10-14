@@ -2,6 +2,7 @@
 import { h, icon } from './js/dom.js';
 import { api, publicApi, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
 import { startStream, renderEvent } from './js/chat.js';
+import { changesPage } from './js/git.js';
 import { enableNotifications, registerPasskey, loginWithPasskey } from './js/passkeys.js';
 
 // ---------- views ----------
@@ -62,6 +63,7 @@ async function showApp() {
       isAdmin && h('button', { onclick: () => addAccountDialog() }, 'Codex accounts'),
       isAdmin && h('button', { onclick: () => addAccountDialog('claude') }, 'Claude Code accounts'),
       isAdmin && h('button', { onclick: () => defaultModelDialog() }, 'Model & effort defaults'),
+      isAdmin && h('button', { onclick: () => promptsDialog() }, 'Generate prompts'),
       isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
       h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
@@ -150,6 +152,35 @@ async function showApp() {
       ...sections.map((s) => s.el),
       h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closePage }, 'Cancel')),
       msg));
+  }
+  // The instructions the Changes page's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in.
+  function promptsDialog() {
+    const section = (path, title, help) => {
+      const text = h('textarea', { rows: '14', class: 'prompt-edit', placeholder: 'Loading…' });
+      let builtIn = '';
+      api(`/api/settings/${path}`).then((r) => { builtIn = r.default; text.value = r.prompt || r.default; text.placeholder = ''; })
+        .catch((e) => flash(e.message));
+      return {
+        el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('div', { class: 'small' }, help), text,
+          h('div', { class: 'row' }, h('button', { onclick: () => { text.value = builtIn; } }, 'Reset to default'))),
+        // Saving the built-in text unchanged stores nothing, so later updates of the default still apply.
+        save: () => api(`/api/settings/${path}`, { method: 'PUT', body: { prompt: text.value.trim() === builtIn.trim() ? '' : text.value.trim() } }),
+      };
+    };
+    const sections = [
+      section('commit-prompt', 'Commit message', '"Generate message" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.'),
+      section('mr-prompt', 'Merge Request description', '"Generate MR description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the merge commit subject.'),
+    ];
+    const save = guarded(async () => {
+      for (const s of sections) await s.save();
+      flash('prompts saved');
+      closePage();
+    });
+    openPage(h('div', { class: 'page-body' },
+      h('strong', {}, 'Generate prompts'),
+      h('div', { class: 'small' }, 'Used by Codex and Claude Code alike, with the chat\'s own model.'),
+      ...sections.map((s) => s.el),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closePage }, 'Cancel'))));
   }
   // Add another account: runs the CLI's login on the server and shows its link and code here.
   function addAccountDialog(backend = 'codex') {
@@ -334,9 +365,17 @@ async function showApp() {
   }
   const addProjectBtn = h('button', { class: 'add-project', onclick: addProjectDialog }, icon('plus'), 'Add project');
 
-  const newChat = (p) => guarded(async () => { const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: {} }); await loadProjects(); openConv(c.id); });
-  const deleteConv = (id) => guarded(async () => {
-    if (!confirm('Delete this chat and its history? The project and its files stay.')) return;
+  // `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project.
+  const newChat = (p, worktree = false) => guarded(async () => {
+    const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: worktree ? { worktree } : {} });
+    await loadProjects();
+    openConv(c.id);
+  });
+  const deleteConv = (c) => guarded(async () => {
+    const id = c.id;
+    if (!confirm(c.worktree
+      ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} stays if it has unmerged commits.`
+      : 'Delete this chat and its history? The project and its files stay.')) return;
     await api(`/api/conversations/${id}`, { method: 'DELETE' });
     if (state.current === id) {
       if (stopStream) { stopStream(); stopStream = null; }
@@ -360,10 +399,11 @@ async function showApp() {
             icon('folder'),
             h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: `small backend-tag ${p.backend}` }, `${p.backend === 'claude' ? 'Claude Code' : 'Codex'} · ${p.sandbox}`))),
           h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
-          isAdmin && h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
+          h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
             h('div', { class: 'pop' },
-              p.backend === 'codex' && h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
-              h('button', { class: 'danger', onclick: guarded(async () => {
+              h('button', { title: 'A new git branch and folder for this chat only; merge it back from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
+              isAdmin && p.backend === 'codex' && h('button', { onclick: guarded(() => adoptDialog(p)) }, 'Adopt Codex session'),
+              isAdmin && h('button', { class: 'danger', onclick: guarded(async () => {
                 if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
                 await api(`/api/projects/${p.id}`, { method: 'DELETE' });
                 if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) {
@@ -379,8 +419,9 @@ async function showApp() {
           const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
           return h('div', { class: 'conv-row' },
             h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-              h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle)),
-            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c.id) }, icon('trash-2')));
+              h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle),
+              c.worktree && h('span', { class: 'conv-branch', title: `own worktree on ${c.branch}` }, icon('git-branch'))),
+            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c) }, icon('trash-2')));
         })) : h('div', { class: 'small hint' }, 'No chats yet')));
     });
     sidebar.replaceChildren(...[
@@ -431,8 +472,17 @@ async function showApp() {
     const chatTitle = h('strong', { class: 'chat-title', title: initial?.title || 'New conversation' }, initial?.title || 'New conversation');
     const chatProject = h('span', { class: 'chat-project' }, project?.name || 'Project');
     const chatState = h('span', { class: `chat-state ${initial?.status || 'idle'}` }, initial?.status || 'idle');
+    // What git sees in the folder this chat's agent works in; hidden when that folder is not a repository.
+    const changesBtn = h('button', { class: 'changes-btn', hidden: true, title: 'Uncommitted changes: review, commit, revert', onclick: () =>
+      openPage(changesPage({ id, guarded, flash, close: closePage, onChange: () => loadProjects().catch(() => {}) })) },
+      icon('git-branch'), h('span', {}, initial?.branch || 'Changes'));
+    const refreshChanges = async () => {
+      const s = await api(`/api/conversations/${id}/git`);
+      changesBtn.hidden = !s.repo;
+      if (s.repo) changesBtn.lastChild.textContent = `${s.branch || 'HEAD'}${s.files.length ? ` · ${s.files.length} changed` : ''}`;
+    };
     const chatHead = h('div', { class: 'chathead' },
-      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle), chatState);
+      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle), changesBtn, chatState);
     const log = h('div', { class: 'log' });
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
@@ -566,9 +616,11 @@ async function showApp() {
         refreshQueue().catch(() => {});
         refreshConv().catch(() => {});
       }
+      if (e.type === 'turn.status') refreshChanges().catch(() => {});
     });
     refreshQueue().catch(() => {});
     refreshConv().catch(() => {});
+    refreshChanges().catch(() => {});
   }
 
   drawMain(null);

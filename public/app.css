@@ -33,6 +33,7 @@ summary::-webkit-details-marker { display: none; }
 .icon-panel-left { --icon-mask: url('/icons/panel-left.svg'); }
 .icon-x { --icon-mask: url('/icons/x.svg'); }
 .icon-folder { --icon-mask: url('/icons/folder.svg'); }
+.icon-git-branch { --icon-mask: url('/icons/git-branch.svg'); }
 .icon-chevron-right { --icon-mask: url('/icons/chevron-right.svg'); }
 .icon-chevron-down { --icon-mask: url('/icons/chevron-down.svg'); }
 .icon-plus { --icon-mask: url('/icons/plus.svg'); }
@@ -105,6 +106,8 @@ aside { overflow: auto; padding: 12px 10px 20px; background: var(--side); border
 .dot.failed { background: var(--err); }
 @keyframes pulse { 50% { opacity: .3; } }
 .hint { padding: 6px 10px; }
+.conv-branch { flex: none; display: grid; color: var(--dim); }
+.conv-branch .ui-icon { width: 14px; height: 14px; }
 .side-label { padding: 2px 8px 0; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .model-settings { display: grid; gap: 10px; }
 .model-settings label { display: grid; gap: 4px; font-size: 13px; color: var(--dim); }
@@ -127,6 +130,10 @@ main:has(.chathead) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .chat-project { flex: none; max-width: 32%; overflow: hidden; color: var(--dim); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .crumb { color: var(--line); }
 .chat-title { display: block; flex: 1; min-width: 0; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.changes-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 40%; min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--dim); font-size: 12px; }
+.changes-btn span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.changes-btn .ui-icon { width: 14px; height: 14px; }
+.changes-btn:hover { background: var(--hover); color: var(--text); }
 .chat-state { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); font-size: 12px; text-transform: capitalize; }
 .chat-state.running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 36%, var(--line)); background: color-mix(in srgb, var(--ok) 9%, var(--panel)); }
 .chat-state.running::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.2s ease-in-out infinite; }
@@ -233,6 +240,16 @@ aside > div:empty { display: none; }
 .switch { display: inline-flex; align-items: center; }
 .switch input { width: auto; min-height: 0; }
 .backend-tag.claude { color: var(--accent); }
+.githead { margin-top: 0; }
+.prompt-edit { font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; resize: vertical; }
+.githead .spacer, .gitbox .spacer { flex: 1; }
+.page-body .small .ui-icon { width: 13px; height: 13px; vertical-align: -2px; }
+.gitbox { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.gitbox .row { margin-top: 0; }
+.gitfiles { display: grid; gap: 4px; }
+.gitfile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.gitfile > input { width: auto; min-height: 0; margin-top: 7px; }
+.gitfile > button { padding: 4px 10px; min-height: 0; font-size: 12px; }
 .acct { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .acct-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .acct-head .spacer { flex: 1; }

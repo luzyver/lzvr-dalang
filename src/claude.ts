@@ -14,6 +14,8 @@ export interface ClaudeTurnOpts {
   effort?: string;
   /** Gateway MCP endpoint; the bearer token is read from LZVR_MCP_TOKEN in `env`. */
   mcpUrl?: string;
+  /** Extra CLI options, placed before `--resume`. */
+  extraArgs?: string[];
   signal?: AbortSignal;
   killGraceMs?: number;
 }
@@ -27,7 +29,7 @@ const PERMISSION: Record<string, string[]> = {
   'danger-full-access': ['--permission-mode', 'bypassPermissions'],
 };
 
-export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' | 'model' | 'effort' | 'mcpUrl'>): string[] {
+export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' | 'model' | 'effort' | 'mcpUrl' | 'extraArgs'>): string[] {
   const a = ['-p', '--output-format', 'stream-json', '--verbose', ...(PERMISSION[o.sandbox] ?? PERMISSION['read-only']!)];
   if (o.model) a.push('--model', o.model);
   if (o.effort) a.push('--effort', o.effort);
@@ -35,6 +37,7 @@ export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' |
     const server = { type: 'http', url: o.mcpUrl, headers: { Authorization: 'Bearer ${LZVR_MCP_TOKEN}' } };
     a.push('--mcp-config', JSON.stringify({ mcpServers: { dalang: server } }));
   }
+  a.push(...(o.extraArgs ?? []));
   if (o.threadId) a.push('--resume', o.threadId);
   return a;
 }

@@ -67,6 +67,11 @@ export interface Conversation {
   effort: string;
   /** Which agent CLI runs this chat. */
   backend: Backend;
+  /** The chat's own git worktree (its agent works there instead of the project folder), or null. */
+  worktree: string | null;
+  /** The worktree's branch, and the branch of the project folder it was started from. */
+  branch: string | null;
+  base_branch: string | null;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
@@ -93,6 +98,9 @@ export class Store {
     this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('events', 'created_at', 'TEXT');
+    this.ensureColumn('conversations', 'worktree', 'TEXT');
+    this.ensureColumn('conversations', 'branch', 'TEXT');
+    this.ensureColumn('conversations', 'base_branch', 'TEXT');
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -208,6 +216,9 @@ export class Store {
     return this.all('SELECT c.*, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1) AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid', projectId);
   }
   getConversation(id: string): Conversation | null { return this.get('SELECT * FROM conversations WHERE id=?', id); }
+  setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
+    this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
+  }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }

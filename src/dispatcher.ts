@@ -141,6 +141,8 @@ export class Dispatcher {
     while (this.active.size && Date.now() - start < timeoutMs) await new Promise((r) => setTimeout(r, 25));
   }
 
+  isRunning(convId: string): boolean { return this.active.has(convId); }
+
   cancel(convId: string): boolean {
     const ac = this.active.get(convId);
     if (!ac) return false;
@@ -178,6 +180,46 @@ export class Dispatcher {
     });
   }
 
+  /**
+   * One throwaway request outside any chat, e.g. drafting a commit message: read-only, no tools, and no session is kept
+   * (so nothing shows up to adopt or resume). Tries each account once, skipping ones at their limit. Returns the answer.
+   */
+  async ask(backend: Backend, prompt: string, o: { cwd: string; model?: string; effort?: string; timeoutMs?: number }): Promise<string> {
+    const claude = backend === 'claude';
+    const accounts = this.accountsOf(backend);
+    const model = o.model || this.store.getDefaultModel(backend);
+    const effort = o.effort || this.store.getDefaultEffort(backend);
+    const signal = AbortSignal.timeout(o.timeoutMs ?? 120_000);
+    let error = accounts.homes.length ? 'every account is switched off or at its usage limit' : `no ${claude ? 'Claude Code' : 'Codex'} account has been added yet`;
+    for (let home = accounts.pick(); home; home = accounts.pick()) {
+      const extraArgs = claude
+        ? ['--no-session-persistence', '--tools', '']
+        : ['--ephemeral', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : [])];
+      const events = claude
+        ? runClaudeTurn({ command: this.opts.claudeCommand, home, env: this.opts.env, cwd: o.cwd, sandbox: 'read-only', prompt, model, effort, extraArgs, signal })
+        : runTurn({ command: this.opts.command, home, env: this.opts.env, cwd: o.cwd, sandbox: 'read-only', prompt, extraArgs, signal });
+      let answer = '';
+      let limited = false;
+      error = 'the agent gave no answer';
+      for await (const ev of events) {
+        const item = ev.item as { type?: string; text?: unknown } | undefined;
+        if (ev.type === 'item.completed' && item?.type === 'agent_message' && typeof item.text === 'string') answer = item.text;
+        if (ev.type === 'turn.failed' || ev.type === 'error' || ev.type === 'process.exit') {
+          const e = ev as { error?: { message?: string }; message?: string; stderr?: string };
+          error = String(e.error?.message ?? e.message ?? e.stderr ?? ev.type).slice(-500);
+          if (!limited && isLimit(ev, this.opts.limitRe ?? DEFAULT_LIMIT_RE)) {
+            limited = true;
+            accounts.block(home, retryAfterMs(ev, this.opts.blockMs ?? 60 * 60 * 1000));
+          }
+        }
+      }
+      if (signal.aborted) throw new Error('no answer within the time limit');
+      if (answer.trim()) return answer;
+      if (!limited) break;
+    }
+    throw new Error(error);
+  }
+
   private emit(convId: string, turnId: number, ev: CodexEvent | { type: 'turn.status'; status: 'idle' | 'failed' }): void {
     const payload = (ev as { [RAW]?: string })[RAW] ?? JSON.stringify(ev);
     const id = this.store.addEvent(turnId, ev.type, payload);
@@ -210,6 +252,7 @@ export class Dispatcher {
     if (!conv || !project) return; // deleted while queued
 
     const claude = conv.backend === 'claude';
+    const cwd = conv.worktree ?? project.path; // a chat with its own worktree never touches the project folder
     const accounts = claude ? this.claudeAccounts : this.accounts;
     const label = claude ? 'Claude Code' : 'Codex';
     // Claude Code takes no image flag: it opens attached images itself from the path in the prompt.
@@ -268,11 +311,11 @@ export class Dispatcher {
         const env = mcpToken ? { ...this.opts.env, LZVR_MCP_TOKEN: mcpToken } : this.opts.env;
         const events = claude
           ? runClaudeTurn({
-            command: this.opts.claudeCommand, home, env, cwd: project.path, sandbox: project.sandbox, threadId,
+            command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
             prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, signal: ac.signal,
           })
           : runTurn({
-            command: this.opts.command, home, extraArgs, env, cwd: project.path, sandbox: project.sandbox, threadId,
+            command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,
             prompt: attemptPrompt, images, signal: ac.signal,
           });
         for await (let ev of events) {

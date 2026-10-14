@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
+import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { listSessions } from './sessions.js';
@@ -58,8 +59,13 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): Mcp
     description: 'Remove a project and its conversations from the gateway (files on disk are untouched).',
     inputSchema: { project_id: z.string() },
   }, async ({ project_id }) => {
-    for (const c of store.listConversations(project_id)) dispatcher.cancel(c.id);
-    return store.deleteProject(project_id) ? text({ deleted: true }) : fail(`no such project: ${project_id}`);
+    const project = store.getProject(project_id);
+    if (!project) return fail(`no such project: ${project_id}`);
+    const convs = store.listConversations(project_id);
+    for (const c of convs) dispatcher.cancel(c.id);
+    store.deleteProject(project_id);
+    void dropWorktrees(dispatcher, project, convs);
+    return text({ deleted: true });
   });
 
   s.registerTool('list_conversations', {
@@ -67,8 +73,14 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): Mcp
   }, async ({ project_id }) => (store.getProject(project_id) ? text(store.listConversations(project_id)) : fail(`no such project: ${project_id}`)));
 
   s.registerTool('create_conversation', {
-    description: 'Start a new conversation (a fresh Codex session) in a project.', inputSchema: { project_id: z.string() },
-  }, async ({ project_id }) => (store.getProject(project_id) ? text(store.createConversation(project_id)) : fail(`no such project: ${project_id}`)));
+    description: 'Start a new conversation (a fresh agent session) in a project. With worktree, it works on its own git branch and folder.',
+    inputSchema: { project_id: z.string(), worktree: z.boolean().optional() },
+  }, async ({ project_id, worktree }) => {
+    const project = store.getProject(project_id);
+    if (!project) return fail(`no such project: ${project_id}`);
+    if (!worktree) return text(store.createConversation(project_id));
+    try { return text(await createWorktreeChat(store, cfg, project)); } catch (e) { return fail((e as Error).message); }
+  });
 
   s.registerTool('list_sessions', {
     description: 'List Codex sessions found on this machine that can be adopted.', inputSchema: { limit: z.number().int().min(1).max(500).optional() },
