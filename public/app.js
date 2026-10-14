@@ -374,7 +374,7 @@ async function showApp() {
   const deleteConv = (c) => guarded(async () => {
     const id = c.id;
     if (!confirm(c.worktree
-      ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} stays if it has unmerged commits.`
+      ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
       : 'Delete this chat and its history? The project and its files stay.')) return;
     await api(`/api/conversations/${id}`, { method: 'DELETE' });
     if (state.current === id) {
@@ -554,7 +554,7 @@ async function showApp() {
       const running = c.status === 'running';
       stop.hidden = !running;
       sendButton.hidden = running;
-      const title = c.turns && c.turns[0] ? c.turns[0].prompt.slice(0, 80) : null;
+      const title = c.title || null; // the generated title, or the start of the first prompt until there is one
       chatTitle.textContent = title || 'New conversation';
       chatTitle.title = title || 'New conversation';
       chatState.textContent = c.status;
@@ -617,6 +617,7 @@ async function showApp() {
         refreshConv().catch(() => {});
       }
       if (e.type === 'turn.status') refreshChanges().catch(() => {});
+      if (e.type === 'conversation.title') refreshConv().catch(() => {});
     });
     refreshQueue().catch(() => {});
     refreshConv().catch(() => {});

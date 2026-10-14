@@ -70,7 +70,7 @@ describe('worktree chats', () => {
     expect(s.worktree).toMatchObject({ branch: conv.branch, base: 'main', ahead: 1, into: 'main' });
 
     const m = await t.call('POST', `/api/conversations/${conv.id}/git/merge`);
-    expect(m.json()).toEqual({ into: 'main' });
+    expect(m.json()).toEqual({ into: 'main', push: { pushed: null } });
     expect(readFileSync(join(t.repo, 'b.txt'), 'utf8')).toBe('new\n');
   });
 
@@ -283,7 +283,7 @@ describe('Merge Request descriptions', () => {
   it('merges with the given message, Markdown headings included', async () => {
     const { t, conv } = await aheadChat();
     const message = 'feat: Add b file\n\n## Summary\n- Adds b';
-    expect((await t.call('POST', `/api/conversations/${conv.id}/git/merge`, { message })).json()).toEqual({ into: 'main' });
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/merge`, { message })).json()).toEqual({ into: 'main', push: { pushed: null } });
     expect(sh(t.repo, 'log', '-1', '--format=%B')).toBe(message);
   });
 
@@ -291,5 +291,107 @@ describe('Merge Request descriptions', () => {
     const md = '## Title\n`feat: Add merge descriptions`\n\n## Summary\n- Why it matters\n\n## Changes\n- **`a.ts`**: x';
     expect(toCommitMessage(md)).toBe('feat: Add merge descriptions\n\n## Summary\n- Why it matters\n\n## Changes\n- **`a.ts`**: x');
     expect(toCommitMessage('just text')).toBe('just text');
+  });
+});
+
+describe('push after commit and merge', () => {
+  /** A bare repo next to the project, as its `origin`, with `main` already pushed and tracked. */
+  function addRemote(t: Awaited<ReturnType<typeof gitProject>>) {
+    const bare = join(t.base, 'remote.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+    sh(t.repo, 'remote', 'add', 'origin', bare);
+    sh(t.repo, 'push', '-q', '-u', 'origin', 'main');
+    return bare;
+  }
+
+  it('pushes a commit to the branch upstream', async () => {
+    const t = await gitProject();
+    const bare = addRemote(t);
+    const conv = (await t.chat(false)).json();
+    writeFileSync(join(t.repo, 'a.txt'), 'two\n');
+    const r = (await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'fix: Change a' })).json();
+    expect(r.push).toEqual({ pushed: 'origin/main' });
+    expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('fix: Change a');
+  });
+
+  it('gives a worktree chat its branch on the remote, then pushes the merge', async () => {
+    const t = await gitProject();
+    const bare = addRemote(t);
+    const conv = (await t.chat(true)).json();
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    const c = (await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add b' })).json();
+    expect(c.push).toEqual({ pushed: `origin/${conv.branch}` });
+    expect(sh(bare, 'log', '-1', '--format=%s', conv.branch)).toBe('feat: Add b');
+    expect(sh(conv.worktree, 'rev-parse', '--abbrev-ref', '@{u}')).toBe(`origin/${conv.branch}`); // tracked from now on
+
+    const m = (await t.call('POST', `/api/conversations/${conv.id}/git/merge`, { message: 'feat: Merge b' })).json();
+    expect(m).toEqual({ into: 'main', push: { pushed: 'origin/main' } });
+    expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('feat: Merge b');
+  });
+
+  it('deletes a merged branch on the remote with the chat, and keeps an unmerged one', async () => {
+    const t = await gitProject();
+    const bare = addRemote(t);
+    const branches = () => sh(bare, 'branch', '--list', 'dalang/*');
+    const pushed = async () => {
+      const conv = (await t.chat(true)).json();
+      writeFileSync(join(conv.worktree, `${conv.id}.txt`), 'x\n');
+      await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add x' });
+      return conv;
+    };
+    const del = (id: string) => t.app.inject({ method: 'DELETE', url: `/api/conversations/${id}`, headers: AUTH });
+
+    const unmerged = await pushed();
+    await del(unmerged.id);
+    await until(() => !existsSync(unmerged.worktree));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(branches()).toContain(unmerged.branch); // on the remote
+    expect(sh(t.repo, 'branch', '--list', unmerged.branch)).toContain(unmerged.branch); // and here
+
+    const merged = await pushed();
+    await t.call('POST', `/api/conversations/${merged.id}/git/merge`);
+    await del(merged.id);
+    await until(() => !branches().includes(merged.branch));
+    expect(sh(t.repo, 'branch', '--list', merged.branch)).toBe('');
+    expect(branches()).toContain(unmerged.branch);
+  });
+
+  it('keeps a merged branch on the remote when someone pushed more to it', async () => {
+    const t = await gitProject();
+    const bare = addRemote(t);
+    const conv = (await t.chat(true)).json();
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add b' });
+    await t.call('POST', `/api/conversations/${conv.id}/git/merge`);
+    // another clone adds a commit to the same remote branch
+    const other = join(t.base, 'other');
+    execFileSync('git', ['clone', '-q', '-b', conv.branch, bare, other]);
+    writeFileSync(join(other, 'c.txt'), 'c\n');
+    sh(other, 'add', '.');
+    sh(other, '-c', 'user.name=O', '-c', 'user.email=o@o', 'commit', '-q', '-m', 'more');
+    sh(other, 'push', '-q');
+
+    await t.app.inject({ method: 'DELETE', url: `/api/conversations/${conv.id}`, headers: AUTH });
+    await until(() => sh(t.repo, 'branch', '--list', conv.branch) === '');
+    await new Promise((r) => setTimeout(r, 500));
+    expect(sh(bare, 'log', '-1', '--format=%s', conv.branch)).toBe('more');
+  });
+
+  it('skips the push without a remote', async () => {
+    const t = await gitProject();
+    const conv = (await t.chat(false)).json();
+    writeFileSync(join(t.repo, 'a.txt'), 'two\n');
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'x' })).json().push).toEqual({ pushed: null });
+  });
+
+  it('keeps the commit when the push fails, and says why', async () => {
+    const t = await gitProject();
+    sh(t.repo, 'remote', 'add', 'origin', join(t.base, 'no-such-remote.git'));
+    const conv = (await t.chat(false)).json();
+    writeFileSync(join(t.repo, 'a.txt'), 'two\n');
+    const r = await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'fix: Keep me' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().push).toEqual({ pushed: null, error: expect.any(String) });
+    expect(sh(t.repo, 'log', '-1', '--format=%s')).toBe('fix: Keep me');
   });
 });

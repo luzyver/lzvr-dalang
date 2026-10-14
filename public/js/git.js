@@ -5,6 +5,9 @@ import { fileChange } from './chat.js';
 
 const MAX_DIFFS = 50; // more files than this are listed without their diff
 
+/** How the push after a commit or merge went, for the status line. */
+const pushNote = (p) => (!p ? '' : p.error ? ` · push failed: ${p.error}` : p.pushed ? ` · pushed to ${p.pushed}` : ' · not pushed (no remote)');
+
 /** git's two-letter status as the change kinds the diff view already labels. */
 function kindOf(status) {
   if (status === '??' || status[0] === 'A') return 'add';
@@ -60,7 +63,7 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
       const r = await api(`/api/conversations/${id}/git/commit`, {
         method: 'POST', body: { message: message.value.trim(), ...(picked().length < s.files.length && { paths: picked() }) },
       });
-      flash(`committed ${r.commit}`);
+      flash(`committed ${r.commit}${pushNote(r.push)}`);
     });
     const discard = after(async () => {
       if (!confirm('Throw away every uncommitted change in this folder, including new files? This cannot be undone.')) return false;
@@ -90,7 +93,7 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
     const merge = w && after(async () => {
       if (!confirm(`Merge ${w.branch} into ${w.into} in the project folder?`)) return false;
       const r = await api(`/api/conversations/${id}/git/merge`, { method: 'POST', body: { message: mergeMessage.value } });
-      flash(`merged into ${r.into}`);
+      flash(`merged into ${r.into}${pushNote(r.push)}`);
     });
 
     body.replaceChildren(

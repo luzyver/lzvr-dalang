@@ -252,8 +252,10 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
     const paths = req.body.paths ?? [];
     if (paths.length && !(await pick(c.cwd, paths, reply))) return;
+    // A commit goes straight to the remote too (a worktree chat's branch gets one there, ready for a Merge Request).
     try {
-      return { commit: await git.commit(c.cwd, req.body.message, paths) };
+      const commit = await git.commit(c.cwd, req.body.message, paths);
+      return { commit, push: await git.push(c.cwd) };
     } catch (e) { return gitFailed(reply, e); }
   });
 
@@ -335,7 +337,8 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const s = await git.status(c.cwd);
     if (s.repo && s.files.length) return reply.code(409).send({ error: 'the chat has uncommitted changes: commit or discard them first' });
     try {
-      return { into: await git.merge(c.project.path, c.conv.branch, message) };
+      const into = await git.merge(c.project.path, c.conv.branch, message);
+      return { into, push: await git.push(c.project.path) };
     } catch (e) { return gitFailed(reply, e); }
   });
 }

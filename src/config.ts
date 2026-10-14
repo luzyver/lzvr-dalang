@@ -25,6 +25,8 @@ export interface Config {
   vapidSubject?: string;
   /** A conversation messaging another one through MCP: hold for approval, or run straight away. */
   mcpCrossSend: 'approve' | 'auto';
+  /** Give new chats a short generated title (off: the first prompt is the title). */
+  autoTitle?: boolean;
   /** When set, every Codex turn is given this MCP endpoint plus a token bound to its conversation. */
   mcpUrl?: string;
 }
@@ -66,5 +68,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     origin: env.LZVR_ORIGIN || undefined,
     vapidSubject: env.LZVR_VAPID_SUBJECT || undefined,
     mcpCrossSend: env.MCP_CROSS_SEND === 'auto' ? 'auto' : 'approve',
+    autoTitle: env.AUTO_TITLE !== '0',
   };
 }

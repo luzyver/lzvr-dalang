@@ -10,11 +10,17 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Worktree per chat** (optional, git projects): "New chat in own worktree" in a project's `⋯` menu gives the chat a
   branch `dalang/<id>` from the project's HEAD, checked out under `<STATE_DIR>/worktrees/<chat id>`. Its agent works only
   there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
-  lost) and the branch too, unless it has commits that were never merged.
+  lost) and the branch too, locally and on the remote, unless it has commits that were never merged.
 - **Changes**: the branch button in a chat's header lists what git sees in the folder that chat works in, with each
   file's diff. Commit all or selected files, revert one file, discard everything, and for a worktree chat merge its branch
   into whatever the project folder has checked out (a conflict aborts the merge and leaves the folder as it was). These
   actions are refused while an agent is running in the same folder, and in `read-only` projects they are admin only.
+  A commit is **pushed right away** (to the branch's upstream, or to `origin` under the same name, which becomes its
+  upstream; a worktree chat's `dalang/<id>` branch thus appears on the remote, ready for a Merge Request), and so is the
+  target branch after a merge. Without a remote nothing is pushed; a failed push (credentials, rejected) is shown and the
+  local commit stays. The push uses the VM's own git credentials (SSH key or credential helper of the user Dalang runs as)
+  and never prompts. Deleting a worktree chat also deletes its branch on the remote, but only when it is merged into the
+  project folder's branch and nobody pushed more to it since; an unmerged branch stays there and locally.
   Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate message** asks
   the chat's own agent (same CLI and model) for a one-line Conventional Commit subject (`feat: Add ...`), given the
   selected diffs, the repo's recent commit subjects and the chat's last requests. For a worktree chat with commits to
@@ -158,6 +164,7 @@ delete the folder and its entry under `extra_homes` if you need to.
 | `MCP_CROSS_SEND` | `approve` | `auto` lets one chat message another through MCP without approval. |
 | `MCP_INJECT` | off | `1` gives every Codex turn this gateway's `/mcp` (see "MCP" below). Off by default; turn it on only after checking it works with your Codex version. |
 | `MCP_URL` | `http://127.0.0.1:<PORT>/mcp` | Where Codex should reach `/mcp` when `MCP_INJECT=1`. |
+| `AUTO_TITLE` | on | `0` turns off generated chat titles: the chat's agent gives each new chat a short title from its first prompt (one small read-only request, counted against the account's usage), else the first prompt is the title. |
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
 
 ### Security

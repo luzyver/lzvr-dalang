@@ -1,4 +1,4 @@
-// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt.
+// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
@@ -56,7 +56,7 @@ process.stdin.on('end', async () => {
   }
   out({
     type: 'item.completed',
-    item: { type: 'agent_message', text: process.env.FAKE_ECHO_ARGS ? JSON.stringify(args) : input, args, home, mcpToken: process.env.LZVR_MCP_TOKEN, leaked: process.env.LZVR_TOKEN },
+    item: { type: 'agent_message', text: process.env.FAKE_ANSWER ?? (process.env.FAKE_ECHO_ARGS ? JSON.stringify(args) : input), args, home, mcpToken: process.env.LZVR_MCP_TOKEN, leaked: process.env.LZVR_TOKEN },
   });
   out({
     type: 'turn.completed',

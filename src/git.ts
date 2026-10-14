@@ -43,15 +43,26 @@ export async function addWorktree(repo: string, dir: string, branch: string): Pr
 }
 
 /**
- * Remove a chat's worktree. Its branch goes too when nothing on it is lost (`branch -d` refuses an unmerged branch,
- * which then stays for a human to look at).
+ * Remove a chat's worktree. Its branch goes too, locally and on the remote it was pushed to, but only when everything on
+ * it is in what the project folder has checked out; an unmerged branch stays in both places for a human to look at.
  */
 export async function removeWorktree(repo: string, dir: string, branch: string | null): Promise<void> {
   await git(repo, ['worktree', 'remove', '--force', dir]).catch(() => {
     rmSync(dir, { recursive: true, force: true }); // repo gone or already pruned: at least free the folder
     return git(repo, ['worktree', 'prune']).catch(() => '');
   });
-  if (branch) await git(repo, ['branch', '-d', branch]).catch(() => '');
+  if (!branch) return;
+  // Not `branch -d`: once pushed, the branch counts as merged into its own upstream, which says nothing about main.
+  const merged = await git(repo, ['merge-base', '--is-ancestor', branch, 'HEAD']).then(() => true, () => false);
+  if (!merged) return;
+  const cfg = (key: string) => git(repo, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
+  const [remote, ref, tip] = await Promise.all([cfg('remote'), cfg('merge'), git(repo, ['rev-parse', branch]).then((v) => v.trim(), () => '')]);
+  await git(repo, ['branch', '-D', branch]).catch(() => ''); // its upstream settings go with it, hence read first
+  // The lease deletes the remote branch only while it still points where ours did: if someone pushed more to it, it stays.
+  if (remote && ref && tip) {
+    await git(repo, ['push', `--force-with-lease=${ref}:${tip}`, remote, `:${ref}`], 120_000)
+      .catch((e: Error) => console.warn(`kept ${remote}/${ref.replace(/^refs\/heads\//, '')}: ${e.message}`));
+  }
 }
 
 export interface GitFile {
@@ -111,6 +122,33 @@ export async function commit(cwd: string, message: string, paths: string[]): Pro
   await git(cwd, ['add', '-A', '--', ...(paths.length ? paths : ['.'])]);
   await git(cwd, [...(await identity(cwd)), 'commit', '-m', message]);
   return (await git(cwd, ['rev-parse', '--short', 'HEAD'])).trim();
+}
+
+export interface PushResult {
+  /** Where it went (`origin/main`), or null when the repo has no remote or HEAD is detached. */
+  pushed: string | null;
+  /** Set when the push itself failed; the commit or merge before it still stands. */
+  error?: string;
+}
+
+/**
+ * Push the checked-out branch: to its upstream when it has one, otherwise to `origin` (or the only remote) under the
+ * same name, which then becomes its upstream. Never throws: a failed push is reported, the local commit stays.
+ */
+export async function push(cwd: string): Promise<PushResult> {
+  const branch = await currentBranch(cwd);
+  const remotes = (await git(cwd, ['remote']).catch(() => '')).split('\n').map((r) => r.trim()).filter(Boolean);
+  if (!branch || !remotes.length) return { pushed: null };
+  const cfg = (key: string) => git(cwd, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
+  const [upstreamRemote, upstreamRef] = await Promise.all([cfg('remote'), cfg('merge')]);
+  const remote = upstreamRemote || (remotes.includes('origin') ? 'origin' : remotes[0]!);
+  const target = upstreamRef || `refs/heads/${branch}`;
+  try {
+    await git(cwd, ['push', ...(upstreamRef ? [] : ['-u']), remote, `${branch}:${target}`], 120_000);
+    return { pushed: `${remote}/${target.replace(/^refs\/heads\//, '')}` };
+  } catch (e) {
+    return { pushed: null, error: (e as Error).message };
+  }
 }
 
 /** Put the given files back as they are in HEAD; untracked ones are deleted. */

@@ -58,8 +58,10 @@ export interface UserSummary { id: string; name: string; role: Role; createdAt: 
 export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
-  /** First prompt of the chat (list only), for display. */
+  /** For display: the title the agent gave the chat, or else the start of its first prompt (null before any). */
   title?: string | null;
+  /** The generated title alone (null until one exists). */
+  auto_title?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
   /** Codex model for this chat; empty = Codex's own default. */
   model: string;
@@ -79,6 +81,8 @@ export interface Turn {
   usage: string | null; started_at: string; ended_at: string | null;
 }
 export interface StoredEvent { id: number; conversation_id: string; type: string; payload: string; created_at: string }
+
+const TITLE = `COALESCE(c.auto_title, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1))`;
 
 interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
@@ -101,6 +105,7 @@ export class Store {
     this.ensureColumn('conversations', 'worktree', 'TEXT');
     this.ensureColumn('conversations', 'branch', 'TEXT');
     this.ensureColumn('conversations', 'base_branch', 'TEXT');
+    this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -213,9 +218,10 @@ export class Store {
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
-    return this.all('SELECT c.*, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1) AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid', projectId);
+    return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
   }
-  getConversation(id: string): Conversation | null { return this.get('SELECT * FROM conversations WHERE id=?', id); }
+  getConversation(id: string): Conversation | null { return this.get(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE id=?`, id); }
+  setTitle(id: string, title: string): void { this.run('UPDATE conversations SET auto_title=? WHERE id=?', title, id); }
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
   }

@@ -8,7 +8,7 @@ import { runTurn } from './codex.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
-import type { QueueItem, Store } from './store.js';
+import type { Conversation, QueueItem, Store } from './store.js';
 import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -28,6 +28,8 @@ export interface DispatcherOpts {
   limitRe?: RegExp;
   /** When set, each turn gets this MCP endpoint and a token bound to its conversation (see issueMcpToken). */
   mcpUrl?: string;
+  /** Have the chat's agent give each new chat a short title from its first prompt (else the prompt itself is the title). */
+  autoTitle?: boolean;
   /** Called after every turn (completed, failed or cancelled), e.g. to send a push notification. */
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
@@ -54,6 +56,13 @@ export function parseClaudeModels(out: string): ModelInfo[] {
     }));
   }
   return [];
+}
+
+/** The first line of an answer, without the quotes, heading marks or final full stop agents like to add. */
+export function cleanTitle(answer: string): string {
+  const line = answer.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  const bare = (s: string) => s.replace(/^["'`*]+|["'`*]+$/g, '').replace(/[.!。]+$/, '').trim();
+  return bare(bare(line.replace(/^(?:#+\s*)?(?:title:\s*)?/i, ''))).slice(0, 80); // twice: `"Fix it".` as well as `"Fix it."`
 }
 
 export class Dispatcher {
@@ -220,6 +229,21 @@ export class Dispatcher {
     throw new Error(error);
   }
 
+  /** Ask for a short title for a chat from its first prompt and store it. On failure the first prompt stays the title. */
+  private async titleChat(conv: Conversation, turnId: number, cwd: string, prompt: string): Promise<void> {
+    const ask = 'Write a short title for a chat that starts with the request below: at most 6 words, in the same language '
+      + 'as the request, naming what it is about. No quotes, no punctuation at the end. Do not run any tools. Reply with the '
+      + `title only.\n\nRequest:\n${prompt.slice(0, 4000)}`;
+    try {
+      const title = cleanTitle(await this.ask(conv.backend, ask, { cwd, model: conv.model, effort: conv.effort, timeoutMs: 60_000 }));
+      if (!title || !this.store.getConversation(conv.id)) return; // nothing usable, or the chat was deleted meanwhile
+      this.store.setTitle(conv.id, title);
+      this.emit(conv.id, turnId, { type: 'conversation.title', title });
+    } catch (e) {
+      console.warn(`could not title chat ${conv.id}: ${(e as Error).message}`);
+    }
+  }
+
   private emit(convId: string, turnId: number, ev: CodexEvent | { type: 'turn.status'; status: 'idle' | 'failed' }): void {
     const payload = (ev as { [RAW]?: string })[RAW] ?? JSON.stringify(ev);
     const id = this.store.addEvent(turnId, ev.type, payload);
@@ -265,6 +289,9 @@ export class Dispatcher {
     const turnId = this.store.startTurn(convId, item.prompt);
     this.store.setStatus(convId, 'running');
     this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt }); // so replayed history shows what was asked
+    if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
+      void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
+    }
     let failed = false;
     let usage: unknown = null;
     let lastMessage = '';

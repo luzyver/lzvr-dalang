@@ -15,6 +15,7 @@ const push = new Push(store, { subject: cfg.vapidSubject ?? (cfg.origin ? cfg.or
 const dispatcher = new Dispatcher(store, {
   homes: [], // no account exists until an admin adds one in the panel; they are loaded from the database just below
   command: cfg.codexCommand, claudeCommand: cfg.claudeCommand, blockMs: cfg.limitBlockMs, limitRe: cfg.limitRegex, mcpUrl: cfg.mcpUrl,
+  autoTitle: cfg.autoTitle,
   onTurnEnd: (e) => push.notifyTurn(e),
 });
 
