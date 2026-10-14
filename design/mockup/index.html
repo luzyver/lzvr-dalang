@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en" data-palette="jade" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dalang — redesign mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<div class="app preload" id="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-top">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 2.5c3.6 2.8 6 6.3 6 10.2a6 6 0 0 1-12 0c0-3.9 2.4-7.4 6-10.2Z"/><path d="M12 9v12"/></svg>
+        </span>
+        <span class="brand-name">Dalang</span>
+      </div>
+      <button class="icon-btn" data-action="toggle-sidebar" aria-label="Collapse sidebar"><i class="i i-panel-left"></i></button>
+    </div>
+
+    <button class="search-trigger" data-action="palette">
+      <i class="i i-search"></i><span>Search or run a command</span><kbd>⌘K</kbd>
+    </button>
+
+    <nav class="side-nav">
+      <a class="nav-item"><i class="i i-clock"></i>Scheduled<span class="count">4</span></a>
+      <a class="nav-item"><i class="i i-shield-check"></i>Approvals<span class="count attention">1</span></a>
+    </nav>
+
+    <div class="side-section">
+      <div class="section-head"><span>Projects</span><button class="icon-btn sm" aria-label="Add project"><i class="i i-plus"></i></button></div>
+
+      <div class="project open">
+        <div class="project-row">
+          <i class="i i-chevron-down caret"></i>
+          <span class="project-name">dalang</span>
+          <span class="project-meta">read-write</span>
+          <button class="icon-btn sm ghost-hover" aria-label="New chat"><i class="i i-plus"></i></button>
+        </div>
+        <div class="chats">
+          <a class="chat active"><span class="dot running"></span><span class="chat-title">Redesign the panel UI</span><i class="i i-git-branch tiny"></i></a>
+          <a class="chat"><span class="dot"></span><span class="chat-title">MR description prompt tweaks</span><span class="when">2h</span></a>
+          <a class="chat"><span class="dot failed"></span><span class="chat-title">Fix flaky dispatcher test</span><span class="when">1d</span></a>
+          <a class="chat"><span class="dot"></span><span class="chat-title">Nightly npm audit summary</span><i class="i i-clock tiny"></i></a>
+        </div>
+      </div>
+
+      <div class="project open">
+        <div class="project-row">
+          <i class="i i-chevron-down caret"></i>
+          <span class="project-name">datahive-api</span>
+          <span class="badge-cc">CC</span>
+          <button class="icon-btn sm ghost-hover" aria-label="New chat"><i class="i i-plus"></i></button>
+        </div>
+        <div class="chats">
+          <a class="chat"><span class="dot waiting"></span><span class="chat-title">Migrate auth to passkeys</span><span class="pill-mini">needs input</span></a>
+          <a class="chat"><span class="dot"></span><span class="chat-title">Pagination for /v2/events</span><span class="when">3d</span></a>
+        </div>
+      </div>
+
+      <div class="project">
+        <div class="project-row">
+          <i class="i i-chevron-right caret"></i>
+          <span class="project-name">infra-terraform</span>
+          <span class="project-meta">read-only</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="side-bottom">
+      <div class="usage">
+        <div class="usage-row"><span>Codex · ahu.satu</span><span class="dim">62%</span></div>
+        <div class="meter"><span style="--v:62%"></span></div>
+      </div>
+      <div class="user-row">
+        <span class="avatar">A</span>
+        <div class="user-meta"><strong>ahu.satu</strong><span>admin</span></div>
+        <button class="icon-btn" data-action="settings" aria-label="Settings"><i class="i i-settings"></i></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN / THREAD ============ -->
+  <main class="main">
+    <header class="chat-head">
+      <button class="icon-btn mobile-only" data-action="toggle-sidebar" aria-label="Open sidebar"><i class="i i-panel-left"></i></button>
+      <div class="crumbs">
+        <span class="crumb-project">dalang</span>
+        <i class="i i-chevron-right tiny dim"></i>
+        <span class="crumb-title">Redesign the panel UI</span>
+      </div>
+      <span class="backend">Codex</span>
+      <span class="status running"><i class="i i-loader-circle spin"></i>Running · 2m 14s</span>
+      <div class="head-spacer"></div>
+      <button class="icon-btn" aria-label="Scheduled prompts"><i class="i i-clock"></i></button>
+      <button class="branch-btn" data-action="inspector" data-tab="changes"><i class="i i-git-branch"></i><span>dalang/k3f9</span><span class="branch-count">3</span></button>
+      <button class="icon-btn" data-action="inspector" aria-label="Toggle inspector"><i class="i i-panel-right"></i></button>
+    </header>
+
+    <div class="thread" id="thread">
+      <div class="thread-inner">
+
+        <div class="msg user">
+          <div class="bubble">Redesign the chat header so the run status, the account in use and the branch are visible at a glance. Keep it CSP-safe.</div>
+          <div class="msg-meta">ahu.satu · 10:42</div>
+        </div>
+
+        <details class="turn" open>
+          <summary>
+            <i class="i i-chevron-right caret"></i>
+            <span>Worked for 1m 42s</span><span class="dim">· 6 steps · 3 files edited</span>
+          </summary>
+          <ol class="steps">
+            <li class="step"><i class="i i-search"></i><span class="step-label">Searched</span><code>chathead|chat-state</code><span class="step-time">0.4s</span></li>
+            <li class="step"><i class="i i-terminal"></i><span class="step-label">Ran</span><code>sed -n 1,80p public/js/chat-view.js</code><span class="step-time">0.1s</span></li>
+            <li class="step open">
+              <div class="step-line"><i class="i i-terminal"></i><span class="step-label">Ran</span><code>npm test -- panel</code><span class="step-ok"><i class="i i-check"></i>exit 0</span><span class="step-time">8.2s</span></div>
+              <pre class="output"><span class="dim">✓ test/panel.test.ts (6 tests) 412ms</span>
+ Test Files  1 passed (1)
+      Tests  6 passed (6)</pre>
+            </li>
+            <li class="step"><i class="i i-file-pen"></i><span class="step-label">Edited</span><code>public/js/chat-view.js</code><span class="diffstat"><b class="add">+38</b><b class="del">−12</b></span></li>
+            <li class="step"><i class="i i-file-pen"></i><span class="step-label">Edited</span><code>public/app.css</code><span class="diffstat"><b class="add">+21</b><b class="del">−4</b></span></li>
+            <li class="step"><i class="i i-file-plus"></i><span class="step-label">Created</span><code>public/icons/gauge.svg</code><span class="diffstat"><b class="add">+12</b></span></li>
+          </ol>
+        </details>
+
+        <div class="msg agent">
+          <p>The header now has three zones: <strong>context</strong> (project / chat), <strong>run state</strong> and <strong>git</strong>. The status pill shows the elapsed time while a turn runs and the account that is serving it.</p>
+          <ul>
+            <li>Status uses the semantic tokens <code>--ok</code>, <code>--warn</code> and <code>--err</code>, so it follows the theme.</li>
+            <li>The branch button opens the Changes tab in the inspector instead of replacing the chat.</li>
+          </ul>
+          <div class="code">
+            <div class="code-head"><span>public/js/chat-view.js</span><button class="icon-btn sm" aria-label="Copy"><i class="i i-copy"></i></button></div>
+<pre><span class="k">const</span> status = h(<span class="s">'span'</span>, { <span class="p">class</span>: <span class="s">`status ${conv.status}`</span> },
+  icon(conv.status === <span class="s">'running'</span> ? <span class="s">'loader-circle'</span> : <span class="s">'circle-check'</span>),
+  <span class="f">elapsed</span>(conv.startedAt));   <span class="c">// ticks every second while running</span>
+<span class="k">return</span> h(<span class="s">'header'</span>, { <span class="p">class</span>: <span class="s">'chat-head'</span> }, crumbs, backend, status);</pre>
+          </div>
+          <div class="msg-actions">
+            <button class="icon-btn sm" aria-label="Copy answer"><i class="i i-copy"></i></button>
+            <span class="dim small">gpt-5.5-codex · high · 14.2k tokens</span>
+          </div>
+        </div>
+
+        <div class="card approval">
+          <div class="card-icon"><i class="i i-shield-check"></i></div>
+          <div class="card-body">
+            <strong>“Fix flaky dispatcher test” wants to message this chat</strong>
+            <p class="dim">“The dispatcher now emits <code>turn_end</code> after the push. Can you re-run the panel tests on your branch?”</p>
+            <div class="card-actions"><button class="btn primary sm">Approve</button><button class="btn sm">Decline</button></div>
+          </div>
+        </div>
+
+        <div class="live">
+          <i class="i i-loader-circle spin"></i>
+          <span>Running</span><code>npm run typecheck</code><span class="dim">· 12s</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="queue">
+        <span class="queue-label">Queued</span>
+        <span class="chip">Run lint after this turn<button aria-label="Remove"><i class="i i-x"></i></button></span>
+        <span class="chip">Then generate an MR description<button aria-label="Remove"><i class="i i-x"></i></button></span>
+      </div>
+      <div class="composer">
+        <textarea rows="2" placeholder="Message Codex… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <div class="composer-bar">
+          <button class="icon-btn" aria-label="Attach files"><i class="i i-paperclip"></i></button>
+          <button class="select-chip"><i class="i i-cpu"></i>gpt-5.5-codex<i class="i i-chevron-down tiny"></i></button>
+          <button class="select-chip"><i class="i i-brain"></i>high<i class="i i-chevron-down tiny"></i></button>
+          <span class="select-chip static"><i class="i i-shield-check"></i>workspace-write</span>
+          <div class="head-spacer"></div>
+          <button class="btn sm stop"><i class="i i-square"></i>Stop</button>
+          <button class="send" aria-label="Send"><i class="i i-arrow-up"></i></button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ INSPECTOR ============ -->
+  <aside class="inspector" id="inspector">
+    <div class="insp-head">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="changes">Changes <span class="tab-count">3</span></button>
+        <button class="tab" data-tab="schedules">Schedules <span class="tab-count">1</span></button>
+        <button class="tab" data-tab="info">Info</button>
+      </div>
+      <button class="icon-btn" data-action="inspector" aria-label="Close inspector"><i class="i i-x"></i></button>
+    </div>
+
+    <div class="insp-body" data-pane="changes">
+      <div class="branch-card">
+        <div class="branch-line"><i class="i i-git-branch"></i><code>dalang/k3f9</code><i class="i i-chevron-right tiny dim"></i><code>master</code></div>
+        <div class="dim small">2 commits ahead · worktree · pushed to origin</div>
+        <a class="mr-link"><i class="i i-git-pull-request"></i>!42 Redesign the panel header<i class="i i-external-link tiny"></i></a>
+      </div>
+
+      <div class="file-list">
+        <div class="file-list-head"><label class="check"><input type="checkbox" checked><span>3 files</span></label><span class="dim small">+71 −16</span></div>
+        <label class="file selected"><input type="checkbox" checked><span class="fstat m">M</span><span class="fpath"><span class="dim">public/js/</span>chat-view.js</span><span class="diffstat"><b class="add">+38</b><b class="del">−12</b></span></label>
+        <label class="file"><input type="checkbox" checked><span class="fstat m">M</span><span class="fpath"><span class="dim">public/</span>app.css</span><span class="diffstat"><b class="add">+21</b><b class="del">−4</b></span></label>
+        <label class="file"><input type="checkbox" checked><span class="fstat a">A</span><span class="fpath"><span class="dim">public/icons/</span>gauge.svg</span><span class="diffstat"><b class="add">+12</b></span></label>
+      </div>
+
+      <div class="diff">
+        <div class="diff-toolbar">
+          <code>public/js/chat-view.js</code>
+          <div class="seg"><button class="active">Unified</button><button>Split</button></div>
+          <button class="icon-btn sm" aria-label="Revert file"><i class="i i-undo-2"></i></button>
+        </div>
+        <div class="hunk-head">@@ -18,9 +18,14 @@ export function chatView(…)</div>
+        <table class="lines">
+          <tr class="ctx"><td>18</td><td>18</td><td>  <span class="k">const</span> chatTitle = h(<span class="s">'strong'</span>, …);</td></tr>
+          <tr class="del"><td>19</td><td></td><td>  <span class="k">const</span> chatState = h(<span class="s">'span'</span>, { <span class="p">class</span>: <span class="s">'chat-state'</span> }, status);</td></tr>
+          <tr class="add"><td></td><td>19</td><td>  <span class="k">const</span> status = h(<span class="s">'span'</span>, { <span class="p">class</span>: <span class="s">`status ${s}`</span> },</td></tr>
+          <tr class="add"><td></td><td>20</td><td>    icon(<span class="s">'loader-circle'</span>), <span class="f">elapsed</span>(conv.startedAt));</td></tr>
+          <tr class="add"><td></td><td>21</td><td>  <span class="k">const</span> backend = h(<span class="s">'span'</span>, { <span class="p">class</span>: <span class="s">'backend'</span> }, name);</td></tr>
+          <tr class="ctx"><td>20</td><td>22</td><td>  <span class="c">// What git sees in the folder this chat works in.</span></td></tr>
+          <tr class="ctx"><td>21</td><td>23</td><td>  <span class="k">const</span> changesBtn = h(<span class="s">'button'</span>, …);</td></tr>
+        </table>
+      </div>
+
+      <div class="commit-box">
+        <div class="field-head"><span>Commit message</span><button class="btn ghost sm"><i class="i i-sparkles"></i>Generate</button></div>
+        <textarea rows="2">feat: Show run state, account and branch in the chat header</textarea>
+        <div class="commit-actions">
+          <button class="btn primary"><i class="i i-git-commit-horizontal"></i>Commit &amp; push</button>
+          <button class="btn"><i class="i i-git-pull-request"></i>Create MR</button>
+          <div class="head-spacer"></div>
+          <button class="btn ghost danger sm"><i class="i i-trash-2"></i>Discard all</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="insp-body" data-pane="schedules" hidden>
+      <div class="sched">
+        <div class="sched-top"><strong>Nightly npm audit summary</strong><label class="switch"><input type="checkbox" checked><span></span></label></div>
+        <code class="cron">0 2 * * *</code>
+        <div class="dim small">At 02:00 AM, every day · next in 15h 18m</div>
+        <div class="sched-actions"><button class="btn sm"><i class="i i-play"></i>Run now</button><button class="btn ghost sm">Edit</button></div>
+      </div>
+      <button class="btn dashed"><i class="i i-plus"></i>New schedule</button>
+    </div>
+
+    <div class="insp-body" data-pane="info" hidden>
+      <dl class="info">
+        <dt>Backend</dt><dd>Codex CLI</dd>
+        <dt>Account</dt><dd>ahu.satu (failover: dev-2)</dd>
+        <dt>Folder</dt><dd><code>state/worktrees/k3f9</code></dd>
+        <dt>Sandbox</dt><dd>workspace-write</dd>
+        <dt>Session</dt><dd><code>019a…4e2c</code></dd>
+        <dt>Created</dt><dd>14 Oct 2026, 10:41</dd>
+      </dl>
+    </div>
+  </aside>
+
+  <div class="scrim" data-action="close-overlays"></div>
+</div>
+
+<!-- ============ COMMAND PALETTE ============ -->
+<dialog class="palette" id="palette">
+  <div class="palette-input"><i class="i i-search"></i><input placeholder="Search chats or type a command…" value="audit"><kbd>Esc</kbd></div>
+  <div class="palette-list">
+    <div class="group-label">Chats</div>
+    <a class="palette-item active"><i class="i i-clock"></i><div><strong>Nightly npm <mark>audit</mark> summary</strong><span class="dim small">dalang · “…3 moderate vulnerabilities, all in dev dependencies…”</span></div><kbd>↵</kbd></a>
+    <a class="palette-item"><i class="i i-bot"></i><div><strong>Migrate auth to passkeys</strong><span class="dim small">datahive-api · “…the <mark>audit</mark> log keeps the credential id…”</span></div></a>
+    <div class="group-label">Actions</div>
+    <a class="palette-item"><i class="i i-plus"></i><div><strong>New chat in dalang</strong></div><kbd>N</kbd></a>
+    <a class="palette-item"><i class="i i-git-branch"></i><div><strong>Open Changes</strong></div><kbd>G C</kbd></a>
+    <a class="palette-item"><i class="i i-settings"></i><div><strong>Settings: Codex accounts</strong></div></a>
+  </div>
+</dialog>
+
+<!-- ============ SETTINGS MODAL ============ -->
+<dialog class="settings" id="settings">
+  <nav class="settings-nav">
+    <div class="group-label">Settings</div>
+    <a class="active"><i class="i i-palette"></i>Appearance</a>
+    <a><i class="i i-cpu"></i>Defaults</a>
+    <a><i class="i i-sparkles"></i>Generate prompts</a>
+    <a><i class="i i-user"></i>Codex accounts</a>
+    <a><i class="i i-bot"></i>Claude Code accounts</a>
+    <a><i class="i i-user"></i>Users</a>
+    <a><i class="i i-bell"></i>Notifications &amp; passkeys</a>
+  </nav>
+  <div class="settings-body">
+    <div class="settings-head"><h2>Appearance</h2><button class="icon-btn" data-action="close-settings" aria-label="Close"><i class="i i-x"></i></button></div>
+    <div class="field">
+      <div class="field-label">Theme</div>
+      <div class="seg" data-control="theme"><button data-v="light"><i class="i i-sun"></i>Light</button><button data-v="dark"><i class="i i-moon"></i>Dark</button><button data-v="system"><i class="i i-monitor"></i>System</button></div>
+    </div>
+    <div class="field">
+      <div class="field-label">Accent palette</div>
+      <div class="swatches" data-control="palette">
+        <button data-v="jade"><span class="sw sw-jade"></span><span><strong>Jade × Sage</strong><span class="dim small">Calm, close to today's teal</span></span></button>
+        <button data-v="iris"><span class="sw sw-iris"></span><span><strong>Iris × Slate</strong><span class="dim small">Cool, Linear-like</span></span></button>
+        <button data-v="amber"><span class="sw sw-amber"></span><span><strong>Blencong × Sand</strong><span class="dim small">Warm lamp of the wayang</span></span></button>
+      </div>
+    </div>
+    <div class="field">
+      <div class="field-label">Density</div>
+      <div class="seg"><button class="active">Comfortable</button><button>Compact</button></div>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ MOCKUP CONTROLS (not part of the design) ============ -->
+<div class="mock-controls">
+  <span>Mockup</span>
+  <div class="seg" data-control="palette"><button data-v="jade">Jade</button><button data-v="iris">Iris</button><button data-v="amber">Blencong</button></div>
+  <div class="seg" data-control="theme"><button data-v="light">Light</button><button data-v="dark">Dark</button><button data-v="system">Auto</button></div>
+  <button class="btn sm" data-action="palette">⌘K</button>
+  <button class="btn sm" data-action="settings">Settings</button>
+</div>
+
+<script src="mockup.js"></script>
+</body>
+</html>

@@ -1,180 +1,165 @@
-// An open chat: header (Changes, schedules, status), the live log, and the composer with queue, model and effort.
-import { h, icon } from './dom.js';
+// An open chat: the header (context, run state, branch), the thread and the composer. Its state lives in `chat`, which
+// the inspector (Changes, Schedules, Info) reads too.
+import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
+import { batch, signal } from '../vendor/signals.js';
+import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { startStream, renderEvent } from './chat.js';
-import { changesPage } from './git.js';
-import { schedulesPage } from './schedules.js';
+import { Icon } from './ui.js';
+import { approvals, findConv, patchConv, route, toggleInspector, toggleSidebar, ui } from './store.js';
+import { startStream, ThreadModel } from './stream.js';
+import { Block, Elapsed, Live } from './thread.js';
+import { Composer } from './composer.js';
+import { ApprovalCard } from './approvals.js';
 
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** The open chat, shared with the inspector. `version` goes up whenever the thread model changed. */
+export const chat = {
+  id: signal(null),
+  conv: signal(null),
+  git: signal(null),
+  queue: signal([]),
+  version: signal(0),
+  model: new ThreadModel(),
+};
 
-/**
- * `lookup(id)` gives `{ project, conv }` from the sidebar's lists; `conv` is updated in place and `onUpdate` called when
- * its status or title changed. `onChange` runs after the Changes page changed files. `focusEvent`: the id of a message to
- * scroll to and mark (from a search result). Returns the nodes for the main area and a function that stops the stream.
- */
-export function chatView({ id, focusEvent, lookup, guarded, flash, openPage, close, onChange, onUpdate }) {
-  const { project, conv: initial } = lookup(id) || {};
-  const chatTitle = h('strong', { class: 'chat-title', title: initial?.title || 'New conversation' }, initial?.title || 'New conversation');
-  const chatProject = h('span', { class: 'chat-project' }, project?.name || 'Project');
-  const chatState = h('span', { class: `chat-state ${initial?.status || 'idle'}` }, initial?.status || 'idle');
-  // What git sees in the folder this chat's agent works in; hidden when that folder is not a repository.
-  const changesBtn = h('button', { class: 'changes-btn', hidden: true, title: 'Uncommitted changes: review, commit, revert', onclick: () =>
-    openPage(changesPage({ id, guarded, flash, close, onChange })) },
-    icon('git-branch'), h('span', {}, initial?.branch || 'Changes'));
-  const refreshChanges = async () => {
-    const s = await api(`/api/conversations/${id}/git`);
-    changesBtn.hidden = !s.repo;
-    if (s.repo) changesBtn.lastChild.textContent = `${s.branch || 'HEAD'}${s.files.length ? ` · ${s.files.length} changed` : ''}`;
+export async function refreshConv(id = chat.id.value) {
+  const c = await api(`/api/conversations/${id}`);
+  if (chat.id.value !== id) return;
+  chat.conv.value = c;
+  patchConv(id, { status: c.status, ...(c.title && { title: c.title }) });
+}
+export async function refreshQueue(id = chat.id.value) {
+  const q = await api(`/api/conversations/${id}/queue`);
+  if (chat.id.value === id) chat.queue.value = q;
+}
+export async function refreshGit(id = chat.id.value) {
+  const s = await api(`/api/conversations/${id}/git`);
+  if (chat.id.value === id) chat.git.value = s;
+}
+
+const TURN_END = new Set(['turn.completed', 'turn.failed', 'turn.status', 'process.exit', 'user.prompt']);
+
+function ChatHead({ project, conv }) {
+  chat.version.value; // the running turn's start and account come from the thread model
+  const c = chat.conv.value || conv;
+  const git = chat.git.value;
+  const status = c?.status || 'idle';
+  const backend = (c?.backend || project?.backend) === 'claude' ? 'Claude Code' : 'Codex';
+  return html`<header class="chat-head">
+    <button class="icon-btn sidebar-toggle" aria-label="Show sidebar" title="Sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
+    <div class="crumbs">
+      <span class="crumb-project">${project?.name}</span>
+      <${Icon} name="chevron-right" class="tiny dim crumb-sep" />
+      <span class="crumb-title" title=${c?.title || 'New chat'}>${c?.title || 'New chat'}</span>
+    </div>
+    <span class="backend" title="Agent">${backend}</span>
+    ${status === 'running' && html`<span class="status running" title=${chat.model.account ? `on account ${chat.model.account}` : ''}>
+      <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
+    ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
+    <div class="spacer"></div>
+    <button class="icon-btn" aria-label="Scheduled prompts" title="Scheduled prompts" onClick=${() => toggleInspector(true, 'schedules')}><${Icon} name="clock" /></button>
+    ${git?.repo && html`<button class="branch-btn" title="Changes: review, commit, revert" onClick=${() => toggleInspector(true, 'changes')}>
+      <${Icon} name="git-branch" /><span class="branch-name">${git.branch || 'HEAD'}</span>
+      ${git.files.length > 0 && html`<span class="branch-count">${git.files.length}</span>`}
+    </button>`}
+    <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
+  </header>`;
+}
+
+export function ChatView({ id, focusEvent }) {
+  const found = findConv(id);
+  const scroller = useRef(null);
+  const stick = useRef(true); // follow new output while the user is at the bottom
+  const pinned = useRef(0); // a search hit was just scrolled to: the replay after it must not scroll it away
+  const [hitShown, setHitShown] = useState(false);
+
+  // Reset during render, not in an effect, so the first frame of a newly opened chat never shows the previous one.
+  if (chat.id.peek() !== id) {
+    batch(() => {
+      chat.id.value = id;
+      chat.conv.value = found?.conv || null;
+      chat.git.value = null;
+      chat.queue.value = [];
+      chat.model = new ThreadModel();
+      chat.version.value++;
+    });
+  }
+
+  useEffect(() => {
+    stick.current = true;
+    setHitShown(false);
+    let frame = 0;
+    let pending = [];
+    // Many events arrive at once while the history replays: fold them in once per frame.
+    const flush = () => {
+      frame = 0;
+      const events = pending;
+      pending = [];
+      chat.model.apply(events);
+      chat.version.value++;
+      if (events.some((e) => TURN_END.has(e.type))) {
+        refreshQueue(id).catch(() => {});
+        refreshConv(id).catch(() => {});
+      }
+      if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
+      if (events.some((e) => e.type === 'conversation.title')) refreshConv(id).catch(() => {});
+    };
+    const stop = startStream(id, (events) => {
+      pending.push(...events);
+      frame ||= requestAnimationFrame(flush);
+    });
+    refreshConv(id).catch(() => {});
+    refreshQueue(id).catch(() => {});
+    refreshGit(id).catch(() => {});
+    return () => {
+      stop();
+      cancelAnimationFrame(frame);
+      if (chat.id.peek() === id) chat.id.value = null; // reopening it later replays the stream into a fresh model
+    };
+  }, [id]);
+
+  const version = chat.version.value;
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (focusEvent && !hitShown) {
+      const hit = el.querySelector(`[data-event="${focusEvent}"]`);
+      if (hit) {
+        hit.scrollIntoView({ block: 'center' });
+        pinned.current = Date.now() + 2000;
+        stick.current = false;
+        setHitShown(true);
+        return;
+      }
+    }
+    if (stick.current && Date.now() > pinned.current) el.scrollTop = el.scrollHeight;
+  }, [version]);
+
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
-  const schedulesBtn = h('button', { class: 'iconbtn', title: 'Scheduled prompts for this chat', 'aria-label': 'Scheduled prompts', onclick: () =>
-    openPage(schedulesPage({ convId: id, guarded, flash, close })) }, icon('clock'));
-  const chatHead = h('div', { class: 'chathead' },
-    h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle),
-    h('div', { class: 'chat-tools' }, schedulesBtn), changesBtn, chatState);
-  const log = h('div', { class: 'log' });
-  const queueBox = h('div', { class: 'queue' });
-  const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
-  const files = h('input', { type: 'file', multiple: true });
 
-  // Model and effort: '' follows the global default, which is shown as the first option.
-  let modelList = [];
-  let currentModel = '';
-  let currentEffort = '';
-  let globalModel = '';
-  let globalEffort = '';
-  let backendName = 'Codex';
-  const model = h('select', { title: 'Model', onchange: guarded(async () => {
-    currentModel = model.value;
-    updateEffortOptions();
-    await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: currentModel } });
-    flash(currentModel ? `model: ${currentModel}` : 'using global model default');
-  }) });
-  const effort = h('select', { title: 'Reasoning effort', onchange: guarded(async () => {
-    currentEffort = effort.value;
-    await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: currentEffort } });
-    flash(currentEffort ? `effort: ${currentEffort}` : 'effort: default');
-  }) });
-  function updateModelOptions() {
-    const options = [h('option', { value: '' }, globalModel || `${backendName} default`), ...modelList.filter((m) => m.slug !== globalModel).map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
-    if (currentModel && currentModel !== globalModel && !modelList.some((m) => m.slug === currentModel)) options.push(h('option', { value: currentModel }, currentModel));
-    model.replaceChildren(...options);
-    model.value = currentModel === globalModel ? '' : currentModel;
-  }
-  function updateEffortOptions() {
-    const supported = modelList.find((m) => m.slug === (model.value || globalModel))?.efforts;
-    const choices = (supported?.length ? supported : EFFORTS).filter((v) => v !== globalEffort);
-    const selectedEffort = currentEffort === globalEffort ? '' : currentEffort;
-    const values = [...new Set(['', ...choices, ...(selectedEffort && !choices.includes(selectedEffort) ? [selectedEffort] : [])])];
-    effort.replaceChildren(...values.map((v) => h('option', { value: v }, v || globalEffort || `${backendName} default`)));
-    effort.value = selectedEffort;
-  }
-  updateModelOptions();
-  updateEffortOptions();
-  api(`/api/conversations/${id}`).then((c) => {
-    const claude = c.backend === 'claude';
-    backendName = claude ? 'Claude Code' : 'Codex';
-    text.placeholder = `Message ${backendName}…`;
-    return Promise.all([
-      api(`/api/models${claude ? '?backend=claude' : ''}`),
-      api(`/api/settings/default-model${claude ? '?backend=claude' : ''}`).catch(() => ({ model: '' })),
-      api(`/api/settings/default-effort${claude ? '?backend=claude' : ''}`).catch(() => ({ effort: '' })),
-    ]);
-  }).then(([list, m, e]) => {
-    modelList = list;
-    globalModel = m.model;
-    globalEffort = e.effort;
-    updateModelOptions();
-    updateEffortOptions();
-  }).catch(() => {});
+  const model = chat.model;
+  const conv = chat.conv.value || found?.conv;
+  const running = conv?.status === 'running';
+  const lastSteps = model.blocks.length && model.blocks[model.blocks.length - 1].type === 'steps' ? model.blocks[model.blocks.length - 1] : null;
+  const waiting = approvals.value.filter((a) => a.to_conv === id);
+  const focus = route.value.focusEvent;
 
-  async function refreshQueue() {
-    const q = await api(`/api/conversations/${id}/queue`);
-    queueBox.replaceChildren(...q.map((item) => h('span', { class: 'chip' }, item.prompt.slice(0, 40),
-      h('button', { class: 'iconbtn', title: 'Remove from queue', 'aria-label': 'Remove from queue', onclick: guarded(async () => { await api(`/api/queue/${item.id}`, { method: 'DELETE' }); refreshQueue(); }) }, icon('x')))));
-  }
-  async function refreshConv() {
-    const c = await api(`/api/conversations/${id}`);
-    currentModel = c.model || '';
-    currentEffort = c.effort || '';
-    if (document.activeElement !== model) updateModelOptions();
-    updateEffortOptions();
-    if (!text.value && c.draft) text.value = c.draft;
-    const known = lookup(id)?.conv;
-    const running = c.status === 'running';
-    stop.hidden = !running;
-    sendButton.hidden = running;
-    const title = c.title || null; // the generated title, or the start of the first prompt until there is one
-    chatTitle.textContent = title || 'New conversation';
-    chatTitle.title = title || 'New conversation';
-    chatState.textContent = c.status;
-    chatState.className = `chat-state ${c.status}`;
-    if (known && (known.status !== c.status || (title && known.title !== title))) { known.status = c.status; if (title) known.title = title; onUpdate(); }
-  }
-
-  const send = guarded(async () => {
-    const prompt = text.value.trim();
-    if (!prompt) return;
-    const attachments = [];
-    for (const f of files.files) {
-      const form = new FormData();
-      form.append('file', f);
-      attachments.push((await api('/api/uploads', { method: 'POST', form })).path);
-    }
-    await api(`/api/conversations/${id}/prompts`, { method: 'POST', body: { prompt, attachments } });
-    text.value = '';
-    files.value = '';
-    await api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: '' } });
-    refreshQueue();
-  });
-  // Desktop: Enter sends, Shift+Enter is a new line. Touch keyboards keep Enter as a new line (the send button sends).
-  const mouse = matchMedia('(pointer: fine)');
-  text.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && (e.ctrlKey || e.metaKey || (mouse.matches && !e.shiftKey))) { e.preventDefault(); send(); } });
-  let draftTimer;
-  text.addEventListener('input', () => {
-    clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: text.value } }).catch(() => {}), 800);
-  });
-
-  const attachCount = h('span', {});
-  files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
-  const settings = h('div', { class: 'settings' },
-    h('label', {}, 'Model', model), h('label', {}, 'Effort', effort));
-  const initiallyRunning = initial?.status === 'running';
-  const stop = h('button', { class: 'stop', hidden: !initiallyRunning, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
-    const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
-  }) }, icon('square'));
-  const sendButton = h('button', { class: 'primary send', hidden: initiallyRunning, 'aria-label': 'Send', onclick: send }, icon('arrow-up'));
-  const composer = h('div', { class: 'composer' },
-    queueBox,
-    h('div', { class: 'box' },
-      h('div', { class: 'inputrow' },
-        h('label', { class: 'iconbtn', title: 'Attach files' }, icon('paperclip'), attachCount, files),
-        text,
-        stop,
-        sendButton),
-      settings));
-
-  let pinnedUntil = 0;
-  const stopStream = startStream(id, (e) => {
-    const el = renderEvent(e);
-    if (el) {
-      const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-      log.append(el);
-      if (focusEvent && e.id === focusEvent) {
-        el.classList.add('hit');
-        el.scrollIntoView({ block: 'center' });
-        pinnedUntil = Date.now() + 2000; // the rest of the history replays right after: it must not scroll the hit away
-      } else if (nearBottom && Date.now() > pinnedUntil) log.scrollTop = log.scrollHeight;
-    }
-    if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.status' || e.type === 'process.exit' || e.type === 'user.prompt') {
-      refreshQueue().catch(() => {});
-      refreshConv().catch(() => {});
-    }
-    if (e.type === 'turn.status') refreshChanges().catch(() => {});
-    if (e.type === 'conversation.title') refreshConv().catch(() => {});
-  });
-  refreshQueue().catch(() => {});
-  refreshConv().catch(() => {});
-  refreshChanges().catch(() => {});
-  return { nodes: [chatHead, log, composer], stop: stopStream };
+  return html`<main class="main">
+    <${ChatHead} project=${found?.project} conv=${found?.conv} />
+    <div class="thread" ref=${scroller} onScroll=${onScroll}>
+      <div class="thread-inner">
+        ${!model.blocks.length && !running && html`<div class="thread-empty">
+          <div class="empty-icon"><${Icon} name="message-square" /></div>
+          <strong>Start the conversation</strong>
+          <span class="dim">${found?.project?.name}: the agent works in ${conv?.worktree ? `its own worktree on ${conv.branch}` : 'the project folder'}.</span>
+        </div>`}
+        ${model.blocks.map((b) => html`<${Block} key=${b.key} b=${b} v=${b.v} hit=${focus != null && b.eventId === focus} active=${running && b === lastSteps && !b.done} root=${conv?.worktree || found?.project?.path} />`)}
+        ${waiting.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} />`)}
+        ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
+      </div>
+    </div>
+    <${Composer} id=${id} project=${found?.project} />
+  </main>`;
 }

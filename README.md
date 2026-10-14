@@ -11,8 +11,8 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   branch `dalang/<id>` from the project's HEAD, checked out under `<STATE_DIR>/worktrees/<chat id>`. Its agent works only
   there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
   lost) and the branch too, locally and on the remote, unless it has commits that were never merged.
-- **Changes**: the branch button in a chat's header lists what git sees in the folder that chat works in, with each
-  file's diff. Commit all or selected files, revert one file, discard everything, and for a worktree chat open a Merge
+- **Changes**: the branch button in a chat's header opens the **Changes** tab of the inspector beside the chat: what git
+  sees in the folder that chat works in, with each file's diff (unified or side by side, syntax highlighted). Commit all or selected files, revert one file, discard everything, and for a worktree chat open a Merge
   Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
   a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
   `read-only` projects they are admin only.
@@ -22,11 +22,11 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   local commit stays. The push uses the VM's own git credentials (SSH key or credential helper of the user Dalang runs as)
   and never prompts. Deleting a worktree chat also deletes its branch on the remote, but only when it is merged into the
   project folder's branch and nobody pushed more to it since; an unmerged branch stays there and locally.
-  Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate message** asks
+  Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate** asks
   the chat's own agent (same CLI and model) for a one-line Conventional Commit subject (`feat: Add ...`), given the
   selected diffs, the repo's recent commit subjects and the chat's last requests. For a worktree chat with commits to
-  propose, **Generate MR description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
-  the branch's commits and its diff against the branch it merges into. **Copy MR description** copies the Markdown for
+  propose, **Generate description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
+  the branch's commits and its diff against the branch it merges into. **Copy Markdown** copies the Markdown for
   GitLab/GitHub, and the Merge Request text box gets it too (the Title line as title, the other sections as description;
   editable before creating it). Admins can change both instructions in **Generate prompts**
   (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
@@ -35,27 +35,29 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Create Merge Request**: for a worktree chat with commits, **Create Merge Request** on the Changes page pushes its
   branch and opens a Merge Request (GitLab, through `glab`) or pull request (GitHub, through `gh`) into the branch the chat
   started from. The text box above it is its text: first line the title (empty: the last commit's subject), the rest the
-  description, so **Generate MR description** fills both. The CLI runs with the server's own login (`gh auth login` /
+  description, so **Generate description** fills both. The CLI runs with the server's own login (`gh auth login` /
   `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
   remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept and shown on the Changes page;
   later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
   address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab".
-- **Search**: the box at the top of the sidebar searches every project's chats: generated titles, prompts and the
-  agents' answers (not commands or their output). Every word has to occur; a result opens the chat scrolled to that message.
-- **Scheduled prompts**: the clock in a chat's header queues a prompt into that chat on a cron schedule
+- **Search and commands**: `Ctrl K` / `⌘K` (or the box at the top of the sidebar) opens the command palette. It finds
+  chats by title and searches every project's chats: generated titles, prompts and the agents' answers (not commands or
+  their output). Every word has to occur; a result opens the chat scrolled to that message. It also runs actions: a new
+  chat in a project, Changes, Settings, the theme.
+- **Scheduled prompts**: the clock in a chat's header (the **Schedules** tab of the inspector) queues a prompt into that chat on a cron schedule
   (`minute hour day month weekday` in the server's time zone, or `@hourly`, `@daily`, ...), e.g. a nightly
   `npm audit` summary. The agent continues the same conversation, and the usual push notification comes when the turn
   ends. A run is skipped while the same prompt is still waiting in the queue; runs missed while the gateway was down
   are made up once, not one by one. **Run now** queues it off schedule. All schedules are listed under
-  **Scheduled prompts** in the menu. Anyone who may send prompts may schedule them.
+  **Scheduled** in the sidebar. Anyone who may send prompts may schedule them.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
 - **Passkeys + push**: passkey login on top of the access token, installable PWA, Web Push when a turn finishes,
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 
-- **Claude Code too**: a chat can run on Claude Code instead of Codex (the `CC` button next to a project's `+`). Needs the
-  `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added from the panel menu ("Claude Code accounts"), each with its own
+- **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
+  `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
   `CLAUDE_CONFIG_DIR`, with the same failover. Claude Code has no OS sandbox: `read-only` runs in plan mode,
   `workspace-write` allows edits and Bash unrestricted, `danger-full-access` bypasses all permission checks.
 
@@ -124,7 +126,7 @@ anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw 
 80 open to everyone until the certificate is issued, and again at renewal time unless you renew with the DNS challenge.
 
 Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), enter the token, then use
-**Add passkey** and **Notifications** in the header. Passkeys, push and "install app" only work over HTTPS (or localhost).
+**Add passkey** and **Notifications** in Settings → This device. Passkeys, push and "install app" only work over HTTPS (or localhost).
 
 ### Users and roles
 
@@ -285,6 +287,11 @@ if Codex rejects the config, unset `MCP_INJECT` (everything else keeps working).
 ## Develop
 
 `LZVR_TOKEN=<32+ chars> WORKSPACE_ROOT=. npm run dev`, `npm test`, `npm run typecheck`.
+
+The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in
+`@preact/signals`. Its libraries and fonts are copied from `node_modules` into `public/vendor` and `public/fonts` by
+`npm run vendor` (run it after updating one of them); bare imports are rewritten to relative ones there, since the CSP
+allows no inline import map. Colours come from Radix Colors scales (Settings → Appearance switches the accent palette).
 
 ## Scope
 

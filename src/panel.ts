@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 
@@ -14,7 +15,9 @@ const FILES: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   ...folder('js', '.js', 'text/javascript; charset=utf-8'),
+  ...folder('vendor', '.js', 'text/javascript; charset=utf-8'),
   ...folder('icons', '.svg', 'image/svg+xml'),
+  ...folder('fonts', '.woff2', 'font/woff2'),
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'],
@@ -27,14 +30,18 @@ export const PANEL_PATHS = new Set(Object.keys(FILES));
 export function panelRoutes(app: FastifyInstance): void {
   for (const [path, [file, type]] of Object.entries(FILES)) {
     const body = readFileSync(new URL(file, dir));
-    app.get(path, (_req, reply) =>
+    // no-cache still lets the browser keep a copy: it asks each time, and an unchanged file costs a 304.
+    const etag = `"${createHash('sha1').update(body).digest('base64url')}"`;
+    app.get(path, (req, reply) => {
       reply
         .header('content-type', type)
         .header('cache-control', 'no-cache')
+        .header('etag', etag)
         .header('content-security-policy', "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
         .header('x-frame-options', 'DENY')
         .header('x-content-type-options', 'nosniff')
-        .header('referrer-policy', 'no-referrer')
-        .send(body));
+        .header('referrer-policy', 'no-referrer');
+      return req.headers['if-none-match'] === etag ? reply.code(304).send() : reply.send(body);
+    });
   }
 }
