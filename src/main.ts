@@ -6,6 +6,7 @@ import { loadConfig } from './config.js';
 import { Dispatcher } from './dispatcher.js';
 import { Logins } from './login.js';
 import { Push } from './push.js';
+import { Scheduler } from './schedules.js';
 import { Store } from './store.js';
 
 const cfg = loadConfig();
@@ -42,6 +43,8 @@ for (const id of store.resetRunning()) dispatcher.kick(id);
 
 const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins });
 await app.listen({ host: cfg.host, port: cfg.port });
+const scheduler = new Scheduler(store, dispatcher);
+scheduler.start();
 
 // systemd sends SIGTERM on stop/restart: kill running turns cleanly.
 let closing = false;
@@ -50,6 +53,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     if (closing) return;
     closing = true;
     void (async () => {
+      scheduler.stop();
       await dispatcher.shutdown();
       await app.close().catch(() => {});
       process.exit(0);

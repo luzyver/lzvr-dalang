@@ -90,6 +90,14 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
         generateMr.textContent = 'Generate MR description';
       }
     }) }, 'Generate MR description');
+    // Pushes the branch and opens a Merge Request (GitLab) or pull request (GitHub) into the branch the chat started from.
+    // The merge message above doubles as its text: the first line is the title, the rest the description.
+    const createMr = w && after(async () => {
+      if (!confirm(`Push ${w.branch} and open a Merge Request into ${w.base}?`)) return false;
+      const [title = '', ...rest] = mergeMessage.value.trim().split('\n');
+      const r = await api(`/api/conversations/${id}/git/pull-request`, { method: 'POST', body: { title: title.trim(), body: rest.join('\n').trim() } });
+      flash(r.existed ? 'a Merge Request was already open for this branch' : `Merge Request opened${pushNote(r.push)}`);
+    });
     const merge = w && after(async () => {
       if (!confirm(`Merge ${w.branch} into ${w.into} in the project folder?`)) return false;
       const r = await api(`/api/conversations/${id}/git/merge`, { method: 'POST', body: { message: mergeMessage.value } });
@@ -108,7 +116,10 @@ export function changesPage({ id, guarded, flash, close, onChange }) {
         w.ahead > 0 && mergeMessage,
         w.ahead > 0 && h('div', { class: 'row' },
           h('button', { class: 'primary', onclick: merge }, `Merge into ${w.into || 'project branch'}`),
-          generateMr, copyMr)),
+          !w.pr && w.base && h('button', { title: `Push ${w.branch} and open a Merge Request / pull request into ${w.base}; the message above is its title and description`, onclick: createMr },
+            icon('git-pull-request'), ' Create Merge Request'),
+          generateMr, copyMr),
+        w.pr && h('a', { class: 'pr-link small', href: w.pr, target: '_blank', rel: 'noopener noreferrer' }, icon('git-pull-request'), ' View Merge Request: ', w.pr)),
       s.files.length
         ? h('div', { class: 'gitfiles' }, rows, s.files.length > MAX_DIFFS ? h('div', { class: 'small' }, `Diffs shown for the first ${MAX_DIFFS} files.`) : null)
         : h('div', { class: 'small' }, 'No uncommitted changes.'),

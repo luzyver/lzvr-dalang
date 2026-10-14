@@ -14,6 +14,7 @@ import { passkeyRoutes, sessionHash } from './passkeys.js';
 import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
+import { scheduleRoutes } from './schedules.js';
 import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
 import { realWebAuthn, type WebAuthn } from './webauthn.js';
 import type { Store } from './store.js';
@@ -37,6 +38,17 @@ function safeName(raw: string): string {
   if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(n)) n = `_${n}`;
   n = n.slice(0, 100);
   return n && n !== '.' && n !== '..' ? n : 'file';
+}
+
+/** The part of a long text around the first search term, on one line. */
+export function snippet(text: string, terms: string[], width = 220): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= width) return flat;
+  const lower = flat.toLowerCase();
+  const at = Math.min(...terms.map((t) => lower.indexOf(t)).filter((i) => i >= 0), flat.length);
+  const start = at === flat.length ? 0 : Math.max(0, at - Math.floor(width / 4));
+  const end = Math.min(flat.length, start + width);
+  return `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`;
 }
 
 export function buildApp(
@@ -123,7 +135,18 @@ export function buildApp(
   panelRoutes(app);
   passkeyRoutes(app, { cfg, store, webauthn: deps.webauthn ?? realWebAuthn, noteFailure });
   mcpRoutes(app, { cfg, store, dispatcher, push });
-  gitRoutes(app, { store, dispatcher });
+  gitRoutes(app, { store, dispatcher, cfg });
+  scheduleRoutes(app, { store, dispatcher });
+
+  // Search the chats: titles, prompts and the agents' answers. Every word has to occur (in any order).
+  app.get<{ Querystring: { q: string; project?: string } }>('/api/search', {
+    schema: { querystring: { type: 'object', required: ['q'],
+      properties: { q: { type: 'string', maxLength: 200 }, project: { type: 'string' } } } },
+  }, (req, reply) => {
+    const terms = [...new Set(req.query.q.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, 8);
+    if (!terms.length) return reply.code(400).send({ error: 'type something to search for' });
+    return store.search(terms, { projectId: req.query.project || undefined }).map((hit) => ({ ...hit, text: snippet(hit.text, terms) }));
+  });
 
   // Sends that one conversation (via MCP) wants to make into another wait here for a human decision.
   app.get('/api/approvals', { onRequest: requireAdmin }, () => store.listApprovals('pending'));

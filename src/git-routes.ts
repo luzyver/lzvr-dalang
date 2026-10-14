@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
+import { createPullRequest, forgeOf } from './forge.js';
 import * as git from './git.js';
 import type { Conversation, Project, Store } from './store.js';
 
@@ -178,8 +179,8 @@ export function cleanMessage(text: string): string {
   return m;
 }
 
-export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher }): void {
-  const { store, dispatcher } = deps;
+export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher; cfg: Config }): void {
+  const { store, dispatcher, cfg } = deps;
   const notFound = (reply: Reply) => reply.code(404).send({ error: 'not found' });
 
   /** The chat, its project and the folder git runs in, or null after replying 404. */
@@ -229,7 +230,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const base = c.conv.base_branch ?? 'HEAD';
     const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `${base}..${c.conv.branch}`]).catch(() => '0')).trim()) || 0;
     const into = await git.currentBranch(c.project.path);
-    return { ...s, worktree: { branch: c.conv.branch, base: c.conv.base_branch, ahead, into } };
+    return { ...s, worktree: { branch: c.conv.branch, base: c.conv.base_branch, ahead, into, pr: c.conv.pr_url } };
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>('/api/conversations/:id/git/diff', {
@@ -299,6 +300,39 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     } catch (e) {
       return reply.code(502).send({ error: `could not draft a description: ${(e as Error).message}` });
     }
+  });
+
+  // Push a worktree chat's branch and open a Merge Request (GitLab, via `glab`) or pull request (GitHub, via `gh`) from
+  // it into the branch it was started from, with the server's own CLI login. Without a title, the last commit's subject.
+  // The body is optional, so it is checked here rather than by a schema (like merge).
+  app.post<{ Params: { id: string }; Body: { title?: unknown; body?: unknown } | undefined }>('/api/conversations/:id/git/pull-request', async (req, reply) => {
+    const { title: rawTitle = '', body: rawBody = '' } = req.body ?? {};
+    if (typeof rawTitle !== 'string' || rawTitle.length > 300) return reply.code(400).send({ error: 'title must be a string of at most 300 characters' });
+    if (typeof rawBody !== 'string' || rawBody.length > 60_000) return reply.code(400).send({ error: 'body must be a string of at most 60000 characters' });
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    const branch = c.conv.branch;
+    if (!c.conv.worktree || !branch) return reply.code(400).send({ error: 'this chat has no worktree of its own' });
+    const base = c.conv.base_branch;
+    if (!base) return reply.code(400).send({ error: 'this chat was branched from a detached HEAD: there is no branch to merge into' });
+    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `${base}..${branch}`]).catch(() => '0')).trim()) || 0;
+    if (!ahead) return reply.code(400).send({ error: `nothing to propose: ${branch} has no commits that ${base} lacks` });
+
+    const push = await git.push(c.cwd);
+    if (!push.pushed) return reply.code(400).send({ error: push.error ? `push failed: ${push.error}` : 'the repository has no remote to open a Merge Request on' });
+    const remote = push.pushed.slice(0, push.pushed.indexOf('/'));
+    const url = (await git.git(c.cwd, ['remote', 'get-url', remote]).catch(() => '')).trim();
+    const forge = cfg.forge ?? forgeOf(url);
+    if (!forge) return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: set GIT_FORGE` });
+
+    const title = rawTitle.trim() || (await git.git(c.cwd, ['log', '-1', '--format=%s', branch])).trim();
+    try {
+      const command = (forge === 'github' ? cfg.ghCommand : cfg.glabCommand) ?? [forge === 'github' ? 'gh' : 'glab'];
+      const pr = await createPullRequest({ forge, command, cwd: c.cwd, branch, base, title, body: rawBody.trim() });
+      store.setPrUrl(c.conv.id, pr.url);
+      return { ...pr, forge, push };
+    } catch (e) { return gitFailed(reply, e); }
   });
 
   app.post<{ Params: { id: string }; Body: { paths: string[] } }>('/api/conversations/:id/git/revert', {

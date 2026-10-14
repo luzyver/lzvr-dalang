@@ -3,6 +3,8 @@ import { h, icon } from './js/dom.js';
 import { api, publicApi, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
 import { startStream, renderEvent } from './js/chat.js';
 import { changesPage } from './js/git.js';
+import { schedulesPage } from './js/schedules.js';
+import { searchPage } from './js/search.js';
 import { enableNotifications, registerPasskey, loginWithPasskey } from './js/passkeys.js';
 
 // ---------- views ----------
@@ -65,6 +67,7 @@ async function showApp() {
       isAdmin && h('button', { onclick: () => defaultModelDialog() }, 'Model & effort defaults'),
       isAdmin && h('button', { onclick: () => promptsDialog() }, 'Generate prompts'),
       isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
+      h('button', { onclick: () => openPage(schedulesPage({ guarded, flash, close: closePage, open: (id) => openConv(id) })) }, 'Scheduled prompts'),
       h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
       h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
@@ -364,6 +367,12 @@ async function showApp() {
     nameIn.focus();
   }
   const addProjectBtn = h('button', { class: 'add-project', onclick: addProjectDialog }, icon('plus'), 'Add project');
+  // Made once, so what is typed survives the sidebar being redrawn.
+  const openSearch = (query) => openPage(searchPage({ query, guarded, close: closePage, open: (id, eventId) => openConv(id, eventId) }));
+  const searchIn = h('input', { type: 'search', placeholder: 'Search chats', 'aria-label': 'Search chats' });
+  searchIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && searchIn.value.trim()) openSearch(searchIn.value.trim()); });
+  const searchBox = h('div', { class: 'side-search' }, searchIn,
+    h('button', { class: 'iconbtn', title: 'Search chats', 'aria-label': 'Search', onclick: () => openSearch(searchIn.value.trim()) }, icon('search')));
 
   // `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project.
   const newChat = (p, worktree = false) => guarded(async () => {
@@ -425,11 +434,12 @@ async function showApp() {
     });
     sidebar.replaceChildren(...[
       h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
-      isAdmin ? addProjectBtn : null, ...blocks,
+      searchBox, isAdmin ? addProjectBtn : null, ...blocks,
       !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
   }
 
-  async function openConv(id) {
+  /** `focusEvent`: the id of a message to scroll to and mark (from a search result). */
+  async function openConv(id, focusEvent) {
     if (stopStream) { stopStream(); stopStream = null; }
     const exists = state.projects.some((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
     if (!exists) {
@@ -442,10 +452,10 @@ async function showApp() {
     history.replaceState(null, '', `${location.pathname}${location.search}#c=${encodeURIComponent(id)}`);
     document.body.classList.remove('nav');
     drawSidebar();
-    drawMain(id);
+    drawMain(id, focusEvent);
   }
 
-  function drawMain(id) {
+  function drawMain(id, focusEvent) {
     leavePage();
     if (!id) {
       main.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Dalang'), h('p', {}, 'Pick a chat, or start a new one with the + next to a project.'),
@@ -466,8 +476,11 @@ async function showApp() {
       changesBtn.hidden = !s.repo;
       if (s.repo) changesBtn.lastChild.textContent = `${s.branch || 'HEAD'}${s.files.length ? ` · ${s.files.length} changed` : ''}`;
     };
+    const schedulesBtn = h('button', { class: 'iconbtn', title: 'Scheduled prompts for this chat', 'aria-label': 'Scheduled prompts', onclick: () =>
+      openPage(schedulesPage({ convId: id, guarded, flash, close: closePage })) }, icon('clock'));
     const chatHead = h('div', { class: 'chathead' },
-      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle), changesBtn, chatState);
+      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle),
+      h('div', { class: 'chat-tools' }, schedulesBtn), changesBtn, chatState);
     const log = h('div', { class: 'log' });
     const queueBox = h('div', { class: 'queue' });
     const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
@@ -590,12 +603,17 @@ async function showApp() {
           sendButton),
         settings)));
 
+    let pinnedUntil = 0;
     stopStream = startStream(id, (e) => {
       const el = renderEvent(e);
       if (el) {
         const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
         log.append(el);
-        if (nearBottom) log.scrollTop = log.scrollHeight;
+        if (focusEvent && e.id === focusEvent) {
+          el.classList.add('hit');
+          el.scrollIntoView({ block: 'center' });
+          pinnedUntil = Date.now() + 2000; // the rest of the history replays right after: it must not scroll the hit away
+        } else if (nearBottom && Date.now() > pinnedUntil) log.scrollTop = log.scrollHeight;
       }
       if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.status' || e.type === 'process.exit' || e.type === 'user.prompt') {
         refreshQueue().catch(() => {});

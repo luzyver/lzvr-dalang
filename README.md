@@ -31,6 +31,22 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
   (`codex exec --ephemeral`, `claude --no-session-persistence`) and use the same account failover; they do count against
   the account's usage.
+- **Create Merge Request**: for a worktree chat with commits, **Create Merge Request** on the Changes page pushes its
+  branch and opens a Merge Request (GitLab, through `glab`) or pull request (GitHub, through `gh`) into the branch the chat
+  started from. The merge message box is its text: first line the title (empty: the last commit's subject), the rest the
+  description, so **Generate MR description** fills both. The CLI runs with the server's own login (`gh auth login` /
+  `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
+  remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept and shown on the Changes page;
+  later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
+  address is returned instead.
+- **Search**: the box at the top of the sidebar searches every project's chats: generated titles, prompts and the
+  agents' answers (not commands or their output). Every word has to occur; a result opens the chat scrolled to that message.
+- **Scheduled prompts**: the clock in a chat's header queues a prompt into that chat on a cron schedule
+  (`minute hour day month weekday` in the server's time zone, or `@hourly`, `@daily`, ...), e.g. a nightly
+  `npm audit` summary. The agent continues the same conversation, and the usual push notification comes when the turn
+  ends. A run is skipped while the same prompt is still waiting in the queue; runs missed while the gateway was down
+  are made up once, not one by one. **Run now** queues it off schedule. All schedules are listed under
+  **Scheduled prompts** in the menu. Anyone who may send prompts may schedule them.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
 - **Passkeys + push**: passkey login on top of the access token, installable PWA, Web Push when a turn finishes,
@@ -164,6 +180,8 @@ delete the folder and its entry under `extra_homes` if you need to.
 | `MCP_URL` | `http://127.0.0.1:<PORT>/mcp` | Where Codex should reach `/mcp` when `MCP_INJECT=1`. |
 | `AUTO_TITLE` | on | `0` turns off generated chat titles: the chat's agent gives each new chat a short title from its first prompt (one small read-only request, counted against the account's usage), else the first prompt is the title. |
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
+| `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
+| `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. |
 
 ### Security
 
@@ -196,7 +214,8 @@ bash scripts/smoke.sh        # create a project + chat, send a prompt, stream th
 ```
 
 REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
-`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,merge}`,
+`/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,merge,pull-request}`,
+`/api/search?q=`, `/api/conversations/:id/schedules`, `/api/schedules` (`/:id`, `/:id/run`, `/preview?cron=`),
 `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 

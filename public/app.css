@@ -43,6 +43,9 @@ summary::-webkit-details-marker { display: none; }
 .icon-settings { --icon-mask: url('/icons/settings.svg'); }
 .icon-square { --icon-mask: url('/icons/square.svg'); }
 .icon-arrow-up { --icon-mask: url('/icons/arrow-up.svg'); }
+.icon-clock { --icon-mask: url('/icons/clock.svg'); }
+.icon-search { --icon-mask: url('/icons/search.svg'); }
+.icon-git-pull-request { --icon-mask: url('/icons/git-pull-request.svg'); }
 
 /* ---- login ---- */
 .login { max-width: 380px; margin: 14vh auto 0; padding: 28px 22px; display: grid; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
@@ -263,3 +266,26 @@ aside > div:empty { display: none; }
 .meter-fill.hot { background: var(--err); }
 .meter-pct { text-align: right; font-variant-numeric: tabular-nums; }
 .meter-reset { grid-column: 2 / 4; margin-top: -2px; }
+
+/* ---- search ---- */
+.side-search { display: flex; align-items: center; gap: 6px; padding: 0 2px; }
+.side-search input { min-height: 36px; padding: 6px 10px; font-size: 14px; }
+.search-results { display: grid; gap: 6px; }
+.search-hit { display: grid; gap: 4px; text-align: left; padding: 10px 12px; border-radius: 12px; background: var(--bg); }
+.search-where { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-where strong { color: var(--text); }
+.search-kind { margin-left: 8px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; }
+.search-kind.answer { color: var(--accent); }
+.search-text { font-size: 14px; overflow-wrap: anywhere; }
+mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.log > .hit { outline: 2px solid color-mix(in srgb, var(--warn) 60%, transparent); outline-offset: 6px; border-radius: 10px; }
+
+/* ---- scheduled prompts ---- */
+.sched-list { display: grid; gap: 8px; }
+.sched { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.sched .acct-head button { padding: 4px 10px; min-height: 0; font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.chat-tools { flex: none; display: flex; align-items: center; gap: 2px; }
+.chat-tools .iconbtn { min-width: 32px; height: 32px; }
+.chat-tools .ui-icon { width: 16px; height: 16px; }
+.pr-link { display: inline-flex; align-items: center; gap: 6px; color: var(--link); }

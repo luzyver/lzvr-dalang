@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildClaudeArgs } from '../src/claude.js';
+import { forgeOf, pullRequestArgs } from '../src/forge.js';
 import { cleanMessage, toCommitMessage } from '../src/git-routes.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -393,5 +395,82 @@ describe('push after commit and merge', () => {
     expect(r.statusCode).toBe(200);
     expect(r.json().push).toEqual({ pushed: null, error: expect.any(String) });
     expect(sh(t.repo, 'log', '-1', '--format=%s')).toBe('fix: Keep me');
+  });
+});
+
+describe('Merge Requests on GitHub / GitLab', () => {
+  const fakeGh = fileURLToPath(new URL('./fake-gh.mjs', import.meta.url));
+
+  /** A project with a bare `origin`, set up to use the fake `gh`; `log` collects each call. */
+  async function forgeProject() {
+    const t = await gitProject();
+    const bare = join(t.base, 'remote.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+    sh(t.repo, 'remote', 'add', 'origin', bare);
+    sh(t.repo, 'push', '-q', '-u', 'origin', 'main');
+    const log = join(t.base, 'gh.log');
+    t.cfg.forge = 'github';
+    t.cfg.ghCommand = [process.execPath, fakeGh, log];
+    const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+    return { ...t, bare, calls };
+  }
+
+  it('pushes the branch and opens one into the branch the chat started from', async () => {
+    const t = await forgeProject();
+    const conv = (await t.chat(true)).json();
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    sh(conv.worktree, 'add', '.');
+    sh(conv.worktree, 'commit', '-q', '-m', 'feat: Add b'); // committed by hand: not pushed yet
+
+    const r = await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, { title: 'feat: Add b', body: '## Summary\n- b' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ url: 'https://github.com/acme/app/pull/7', existed: false, forge: 'github', push: { pushed: `origin/${conv.branch}` } });
+    expect(sh(t.bare, 'log', '-1', '--format=%s', conv.branch)).toBe('feat: Add b');
+    const [call] = t.calls();
+    expect(call.args).toEqual(['pr', 'create', '--head', conv.branch, '--base', 'main', '--title', 'feat: Add b', '--body', '## Summary\n- b']);
+    expect(call.leaked).toBeNull();
+
+    const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
+    expect(s.worktree.pr).toBe('https://github.com/acme/app/pull/7');
+    // Asked again: the open one is reported, not an error.
+    const again = (await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, {})).json();
+    expect(again).toMatchObject({ url: 'https://github.com/acme/app/pull/7', existed: true });
+  });
+
+  it('takes the last commit subject as the title when none is given', async () => {
+    const t = await forgeProject();
+    const conv = (await t.chat(true)).json();
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'fix: Subject from commit' });
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`)).statusCode).toBe(200);
+    expect(t.calls()[0].args.slice(6, 10)).toEqual(['--title', 'fix: Subject from commit', '--body', '']);
+  });
+
+  it('refuses without commits, without a remote, or for an unknown host', async () => {
+    const t = await forgeProject();
+    const conv = (await t.chat(true)).json();
+    const none = await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, {});
+    expect(none.statusCode).toBe(400);
+    expect(none.json().error).toMatch(/nothing to propose/);
+
+    sh(conv.worktree, 'commit', '-q', '--allow-empty', '-m', 'empty');
+    t.cfg.forge = undefined; // a bare repo path says nothing about GitHub or GitLab
+    const unknown = await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, {});
+    expect(unknown.json().error).toMatch(/GIT_FORGE/);
+
+    const plain = (await t.chat(false)).json();
+    expect((await t.call('POST', `/api/conversations/${plain.id}/git/pull-request`, {})).json().error).toMatch(/no worktree/);
+    expect(t.calls()).toEqual([]);
+  });
+
+  it('tells GitHub from GitLab by the remote address and builds each CLI\'s arguments', () => {
+    expect(forgeOf('git@github.com:acme/app.git')).toBe('github');
+    expect(forgeOf('https://github.example.com/acme/app')).toBe('github');
+    expect(forgeOf('ssh://git@gitlab.company.io:2222/team/app.git')).toBe('gitlab');
+    expect(forgeOf('https://user@gitlab.com/team/app.git')).toBe('gitlab');
+    expect(forgeOf('/srv/git/app.git')).toBeNull();
+    expect(forgeOf('https://git.example.com/github-mirror/app')).toBeNull(); // only the host counts
+    expect(pullRequestArgs({ forge: 'gitlab', branch: 'b', base: 'main', title: 't', body: 'd' }))
+      .toEqual(['mr', 'create', '--source-branch', 'b', '--target-branch', 'main', '--title', 't', '--description', 'd', '--yes']);
   });
 });

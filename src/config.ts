@@ -14,6 +14,11 @@ export interface Config {
   trustProxy: string[];
   codexCommand: string[];
   claudeCommand: string[];
+  /** How to start the GitHub and GitLab CLIs that open Merge Requests (default `gh` / `glab`). */
+  ghCommand?: string[];
+  glabCommand?: string[];
+  /** Overrides telling GitHub from GitLab by the remote's host name (for self-hosted servers named otherwise). */
+  forge?: 'github' | 'gitlab';
   /** How long an account stays skipped after hitting its usage limit. */
   limitBlockMs: number;
   /** Overrides the built-in usage-limit detection regex. */
@@ -52,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const blockMinutes = Number(env.LIMIT_BLOCK_MINUTES ?? 60);
   if (!Number.isFinite(blockMinutes) || blockMinutes <= 0) throw new Error('LIMIT_BLOCK_MINUTES must be a positive number');
   const port = Number(env.PORT ?? 9876);
+  if (env.GIT_FORGE && env.GIT_FORGE !== 'github' && env.GIT_FORGE !== 'gitlab') throw new Error('GIT_FORGE must be github or gitlab');
   return {
     token,
     workspaceRoot: resolve(env.WORKSPACE_ROOT),
@@ -61,6 +67,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     codexCommand: [env.CODEX_BIN ?? 'codex'],
     claudeCommand: [env.CLAUDE_BIN ?? 'claude'],
+    ghCommand: [env.GH_BIN ?? 'gh'],
+    glabCommand: [env.GLAB_BIN ?? 'glab'],
+    forge: env.GIT_FORGE === 'github' || env.GIT_FORGE === 'gitlab' ? env.GIT_FORGE : undefined,
     limitBlockMs: blockMinutes * 60_000,
     mcpUrl: env.MCP_INJECT === '1' ? env.MCP_URL || `http://127.0.0.1:${port}/mcp` : undefined,
     limitRegex: env.LIMIT_REGEX ? new RegExp(env.LIMIT_REGEX, 'i') : undefined,

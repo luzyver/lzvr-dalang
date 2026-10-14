@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approvals (
   id INTEGER PRIMARY KEY AUTOINCREMENT, from_conv TEXT NOT NULL, to_conv TEXT NOT NULL,
   prompt TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  prompt TEXT NOT NULL, cron TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at INTEGER, last_run_at INTEGER, created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 `;
 
 export interface Approval {
@@ -74,15 +80,37 @@ export interface Conversation {
   /** The worktree's branch, and the branch of the project folder it was started from. */
   branch: string | null;
   base_branch: string | null;
+  /** The Merge Request / pull request opened for the worktree's branch, or null. */
+  pr_url: string | null;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
 }
+/** A prompt queued into a chat on a cron schedule. Times are epoch milliseconds; `next_run_at` is null when off. */
+export interface Schedule {
+  id: number; conversation_id: string; prompt: string; cron: string; enabled: boolean;
+  next_run_at: number | null; last_run_at: number | null; created_by: string; created_at: string;
+}
+/** A schedule with the names the overview shows. */
+export interface ScheduleSummary extends Schedule { project_id: string; project: string; title: string | null }
+
+/** A search match: a chat's title, one of its prompts or one of the agent's answers (then `event_id` locates it). */
+export interface SearchHit {
+  kind: 'title' | 'prompt' | 'answer'; conversation_id: string; project_id: string; project: string;
+  title: string | null; text: string; event_id: number | null; created_at: string | null;
+}
+
 export interface StoredEvent { id: number; conversation_id: string; type: string; payload: string; created_at: string }
 
 const TITLE = `COALESCE(c.auto_title, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1))`;
+
+/** A LIKE pattern (used with `ESCAPE '\'`) in which `%`, `_` and `\` match themselves. */
+const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
+
+type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
+const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
 interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
@@ -106,6 +134,7 @@ export class Store {
     this.ensureColumn('conversations', 'branch', 'TEXT');
     this.ensureColumn('conversations', 'base_branch', 'TEXT');
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
+    this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -225,6 +254,7 @@ export class Store {
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
   }
+  setPrUrl(id: string, url: string): void { this.run('UPDATE conversations SET pr_url=? WHERE id=?', url, id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
@@ -262,6 +292,70 @@ export class Store {
       `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
        JOIN turns t ON t.id = e.turn_id
        WHERE t.conversation_id=? AND e.id>? ORDER BY e.id`, convId, afterId);
+  }
+
+  // --- scheduled prompts ---
+  createSchedule(convId: string, s: { prompt: string; cron: string; enabled: boolean; nextRunAt: number | null; createdBy: string }): Schedule {
+    const r = this.run('INSERT INTO schedules (conversation_id,prompt,cron,enabled,next_run_at,created_by) VALUES (?,?,?,?,?,?)',
+      convId, s.prompt, s.cron, s.enabled ? 1 : 0, s.enabled ? s.nextRunAt : null, s.createdBy);
+    return this.getSchedule(Number(r.lastInsertRowid))!;
+  }
+  getSchedule(id: number): Schedule | null {
+    const r = this.get<ScheduleRow>('SELECT * FROM schedules WHERE id=?', id);
+    return r && toSchedule(r);
+  }
+  /** One chat's schedules, or every schedule when `convId` is omitted; with the project and chat names. */
+  listSchedules(convId?: string): ScheduleSummary[] {
+    const rows = this.db.prepare(`SELECT s.*, c.project_id, p.name AS project, ${TITLE} AS title FROM schedules s
+      JOIN conversations c ON c.id = s.conversation_id JOIN projects p ON p.id = c.project_id
+      WHERE ? IS NULL OR s.conversation_id = ? ORDER BY p.name, s.id`).all(convId ?? null, convId ?? null) as unknown as (ScheduleRow & Omit<ScheduleSummary, keyof Schedule>)[];
+    return rows.map(toSchedule);
+  }
+  updateSchedule(id: number, s: { prompt: string; cron: string; enabled: boolean; nextRunAt: number | null }): void {
+    this.run('UPDATE schedules SET prompt=?, cron=?, enabled=?, next_run_at=? WHERE id=?', s.prompt, s.cron, s.enabled ? 1 : 0, s.enabled ? s.nextRunAt : null, id);
+  }
+  deleteSchedule(id: number): boolean { return Number(this.run('DELETE FROM schedules WHERE id=?', id).changes) > 0; }
+  /** Enabled schedules whose next run is due at `now`. */
+  dueSchedules(now: number): Schedule[] {
+    return this.all<ScheduleRow>('SELECT * FROM schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at', now).map(toSchedule);
+  }
+  /** Record a run; `nextRunAt` null switches the schedule off (it would never fire again). */
+  markScheduleRun(id: number, at: number, nextRunAt: number | null): void {
+    this.run('UPDATE schedules SET last_run_at=?, next_run_at=?, enabled=CASE WHEN ? IS NULL THEN 0 ELSE enabled END WHERE id=?', at, nextRunAt, nextRunAt, id);
+  }
+
+  /**
+   * Chats whose title, prompts or agent answers contain every term (case-insensitive for ASCII letters), newest first.
+   * Only what a person reads is searched: commands, their output and tool calls are not.
+   */
+  search(terms: string[], o: { projectId?: string; limit?: number } = {}): SearchHit[] {
+    const limit = o.limit ?? 50;
+    const project = o.projectId ?? null;
+    const likes = terms.map(likeTerm);
+    const all = (col: string) => terms.map(() => `${col} LIKE ? ESCAPE '\\'`).join(' AND ');
+    // Generated titles only: without one, the title is the first prompt, which the events below already cover.
+    const titles = this.db.prepare(`SELECT 'title' AS kind, c.id AS conversation_id, c.project_id, p.name AS project,
+        c.auto_title AS title, NULL AS event_id, NULL AS created_at FROM conversations c JOIN projects p ON p.id = c.project_id
+        WHERE (? IS NULL OR c.project_id = ?) AND c.auto_title IS NOT NULL AND ${all('c.auto_title')} ORDER BY p.name, c.auto_title LIMIT ?`)
+      .all(project, project, ...likes, limit) as unknown as SearchHit[];
+    // The events that hold text: what was asked (user.prompt) and what the agent answered (an agent_message item).
+    const events = this.db.prepare(`SELECT * FROM (SELECT
+        CASE e.type WHEN 'user.prompt' THEN 'prompt' ELSE 'answer' END AS kind,
+        t.conversation_id, c.project_id, p.name AS project, e.id AS event_id, e.created_at,
+        CASE e.type WHEN 'user.prompt' THEN json_extract(e.payload, '$.text') ELSE json_extract(e.payload, '$.item.text') END AS text
+      FROM events e JOIN turns t ON t.id = e.turn_id JOIN conversations c ON c.id = t.conversation_id JOIN projects p ON p.id = c.project_id
+      WHERE (? IS NULL OR c.project_id = ?)
+        AND (e.type = 'user.prompt' OR (e.type = 'item.completed' AND e.payload LIKE '%"agent_message"%'))
+        AND json_valid(e.payload)
+        AND (e.type = 'user.prompt' OR json_extract(e.payload, '$.item.type') = 'agent_message'))
+      WHERE typeof(text) = 'text' AND ${all('text')} ORDER BY event_id DESC LIMIT ?`)
+      .all(project, project, ...likes, limit) as unknown as SearchHit[];
+    const titleOf = new Map(titles.map((t) => [t.conversation_id, t.title]));
+    for (const e of events) {
+      if (!titleOf.has(e.conversation_id)) titleOf.set(e.conversation_id, this.getConversation(e.conversation_id)?.title ?? null);
+      e.title = titleOf.get(e.conversation_id) ?? null;
+    }
+    return [...titles.map((t) => ({ ...t, text: t.title ?? '' })), ...events].slice(0, limit);
   }
 
   /** Mark rows left `running` by a crash as failed; return conversations that still have queued prompts. */
