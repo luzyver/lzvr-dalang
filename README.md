@@ -12,7 +12,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
   lost) and the branch too, locally and on the remote, unless it has commits that were never merged.
 - **Changes**: the branch button in a chat's header opens the **Changes** tab of the inspector beside the chat: what git
-  sees in the folder that chat works in, with each file's diff (unified or side by side, syntax highlighted). Commit all or selected files, revert one file, discard everything, and for a worktree chat open a Merge
+  sees in the folder that chat works in, with each file's diff (unified or side by side, syntax highlighted). Commit all or selected files, revert one file, discard everything, and open a Merge
   Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
   a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
   `read-only` projects they are admin only.
@@ -24,7 +24,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   project folder's branch and nobody pushed more to it since; an unmerged branch stays there and locally.
   Commits use the machine's git identity, or `Dalang <dalang@localhost>` when it has none. **Generate** asks
   the chat's own agent (same CLI and model) for a one-line Conventional Commit subject (`feat: Add ...`), given the
-  selected diffs, the repo's recent commit subjects and the chat's last requests. For a worktree chat with commits to
+  selected diffs, the repo's recent commit subjects and the chat's last requests. For a branch with commits to
   propose, **Generate description** writes a Merge Request description (`## Title`, `## Summary`, `## Changes`, ...) from
   the branch's commits and its diff against the branch it merges into. **Copy Markdown** copies the Markdown for
   GitLab/GitHub, and the Merge Request text box gets it too (the Title line as title, the other sections as description;
@@ -32,12 +32,14 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
   (`codex exec --ephemeral`, `claude --no-session-persistence`) and use the same account failover; they do count against
   the account's usage.
-- **Create Merge Request**: for a worktree chat with commits, **Create Merge Request** on the Changes page pushes its
-  branch and opens a Merge Request (GitLab, through `glab`) or pull request (GitHub, through `gh`) into the branch the chat
-  started from. The text box above it is its text: first line the title (empty: the last commit's subject), the rest the
+- **Create Merge Request**: **Create Merge Request** on the Changes page pushes the chat's branch and opens a Merge
+  Request (GitLab, through `glab`) or pull request (GitHub, through `gh`). A worktree chat proposes its `dalang/<id>`
+  branch into the branch it started from. A plain chat proposes whatever branch the project folder has checked out into
+  the remote's default branch (`origin/HEAD`, else `main` or `master`); on the default branch itself there is nothing to
+  open, so the box is hidden. The text box above it is its text: first line the title (empty: the last commit's subject), the rest the
   description, so **Generate description** fills both. The CLI runs with the server's own login (`gh auth login` /
   `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
-  remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept and shown on the Changes page;
+  remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept per chat and branch and shown on the Changes page;
   later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
   address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab".
 - **Search and commands**: `Ctrl K` / `⌘K` (or the box at the top of the sidebar) opens the command palette. It finds

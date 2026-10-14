@@ -256,7 +256,7 @@ describe('Merge Request descriptions', () => {
     expect(r.statusCode).toBe(200);
     const prompt = r.json().description as string; // the fake Codex answers with its prompt
     expect(prompt.startsWith('You are an expert at writing Merge Request descriptions.')).toBe(true);
-    expect(prompt).toContain(`merging branch ${conv.branch} into the current branch`);
+    expect(prompt).toContain(`merging branch ${conv.branch} into main`);
     expect(prompt).toContain(`Commits on ${conv.branch} (oldest first):\n- feat: Add b`);
     expect(prompt).toContain('- add a b file');
     expect(prompt).toContain('+bee');
@@ -449,8 +449,34 @@ describe('Merge Requests on GitHub / GitLab', () => {
     expect(unknown.json().error).toMatch(/GIT_FORGE/);
 
     const plain = (await t.chat(false)).json();
-    expect((await t.call('POST', `/api/conversations/${plain.id}/git/pull-request`, {})).json().error).toMatch(/no worktree/);
+    // a plain chat while the project folder is on the default branch: nothing to open
+    expect((await t.call('POST', `/api/conversations/${plain.id}/git/pull-request`, {})).json().error).toMatch(/default branch/);
+    expect((await t.call('GET', `/api/conversations/${plain.id}/git`)).json().mr).toBeNull();
     expect(t.calls()).toEqual([]);
+  });
+
+  it('opens one from a plain chat on a feature branch into the default branch', async () => {
+    const t = await forgeProject();
+    const conv = (await t.chat(false)).json();
+    sh(t.repo, 'checkout', '-q', '-b', 'feature/x');
+    writeFileSync(join(t.repo, 'x.txt'), 'x\n');
+    await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add x' });
+
+    const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
+    expect(s.worktree).toBeNull();
+    expect(s.mr).toEqual({ branch: 'feature/x', base: 'main', ahead: 1, pr: null });
+    const prompt = (await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`)).json().description as string;
+    expect(prompt).toContain('merging branch feature/x into main');
+    expect(prompt).toContain('+x');
+
+    const r = await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, { title: 'feat: Add x' });
+    expect(r.json()).toMatchObject({ url: 'https://github.com/acme/app/pull/7', push: { pushed: 'origin/feature/x' } });
+    expect(t.calls()[0].args.slice(0, 6)).toEqual(['pr', 'create', '--head', 'feature/x', '--base', 'main']);
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr.pr).toBe('https://github.com/acme/app/pull/7');
+
+    // on another branch the link is not this branch's Merge Request
+    sh(t.repo, 'checkout', '-q', '-b', 'feature/y');
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ branch: 'feature/y', pr: null });
   });
 
   it('reads the host and repository from a remote address', () => {

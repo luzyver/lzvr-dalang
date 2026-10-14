@@ -28,6 +28,25 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   try { return (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim() || null; } catch { return null; }
 }
 
+/**
+ * The branch Merge Requests usually go into: the remote's default branch (`origin/HEAD`), else `main` or `master`.
+ * `ref` is what to compare against: the remote-tracking branch when there is one, so a stale local copy does not count.
+ */
+export async function defaultBranch(cwd: string): Promise<{ name: string; ref: string } | null> {
+  const remotes = (await git(cwd, ['remote']).catch(() => '')).split('\n').map((r) => r.trim()).filter(Boolean);
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+  const exists = (ref: string) => git(cwd, ['rev-parse', '--verify', '--quiet', ref]).then(() => true, () => false);
+  if (remote) {
+    const head = (await git(cwd, ['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]).catch(() => '')).trim();
+    if (head.startsWith(`${remote}/`)) return { name: head.slice(remote.length + 1), ref: head };
+  }
+  for (const name of ['main', 'master']) {
+    if (remote && (await exists(`refs/remotes/${remote}/${name}`))) return { name, ref: `${remote}/${name}` };
+    if (await exists(`refs/heads/${name}`)) return { name, ref: name };
+  }
+  return null;
+}
+
 /** A machine without a git identity cannot commit at all; fall back to one that says where the commit came from. */
 async function identity(cwd: string): Promise<string[]> {
   const email = await git(cwd, ['config', 'user.email']).catch(() => '');

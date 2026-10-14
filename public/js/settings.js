@@ -101,7 +101,7 @@ function PromptFor({ path, title, help }) {
 }
 
 const COMMIT_HELP = '"Generate" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.';
-const MR_HELP = '"Generate description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.';
+const MR_HELP = '"Generate description" in Changes, for a worktree chat or a feature branch. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.';
 
 const Prompts = () => html`
   <p class="dim">Used by Codex and Claude Code alike, with the chat's own model.</p>

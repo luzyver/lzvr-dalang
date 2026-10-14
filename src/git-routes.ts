@@ -129,23 +129,38 @@ Use conventional commit types: feat, fix, chore, refactor, docs, style, test, pe
 - Omit sections that are not relevant to the change
 - Title must be 70 characters or fewer`;
 
+/** What a chat's Merge Request would go from and into. `base.name` is null when there is no branch to open one into. */
+export interface MrTarget { branch: string; base: { name: string | null; ref: string } }
+
+/**
+ * A worktree chat proposes its own branch into the branch it started from. A plain chat proposes whatever branch the
+ * project folder has checked out into the remote's default branch, unless that is the default branch itself.
+ */
+export async function mrTarget(conv: Conversation, project: Project): Promise<MrTarget | null> {
+  if (conv.worktree && conv.branch) return { branch: conv.branch, base: { name: conv.base_branch, ref: conv.base_branch ?? 'HEAD' } };
+  const branch = await git.currentBranch(project.path);
+  if (!branch) return null;
+  const base = await git.defaultBranch(project.path);
+  return base && base.name !== branch ? { branch, base } : null;
+}
+
 /**
  * The instructions, then what the merge would bring (the agent gets no tools): the branch's commits, its changed files
  * and the diff against the merge base with the target branch, and what the chat was asked to do.
  */
-export async function mrDescriptionPrompt(repo: string, branch: string, requests: string[], instructions = DEFAULT_MR_PROMPT): Promise<string> {
-  const range = `HEAD...${branch}`; // HEAD of the project folder = the branch the merge goes into
+export async function mrDescriptionPrompt(repo: string, branch: string, target: MrTarget['base'], requests: string[], instructions = DEFAULT_MR_PROMPT): Promise<string> {
+  const range = `${target.ref}...${branch}`;
   const [commits, stat, diff, recent] = await Promise.all([
-    git.git(repo, ['log', '--reverse', '--format=- %s%n%b', `HEAD..${branch}`]).catch(() => ''),
+    git.git(repo, ['log', '--reverse', '--format=- %s%n%b', `${target.ref}..${branch}`]).catch(() => ''),
     git.git(repo, ['diff', '--no-color', '--stat=200', range]).catch(() => ''),
     git.git(repo, ['diff', '--no-color', range]).catch(() => ''),
-    git.git(repo, ['log', '-10', '--format=%s', 'HEAD']).catch(() => ''),
+    git.git(repo, ['log', '-10', '--format=%s', target.ref]).catch(() => ''),
   ]);
   const shown = diff.slice(0, MAX_PROMPT_DIFF);
   return [
     instructions.trim(),
     '\n=====\nContext gathered from git; everything you need is here, so do not run any tools.',
-    `It describes merging branch ${branch} into the current branch.`,
+    `It describes merging branch ${branch} into ${target.name}.`,
     'Reply with the description only: no code fence around it, no commentary.',
     recent.trim() && `\nRecent commits on the target branch:\n${recent.trim()}`,
     `\nCommits on ${branch} (oldest first):\n${commits.replace(/\n{2,}/g, '\n').trim() || '(none)'}`,
@@ -205,6 +220,14 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     return true;
   };
 
+  const noTarget = 'no Merge Request to open: check out a branch other than the default branch (or use a worktree chat)';
+  const aheadOf = async (repo: string, t: MrTarget) =>
+    Number((await git.git(repo, ['rev-list', '--count', `${t.base.ref}..${t.branch}`]).catch(() => '0')).trim()) || 0;
+
+  /** The Merge Request this chat opened for `branch`; rows from before `pr_branch` existed are worktree chats only. */
+  const prFor = (conv: Conversation, branch: string) =>
+    (conv.pr_branch ? conv.pr_branch === branch : !!conv.worktree) ? conv.pr_url : null;
+
   const gitFailed = (reply: Reply, e: unknown) => {
     if (e instanceof git.GitError) return reply.code(400).send({ error: e.message });
     throw e;
@@ -225,11 +248,10 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!c) return;
     const s = await git.status(c.cwd);
     if (!s.repo) return s;
-    if (!c.conv.worktree) return { ...s, worktree: null };
-    // Commits on the chat's branch that its base (or, if it had none, the project folder's HEAD) does not have yet.
-    const base = c.conv.base_branch ?? 'HEAD';
-    const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `${base}..${c.conv.branch}`]).catch(() => '0')).trim()) || 0;
-    return { ...s, worktree: { branch: c.conv.branch, base: c.conv.base_branch, ahead, pr: c.conv.pr_url } };
+    const t = await mrTarget(c.conv, c.project);
+    // Commits on the branch that its target (or, if a worktree had none, the project folder's HEAD) does not have yet.
+    const mr = t && { branch: t.branch, base: t.base.name, ahead: await aheadOf(c.project.path, t), pr: prFor(c.conv, t.branch) };
+    return { ...s, worktree: c.conv.worktree ? mr : null, mr };
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>('/api/conversations/:id/git/diff', {
@@ -282,15 +304,16 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     }
   });
 
-  // Describe what merging a worktree chat would bring, as a Merge Request description. Changes nothing.
+  // Describe what merging the chat's branch would bring, as a Merge Request description. Changes nothing.
   app.post<{ Params: { id: string } }>('/api/conversations/:id/git/mr-description', async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c) return;
-    if (!c.conv.worktree || !c.conv.branch) return reply.code(400).send({ error: 'this chat has no worktree of its own' });
-    const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `HEAD..${c.conv.branch}`]).catch(() => '0')).trim()) || 0;
-    if (!ahead) return reply.code(400).send({ error: 'nothing to merge: commit the chat\'s changes first' });
-    const requests = store.listTurns(c.conv.id).slice(-5).map((t) => t.prompt);
-    const prompt = await mrDescriptionPrompt(c.project.path, c.conv.branch, requests, store.getKv('mr_prompt') || DEFAULT_MR_PROMPT);
+    const t = await mrTarget(c.conv, c.project);
+    if (!t) return reply.code(400).send({ error: noTarget });
+    if (!(await aheadOf(c.project.path, t))) return reply.code(400).send({ error: 'nothing to merge: commit the chat\'s changes first' });
+    const requests = store.listTurns(c.conv.id).slice(-5).map((r) => r.prompt);
+    const prompt = await mrDescriptionPrompt(c.project.path, t.branch, { name: t.base.name ?? 'the current branch', ref: t.base.ref }, requests,
+      store.getKv('mr_prompt') || DEFAULT_MR_PROMPT);
     try {
       const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd, model: c.conv.model, effort: c.conv.effort });
       const description = cleanMessage(answer);
@@ -301,8 +324,8 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     }
   });
 
-  // Push a worktree chat's branch and open a Merge Request (GitLab, via `glab`) or pull request (GitHub, via `gh`) from
-  // it into the branch it was started from, with the server's own CLI login. Without a title, the last commit's subject.
+  // Push the chat's branch and open a Merge Request (GitLab, via `glab`) or pull request (GitHub, via `gh`) from it into
+  // its target (see mrTarget), with the server's own CLI login. Without a title, the last commit's subject.
   // The body is optional, so it is checked here rather than by a schema.
   app.post<{ Params: { id: string }; Body: { title?: unknown; body?: unknown } | undefined }>('/api/conversations/:id/git/pull-request', async (req, reply) => {
     const { title: rawTitle = '', body: rawBody = '' } = req.body ?? {};
@@ -310,13 +333,12 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (typeof rawBody !== 'string' || rawBody.length > 60_000) return reply.code(400).send({ error: 'body must be a string of at most 60000 characters' });
     const c = load(req.params.id, reply);
     if (!c) return;
-    const branch = c.conv.branch;
-    if (!c.conv.worktree || !branch) return reply.code(400).send({ error: 'this chat has no worktree of its own' });
-    const base = c.conv.base_branch;
+    const t = await mrTarget(c.conv, c.project);
+    if (!t) return reply.code(400).send({ error: noTarget });
+    const { branch, base: { name: base } } = t;
     if (!base) return reply.code(400).send({ error: 'this chat was branched from a detached HEAD: there is no branch to merge into' });
     if (!mayWrite(req, reply, c.project, [c.cwd])) return;
-    const ahead = Number((await git.git(c.project.path, ['rev-list', '--count', `${base}..${branch}`]).catch(() => '0')).trim()) || 0;
-    if (!ahead) return reply.code(400).send({ error: `nothing to propose: ${branch} has no commits that ${base} lacks` });
+    if (!(await aheadOf(c.project.path, t))) return reply.code(400).send({ error: `nothing to propose: ${branch} has no commits that ${base} lacks` });
 
     const push = await git.push(c.cwd);
     if (!push.pushed) return reply.code(400).send({ error: push.error ? `push failed: ${push.error}` : 'the repository has no remote to open a Merge Request on' });
@@ -330,7 +352,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     try {
       const command = (forge === 'github' ? cfg.ghCommand : cfg.glabCommand) ?? [forge === 'github' ? 'gh' : 'glab'];
       const pr = await createPullRequest({ forge, command, cwd: c.cwd, repo, branch, base, title, body: rawBody.trim() });
-      store.setPrUrl(c.conv.id, pr.url);
+      store.setPrUrl(c.conv.id, pr.url, branch);
       return { ...pr, forge, push };
     } catch (e) { return gitFailed(reply, e); }
   });

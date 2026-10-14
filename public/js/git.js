@@ -1,5 +1,5 @@
 // The Changes tab: what git sees in the folder the chat's agent works in. Pick files, read their diffs, commit and push,
-// revert, discard, and for a worktree chat open a Merge Request.
+// revert, discard, and open a Merge Request for the chat's branch.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
@@ -38,8 +38,9 @@ function useDiffs(id, files) {
   return [diffs, (path) => { if (!(path in diffs)) fetchOne(path); }];
 }
 
-function Worktree({ id, s, onDone }) {
-  const w = s.worktree;
+/** The chat's branch and where its Merge Request goes: a worktree chat's own branch, or the project folder's feature branch. */
+function MergeRequest({ id, s, onDone }) {
+  const w = s.mr;
   const [mrText, setMrText] = useState('');
   const [description, setDescription] = useState('');
   const generate = guarded(async () => {
@@ -47,7 +48,7 @@ function Worktree({ id, s, onDone }) {
     setDescription(r.description);
     setMrText(r.message);
   });
-  // Pushes the branch and opens a Merge Request (GitLab) or pull request (GitHub) into the branch the chat started from.
+  // Pushes the branch and opens a Merge Request (GitLab) or pull request (GitHub) into its target branch.
   const create = guarded(async () => {
     if (!confirm(`Push ${w.branch} and open a Merge Request into ${w.base}?`)) return;
     const [title = '', ...rest] = mrText.trim().split('\n');
@@ -57,7 +58,7 @@ function Worktree({ id, s, onDone }) {
   });
   return html`<section class="branch-card">
     <div class="branch-line"><${Icon} name="git-branch" /><code>${w.branch}</code><${Icon} name="chevron-right" class="tiny dim" /><code>${w.base || 'detached HEAD'}</code></div>
-    <div class="dim small">Own worktree · ${w.ahead ? `${plural(w.ahead, 'commit')} not in ${w.base || 'the project folder'} yet` : 'nothing to propose yet'}</div>
+    <div class="dim small">${s.worktree ? 'Own worktree' : 'Project folder'} · ${w.ahead ? `${plural(w.ahead, 'commit')} not in ${w.base || 'the project folder'} yet` : 'nothing to propose yet'}</div>
     ${w.pr && html`<a class="mr-link" href=${w.pr} target="_blank" rel="noopener noreferrer"><${Icon} name="git-pull-request" /><span>${w.pr}</span><${Icon} name="external-link" class="tiny" /></a>`}
     ${w.ahead > 0 && html`<div class="mr-box">
       <textarea rows="4" value=${mrText} onInput=${(e) => setMrText(e.currentTarget.value)}
@@ -132,7 +133,7 @@ export function ChangesPane({ id }) {
       <div class="dim small"><${Icon} name="git-branch" class="tiny" /> ${s.branch || 'detached HEAD'}${s.head ? ` · ${s.head.hash} ${s.head.subject}` : ' · no commits yet'}</div>
       <button class="icon-btn sm" aria-label="Refresh" title="Refresh" onClick=${guarded(() => refreshGit(id))}><${Icon} name="refresh-cw" /></button>
     </div>
-    ${s.worktree && html`<${Worktree} id=${id} s=${s} onDone=${() => after()} />`}
+    ${s.mr && html`<${MergeRequest} id=${id} s=${s} onDone=${() => after()} />`}
     ${!files.length ? html`<${Empty} icon="circle-check" title="No uncommitted changes">Everything in this folder is committed.<//>` : html`
       <section class="file-list">
         <div class="file-list-head">
