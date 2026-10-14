@@ -1,6 +1,6 @@
 // The main area when no chat is open.
 import { html } from './lib.js';
-import { Icon } from './ui.js';
+import { Icon, Logo } from './ui.js';
 import { isAdmin, newChat, projects, toggleSidebar, ui } from './store.js';
 
 export function Home() {
@@ -10,7 +10,7 @@ export function Home() {
       <button class="icon-btn sidebar-toggle" aria-label="Show sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
     </header>
     <div class="thread"><div class="home">
-      <span class="logo xl" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2.5c3.6 2.8 6 6.3 6 10.2a6 6 0 0 1-12 0c0-3.9 2.4-7.4 6-10.2Z" /><path d="M12 9v12" /></svg></span>
+      <${Logo} size=${56} />
       <h1>What should the agents work on?</h1>
       <p class="dim">Pick a chat in the sidebar, or start a new one.</p>
       ${list.length > 0 && html`<div class="home-grid">

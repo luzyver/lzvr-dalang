@@ -4,7 +4,7 @@ import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Field, Icon, Menu, MenuItem, Modal } from './ui.js';
+import { AsyncButton, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
 import {
   approvals, convs, goHome, guarded, isAdmin, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
@@ -121,7 +121,7 @@ export function Sidebar() {
   return html`<aside class="sidebar" aria-label="Projects and chats">
     <div class="side-top">
       <a class="brand" href="#" onClick=${(e) => { e.preventDefault(); goHome(); }}>
-        <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2.5c3.6 2.8 6 6.3 6 10.2a6 6 0 0 1-12 0c0-3.9 2.4-7.4 6-10.2Z" /><path d="M12 9v12" /></svg></span>
+        <${Logo} />
         <span class="brand-name">Dalang</span>
       </a>
       <button class="icon-btn" aria-label="Hide sidebar" title="Hide sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>

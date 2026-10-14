@@ -201,10 +201,11 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .side-top { display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 var(--s2); }
 .brand { display: flex; align-items: center; gap: 9px; color: var(--text); }
 .brand:hover { text-decoration: none; }
-.logo { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--accent); color: var(--accent-fg); flex: none; }
-.logo svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-.logo.lg { width: 44px; height: 44px; border-radius: 13px; } .logo.lg svg { width: 26px; height: 26px; }
-.logo.xl { width: 56px; height: 56px; border-radius: 16px; } .logo.xl svg { width: 32px; height: 32px; }
+.logo { display: block; flex: none; }
+.logo-tile { fill: var(--accent); }
+.logo-mark { fill: var(--accent-fg); }
+.logo-cut { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.logo-base { fill: none; stroke: var(--accent-fg); stroke-width: 1.8; stroke-linecap: round; }
 .brand-name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
 .search-trigger { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 7px 0 10px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); color: var(--text-faint); font-size: var(--fs-sm); box-shadow: var(--shadow-sm); flex: none; }
 .search-trigger > span:not(.i) { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

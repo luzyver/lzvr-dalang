@@ -2,7 +2,7 @@
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
 import { publicApi, tokenStore } from './api.js';
-import { Icon, Spinner } from './ui.js';
+import { Icon, Logo, Spinner } from './ui.js';
 import { loginWithPasskey } from './passkeys.js';
 import { loginMessage, startSession } from './session.js';
 
@@ -32,7 +32,7 @@ export function Login() {
 
   return html`<div class="login-screen">
     <form class="login" onSubmit=${signIn}>
-      <span class="logo lg" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2.5c3.6 2.8 6 6.3 6 10.2a6 6 0 0 1-12 0c0-3.9 2.4-7.4 6-10.2Z" /><path d="M12 9v12" /></svg></span>
+      <${Logo} size=${44} />
       <div><h1>Sign in to Dalang</h1><p class="dim">The control room for your coding agents.</p></div>
       <label class="field"><span class="field-label">Access token</span>
         <input type="password" autocomplete="current-password" autofocus value=${token} onInput=${(e) => setToken(e.currentTarget.value)} /></label>

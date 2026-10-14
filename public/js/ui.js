@@ -8,6 +8,19 @@ export function Icon({ name, class: cls, spin }) {
   return html`<span class=${cx('i', cls, spin && 'spin')} style=${{ '--m': `url(/icons/${name}.svg)` }} aria-hidden="true"></span>`;
 }
 
+/**
+ * The Dalang mark: a gunungan (the leaf-shaped wayang figure that opens and closes a play) with the tree of life inside,
+ * branching like the agents one dalang drives. Coloured by the theme, so it follows the accent palette.
+ */
+export const Logo = ({ size = 26 }) => html`<svg class="logo" width=${size} height=${size} viewBox="0 0 32 32" aria-hidden="true">
+  <rect class="logo-tile" width="32" height="32" rx="7.5" />
+  <g transform="translate(5.6 5.4) scale(.866)">
+    <path class="logo-mark" d="M12 2.2C14.2 5.4 18.6 9 18.6 13.6C18.6 16.6 16 18.4 12 18.4C8 18.4 5.4 16.6 5.4 13.6C5.4 9 9.8 5.4 12 2.2Z" />
+    <path class="logo-cut" d="M12 16.6V9M12 12.6 9.4 10.4M12 12.6l2.6-2.2" />
+    <path class="logo-base" d="M8.5 21h7" />
+  </g>
+</svg>`;
+
 export const Spinner = ({ class: cls }) => html`<${Icon} name="loader-circle" spin class=${cls} />`;
 
 /**
