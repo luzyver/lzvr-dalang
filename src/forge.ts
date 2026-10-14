@@ -5,12 +5,43 @@ import { GitError } from './git.js';
 export type Forge = 'github' | 'gitlab';
 export const FORGES = ['github', 'gitlab'] as const;
 
-/** GitHub or GitLab from a remote URL (`git@github.com:o/r.git`, `https://gitlab.example.com/o/r`), or null. */
-export function forgeOf(remoteUrl: string): Forge | null {
-  const host = /^[\w+.-]+:\/\/(?:[^@/]*@)?([^/:]+)/.exec(remoteUrl)?.[1] ?? /^(?:[^@/]*@)?([^/:]+):/.exec(remoteUrl)?.[1] ?? '';
+/** The host and repository path (`owner/repo`, no `.git`) of a remote URL, and whether it goes over SSH. */
+export function parseRemote(remoteUrl: string): { host: string; path: string; ssh: boolean } | null {
+  if (/^[a-z]:[\\/]/i.test(remoteUrl)) return null; // a Windows path, not `host:path`
+  const url = /^([\w+.-]+):\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(remoteUrl);
+  const scp = url ? null : /^(?:[^@/]*@)?([^/:]+):(?!\/\/)(.+)$/.exec(remoteUrl);
+  const [host, path, ssh] = url ? [url[2]!, url[3]!, /ssh/i.test(url[1]!)] : scp ? [scp[1]!, scp[2]!, true] : [];
+  if (!host || !path) return null;
+  return { host: host.toLowerCase(), path: path.replace(/\.git\/?$/, '').replace(/^\/+|\/+$/g, ''), ssh: !!ssh };
+}
+
+/** GitHub or GitLab from a host name (`github.com`, `gitlab.example.com`), or null. */
+export function forgeOf(host: string): Forge | null {
   if (/(^|\.)github\b/i.test(host)) return 'github';
   if (/(^|\.)gitlab\b/i.test(host)) return 'gitlab';
   return null;
+}
+
+/**
+ * The real host behind an SSH remote. `~/.ssh/config` aliases such as `github.com-work` (one key per account) are
+ * common, and neither `gh` nor `glab` knows them; `ssh -G` prints what the alias stands for. The name itself if that fails.
+ */
+export function sshHostName(alias: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('ssh', ['-G', '--', alias], { timeout: 10_000 }, (err, out) => {
+      const name = err ? null : /^hostname\s+(\S+)/im.exec(String(out))?.[1];
+      resolve((name ?? alias).toLowerCase());
+    });
+  });
+}
+
+/** Where the Merge Request goes: the forge and the repository as `host/owner/repo`, from a remote URL. */
+export async function remoteRepo(remoteUrl: string, forge?: Forge): Promise<{ forge: Forge; repo: string | null } | null> {
+  const r = parseRemote(remoteUrl);
+  if (!r) return forge ? { forge, repo: null } : null; // e.g. a local path: let the CLI work it out
+  const host = r.ssh ? await sshHostName(r.host) : r.host;
+  const f = forge ?? forgeOf(host) ?? forgeOf(r.host);
+  return f ? { forge: f, repo: `${host}/${r.path}` } : null;
 }
 
 export interface PullRequestOpts {
@@ -18,6 +49,8 @@ export interface PullRequestOpts {
   /** How to start `gh` / `glab` (the binary and any leading arguments). */
   command: string[];
   cwd: string;
+  /** `host/owner/repo`, so the CLI need not recognise the remote itself (it does not know SSH aliases). */
+  repo?: string | null;
   branch: string;
   base: string;
   title: string;
@@ -26,9 +59,11 @@ export interface PullRequestOpts {
 
 /** The arguments that open a Merge Request (GitLab) or pull request (GitHub) without asking anything. */
 export function pullRequestArgs(o: Omit<PullRequestOpts, 'command' | 'cwd'>): string[] {
+  // gh takes `[HOST/]OWNER/REPO`; glab a full URL (its OWNER/REPO form would assume gitlab.com).
+  const repo = !o.repo ? [] : o.forge === 'github' ? ['--repo', o.repo] : ['--repo', `https://${o.repo}`];
   return o.forge === 'github'
-    ? ['pr', 'create', '--head', o.branch, '--base', o.base, '--title', o.title, '--body', o.body]
-    : ['mr', 'create', '--source-branch', o.branch, '--target-branch', o.base, '--title', o.title, '--description', o.body, '--yes'];
+    ? ['pr', 'create', ...repo, '--head', o.branch, '--base', o.base, '--title', o.title, '--body', o.body]
+    : ['mr', 'create', ...repo, '--source-branch', o.branch, '--target-branch', o.base, '--title', o.title, '--description', o.body, '--yes'];
 }
 
 const URL_RE = /https?:\/\/[^\s"'<>]+/g;

@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
-import { createPullRequest, forgeOf } from './forge.js';
+import { createPullRequest, remoteRepo } from './forge.js';
 import * as git from './git.js';
 import type { Conversation, Project, Store } from './store.js';
 
@@ -323,13 +323,14 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!push.pushed) return reply.code(400).send({ error: push.error ? `push failed: ${push.error}` : 'the repository has no remote to open a Merge Request on' });
     const remote = push.pushed.slice(0, push.pushed.indexOf('/'));
     const url = (await git.git(c.cwd, ['remote', 'get-url', remote]).catch(() => '')).trim();
-    const forge = cfg.forge ?? forgeOf(url);
-    if (!forge) return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: set GIT_FORGE` });
+    const target = await remoteRepo(url, cfg.forge);
+    if (!target) return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: set GIT_FORGE` });
+    const { forge, repo } = target;
 
     const title = rawTitle.trim() || (await git.git(c.cwd, ['log', '-1', '--format=%s', branch])).trim();
     try {
       const command = (forge === 'github' ? cfg.ghCommand : cfg.glabCommand) ?? [forge === 'github' ? 'gh' : 'glab'];
-      const pr = await createPullRequest({ forge, command, cwd: c.cwd, branch, base, title, body: rawBody.trim() });
+      const pr = await createPullRequest({ forge, command, cwd: c.cwd, repo, branch, base, title, body: rawBody.trim() });
       store.setPrUrl(c.conv.id, pr.url);
       return { ...pr, forge, push };
     } catch (e) { return gitFailed(reply, e); }

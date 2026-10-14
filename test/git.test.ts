@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildClaudeArgs } from '../src/claude.js';
-import { forgeOf, pullRequestArgs } from '../src/forge.js';
+import { forgeOf, parseRemote, pullRequestArgs, remoteRepo } from '../src/forge.js';
 import { cleanMessage, toCommitMessage } from '../src/git-routes.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -463,14 +463,33 @@ describe('Merge Requests on GitHub / GitLab', () => {
     expect(t.calls()).toEqual([]);
   });
 
-  it('tells GitHub from GitLab by the remote address and builds each CLI\'s arguments', () => {
-    expect(forgeOf('git@github.com:acme/app.git')).toBe('github');
-    expect(forgeOf('https://github.example.com/acme/app')).toBe('github');
-    expect(forgeOf('ssh://git@gitlab.company.io:2222/team/app.git')).toBe('gitlab');
-    expect(forgeOf('https://user@gitlab.com/team/app.git')).toBe('gitlab');
-    expect(forgeOf('/srv/git/app.git')).toBeNull();
-    expect(forgeOf('https://git.example.com/github-mirror/app')).toBeNull(); // only the host counts
-    expect(pullRequestArgs({ forge: 'gitlab', branch: 'b', base: 'main', title: 't', body: 'd' }))
-      .toEqual(['mr', 'create', '--source-branch', 'b', '--target-branch', 'main', '--title', 't', '--description', 'd', '--yes']);
+  it('reads the host and repository from a remote address', () => {
+    expect(parseRemote('git@github.com:acme/app.git')).toEqual({ host: 'github.com', path: 'acme/app', ssh: true });
+    expect(parseRemote('git@github.com-work:acme/app.git')).toEqual({ host: 'github.com-work', path: 'acme/app', ssh: true });
+    expect(parseRemote('ssh://git@gitlab.company.io:2222/team/sub/app.git')).toEqual({ host: 'gitlab.company.io', path: 'team/sub/app', ssh: true });
+    expect(parseRemote('https://user@gitlab.com/team/app.git')).toEqual({ host: 'gitlab.com', path: 'team/app', ssh: false });
+    expect(parseRemote('/srv/git/app.git')).toBeNull();
+    expect(parseRemote('C:\\repos\\app.git')).toBeNull();
+    expect(forgeOf('github.example.com')).toBe('github');
+    expect(forgeOf('gitlab.company.io')).toBe('gitlab');
+    expect(forgeOf('git.example.com')).toBeNull();
+  });
+
+  it('finds the forge behind an https remote and passes the repository to the CLI', async () => {
+    expect(await remoteRepo('https://github.com/acme/app.git')).toEqual({ forge: 'github', repo: 'github.com/acme/app' });
+    expect(await remoteRepo('https://git.example.com/github-mirror/app')).toBeNull(); // only the host counts
+    expect(await remoteRepo('https://git.example.com/team/app', 'gitlab')).toEqual({ forge: 'gitlab', repo: 'git.example.com/team/app' });
+    expect(await remoteRepo('/srv/git/app.git', 'github')).toEqual({ forge: 'github', repo: null });
+    expect(pullRequestArgs({ forge: 'github', repo: 'github.com/acme/app', branch: 'b', base: 'main', title: 't', body: 'd' }))
+      .toEqual(['pr', 'create', '--repo', 'github.com/acme/app', '--head', 'b', '--base', 'main', '--title', 't', '--body', 'd']);
+    expect(pullRequestArgs({ forge: 'gitlab', repo: 'git.example.com/team/app', branch: 'b', base: 'main', title: 't', body: 'd' }))
+      .toEqual(['mr', 'create', '--repo', 'https://git.example.com/team/app', '--source-branch', 'b', '--target-branch', 'main', '--title', 't', '--description', 'd', '--yes']);
+  });
+
+  it('resolves an SSH alias such as github.com-work to the host it stands for', async () => {
+    // `ssh -G` applies ~/.ssh/config; an alias that is not configured simply comes back as itself
+    const r = await remoteRepo('git@github.com-dalang-test-alias:acme/app.git');
+    expect(r?.forge).toBe('github');
+    expect(r?.repo).toMatch(/^github\.com(-dalang-test-alias)?\/acme\/app$/);
   });
 });
