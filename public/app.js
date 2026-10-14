@@ -67,8 +67,8 @@ async function showApp() {
       h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
       h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
   document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
-  const approvalsBox = h('div', { class: 'modal-body' });
-  const approvalsBtn = h('button', { class: 'badge warn', hidden: true, onclick: () => openModal(approvalsBox) });
+  const approvalsBox = h('div', { class: 'page-body' });
+  const approvalsBtn = h('button', { class: 'badge warn', hidden: true, onclick: () => openPage(approvalsBox) });
   const header = h('header', {},
     h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, icon('panel-left')),
     h('span', { class: 'title' }, 'Dalang'), approvalsBtn,
@@ -97,20 +97,17 @@ async function showApp() {
     return l ? l.windows.map((w) => `${w.label}: ${Math.max(0, 100 - Math.round(w.usedPercent))}% left, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`).join('\n') : '';
   }
 
-  // Add another Codex account: runs `codex login --device-auth` on the server and shows its link and code here.
-  // Every menu action opens in this one modal instead of the sidebar.
-  const modal = h('dialog', { class: 'modal' });
-  let onModalClose = null;
-  modal.addEventListener('close', () => { const f = onModalClose; onModalClose = null; modal.replaceChildren(); f?.(); });
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); }); // click on the backdrop
-  root.append(modal);
-  const closeModal = () => modal.close();
-  function openModal(content, onClose) {
-    if (modal.open) modal.close();
-    onModalClose = onClose || null;
-    modal.replaceChildren(content);
-    modal.showModal();
+  // Every menu action opens as a page in the main area instead of a chat; closing it goes back to the chat that was open.
+  let onPageClose = null;
+  function leavePage() { const f = onPageClose; onPageClose = null; f?.(); }
+  function openPage(content, onClose) {
+    leavePage();
+    if (stopStream) { stopStream(); stopStream = null; }
+    onPageClose = onClose || null;
+    document.body.classList.remove('nav');
+    main.replaceChildren(h('div', { class: 'page' }, content));
   }
+  const closePage = () => drawMain(state.current);
   // Global model/effort defaults, one section per backend (a Codex model name means nothing to Claude Code).
   function defaultModelDialog() {
     const msg = h('div', { class: 'small' });
@@ -145,15 +142,16 @@ async function showApp() {
     const save = guarded(async () => {
       for (const s of sections) await s.save();
       flash('Global model and effort defaults saved');
-      closeModal();
+      closePage();
     });
-    openModal(h('div', { class: 'modal-body' },
+    openPage(h('div', { class: 'page-body' },
       h('strong', {}, 'Global defaults'),
       h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on its default to let the CLI choose.'),
       ...sections.map((s) => s.el),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closeModal }, 'Cancel')),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closePage }, 'Cancel')),
       msg));
   }
+  // Add another account: runs the CLI's login on the server and shows its link and code here.
   function addAccountDialog(backend = 'codex') {
     const label = backend === 'claude' ? 'Claude Code' : 'Codex';
     const q = backend === 'claude' ? '?backend=claude' : '';
@@ -186,7 +184,7 @@ async function showApp() {
     const msg = h('div', { class: 'small' });
     let id = null;
     let timer = null;
-    const close = closeModal;
+    const close = closePage;
     const poll = async () => {
       try {
         const s = await api(`/api/accounts/login/${id}`);
@@ -231,7 +229,7 @@ async function showApp() {
       poll();
     }) }, 'Cancel');
     loadList();
-    openModal(h('div', { class: 'modal-body' },
+    openPage(h('div', { class: 'page-body' },
       h('strong', {}, `${label} accounts`), list,
       h('strong', {}, 'Add an account'),
       h('div', { class: 'small' }, backend === 'claude'
@@ -247,7 +245,7 @@ async function showApp() {
     const reveal = h('div');
     const nameIn = h('input', { placeholder: 'user name (a-z, 0-9, - or _)' });
     const roleSel = h('select', {}, ['dev', 'admin'].map((v) => h('option', { value: v }, v)));
-    const close = closeModal;
+    const close = closePage;
 
     function showToken(who, token) {
       const field = h('input', { readonly: true, value: token });
@@ -280,7 +278,7 @@ async function showApp() {
       showToken(r.name, r.token);
       reload();
     });
-    openModal(h('div', { class: 'modal-body' },
+    openPage(h('div', { class: 'page-body' },
       h('strong', {}, 'Users'),
       h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects.'),
       list,
@@ -296,7 +294,7 @@ async function showApp() {
       const decide = (a, verb) => guarded(async () => { await api(`/api/approvals/${a.id}/${verb}`, { method: 'POST' }); refreshApprovals(); });
       approvalsBtn.hidden = !list.length;
       approvalsBtn.textContent = `Approvals (${list.length})`;
-      if (!list.length && approvalsBox.isConnected) closeModal();
+      if (!list.length && approvalsBox.isConnected) closePage();
       approvalsBox.replaceChildren(h('strong', {}, 'Approvals'), ...list.map((a) => h('div', { class: 'msg' },
         `Approval needed: chat ${a.from_conv.slice(0, 8)} wants to message chat ${a.to_conv.slice(0, 8)}:\n${a.prompt}`,
         h('div', { class: 'row' },
@@ -320,17 +318,17 @@ async function showApp() {
     const create = async () => {
       try {
         await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value, backend: backendSel.value } });
-        closeModal();
+        closePage();
         await loadProjects();
       } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
     };
-    openModal(h('div', { class: 'modal-body' },
+    openPage(h('div', { class: 'page-body' },
       h('strong', {}, 'Add project'),
       h('label', {}, 'Name', nameIn),
       h('label', {}, 'Folder', pathIn),
       h('label', {}, 'Agent (for every chat in this project)', backendSel),
       h('label', {}, 'Sandbox', sbSel),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: closeModal }, 'Cancel')),
+      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: closePage }, 'Cancel')),
       msg));
     nameIn.focus();
   }
@@ -398,11 +396,11 @@ async function showApp() {
       `${new Date(s.modified).toLocaleString()} ${s.cwd ? '· ' + s.cwd : ''} · ${s.id.slice(0, 8)}`)));
     const box = h('div', { class: 'row' }, sel, h('button', { class: 'primary', onclick: guarded(async () => {
       const c = await api(`/api/projects/${project.id}/conversations`, { method: 'POST', body: { threadId: sel.value } });
-      closeModal();
+      closePage();
       await loadProjects();
       openConv(c.id);
-    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: closeModal }, icon('x')));
-    openModal(h('div', { class: 'modal-body' }, h('strong', {}, 'Adopt a Codex session'), box));
+    }) }, 'Adopt'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: closePage }, icon('x')));
+    openPage(h('div', { class: 'page-body' }, h('strong', {}, 'Adopt a Codex session'), box));
   }
 
   async function openConv(id) {
@@ -422,6 +420,7 @@ async function showApp() {
   }
 
   function drawMain(id) {
+    leavePage();
     if (!id) {
       main.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Dalang'), h('p', {}, 'Pick a chat, or start a new one with the + next to a project.'),
         h('button', { class: 'primary mobonly', onclick: () => document.body.classList.add('nav') }, 'Open chats')));
