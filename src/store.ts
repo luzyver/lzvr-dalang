@@ -57,8 +57,8 @@ export interface Approval {
 export interface Passkey { id: string; publicKey: Uint8Array<ArrayBuffer>; counter: number; transports?: string[]; userId?: string | null }
 
 export type Role = 'admin' | 'dev';
-export interface User { id: string; name: string; role: Role; created_at: string }
-export interface UserSummary { id: string; name: string; role: Role; createdAt: string; passkeys: number }
+export interface User { id: string; name: string; role: Role; email: string | null; created_at: string }
+export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string; passkeys: number }
 
 /** `backend` is the agent CLI every chat in the project runs on. */
 export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend }
@@ -137,6 +137,8 @@ export class Store {
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
+    this.ensureColumn('users', 'email', 'TEXT');
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -175,15 +177,21 @@ export class Store {
   }
 
   // --- panel users (role admin or dev); the personal token is stored only as a hash ---
-  createUser(name: string, role: Role, tokenHash: string): User {
+  /** `email` is stored lowercased; it is what the user signs in with (a one-time code is mailed to it). */
+  createUser(name: string, role: Role, tokenHash: string, email: string | null = null): User {
     const id = randomUUID();
-    this.run('INSERT INTO users (id,name,role,token_hash) VALUES (?,?,?,?)', id, name, role, tokenHash);
+    this.run('INSERT INTO users (id,name,role,token_hash,email) VALUES (?,?,?,?,?)', id, name, role, tokenHash, email?.toLowerCase() ?? null);
     return this.getUser(id)!;
   }
-  getUser(id: string): User | null { return this.get('SELECT id,name,role,created_at FROM users WHERE id=?', id); }
-  getUserByTokenHash(hash: string): User | null { return this.get('SELECT id,name,role,created_at FROM users WHERE token_hash=?', hash); }
+  getUser(id: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE id=?', id); }
+  getUserByTokenHash(hash: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE token_hash=?', hash); }
+  getUserByEmail(email: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE email=?', email.toLowerCase()); }
+  /** Throws when another user already has this email. */
+  setUserEmail(id: string, email: string | null): boolean {
+    return Number(this.run('UPDATE users SET email=? WHERE id=?', email?.toLowerCase() ?? null, id).changes) > 0;
+  }
   listUsers(): UserSummary[] {
-    return this.all(`SELECT u.id, u.name, u.role, u.created_at AS createdAt,
+    return this.all(`SELECT u.id, u.name, u.role, u.email, u.created_at AS createdAt,
       (SELECT COUNT(*) FROM passkeys p WHERE p.user_id = u.id) AS passkeys FROM users u ORDER BY u.rowid`);
   }
   setUserRole(id: string, role: Role): boolean { return Number(this.run('UPDATE users SET role=? WHERE id=?', role, id).changes) > 0; }

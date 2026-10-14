@@ -6,6 +6,7 @@ import type { Config } from '../src/config.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import { Logins } from '../src/login.js';
 import { Push, type PushSend } from '../src/push.js';
+import type { SendMail } from '../src/otp.js';
 import { Store } from '../src/store.js';
 import type { WebAuthn } from '../src/webauthn.js';
 import { FAKE, TOKEN } from './helpers.js';
@@ -24,6 +25,7 @@ export interface AppExtras {
   authMaxFailures?: number;
   webauthn?: WebAuthn;
   pushSend?: PushSend;
+  sendMail?: SendMail;
   cfg?: Partial<Config>;
   /** Codex homes the app starts with (default: one). Pass [] to test the "no account yet" state. */
   homes?: string[];
@@ -38,7 +40,7 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   const cfg: Config = {
     token: TOKEN, workspaceRoot: root, limitBlockMs: 3_600_000,
     stateDir: join(base, 'state'), port: 0, host: '127.0.0.1', trustProxy: [], codexCommand: FAKE, claudeCommand: FAKE,
-    rpId: 'localhost', origin: 'http://localhost:9876', mcpCrossSend: 'approve',
+    rpId: 'localhost', origin: 'http://localhost:9876', mcpCrossSend: 'approve', ownerEmails: [], authBypass: false,
     ...extra.cfg,
   };
   const store = new Store();

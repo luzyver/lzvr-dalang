@@ -62,7 +62,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   **Scheduled** in the sidebar. Anyone who may send prompts may schedule them.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
-- **Passkeys + push**: passkey login on top of the access token, installable PWA, Web Push when a turn finishes,
+- **Email sign-in + passkeys + push**: sign in with a 6-digit code mailed to you (through the GEM Mailer), or a passkey, installable PWA, Web Push when a turn finishes,
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 
@@ -135,8 +135,19 @@ nginx sees that proxy's address instead of the visitor's, so you would need ngin
 anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw allow from <ip> to any port 443`), but keep
 80 open to everyone until the certificate is issued, and again at renewal time unless you renew with the DNS challenge.
 
-Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), enter the token, then use
+Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), sign in by email (see below), then use
 **Add passkey** and **Notifications** in Settings → This device. Passkeys, push and "install app" only work over HTTPS (or localhost).
+
+### Signing in
+
+The sign-in screen asks for an email and **Send code**: Dalang mails a 6-digit code through the GEM Mailer
+(`POST $MAILER_URL/mail/send`; the mailer's nginx must allow the VM's address). The code is valid for 5 minutes, can be
+asked for again after 60 seconds, and dies after 5 wrong tries. The emails in `LZVR_OWNER_EMAILS` (comma-separated) sign
+in as the owner; a panel user signs in with the email set on their user. Unknown emails get the same answer and no mail.
+`MAIL_FROM` sets the sender (default: the mailer's). Without `MAILER_URL` the screen falls back to the access token.
+
+**Local development:** `AUTH_BYPASS=true` skips sign-in entirely: every request is the owner. It is refused at start
+unless `HOST` is a loopback address (`127.0.0.1`, `::1`, `localhost`). Never set it on the VM.
 
 ### Users and roles
 
@@ -151,7 +162,8 @@ goes wrong. From it (or any admin) open **Users** in the panel to create people:
 | Approve or reject chat-to-chat sends from MCP | yes | no |
 | Create / delete users, change roles, issue new tokens | yes | no |
 
-Creating a user prints a personal token **once** (only a hash is stored). The user signs in with it, then can press
+Each user has an email (set when creating them, editable in the list): that is what they sign in with. Creating a user also
+prints a personal API token **once** (only a hash is stored), for the HTTP/MCP API or signing in without email. After signing in they can press
 **Add passkey** to register their own; passkey logins sign in as that user. **New token** replaces a user's token and signs
 out all their sessions; **Delete** removes their token, sessions and passkeys at once. Over `/mcp`, a dev's token gets the
 everyday tools only; an admin's gets all 18.

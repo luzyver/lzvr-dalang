@@ -14,7 +14,7 @@ describe('users', () => {
     expect(r.json()).toMatchObject({ name: 'budi', role: 'dev', token: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
     const list = (await call(t, 'GET', '/api/users', AUTH)).json();
-    expect(list).toEqual([{ id: expect.any(String), name: 'budi', role: 'dev', createdAt: expect.any(String), passkeys: 0 }]);
+    expect(list).toEqual([{ id: expect.any(String), name: 'budi', role: 'dev', email: null, createdAt: expect.any(String), passkeys: 0 }]);
     expect(JSON.stringify(list)).not.toContain(r.json().token);
     // the database keeps a hash, never the token itself
     expect(JSON.stringify(t.store.db.prepare('SELECT * FROM users').all())).not.toContain(r.json().token);

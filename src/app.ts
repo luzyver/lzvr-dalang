@@ -14,6 +14,7 @@ import { passkeyRoutes, sessionHash } from './passkeys.js';
 import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
+import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
 import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
 import { realWebAuthn, type WebAuthn } from './webauthn.js';
@@ -29,6 +30,7 @@ declare module 'fastify' {
 }
 
 const USER_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
 /** A filename that is safe on Linux and Windows: no directory part, no reserved/illegal characters or device names. */
@@ -54,7 +56,7 @@ export function snippet(text: string, terms: string[], width = 220): string {
 export function buildApp(
   deps: {
     cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins; webauthn?: WebAuthn;
-    maxUploadBytes?: number; authMaxFailures?: number;
+    maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -128,12 +130,16 @@ export function buildApp(
     const agentConv = m && path === '/mcp' ? dispatcher.mcpConversation(m[1]!) : null;
     if (agentConv) { req.mcpConv = agentConv; return; }
 
+    // Local development (AUTH_BYPASS): whoever calls is the owner. loadConfig refuses it unless HOST is loopback.
+    if (cfg.authBypass) { req.user = { id: null, name: 'owner', role: 'admin', main: false }; return; }
+
     noteFailure(req.ip);
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
   panelRoutes(app);
   passkeyRoutes(app, { cfg, store, webauthn: deps.webauthn ?? realWebAuthn, noteFailure });
+  otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   mcpRoutes(app, { cfg, store, dispatcher, push });
   gitRoutes(app, { store, dispatcher, cfg });
   scheduleRoutes(app, { store, dispatcher });
@@ -275,22 +281,34 @@ export function buildApp(
 
   app.get('/api/me', (req) => ({ name: req.user!.name, role: req.user!.role, main: req.user!.main }));
 
-  // --- panel users (admin only). Each gets a personal token, shown once; only its hash is kept. ---
+  // --- panel users (admin only). They sign in with a code mailed to their email; each also gets a personal API
+  // token, shown once (only its hash is kept). ---
+  /** '' clears the email; otherwise it must look like one and not be an owner email. */
+  const badEmail = (email: string | undefined) => {
+    if (email === undefined || email === '') return null;
+    if (!EMAIL_RE.test(email) || email.length > 254) return 'enter a valid email address';
+    if (cfg.ownerEmails.includes(email.toLowerCase())) return 'this email signs in as the owner (LZVR_OWNER_EMAILS)';
+    return null;
+  };
   app.get('/api/users', { onRequest: requireAdmin }, () => store.listUsers());
-  app.post<{ Body: { name: string; role: 'admin' | 'dev' } }>('/api/users', {
+  app.post<{ Body: { name: string; role: 'admin' | 'dev'; email?: string } }>('/api/users', {
     onRequest: requireAdmin,
     schema: { body: {
       type: 'object', required: ['name', 'role'], additionalProperties: false,
-      properties: { name: { type: 'string' }, role: { enum: ['admin', 'dev'] } },
+      properties: { name: { type: 'string' }, role: { enum: ['admin', 'dev'] }, email: { type: 'string' } },
     } },
   }, (req, reply) => {
     const { name, role } = req.body;
+    const email = req.body.email?.trim() ?? '';
     if (!USER_NAME_RE.test(name)) return reply.code(400).send({ error: 'name must be 1-32 characters: a-z, 0-9, - or _ (starting with a letter or digit)' });
     if (name === 'owner') return reply.code(409).send({ error: '"owner" is reserved for the main access token' });
+    const emailError = badEmail(email);
+    if (emailError) return reply.code(400).send({ error: emailError });
+    if (email && store.getUserByEmail(email)) return reply.code(409).send({ error: `another user already has ${email}` });
     const token = randomBytes(32).toString('hex');
     try {
-      const u = store.createUser(name, role, sessionHash(token));
-      return reply.code(201).send({ id: u.id, name: u.name, role: u.role, token });
+      const u = store.createUser(name, role, sessionHash(token), email || null);
+      return reply.code(201).send({ id: u.id, name: u.name, role: u.role, email: u.email, token });
     } catch {
       return reply.code(409).send({ error: `a user named "${name}" already exists` });
     }
@@ -301,10 +319,25 @@ export function buildApp(
     store.setUserToken(req.params.id, sessionHash(token));
     return { token };
   });
-  app.patch<{ Params: { id: string }; Body: { role: 'admin' | 'dev' } }>('/api/users/:id', {
+  app.patch<{ Params: { id: string }; Body: { role?: 'admin' | 'dev'; email?: string } }>('/api/users/:id', {
     onRequest: requireAdmin,
-    schema: { body: { type: 'object', required: ['role'], additionalProperties: false, properties: { role: { enum: ['admin', 'dev'] } } } },
-  }, (req, reply) => (store.setUserRole(req.params.id, req.body.role) ? reply.code(204).send() : notFound(reply)));
+    schema: { body: {
+      type: 'object', minProperties: 1, additionalProperties: false,
+      properties: { role: { enum: ['admin', 'dev'] }, email: { type: 'string' } },
+    } },
+  }, (req, reply) => {
+    if (!store.getUser(req.params.id)) return notFound(reply);
+    const email = req.body.email?.trim();
+    const emailError = badEmail(email);
+    if (emailError) return reply.code(400).send({ error: emailError });
+    if (email) {
+      const other = store.getUserByEmail(email);
+      if (other && other.id !== req.params.id) return reply.code(409).send({ error: `another user already has ${email}` });
+    }
+    if (req.body.role) store.setUserRole(req.params.id, req.body.role);
+    if (email !== undefined) store.setUserEmail(req.params.id, email || null);
+    return reply.code(204).send();
+  });
   app.delete<{ Params: { id: string } }>('/api/users/:id', { onRequest: requireAdmin }, (req, reply) =>
     store.deleteUser(req.params.id) ? reply.code(204).send() : notFound(reply));
 

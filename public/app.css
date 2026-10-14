@@ -536,6 +536,12 @@ dialog.modal[open] { animation: pop .18s var(--ease); }
 .login { width: min(380px, 100%); display: grid; gap: 14px; padding: 28px 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow-lg); }
 .login h1 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
 .login p { margin: 2px 0 0; font-size: var(--fs-sm); }
+.login-fields { display: grid; gap: 14px; }
+.login-send { display: flex; }
+.login-send > input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; position: relative; }
+.login-send > input:focus { z-index: 1; }
+.login-send > .btn { flex: none; height: auto; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; box-shadow: none; }
+.login > .btn.ghost.sm { justify-self: center; }
 
 /* ---------- 7. Syntax highlighting (highlight.js classes) ---------- */
 .hljs-keyword, .hljs-built_in, .hljs-selector-tag, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--syn-k); }

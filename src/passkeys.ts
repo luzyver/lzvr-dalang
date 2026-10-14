@@ -39,7 +39,10 @@ export function passkeyRoutes(
 
   const body = { type: 'object', required: ['response'], properties: { response: { type: 'object' } } };
 
-  app.get('/api/auth/status', () => ({ passkeys: enabled() && store.listPasskeys().length > 0 }));
+  // What the sign-in screen offers. `bypass`: local development, no sign-in at all (AUTH_BYPASS).
+  app.get('/api/auth/status', () => ({
+    passkeys: enabled() && store.listPasskeys().length > 0, email: Boolean(cfg.mailerUrl), bypass: cfg.authBypass,
+  }));
 
   // Sign out: revoke the session token presented. Idempotent; the main token is not a session and is left alone.
   app.post('/api/auth/logout', (req, reply) => {

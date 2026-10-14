@@ -34,7 +34,17 @@ export interface Config {
   autoTitle?: boolean;
   /** When set, every Codex turn is given this MCP endpoint plus a token bound to its conversation. */
   mcpUrl?: string;
+  /** GEM Mailer base URL (`POST <url>/mail/send`) that delivers the sign-in codes. */
+  mailerUrl?: string;
+  /** Sender of the sign-in mail; the mailer's own default when unset. */
+  mailFrom?: string;
+  /** Emails that sign in as the owner (admin). Panel users sign in with the email set on their user. */
+  ownerEmails: string[];
+  /** Local development only: every request is the owner, no sign-in. Refused unless HOST is a loopback address. */
+  authBypass: boolean;
 }
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 
 /** `1`/`true` mean "a proxy on this machine" (the usual nginx/Caddy setup); otherwise a comma-separated list of IPs/CIDRs. */
 function parseTrustProxy(v: string | undefined): string[] {
@@ -57,13 +67,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const blockMinutes = Number(env.LIMIT_BLOCK_MINUTES ?? 60);
   if (!Number.isFinite(blockMinutes) || blockMinutes <= 0) throw new Error('LIMIT_BLOCK_MINUTES must be a positive number');
   const port = Number(env.PORT ?? 9876);
+  const host = env.HOST ?? '127.0.0.1';
+  const authBypass = env.AUTH_BYPASS === 'true' || env.AUTH_BYPASS === '1';
+  if (authBypass && !LOOPBACK.has(host)) throw new Error('AUTH_BYPASS is for local development only: HOST must be 127.0.0.1, ::1 or localhost');
   if (env.GIT_FORGE && env.GIT_FORGE !== 'github' && env.GIT_FORGE !== 'gitlab') throw new Error('GIT_FORGE must be github or gitlab');
   return {
     token,
     workspaceRoot: resolve(env.WORKSPACE_ROOT),
     stateDir: resolve(env.STATE_DIR ?? 'state'),
     port,
-    host: env.HOST ?? '127.0.0.1',
+    host,
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     codexCommand: [env.CODEX_BIN ?? 'codex'],
     claudeCommand: [env.CLAUDE_BIN ?? 'claude'],
@@ -78,5 +91,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     vapidSubject: env.LZVR_VAPID_SUBJECT || undefined,
     mcpCrossSend: env.MCP_CROSS_SEND === 'auto' ? 'auto' : 'approve',
     autoTitle: env.AUTO_TITLE !== '0',
+    mailerUrl: env.MAILER_URL?.replace(/\/+$/, '') || undefined,
+    mailFrom: env.MAIL_FROM || undefined,
+    ownerEmails: (env.LZVR_OWNER_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+    authBypass,
   };
 }

@@ -32,7 +32,7 @@ describe('passkeys', () => {
   it('registers a passkey (needs the main token) and then reports passkeys as available', async () => {
     const wa = fakeWebAuthn();
     const t = setupApp({}, { webauthn: wa });
-    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toEqual({ passkeys: false });
+    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toMatchObject({ passkeys: false });
 
     expect((await post(t, '/api/passkey/register/options', {}, {})).statusCode).toBe(401);
     const opts = await post(t, '/api/passkey/register/options', {});
@@ -45,7 +45,7 @@ describe('passkeys', () => {
     const ok = await post(t, '/api/passkey/register/verify', { response: { id: 'cred-1' } });
     expect(ok.statusCode).toBe(204);
     expect(wa.calls[0][1]).toMatchObject({ expectedOrigin: 'http://localhost:9876', expectedRPID: 'localhost' });
-    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toEqual({ passkeys: true });
+    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toMatchObject({ passkeys: true });
   });
 
   it('rejects a registration that does not verify', async () => {
@@ -161,7 +161,7 @@ describe('passkeys', () => {
     const t = setupApp({}, { cfg: { rpId: undefined, origin: undefined } });
     expect((await post(t, '/api/passkey/register/options', {})).statusCode).toBe(501);
     expect((await post(t, '/api/auth/passkey/options', {}, {})).statusCode).toBe(501);
-    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toEqual({ passkeys: false });
+    expect((await t.app.inject({ url: '/api/auth/status' })).json()).toMatchObject({ passkeys: false });
   });
 
   it('sessions expire', () => {
