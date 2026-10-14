@@ -80,8 +80,9 @@ export interface Conversation {
   /** The worktree's branch, and the branch of the project folder it was started from. */
   branch: string | null;
   base_branch: string | null;
-  /** The Merge Request / pull request opened for the worktree's branch, or null. */
+  /** The Merge Request / pull request this chat opened last, or null, and the branch it is for (null in older rows). */
   pr_url: string | null;
+  pr_branch: string | null;
 }
 export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
 export interface Turn {
@@ -135,6 +136,7 @@ export class Store {
     this.ensureColumn('conversations', 'base_branch', 'TEXT');
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
+    this.ensureColumn('conversations', 'pr_branch', 'TEXT');
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -254,7 +256,7 @@ export class Store {
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
   }
-  setPrUrl(id: string, url: string): void { this.run('UPDATE conversations SET pr_url=? WHERE id=?', url, id); }
+  setPrUrl(id: string, url: string, branch: string): void { this.run('UPDATE conversations SET pr_url=?, pr_branch=? WHERE id=?', url, branch, id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }

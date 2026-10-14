@@ -28,6 +28,24 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   try { return (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim() || null; } catch { return null; }
 }
 
+/**
+ * The branch Merge Requests usually go into: the remote's default branch (`origin/HEAD`), else `main` or `master`.
+ * `ref` is what to compare against: the remote-tracking branch when there is one, so a stale local copy does not count.
+ */
+export async function defaultBranch(cwd: string): Promise<{ name: string; ref: string } | null> {
+  const { main: remote } = await remotesOf(cwd);
+  const exists = (ref: string) => git(cwd, ['rev-parse', '--verify', '--quiet', ref]).then(() => true, () => false);
+  if (remote) {
+    const head = (await git(cwd, ['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]).catch(() => '')).trim();
+    if (head.startsWith(`${remote}/`)) return { name: head.slice(remote.length + 1), ref: head };
+  }
+  for (const name of ['main', 'master']) {
+    if (remote && (await exists(`refs/remotes/${remote}/${name}`))) return { name, ref: `${remote}/${name}` };
+    if (await exists(`refs/heads/${name}`)) return { name, ref: name };
+  }
+  return null;
+}
+
 /** A machine without a git identity cannot commit at all; fall back to one that says where the commit came from. */
 async function identity(cwd: string): Promise<string[]> {
   const email = await git(cwd, ['config', 'user.email']).catch(() => '');
@@ -137,11 +155,11 @@ export interface PushResult {
  */
 export async function push(cwd: string): Promise<PushResult> {
   const branch = await currentBranch(cwd);
-  const remotes = (await git(cwd, ['remote']).catch(() => '')).split('\n').map((r) => r.trim()).filter(Boolean);
-  if (!branch || !remotes.length) return { pushed: null };
+  const { main } = await remotesOf(cwd);
+  if (!branch || !main) return { pushed: null };
   const cfg = (key: string) => git(cwd, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
   const [upstreamRemote, upstreamRef] = await Promise.all([cfg('remote'), cfg('merge')]);
-  const remote = upstreamRemote || (remotes.includes('origin') ? 'origin' : remotes[0]!);
+  const remote = upstreamRemote || main;
   const target = upstreamRef || `refs/heads/${branch}`;
   try {
     await git(cwd, ['push', ...(upstreamRef ? [] : ['-u']), remote, `${branch}:${target}`], 120_000);
@@ -149,6 +167,106 @@ export async function push(cwd: string): Promise<PushResult> {
   } catch (e) {
     return { pushed: null, error: (e as Error).message };
   }
+}
+
+/** The remotes, and the one to use by default: `origin`, else the first. */
+async function remotesOf(cwd: string): Promise<{ all: string[]; main: string | undefined }> {
+  const all = (await git(cwd, ['remote']).catch(() => '')).split('\n').map((r) => r.trim()).filter(Boolean);
+  return { all, main: all.includes('origin') ? 'origin' : all[0] };
+}
+
+/**
+ * Bring the checked-out branch up to date from its upstream (or the same name on `origin`), fast-forward only: a branch
+ * that has gone its own way is left alone rather than merged. Uncommitted changes stay unless the pull would overwrite
+ * them, in which case git refuses. Returns where it pulled from and how many commits came in.
+ */
+export async function pull(cwd: string): Promise<{ from: string; commits: number }> {
+  const branch = await currentBranch(cwd);
+  if (!branch) throw new GitError('detached HEAD: check out a branch first');
+  const { main } = await remotesOf(cwd);
+  const cfg = (key: string) => git(cwd, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
+  const [upstreamRemote, upstreamRef] = await Promise.all([cfg('remote'), cfg('merge')]);
+  const remote = upstreamRemote || main;
+  if (!remote) throw new GitError('the repository has no remote to pull from');
+  const ref = upstreamRef || `refs/heads/${branch}`;
+  const from = `${remote}/${ref.replace(/^refs\/heads\//, '')}`;
+  const before = (await git(cwd, ['rev-parse', 'HEAD']).catch(() => '')).trim();
+  try {
+    await git(cwd, ['pull', '--ff-only', '--no-rebase', remote, ref], 120_000);
+  } catch (e) {
+    throw new GitError(`pull from ${from} failed: ${(e as Error).message}`);
+  }
+  const commits = before ? Number((await git(cwd, ['rev-list', '--count', `${before}..HEAD`])).trim()) || 0 : 0;
+  return { from, commits };
+}
+
+/**
+ * Local branches, and the remote ones that have no local branch of the same name yet (switching to one of those creates
+ * it, tracking the remote). With `fetch`, the remote's list is refreshed first; a failed fetch keeps the old one.
+ */
+export async function branches(cwd: string, fetch = false): Promise<{ current: string | null; local: string[]; remote: string[] }> {
+  const { main } = await remotesOf(cwd);
+  if (fetch && main) await git(cwd, ['fetch', '--prune', main], 60_000).catch(() => '');
+  const refs = async (prefix: string) =>
+    (await git(cwd, ['for-each-ref', '--format=%(refname)', prefix]).catch(() => '')).split('\n').map((r) => r.trim()).filter(Boolean);
+  const local = (await refs('refs/heads')).map((r) => r.slice('refs/heads/'.length));
+  const remote = main
+    ? (await refs(`refs/remotes/${main}`)).map((r) => r.slice(`refs/remotes/${main}/`.length)).filter((b) => b !== 'HEAD' && !local.includes(b))
+    : [];
+  return { current: await currentBranch(cwd), local, remote };
+}
+
+/** A name git accepts for a branch (and that cannot be read as an option). */
+async function checkBranchName(cwd: string, name: string): Promise<void> {
+  const ok = !name.startsWith('-') && (await git(cwd, ['check-ref-format', '--branch', name]).then(() => true, () => false));
+  if (!ok) throw new GitError(`not a valid branch name: ${name}`);
+}
+
+/**
+ * Check out `name`: an existing local branch, or a remote branch of that name (which becomes a local one tracking it).
+ * With `create`, a new branch from `from` (default: HEAD) instead. Uncommitted changes come along; git refuses when they
+ * would be overwritten, so nothing is lost.
+ */
+export async function switchBranch(cwd: string, name: string, opts: { create?: boolean; from?: string } = {}): Promise<void> {
+  await checkBranchName(cwd, name);
+  if (opts.create) {
+    if (opts.from) {
+      if (opts.from.startsWith('-') || !(await git(cwd, ['rev-parse', '--verify', '--quiet', `${opts.from}^{commit}`]).then(() => true, () => false))) {
+        throw new GitError(`no such branch or commit: ${opts.from}`);
+      }
+    }
+    await git(cwd, ['switch', '--no-track', '-c', name, ...(opts.from ? [opts.from] : [])]);
+    return;
+  }
+  const { main } = await remotesOf(cwd);
+  const exists = (ref: string) => git(cwd, ['rev-parse', '--verify', '--quiet', ref]).then(() => true, () => false);
+  if (await exists(`refs/heads/${name}`)) await git(cwd, ['switch', name]);
+  else if (main && (await exists(`refs/remotes/${main}/${name}`))) await git(cwd, ['switch', '--track', '-c', name, `${main}/${name}`]);
+  else throw new GitError(`no such branch: ${name}`);
+}
+
+/** A branch with commits that are neither in HEAD nor on its upstream: deleting it would lose them. */
+export class UnmergedError extends GitError {}
+
+/**
+ * Delete a local branch (the remote one stays). Not the checked-out branch, not the default branch, and not one a
+ * worktree has checked out (git refuses that itself). A branch whose commits are not in HEAD or on its upstream is
+ * refused with an UnmergedError unless `force`.
+ */
+export async function deleteBranch(cwd: string, name: string, force = false): Promise<void> {
+  await checkBranchName(cwd, name);
+  const exists = await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).then(() => true, () => false);
+  if (!exists) throw new GitError(`no such branch: ${name}`);
+  if (name === (await currentBranch(cwd))) throw new GitError(`${name} is checked out: switch to another branch first`);
+  if (name === (await defaultBranch(cwd))?.name) throw new GitError(`${name} is the default branch: it is not deleted from here`);
+  if (!force) {
+    const contains = (ref: string) => git(cwd, ['merge-base', '--is-ancestor', `refs/heads/${name}`, ref]).then(() => true, () => false);
+    const upstream = (await git(cwd, ['for-each-ref', '--format=%(upstream)', `refs/heads/${name}`]).catch(() => '')).trim();
+    if (!(await contains('HEAD')) && !(upstream && (await contains(upstream)))) {
+      throw new UnmergedError(`${name} has commits that are neither in the current branch nor on its remote: they would be lost`);
+    }
+  }
+  await git(cwd, ['branch', '-D', '--', name]);
 }
 
 /** Put the given files back as they are in HEAD; untracked ones are deleted. */

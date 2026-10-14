@@ -22,7 +22,7 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   return res.status === 204 ? null : res.json();
 }

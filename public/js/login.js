@@ -1,28 +1,44 @@
 // The sign-in screen: an access token, or a passkey when one is registered on the server.
-import { h } from './dom.js';
+import { useEffect, useState } from '../vendor/preact-hooks.js';
+import { html } from './lib.js';
 import { publicApi, tokenStore } from './api.js';
+import { Icon, Logo, Spinner } from './ui.js';
 import { loginWithPasskey } from './passkeys.js';
+import { loginMessage, startSession } from './session.js';
 
-/** `onSignedIn` runs once a token is stored. */
-export function loginScreen({ message, onSignedIn }) {
-  const err = h('div', { class: 'error' }, message || '');
-  const input = h('input', { type: 'password', placeholder: 'access token', autocomplete: 'current-password' });
-  const go = async () => {
-    const t = input.value.trim();
+export function Login() {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState(loginMessage.value);
+  const [busy, setBusy] = useState(false);
+  const [passkeys, setPasskeys] = useState(false);
+  useEffect(() => { publicApi('/api/auth/status').then((s) => setPasskeys(!!s.passkeys)).catch(() => {}); }, []);
+
+  const signIn = async (e) => {
+    e.preventDefault();
+    const t = token.trim();
     if (!t) return;
-    // Not api(): a 401 there rebuilds this screen and the message below would go to a detached element.
+    setBusy(true);
+    setError('');
+    // Not api(): a 401 there would rebuild this screen and lose the message below.
     const res = await fetch('/api/projects', { headers: { authorization: `Bearer ${t}` } }).catch(() => null);
-    if (res && res.ok) { tokenStore.set(t); onSignedIn(); return; }
-    err.textContent = !res ? 'cannot reach the server' : res.status === 429 ? 'too many attempts, wait a minute' : 'wrong token';
+    setBusy(false);
+    if (res && res.ok) { tokenStore.set(t); startSession(); return; }
+    setError(!res ? 'Cannot reach the server' : res.status === 429 ? 'Too many attempts, wait a minute' : 'Wrong token');
   };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  const passkeyBtn = h('button', { onclick: async () => {
-    err.textContent = '';
-    try { await loginWithPasskey(); onSignedIn(); } catch (e) { err.textContent = e.message; }
-  } }, 'Sign in with passkey');
-  passkeyBtn.hidden = true;
-  publicApi('/api/auth/status').then((s) => { passkeyBtn.hidden = !s.passkeys; }).catch(() => {});
-  return h('div', { class: 'login' },
-    h('h1', {}, 'Dalang'), input,
-    h('button', { class: 'primary', onclick: go }, 'Sign in'), passkeyBtn, err);
+  const passkey = async () => {
+    setError('');
+    try { await loginWithPasskey(); startSession(); } catch (e) { setError(e.message); }
+  };
+
+  return html`<div class="login-screen">
+    <form class="login" onSubmit=${signIn}>
+      <${Logo} size=${44} />
+      <div><h1>Sign in to Dalang</h1><p class="dim">The control room for your coding agents.</p></div>
+      <label class="field"><span class="field-label">Access token</span>
+        <input type="password" autocomplete="current-password" autofocus value=${token} onInput=${(e) => setToken(e.currentTarget.value)} /></label>
+      <button class="btn primary lg" type="submit" disabled=${busy}>${busy && html`<${Spinner} />`}Sign in</button>
+      ${passkeys && html`<button class="btn lg" type="button" onClick=${passkey}><${Icon} name="key-round" />Sign in with passkey</button>`}
+      <div class="form-error" role="alert">${error}</div>
+    </form>
+  </div>`;
 }

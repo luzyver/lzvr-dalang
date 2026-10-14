@@ -1,102 +1,156 @@
-// The sidebar: chat search, every project with its chats, and the Add project page.
-import { h, icon } from './dom.js';
-import { api, Unauthorized } from './api.js';
+// The sidebar: search, Scheduled / Approvals, every project with its chats, account usage and the user menu.
+// Also the Add project dialog.
+import { useEffect, useState } from '../vendor/preact-hooks.js';
+import { signal } from '../vendor/signals.js';
+import { html, cx } from './lib.js';
+import { api } from './api.js';
+import { AsyncButton, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
+import {
+  approvals, convs, goHome, guarded, isAdmin, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
+  toggleCollapsed, toggleSidebar, ui,
+} from './store.js';
+import { scheduleCount } from './schedules.js';
 
-function addProjectPage({ close, onCreated }) {
-  const nameIn = h('input', { placeholder: 'name' });
-  const pathIn = h('input', { placeholder: 'path (absolute or under the root)' });
-  const sbSel = h('select', {}, ['workspace-write', 'read-only', 'danger-full-access'].map((v) => h('option', { value: v }, v)));
-  const backendSel = h('select', {}, [['codex', 'Codex'], ['claude', 'Claude Code']].map(([v, l]) => h('option', { value: v }, l)));
-  const msg = h('div', { class: 'small' });
-  const create = async () => {
-    try {
-      await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value, backend: backendSel.value } });
-      close();
-      await onCreated();
-    } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
-  };
-  setTimeout(() => nameIn.focus());
-  return h('div', { class: 'page-body' },
-    h('strong', {}, 'Add project'),
-    h('label', {}, 'Name', nameIn),
-    h('label', {}, 'Folder', pathIn),
-    h('label', {}, 'Agent (for every chat in this project)', backendSel),
-    h('label', {}, 'Sandbox', sbSel),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: close }, 'Cancel')),
-    msg);
+/** Per backend, the first account that is ready and how much of its tightest usage window is left. */
+export const usage = signal([]);
+export async function refreshUsage() {
+  if (!isAdmin.value) return;
+  try {
+    const [codex, claude] = await Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')]);
+    const pick = (label, list) => {
+      const a = list.find((x) => x.enabled && x.loggedIn !== false && !x.blockedUntil) || list.find((x) => x.enabled);
+      if (!a) return null;
+      const left = a.limits?.windows?.length
+        ? Math.min(...a.limits.windows.map((w) => (w.resetsAt * 1000 < Date.now() ? 100 : Math.max(0, 100 - Math.round(w.usedPercent)))))
+        : null;
+      return { label, name: a.name, left, blocked: !!a.blockedUntil };
+    };
+    usage.value = [pick('Codex', codex), pick('Claude Code', claude)].filter(Boolean);
+  } catch { /* shown on the next refresh */ }
 }
 
-/**
- * Draws `state.projects` / `state.convs` (call `draw` after they change). `reload` refetches them, `leaveConv` closes the
- * open chat (it was deleted), `openSearch(query)` shows the search page.
- */
-export function sidebar({ state, isAdmin, guarded, reload, openConv, leaveConv, openSearch, openPage, close }) {
-  const el = h('aside');
-  // Made once, so what is typed survives the sidebar being redrawn.
-  const addProjectBtn = h('button', { class: 'add-project', onclick: () => openPage(addProjectPage({ close, onCreated: reload })) }, icon('plus'), 'Add project');
-  const searchIn = h('input', { type: 'search', placeholder: 'Search chats', 'aria-label': 'Search chats' });
-  searchIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && searchIn.value.trim()) openSearch(searchIn.value.trim()); });
-  const searchBox = h('div', { class: 'side-search' }, searchIn,
-    h('button', { class: 'iconbtn', title: 'Search chats', 'aria-label': 'Search', onclick: () => openSearch(searchIn.value.trim()) }, icon('search')));
+function AddProject() {
+  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write' });
+  const [error, setError] = useState('');
+  const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
+  const close = () => { ui.addProject.value = false; };
+  const create = async () => {
+    setError('');
+    try {
+      await api('/api/projects', { method: 'POST', body: { ...form, name: form.name.trim(), path: form.path.trim() } });
+      close();
+      await loadProjects();
+    } catch (e) { setError(e.message); }
+  };
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Add project</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    <${Field} label="Name"><input value=${form.name} onInput=${set('name')} autofocus placeholder="my-app" /><//>
+    <${Field} label="Folder" hint="Absolute, or relative to the projects root on the server."><input class="mono" value=${form.path} onInput=${set('path')} placeholder="/srv/code/my-app" /><//>
+    <div class="row wrap">
+      <${Field} label="Agent (every chat in this project)"><select value=${form.backend} onChange=${set('backend')}>
+        <option value="codex">Codex</option><option value="claude">Claude Code</option></select><//>
+      <${Field} label="Sandbox"><select value=${form.sandbox} onChange=${set('sandbox')}>
+        ${['workspace-write', 'read-only', 'danger-full-access'].map((v) => html`<option value=${v}>${v}</option>`)}</select><//>
+    </div>
+    ${error && html`<div class="form-error">${error}</div>`}
+    <div class="row end"><button class="btn" onClick=${close}>Cancel</button><${AsyncButton} class="btn primary" icon="folder-plus" onClick=${create}>Create<//></div>
+  </div>`;
+}
 
-  // `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project.
-  const newChat = (p, worktree = false) => guarded(async () => {
-    const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: worktree ? { worktree } : {} });
-    await reload();
-    openConv(c.id);
-  });
-  const deleteConv = (c) => guarded(async () => {
+export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} label="Add project" class="dialog" onClose=${() => { ui.addProject.value = false; }}><${AddProject} /><//>`;
+
+function ChatRow({ c, active }) {
+  const title = c.title || 'New chat';
+  const remove = guarded(async () => {
     if (!confirm(c.worktree
       ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
       : 'Delete this chat and its history? The project and its files stay.')) return;
     await api(`/api/conversations/${c.id}`, { method: 'DELETE' });
-    if (state.current === c.id) leaveConv();
-    await reload();
+    if (active) goHome();
+    await loadProjects();
   });
-  const removeProject = (p) => guarded(async () => {
+  return html`<div class=${cx('chat-row', active && 'active')}>
+    <a class="chat" href=${`#c=${c.id}`} aria-current=${active ? 'page' : undefined} onClick=${(e) => { e.preventDefault(); openChat(c.id); }}>
+      <span class=${cx('dot', c.status)} title=${c.status}></span>
+      <span class="chat-title" title=${title}>${title}</span>
+      ${c.worktree && html`<span class="chat-branch" title=${`Own worktree on ${c.branch}`}><${Icon} name="git-branch" class="tiny" /></span>`}
+    </a>
+    <button class="icon-btn sm row-action" aria-label=${`Delete chat ${title}`} title="Delete chat" onClick=${remove}><${Icon} name="trash-2" /></button>
+  </div>`;
+}
+
+function Project({ p }) {
+  const list = convs.value.get(p.id) || [];
+  const collapsed = ui.collapsed.value.has(p.id);
+  const current = route.value.view === 'chat' ? route.value.id : null;
+  const remove = guarded(async () => {
     if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
     await api(`/api/projects/${p.id}`, { method: 'DELETE' });
-    if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) leaveConv(); // else its stream keeps retrying a chat that no longer exists
-    await reload();
+    await loadProjects();
   });
+  return html`<div class="project">
+    <div class="project-row">
+      <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
+        <${Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} class="caret" />
+        <span class="project-name" title=${p.path}>${p.name}</span>
+        ${p.backend === 'claude' && html`<span class="badge-cc" title="Claude Code">CC</span>`}
+        ${p.sandbox !== 'workspace-write' && html`<span class="project-meta">${p.sandbox}</span>`}
+      </button>
+      <button class="icon-btn sm row-action" aria-label=${`New chat in ${p.name}`} title="New chat" onClick=${newChat(p)}><${Icon} name="plus" /></button>
+      <${Menu} label="Project options" buttonClass="sm row-action">
+        <${MenuItem} icon="git-branch" title="A new git branch and folder for this chat only; open a Merge Request for it from Changes" onClick=${newChat(p, true)}>New chat in own worktree<//>
+        ${isAdmin.value && html`<${MenuItem} icon="trash-2" danger onClick=${remove}>Remove project<//>`}
+      <//>
+    </div>
+    ${!collapsed && html`<div class="chats">
+      ${list.length ? list.map((c) => html`<${ChatRow} key=${c.id} c=${c} active=${c.id === current} />`)
+        : html`<button class="chat ghost" onClick=${newChat(p)}><${Icon} name="plus" class="tiny" />Start a chat</button>`}
+    </div>`}
+  </div>`;
+}
 
-  function convRow(c) {
-    const title = c.title || 'New chat';
-    const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
-    return h('div', { class: 'conv-row' },
-      h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-        h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle),
-        c.worktree && h('span', { class: 'conv-branch', title: `own worktree on ${c.branch}` }, icon('git-branch'))),
-      h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c) }, icon('trash-2')));
-  }
-
-  function projectBlock(p) {
-    const convs = state.convs.get(p.id) || [];
-    const collapsed = state.collapsedProjects.has(p.id);
-    return h('section', { class: 'proj' },
-      h('div', { class: 'projhead' },
-        h('button', { class: 'project-toggle', 'aria-expanded': String(!collapsed), onclick: () => {
-          if (collapsed) state.collapsedProjects.delete(p.id); else state.collapsedProjects.add(p.id);
-          draw();
-        } },
-          icon(collapsed ? 'chevron-right' : 'chevron-down'),
-          icon('folder'),
-          h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: `small backend-tag ${p.backend}` }, `${p.backend === 'claude' ? 'Claude Code' : 'Codex'} · ${p.sandbox}`))),
-        h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
-        h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
-          h('div', { class: 'pop' },
-            h('button', { title: 'A new git branch and folder for this chat only; open a Merge Request for it from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
-            isAdmin && h('button', { class: 'danger', onclick: removeProject(p) }, 'Remove project')))),
-      !collapsed && (convs.length ? h('div', { class: 'project-sessions' }, ...convs.map(convRow)) : h('div', { class: 'small hint' }, 'No chats yet')));
-  }
-
-  function draw() {
-    const blocks = state.projects.map(projectBlock);
-    el.replaceChildren(...[
-      h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
-      searchBox, isAdmin ? addProjectBtn : null, ...blocks,
-      !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
-  }
-
-  return { el, draw };
+export function Sidebar() {
+  const user = me.value;
+  const view = route.value.view;
+  const waiting = approvals.value.length;
+  useEffect(() => {
+    refreshUsage();
+    const t = setInterval(refreshUsage, 60000);
+    return () => clearInterval(t);
+  }, []);
+  return html`<aside class="sidebar" aria-label="Projects and chats">
+    <div class="side-top">
+      <a class="brand" href="#" onClick=${(e) => { e.preventDefault(); goHome(); }}>
+        <${Logo} />
+        <span class="brand-name">Dalang</span>
+      </a>
+      <button class="icon-btn" aria-label="Hide sidebar" title="Hide sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
+    </div>
+    <button class="search-trigger" onClick=${() => { ui.palette.value = true; }}>
+      <${Icon} name="search" /><span>Search or run a command</span><kbd>${navigator.platform.startsWith('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+    </button>
+    <nav class="side-nav">
+      <a class=${cx('nav-item', view === 'schedules' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('schedules'); }}>
+        <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
+      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('approvals'); }}>
+        <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
+    </nav>
+    <div class="side-section">
+      <div class="section-head"><span>Projects</span>
+        ${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="plus" /></button>`}</div>
+      ${projects.value.map((p) => html`<${Project} key=${p.id} p=${p} />`)}
+      ${!projects.value.length && html`<div class="side-empty">${isAdmin.value ? 'No projects yet. Add a folder with the + above.' : 'No projects yet. An admin adds them.'}</div>`}
+    </div>
+    <div class="side-bottom">
+      ${usage.value.map((u) => html`<button class="usage" key=${u.label} title="Accounts" onClick=${() => openSettings(u.label === 'Codex' ? 'codex' : 'claude')}>
+        <div class="usage-row"><span>${u.label} · ${u.name}</span><span class=${cx(u.blocked ? 'warn' : 'dim')}>${u.blocked ? 'at limit' : u.left == null ? '' : `${u.left}% left`}</span></div>
+        ${u.left != null && html`<div class="meter"><span class=${cx(u.left <= 10 ? 'hot' : u.left <= 30 && 'warm')} style=${{ width: `${u.left}%` }}></span></div>`}
+      </button>`)}
+      <div class="user-row">
+        <span class="avatar" aria-hidden="true">${(user?.name || '?').slice(0, 1).toUpperCase()}</span>
+        <div class="user-meta"><strong>${user?.name}</strong><span>${user?.role}</span></div>
+        <button class="icon-btn" aria-label="Settings" title="Settings" onClick=${() => openSettings()}><${Icon} name="settings" /></button>
+      </div>
+    </div>
+  </aside>`;
 }

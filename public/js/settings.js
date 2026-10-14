@@ -1,79 +1,144 @@
-// Admin settings pages: global model/effort defaults and the instructions behind the Changes page's generate buttons.
-import { h } from './dom.js';
+// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, accounts and users for admins.
+import { useEffect, useState } from '../vendor/preact-hooks.js';
+import { html, cx } from './lib.js';
 import { api } from './api.js';
+import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
+import { guarded, isAdmin, me, toast, ui } from './store.js';
+import { PALETTES, THEMES, palette, theme } from './theme.js';
+import { enableNotifications, registerPasskey } from './passkeys.js';
+import { AccountsSection } from './accounts.js';
+import { UsersSection } from './users.js';
+import { signOut } from './session.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-/** Global model/effort defaults, one section per backend (a Codex model name means nothing to Claude Code). */
-export function defaultsPage({ guarded, flash, close }) {
-  const msg = h('div', { class: 'small' });
-  const section = (backend, title) => {
-    const q = backend === 'claude' ? '?backend=claude' : '';
-    const model = h('select');
-    const effort = h('select', {}, [['', `${title} default`], ...EFFORTS.map((v) => [v, v])]
-      .map(([value, label]) => h('option', { value }, label)));
-    let modelList = [];
-    let savedModel = '';
-    const updateModels = () => {
-      const options = [h('option', { value: '' }, `${title} default`), ...modelList.map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
-      if (savedModel && !modelList.some((m) => m.slug === savedModel)) options.push(h('option', { value: savedModel }, savedModel));
-      model.replaceChildren(...options);
-      model.value = savedModel;
-    };
-    Promise.all([api(`/api/settings/default-model${q}`), api(`/api/settings/default-effort${q}`)]).then(([m, e]) => {
-      savedModel = m.model;
-      effort.value = e.effort;
-      updateModels();
-    }).catch((e) => { msg.textContent = e.message; });
-    api(`/api/models${q}`).then((models) => { modelList = models; updateModels(); }).catch(() => {});
-    return {
-      el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('label', {}, 'Model', model), h('label', {}, 'Reasoning effort', effort)),
-      save: async () => {
-        await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value, backend } });
-        await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value, backend } });
-      },
-    };
-  };
-  const sections = [section('codex', 'Codex'), section('claude', 'Claude Code')];
-  const save = guarded(async () => {
-    for (const s of sections) await s.save();
-    flash('Global model and effort defaults saved');
-    close();
-  });
-  return h('div', { class: 'page-body' },
-    h('strong', {}, 'Global defaults'),
-    h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on its default to let the CLI choose.'),
-    ...sections.map((s) => s.el),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: close }, 'Cancel')),
-    msg);
+function Appearance() {
+  return html`
+    <div class="field"><span class="field-label">Theme</span><${Seg} label="Theme" value=${theme.value} options=${THEMES} onChange=${(v) => { theme.value = v; }} /></div>
+    <div class="field"><span class="field-label">Accent palette</span>
+      <div class="swatches" role="radiogroup" aria-label="Accent palette">
+        ${PALETTES.map(([v, name, note]) => html`<button key=${v} role="radio" aria-checked=${palette.value === v} class=${cx(palette.value === v && 'active')} onClick=${() => { palette.value = v; }}>
+          <span class=${`sw sw-${v}`}></span><span><strong>${name}</strong><span class="dim small">${note}</span></span>
+          ${palette.value === v && html`<${Icon} name="check" class="sw-check" />`}
+        </button>`)}
+      </div>
+    </div>`;
 }
 
-/** The instructions the Changes page's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
-export function promptsPage({ guarded, flash, close }) {
-  const section = (path, title, help) => {
-    const text = h('textarea', { rows: '14', class: 'prompt-edit', placeholder: 'Loading…' });
-    let builtIn = '';
-    api(`/api/settings/${path}`).then((r) => { builtIn = r.default; text.value = r.prompt || r.default; text.placeholder = ''; })
-      .catch((e) => flash(e.message));
-    return {
-      el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('div', { class: 'small' }, help), text,
-        h('div', { class: 'row' }, h('button', { onclick: () => { text.value = builtIn; } }, 'Reset to default'))),
-      // Saving the built-in text unchanged stores nothing, so later updates of the default still apply.
-      save: () => api(`/api/settings/${path}`, { method: 'PUT', body: { prompt: text.value.trim() === builtIn.trim() ? '' : text.value.trim() } }),
-    };
-  };
-  const sections = [
-    section('commit-prompt', 'Commit message', '"Generate message" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.'),
-    section('mr-prompt', 'Merge Request description', '"Generate MR description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.'),
-  ];
-  const save = guarded(async () => {
-    for (const s of sections) await s.save();
-    flash('prompts saved');
-    close();
-  });
-  return h('div', { class: 'page-body' },
-    h('strong', {}, 'Generate prompts'),
-    h('div', { class: 'small' }, 'Used by Codex and Claude Code alike, with the chat\'s own model.'),
-    ...sections.map((s) => s.el),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: close }, 'Cancel')));
+function Device() {
+  return html`
+    <div class="setting-row">
+      <div><strong>Notifications</strong><div class="dim small">A push notification when a turn finishes, fails or needs input, on this device.</div></div>
+      <${AsyncButton} class="btn" icon="bell" onClick=${guarded(async () => { await enableNotifications(); toast('Notifications on'); })}>Enable<//>
+    </div>
+    <div class="setting-row">
+      <div><strong>Passkey</strong><div class="dim small">Sign in on this device without the token next time.</div></div>
+      <${AsyncButton} class="btn" icon="key-round" onClick=${guarded(async () => { await registerPasskey(); toast('Passkey registered'); })}>Add passkey<//>
+    </div>
+    <div class="setting-row">
+      <div><strong>Sign out</strong><div class="dim small">Signed in as ${me.value?.name} (${me.value?.role}).</div></div>
+      <button class="btn danger" onClick=${signOut}><${Icon} name="log-out" />Sign out</button>
+    </div>`;
 }
+
+/** Global model/effort defaults, one block per backend (a Codex model name means nothing to Claude Code). */
+function DefaultsFor({ backend, title }) {
+  const q = backend === 'claude' ? '?backend=claude' : '';
+  const [models, setModels] = useState([]);
+  const [model, setModel] = useState(null);
+  const [effort, setEffort] = useState('');
+  useEffect(() => {
+    Promise.all([api(`/api/settings/default-model${q}`), api(`/api/settings/default-effort${q}`)])
+      .then(([m, e]) => { setModel(m.model); setEffort(e.effort); }).catch((e) => toast(e.message, 'err'));
+    api(`/api/models${q}`).then(setModels).catch(() => {});
+  }, []);
+  const save = guarded(async () => {
+    await api('/api/settings/default-model', { method: 'PUT', body: { model, backend } });
+    await api('/api/settings/default-effort', { method: 'PUT', body: { effort, backend } });
+    toast(`${title} defaults saved`);
+  });
+  if (model == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  const options = [['', `${title} default`], ...models.map((m) => [m.slug, `${m.name} (${m.slug})`])];
+  if (model && !models.some((m) => m.slug === model)) options.push([model, model]);
+  return html`<section class="form-card">
+    <strong>${title}</strong>
+    <div class="row wrap">
+      <${Field} label="Model"><select value=${model} onChange=${(e) => setModel(e.currentTarget.value)}>${options.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select><//>
+      <${Field} label="Reasoning effort"><select value=${effort} onChange=${(e) => setEffort(e.currentTarget.value)}>
+        <option value="">${title} default</option>${EFFORTS.map((v) => html`<option value=${v}>${v}</option>`)}</select><//>
+    </div>
+    <div class="row"><${AsyncButton} class="btn primary sm" onClick=${save}>Save<//></div>
+  </section>`;
+}
+
+const Defaults = () => html`
+  <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
+  <${DefaultsFor} backend="codex" title="Codex" />
+  <${DefaultsFor} backend="claude" title="Claude Code" />`;
+
+/** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
+function PromptFor({ path, title, help }) {
+  const [text, setText] = useState(null);
+  const [builtIn, setBuiltIn] = useState('');
+  useEffect(() => {
+    api(`/api/settings/${path}`).then((r) => { setBuiltIn(r.default); setText(r.prompt || r.default); }).catch((e) => toast(e.message, 'err'));
+  }, []);
+  // Saving the built-in text unchanged stores nothing, so later updates of the default still apply.
+  const save = guarded(async () => {
+    await api(`/api/settings/${path}`, { method: 'PUT', body: { prompt: text.trim() === builtIn.trim() ? '' : text.trim() } });
+    toast(`${title} prompt saved`);
+  });
+  if (text == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  return html`<section class="form-card">
+    <strong>${title}</strong><span class="dim small">${help}</span>
+    <textarea class="mono prompt-edit" rows="12" value=${text} onInput=${(e) => setText(e.currentTarget.value)}></textarea>
+    <div class="row">
+      <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
+      <button class="btn ghost sm" onClick=${() => setText(builtIn)} disabled=${text === builtIn}>Reset to default</button>
+      ${text.trim() !== builtIn.trim() && html`<span class="dim small">Customised</span>`}
+    </div>
+  </section>`;
+}
+
+const COMMIT_HELP = '"Generate" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.';
+const MR_HELP = '"Generate description" in Changes, for a worktree chat or a feature branch. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.';
+
+const Prompts = () => html`
+  <p class="dim">Used by Codex and Claude Code alike, with the chat's own model.</p>
+  <${PromptFor} path="commit-prompt" title="Commit message" help=${COMMIT_HELP} />
+  <${PromptFor} path="mr-prompt" title="Merge Request description" help=${MR_HELP} />`;
+
+const SECTIONS = [
+  ['appearance', 'Appearance', 'palette', Appearance, false],
+  ['device', 'This device', 'monitor', Device, false],
+  ['defaults', 'Model & effort', 'sliders-horizontal', Defaults, true],
+  ['prompts', 'Generate prompts', 'sparkles', Prompts, true],
+  ['codex', 'Codex accounts', 'key-round', () => html`<${AccountsSection} backend="codex" />`, true],
+  ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
+  ['users', 'Users', 'users', UsersSection, true],
+];
+
+function Settings() {
+  const current = ui.settings.value;
+  const visible = SECTIONS.filter((s) => !s[4] || isAdmin.value);
+  const [, title, , Body] = visible.find((s) => s[0] === current) || visible[0];
+  const go = (k) => { ui.settings.value = k; };
+  return html`<div class="settings-layout">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <div class="group-label">Settings</div>
+      ${visible.map(([k, label, icon]) => html`<button key=${k} class=${cx('settings-link', k === current && 'active')} onClick=${() => go(k)}><${Icon} name=${icon} />${label}</button>`)}
+    </nav>
+    <div class="settings-main">
+      <div class="dialog-head">
+        <select class="settings-picker" aria-label="Settings section" value=${current} onChange=${(e) => go(e.currentTarget.value)}>
+          ${visible.map(([k, label]) => html`<option value=${k}>${label}</option>`)}
+        </select>
+        <h2>${title}</h2>
+        <button class="icon-btn" aria-label="Close settings" onClick=${() => { ui.settings.value = null; }}><${Icon} name="x" /></button>
+      </div>
+      <div class="settings-body"><${Body} key=${current} /></div>
+    </div>
+  </div>`;
+}
+
+export const SettingsModal = () => html`<${Modal} open=${ui.settings.value != null} label="Settings" class="settings" onClose=${() => { ui.settings.value = null; }}><${Settings} /><//>`;
