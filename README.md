@@ -38,7 +38,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
   remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept and shown on the Changes page;
   later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
-  address is returned instead.
+  address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab".
 - **Search**: the box at the top of the sidebar searches every project's chats: generated titles, prompts and the
   agents' answers (not commands or their output). Every word has to occur; a result opens the chat scrolled to that message.
 - **Scheduled prompts**: the clock in a chat's header queues a prompt into that chat on a cron schedule
@@ -161,6 +161,43 @@ message telling an admin to add one.
 A badge with a warning sign means Codex says that account is not logged in (for example its login expired). Dalang does
 not store your Codex passwords or tokens: they stay in each home's `auth.json`. There is no "remove account" button yet;
 delete the folder and its entry under `extra_homes` if you need to.
+
+### Merge Requests: gh and glab
+
+**Create Merge Request** runs the forge's own CLI on the VM: `gh` for GitHub, `glab` for GitLab. Install only the one
+your remotes need, and sign it in once **as the user Dalang runs as** (the CLI keeps its login in that user's home):
+
+```bash
+# GitHub (github.com or GitHub Enterprise). Install: https://github.com/cli/cli#installation (Windows: winget install GitHub.cli)
+gh auth login                                        # Enterprise: gh auth login --hostname github.example.com
+
+# GitLab (gitlab.com or self-hosted). Install: https://gitlab.com/gitlab-org/cli#installation (Windows: winget install GLab.GLab)
+glab auth login                                      # self-hosted: glab auth login --hostname gitlab.example.com
+```
+
+Then restart Dalang so the new binary is on its `PATH`, or point `GH_BIN` / `GLAB_BIN` at it (on Windows the full path
+to `gh.exe` / `glab.exe`). The account needs write access to the repository; `git push` itself still uses the VM's SSH key
+or credential helper, as for commits.
+
+How Dalang picks the CLI and the repository:
+
+- **From the remote of the chat's branch.** A host name containing `github` means `gh`, one containing `gitlab` means
+  `glab`. A server named otherwise (`git.example.com`) needs `GIT_FORGE=github` or `GIT_FORGE=gitlab`; it applies to
+  every project on this Dalang.
+- **SSH aliases work.** A remote like `git@github.com-work:acme/app.git` (one key per account in `~/.ssh/config`) is
+  resolved with `ssh -G` to the real host, and the CLI is told the repository explicitly (`gh --repo github.com/acme/app`,
+  `glab --repo https://gitlab.example.com/group/sub/app`), since neither CLI knows such aliases. Subgroups work.
+- **Nothing is asked.** `gh` runs with `GH_PROMPT_DISABLED=1`, `glab` with `--yes` and `NO_PROMPT=1`. Dalang pushes the
+  branch first, so the CLI does not offer to.
+- **The target is the branch the chat started from** (`base` of the worktree), not whatever the project folder has
+  checked out now. A chat started from a detached HEAD cannot open one.
+
+Known limits:
+
+- When a Merge Request is already open for the branch, `gh`'s error names its address and Dalang shows that link.
+  `glab`'s message does not include it, so on GitLab this case shows up as an error; the existing MR is untouched.
+- Errors from the CLI (not signed in, no access, branch protection, ...) are shown as they are on the Changes page.
+- Only `gh` was exercised against a fake CLI in the tests; neither was run against the real GitHub or GitLab here.
 
 ### Configuration
 
