@@ -155,7 +155,7 @@ export function ChatView({ id, focusEvent }) {
           <strong>Start the conversation</strong>
           <span class="dim">${found?.project?.name}: the agent works in ${conv?.worktree ? `its own worktree on ${conv.branch}` : 'the project folder'}.</span>
         </div>`}
-        ${model.blocks.map((b) => html`<${Block} key=${b.key} b=${b} v=${b.v} hit=${focus != null && b.eventId === focus} active=${running && b === lastSteps && !b.done} root=${conv?.worktree || found?.project?.path} />`)}
+        ${model.blocks.map((b) => html`<${Block} key=${b.key} b=${b} v=${b.v} hit=${focus != null && b.eventId === focus} active=${running && b === lastSteps && !b.done} root=${conv?.worktree || found?.project?.path} conversationId=${conv?.id} />`)}
         ${waiting.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} />`)}
         ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
       </div>

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
@@ -421,6 +421,28 @@ export function buildApp(
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
     return conv ? { ...conv, turns: store.listTurns(conv.id) } : notFound(reply);
+  });
+
+  // Serve links from agent answers only from this chat's own worktree/project.
+  app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/files/download', {
+    schema: { querystring: { type: 'object', required: ['path'], additionalProperties: false,
+      properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } },
+  }, (req, reply) => {
+    const conv = store.getConversation(req.params.id);
+    const project = conv && store.getProject(conv.project_id);
+    if (!conv || !project) return notFound(reply);
+    const real = insideRoot(conv.worktree ?? project.path, req.query.path);
+    if (!real) return notFound(reply);
+    let stat;
+    try { stat = statSync(real); } catch { return notFound(reply); }
+    if (!stat.isFile()) return notFound(reply);
+    return reply
+      .header('content-type', 'application/octet-stream')
+      .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName(real))}`)
+      .header('content-length', stat.size)
+      .header('cache-control', 'private, no-store')
+      .header('x-content-type-options', 'nosniff')
+      .send(createReadStream(real));
   });
 
   app.post<{ Params: { id: string }; Body: { prompt: string; attachments?: string[] } }>('/api/conversations/:id/prompts', {

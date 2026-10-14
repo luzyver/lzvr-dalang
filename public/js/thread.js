@@ -161,10 +161,10 @@ function Steps({ b, active, root }) {
   </div>`;
 }
 
-function Agent({ b }) {
+function Agent({ b, conversationId }) {
   const u = b.usage;
   return html`<div class="msg agent">
-    <${Markdown} text=${b.text} />
+    <${Markdown} text=${b.text} conversationId=${conversationId} />
     <div class="msg-actions">
       <button class="icon-btn sm" aria-label="Copy answer" title="Copy as Markdown" onClick=${() => copyText(b.text)}><${Icon} name="copy" /></button>
       <span class="msg-meta">${clock(b.at)}${u && ` · ${tokens(u.input_tokens)} in · ${tokens(u.output_tokens)} out`}</span>
@@ -175,14 +175,14 @@ function Agent({ b }) {
 /** One block; redraws only when the block changed (`v`) or its marks did. */
 export class Block extends Component {
   shouldComponentUpdate(next) {
-    return next.b !== this.props.b || next.v !== this.props.v || next.hit !== this.props.hit || next.active !== this.props.active;
+    return next.b !== this.props.b || next.v !== this.props.v || next.hit !== this.props.hit || next.active !== this.props.active || next.conversationId !== this.props.conversationId;
   }
 
-  render({ b, hit, active, root }) {
+  render({ b, hit, active, root, conversationId }) {
     let body;
     if (b.type === 'user') {
       body = html`<div class="msg user"><div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
-    } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} />`;
+    } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} conversationId=${conversationId} />`;
     else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} />`;
     else body = html`<div class=${cx('note', b.tone)}><${Icon} name=${b.tone === 'err' ? 'circle-alert' : b.tone === 'warn' ? 'triangle-alert' : 'info'} /><span>${b.text}</span></div>`;
     return html`<div class=${cx('block', hit && 'hit')} data-event=${b.eventId}>${body}</div>`;

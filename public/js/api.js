@@ -40,3 +40,22 @@ export async function publicApi(path, body) {
   }
   return res.json();
 }
+
+export async function downloadFile(path, filename) {
+  const res = await fetch(path, { headers: { authorization: `Bearer ${currentToken()}` } });
+  if (res.status === 401) { handleUnauthorized(); throw new Unauthorized(); }
+  if (!res.ok) {
+    let message = res.statusText;
+    try { message = (await res.json()).error || message; } catch { /* not JSON */ }
+    throw Object.assign(new Error(message), { status: res.status });
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
