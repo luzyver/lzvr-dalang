@@ -1,17 +1,24 @@
-// Dalang panel. Every server-provided string is inserted as text, never parsed as HTML.
+// Dalang panel: the app shell (header, menu, sidebar, main area). Every feature lives in its own module under js/.
+// Every server-provided string is inserted as text, never parsed as HTML.
 import { h, icon } from './js/dom.js';
-import { api, publicApi, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
-import { startStream, renderEvent } from './js/chat.js';
-import { changesPage } from './js/git.js';
+import { api, currentToken, tokenStore, Unauthorized, setUnauthorizedHandler } from './js/api.js';
+import { loginScreen } from './js/login.js';
+import { sidebar as createSidebar } from './js/sidebar.js';
+import { chatView } from './js/chat-view.js';
+import { accountsPage } from './js/accounts.js';
+import { usersPage } from './js/users.js';
+import { defaultsPage, promptsPage } from './js/settings.js';
+import { approvals as createApprovals } from './js/approvals.js';
 import { schedulesPage } from './js/schedules.js';
 import { searchPage } from './js/search.js';
-import { enableNotifications, registerPasskey, loginWithPasskey } from './js/passkeys.js';
+import { enableNotifications, registerPasskey } from './js/passkeys.js';
 
-// ---------- views ----------
 const root = document.getElementById('root');
 let stopStream = null;
-let accountTimer = null;
+let refreshTimer = null;
 let notificationOpensChat = null; // set by showApp; one service-worker listener (below) calls it
+
+function stopChat() { if (stopStream) { stopStream(); stopStream = null; } }
 
 /** Revoke the session on the server (passkey sessions last 30 days), then forget the token here. */
 async function signOut() {
@@ -20,621 +27,109 @@ async function signOut() {
 }
 
 function showLogin(message) {
-  if (stopStream) { stopStream(); stopStream = null; }
-  clearInterval(accountTimer);
+  stopChat();
+  clearInterval(refreshTimer);
   tokenStore.clear();
-  const err = h('div', { class: 'error' }, message || '');
-  const input = h('input', { type: 'password', placeholder: 'access token', autocomplete: 'current-password' });
-  const go = async () => {
-    const t = input.value.trim();
-    if (!t) return;
-    // Not api(): a 401 there rebuilds this screen and the message below would go to a detached element.
-    const res = await fetch('/api/projects', { headers: { authorization: `Bearer ${t}` } }).catch(() => null);
-    if (res && res.ok) { tokenStore.set(t); showApp(); return; }
-    err.textContent = !res ? 'cannot reach the server' : res.status === 429 ? 'too many attempts, wait a minute' : 'wrong token';
-  };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  const passkeyBtn = h('button', { onclick: async () => {
-    err.textContent = '';
-    try { await loginWithPasskey(); showApp(); } catch (e) { err.textContent = e.message; }
-  } }, 'Sign in with passkey');
-  passkeyBtn.hidden = true;
-  root.replaceChildren(h('div', { class: 'login' },
-    h('h1', {}, 'Dalang'), input,
-    h('button', { class: 'primary', onclick: go }, 'Sign in'), passkeyBtn, err));
-  publicApi('/api/auth/status').then((s) => { passkeyBtn.hidden = !s.passkeys; }).catch(() => {});
+  root.replaceChildren(loginScreen({ message, onSignedIn: showApp }));
 }
 
 async function showApp() {
   let me;
   try { me = await api('/api/me'); } catch (e) { if (!(e instanceof Unauthorized)) showLogin(e.message); return; }
   const isAdmin = me.role === 'admin'; // the server enforces this; the panel only hides what would be refused
-  const state = { projects: [], convs: new Map(), current: null, queue: [], collapsedProjects: new Set() };
-  const sidebar = h('aside');
+  const state = { projects: [], convs: new Map(), current: null, collapsedProjects: new Set() };
   const main = h('main');
   const status = h('span', { class: 'small' });
 
   const flash = (msg) => { status.textContent = msg; if (msg) setTimeout(() => { if (status.textContent === msg) status.textContent = ''; }, 5000); };
   const guarded = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof Unauthorized)) flash(e.message); } };
 
-  document.body.classList.remove('nav');
-  const menu = h('details', { class: 'menu' },
-    h('summary', {}, h('span', { class: 'avatar' }, me.name.slice(0, 1).toUpperCase()), h('span', { class: 'uname' }, me.name)),
-    h('div', { class: 'pop', onclick: () => { menu.open = false; } },
-      h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
-      isAdmin && h('button', { onclick: () => addAccountDialog() }, 'Codex accounts'),
-      isAdmin && h('button', { onclick: () => addAccountDialog('claude') }, 'Claude Code accounts'),
-      isAdmin && h('button', { onclick: () => defaultModelDialog() }, 'Model & effort defaults'),
-      isAdmin && h('button', { onclick: () => promptsDialog() }, 'Generate prompts'),
-      isAdmin && h('button', { onclick: () => usersDialog() }, 'Manage users'),
-      h('button', { onclick: () => openPage(schedulesPage({ guarded, flash, close: closePage, open: (id) => openConv(id) })) }, 'Scheduled prompts'),
-      h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
-      h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
-      h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
-  document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
-  const approvalsBox = h('div', { class: 'page-body' });
-  const approvalsBtn = h('button', { class: 'badge warn', hidden: true, onclick: () => openPage(approvalsBox) });
-  const header = h('header', {},
-    h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, icon('panel-left')),
-    h('span', { class: 'title' }, 'Dalang'), approvalsBtn,
-    h('span', { class: 'spacer' }), status, menu);
-  root.replaceChildren(h('div', { class: 'shell' }, header, sidebar, main));
-  notificationOpensChat = (id) => openConv(id);
-
-  const resetIn = (ts) => {
-    const m = Math.max(0, Math.round((ts * 1000 - Date.now()) / 60000));
-    return m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
-  };
-  // One bar per usage window (the share still left) as last reported by the CLI during a turn. A window past its reset counts as full.
-  function limitBars(l) {
-    if (!l) return h('div', { class: 'small' }, 'Usage appears after this account runs its first turn.');
-    return h('div', { class: 'meters' }, l.windows.map((w) => {
-      const over = w.resetsAt * 1000 < Date.now();
-      const left = over ? 100 : Math.max(0, 100 - Math.round(w.usedPercent));
-      return h('div', { class: 'meter', title: limitsTitle(l) },
-        h('span', { class: 'meter-label' }, w.label),
-        h('div', { class: 'meter-track' }, h('div', { class: `meter-fill ${left <= 10 ? 'hot' : left <= 30 ? 'warm' : ''}`, style: `width:${left}%` })),
-        h('span', { class: 'meter-pct' }, `${left}%`),
-        h('span', { class: 'meter-reset small' }, over ? 'reset' : `resets in ${resetIn(w.resetsAt)}`));
-    }));
-  }
-  function limitsTitle(l) {
-    return l ? l.windows.map((w) => `${w.label}: ${Math.max(0, 100 - Math.round(w.usedPercent))}% left, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`).join('\n') : '';
-  }
-
   // Every menu action opens as a page in the main area instead of a chat; closing it goes back to the chat that was open.
-  let onPageClose = null;
-  function leavePage() { const f = onPageClose; onPageClose = null; f?.(); }
-  function openPage(content, onClose) {
-    leavePage();
-    if (stopStream) { stopStream(); stopStream = null; }
-    onPageClose = onClose || null;
+  function openPage(content) {
+    stopChat();
     document.body.classList.remove('nav');
     main.replaceChildren(h('div', { class: 'page' }, content));
   }
   const closePage = () => drawMain(state.current);
-  // Global model/effort defaults, one section per backend (a Codex model name means nothing to Claude Code).
-  function defaultModelDialog() {
-    const msg = h('div', { class: 'small' });
-    const section = (backend, title) => {
-      const q = backend === 'claude' ? '?backend=claude' : '';
-      const model = h('select');
-      const effort = h('select', {}, [['', `${title} default`], ...['low', 'medium', 'high', 'xhigh', 'max'].map((v) => [v, v])]
-        .map(([value, label]) => h('option', { value }, label)));
-      let modelList = [];
-      let savedModel = '';
-      const updateModels = () => {
-        const options = [h('option', { value: '' }, `${title} default`), ...modelList.map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
-        if (savedModel && !modelList.some((m) => m.slug === savedModel)) options.push(h('option', { value: savedModel }, savedModel));
-        model.replaceChildren(...options);
-        model.value = savedModel;
-      };
-      Promise.all([api(`/api/settings/default-model${q}`), api(`/api/settings/default-effort${q}`)]).then(([m, e]) => {
-        savedModel = m.model;
-        effort.value = e.effort;
-        updateModels();
-      }).catch((e) => { msg.textContent = e.message; });
-      api(`/api/models${q}`).then((models) => { modelList = models; updateModels(); }).catch(() => {});
-      return {
-        el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('label', {}, 'Model', model), h('label', {}, 'Reasoning effort', effort)),
-        save: async () => {
-          await api('/api/settings/default-model', { method: 'PUT', body: { model: model.value, backend } });
-          await api('/api/settings/default-effort', { method: 'PUT', body: { effort: effort.value, backend } });
-        },
-      };
-    };
-    const sections = [section('codex', 'Codex'), section('claude', 'Claude Code')];
-    const save = guarded(async () => {
-      for (const s of sections) await s.save();
-      flash('Global model and effort defaults saved');
-      closePage();
-    });
-    openPage(h('div', { class: 'page-body' },
-      h('strong', {}, 'Global defaults'),
-      h('div', { class: 'small' }, 'Used when a chat has no model or effort override. Leave a field on its default to let the CLI choose.'),
-      ...sections.map((s) => s.el),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closePage }, 'Cancel')),
-      msg));
-  }
-  // The instructions the Changes page's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in.
-  function promptsDialog() {
-    const section = (path, title, help) => {
-      const text = h('textarea', { rows: '14', class: 'prompt-edit', placeholder: 'Loading…' });
-      let builtIn = '';
-      api(`/api/settings/${path}`).then((r) => { builtIn = r.default; text.value = r.prompt || r.default; text.placeholder = ''; })
-        .catch((e) => flash(e.message));
-      return {
-        el: h('div', { class: 'model-settings' }, h('strong', {}, title), h('div', { class: 'small' }, help), text,
-          h('div', { class: 'row' }, h('button', { onclick: () => { text.value = builtIn; } }, 'Reset to default'))),
-        // Saving the built-in text unchanged stores nothing, so later updates of the default still apply.
-        save: () => api(`/api/settings/${path}`, { method: 'PUT', body: { prompt: text.value.trim() === builtIn.trim() ? '' : text.value.trim() } }),
-      };
-    };
-    const sections = [
-      section('commit-prompt', 'Commit message', '"Generate message" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.'),
-      section('mr-prompt', 'Merge Request description', '"Generate MR description" for a worktree chat. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the merge commit subject.'),
-    ];
-    const save = guarded(async () => {
-      for (const s of sections) await s.save();
-      flash('prompts saved');
-      closePage();
-    });
-    openPage(h('div', { class: 'page-body' },
-      h('strong', {}, 'Generate prompts'),
-      h('div', { class: 'small' }, 'Used by Codex and Claude Code alike, with the chat\'s own model.'),
-      ...sections.map((s) => s.el),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: save }, 'Save'), h('button', { onclick: closePage }, 'Cancel'))));
-  }
-  // Add another account: runs the CLI's login on the server and shows its link and code here.
-  function addAccountDialog(backend = 'codex') {
-    const label = backend === 'claude' ? 'Claude Code' : 'Codex';
-    const q = backend === 'claude' ? '?backend=claude' : '';
-    const nameIn = h('input', { placeholder: 'account name (a-z, 0-9, - or _)' });
-    const list = h('div', { class: 'acctlist' });
-    const loadList = async () => {
-      try {
-        const accts = await api(`/api/accounts${q}`);
-        list.replaceChildren(...accts.map((a) => h('div', { class: 'acct' }, h('div', { class: 'acct-head' },
-          h('label', { class: 'switch', title: 'Use this account for new turns' },
-            h('input', { type: 'checkbox', checked: a.enabled, onchange: guarded(async (e) => {
-              await api(`/api/accounts/${encodeURIComponent(a.name)}/enabled`, { method: 'PUT', body: { enabled: e.target.checked, backend } });
-              loadList();
-            }) })),
-          h('strong', {}, a.name),
-          h('span', { class: 'small' }, !a.enabled ? 'off' : a.loggedIn === false ? 'not logged in' : a.blockedUntil ? 'at limit' : 'ready'),
-          h('span', { class: 'spacer' }),
-          a.blockedUntil && h('button', { onclick: guarded(async () => { await api('/api/accounts/unblock', { method: 'POST' }); loadList(); }) }, 'Unblock'),
-          h('button', { class: 'danger', onclick: guarded(async () => {
-            if (!confirm(`Remove account "${a.name}"? Its ${label} login is deleted from this server. Chats and projects stay.`)) return;
-            await api(`/api/accounts/${encodeURIComponent(a.name)}${q}`, { method: 'DELETE' });
-            flash(`removed ${a.name}`);
-            loadList();
-          }) }, 'Remove')),
-          limitBars(a.limits))));
-      } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
-    };
-    const out = h('pre', { class: 'loginlog' });
-    const link = h('div', { class: 'loginlink' });
-    const msg = h('div', { class: 'small' });
-    let id = null;
-    let timer = null;
-    const close = closePage;
-    const poll = async () => {
-      try {
-        const s = await api(`/api/accounts/login/${id}`);
-        // Only touch the DOM when something changed, so a selection in the log or the code survives polling.
-        if (out.textContent !== s.output) out.textContent = s.output;
-        const linkKey = `${s.url || ''}\n${s.code || ''}`;
-        if (link.dataset.key !== linkKey) {
-          link.dataset.key = linkKey;
-          link.replaceChildren();
-          if (s.url && /^https:\/\//.test(s.url)) link.append(h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open the sign-in page'));
-          if (s.code) link.append(' code: ', h('strong', { class: 'logincode' }, s.code), ' ', h('button', { onclick: async () => {
-            try { await navigator.clipboard.writeText(s.code); flash('copied'); } catch { getSelection().selectAllChildren(link.querySelector('.logincode')); }
-          } }, 'Copy'));
-        }
-        if (s.status !== 'pending') {
-          clearInterval(timer);
-          msg.textContent = s.status === 'success' ? `Account "${s.name}" added.` : s.status === 'cancelled' ? 'Cancelled.' : `Failed: ${s.error || 'unknown error'}`;
-          startBtn.disabled = false;
-          cancelBtn.hidden = true;
-          loadList();
-        }
-      } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
-    };
-    const startBtn = h('button', { class: 'primary', onclick: guarded(async () => {
-      msg.textContent = '';
-      const r = await api('/api/accounts/login', { method: 'POST', body: { name: nameIn.value.trim(), backend } });
-      id = r.id;
-      startBtn.disabled = true;
-      cancelBtn.hidden = false;
-      clearInterval(timer);
-      timer = setInterval(poll, 1500);
-      poll();
-    }) }, 'Start login');
-    const codeIn = h('input', { placeholder: 'code from the sign-in page' });
-    const codeRow = backend === 'claude' ? h('div', { class: 'row' }, codeIn, h('button', { onclick: guarded(async () => {
-      await api(`/api/accounts/login/${id}/code`, { method: 'POST', body: { code: codeIn.value.trim() } });
-      codeIn.value = '';
-      poll();
-    }) }, 'Send code')) : null;
-    const cancelBtn = h('button', { class: 'danger', hidden: true, onclick: guarded(async () => {
-      await api(`/api/accounts/login/${id}`, { method: 'DELETE' });
-      poll();
-    }) }, 'Cancel');
-    loadList();
-    openPage(h('div', { class: 'page-body' },
-      h('strong', {}, `${label} accounts`), list,
-      h('strong', {}, 'Add an account'),
-      h('div', { class: 'small' }, backend === 'claude'
-        ? 'Runs "claude auth login" on the server. A browser window opens on that machine; sign in with the account you want to add (or open the link below). If the page shows a code instead of finishing, paste it here.'
-        : 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'),
-      h('div', { class: 'row' }, nameIn, startBtn, cancelBtn, h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: close }, icon('x'))),
-      link, codeRow, out, msg), () => clearInterval(timer));
-  }
+  const page = { guarded, flash, close: closePage }; // what every page module gets
 
-  // User management (admins): create users with a role, change roles, issue a new token, delete.
-  function usersDialog() {
-    const list = h('div');
-    const reveal = h('div');
-    const nameIn = h('input', { placeholder: 'user name (a-z, 0-9, - or _)' });
-    const roleSel = h('select', {}, ['dev', 'admin'].map((v) => h('option', { value: v }, v)));
-    const close = closePage;
-
-    function showToken(who, token) {
-      const field = h('input', { readonly: true, value: token });
-      reveal.replaceChildren(
-        h('div', { class: 'small' }, `Token for ${who}. It is shown only now: give it to them privately. They can add a passkey after signing in.`),
-        h('div', { class: 'row' }, field, h('button', { onclick: async () => {
-          try { await navigator.clipboard.writeText(token); flash('copied'); } catch { field.select(); }
-        } }, 'Copy')));
-      field.select();
+  const lookup = (id) => {
+    for (const project of state.projects) {
+      const conv = (state.convs.get(project.id) || []).find((c) => c.id === id);
+      if (conv) return { project, conv };
     }
-
-    async function reload() {
-      const users = await api('/api/users');
-      list.replaceChildren(...users.map((u) => {
-        const sel = h('select', {}, ['dev', 'admin'].map((v) => h('option', { value: v, selected: v === u.role }, v)));
-        sel.addEventListener('change', guarded(async () => { await api(`/api/users/${u.id}`, { method: 'PATCH', body: { role: sel.value } }); flash(`${u.name} is now ${sel.value}`); }));
-        return h('div', { class: 'row' }, h('strong', {}, u.name), sel, h('span', { class: 'small' }, `${u.passkeys} passkey(s)`),
-          h('button', { onclick: guarded(async () => { showToken(u.name, (await api(`/api/users/${u.id}/token`, { method: 'POST' })).token); }) }, 'New token'),
-          h('button', { class: 'danger', onclick: guarded(async () => {
-            if (!confirm(`Delete user "${u.name}"? Their token, sessions and passkeys stop working.`)) return;
-            await api(`/api/users/${u.id}`, { method: 'DELETE' });
-            reload();
-          }) }, 'Delete'));
-      }));
-    }
-
-    const create = guarded(async () => {
-      const r = await api('/api/users', { method: 'POST', body: { name: nameIn.value.trim(), role: roleSel.value } });
-      nameIn.value = '';
-      showToken(r.name, r.token);
-      reload();
-    });
-    openPage(h('div', { class: 'page-body' },
-      h('strong', {}, 'Users'),
-      h('div', { class: 'small' }, 'admin: everything. dev: use projects and chats, but not manage users, accounts or projects.'),
-      list,
-      h('div', { class: 'row' }, nameIn, roleSel, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { class: 'iconbtn', 'aria-label': 'Close', onclick: close }, icon('x'))),
-      reveal));
-    reload().catch((e) => flash(e.message));
-  }
-
-  // Sends one chat wants to make into another (via MCP) wait here until a human decides.
-  async function refreshApprovals() {
-    try {
-      const list = await api('/api/approvals');
-      const decide = (a, verb) => guarded(async () => { await api(`/api/approvals/${a.id}/${verb}`, { method: 'POST' }); refreshApprovals(); });
-      approvalsBtn.hidden = !list.length;
-      approvalsBtn.textContent = `Approvals (${list.length})`;
-      if (!list.length && approvalsBox.isConnected) closePage();
-      approvalsBox.replaceChildren(h('strong', {}, 'Approvals'), ...list.map((a) => h('div', { class: 'msg' },
-        `Approval needed: chat ${a.from_conv.slice(0, 8)} wants to message chat ${a.to_conv.slice(0, 8)}:\n${a.prompt}`,
-        h('div', { class: 'row' },
-          h('button', { class: 'primary', onclick: decide(a, 'approve') }, 'Approve'),
-          h('button', { class: 'danger', onclick: decide(a, 'reject') }, 'Reject')))));
-    } catch { /* retried on the next tick */ }
-  }
-
+    return null;
+  };
   async function loadProjects() {
     state.projects = await api('/api/projects');
     for (const p of state.projects) state.convs.set(p.id, await api(`/api/projects/${p.id}/conversations`));
-    drawSidebar();
+    side.draw();
   }
-
-  function addProjectDialog() {
-    const nameIn = h('input', { placeholder: 'name' });
-    const pathIn = h('input', { placeholder: 'path (absolute or under the root)' });
-    const sbSel = h('select', {}, ['workspace-write', 'read-only', 'danger-full-access'].map((v) => h('option', { value: v }, v)));
-    const backendSel = h('select', {}, [['codex', 'Codex'], ['claude', 'Claude Code']].map(([v, l]) => h('option', { value: v }, l)));
-    const msg = h('div', { class: 'small' });
-    const create = async () => {
-      try {
-        await api('/api/projects', { method: 'POST', body: { name: nameIn.value.trim(), path: pathIn.value.trim(), sandbox: sbSel.value, backend: backendSel.value } });
-        closePage();
-        await loadProjects();
-      } catch (e) { if (!(e instanceof Unauthorized)) msg.textContent = e.message; }
-    };
-    openPage(h('div', { class: 'page-body' },
-      h('strong', {}, 'Add project'),
-      h('label', {}, 'Name', nameIn),
-      h('label', {}, 'Folder', pathIn),
-      h('label', {}, 'Agent (for every chat in this project)', backendSel),
-      h('label', {}, 'Sandbox', sbSel),
-      h('div', { class: 'row' }, h('button', { class: 'primary', onclick: create }, 'Create'), h('button', { onclick: closePage }, 'Cancel')),
-      msg));
-    nameIn.focus();
+  /** The open chat is gone (deleted, or its project removed). */
+  function leaveConv() {
+    stopChat();
+    state.current = null;
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    drawMain(null);
   }
-  const addProjectBtn = h('button', { class: 'add-project', onclick: addProjectDialog }, icon('plus'), 'Add project');
-  // Made once, so what is typed survives the sidebar being redrawn.
-  const openSearch = (query) => openPage(searchPage({ query, guarded, close: closePage, open: (id, eventId) => openConv(id, eventId) }));
-  const searchIn = h('input', { type: 'search', placeholder: 'Search chats', 'aria-label': 'Search chats' });
-  searchIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && searchIn.value.trim()) openSearch(searchIn.value.trim()); });
-  const searchBox = h('div', { class: 'side-search' }, searchIn,
-    h('button', { class: 'iconbtn', title: 'Search chats', 'aria-label': 'Search', onclick: () => openSearch(searchIn.value.trim()) }, icon('search')));
-
-  // `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project.
-  const newChat = (p, worktree = false) => guarded(async () => {
-    const c = await api(`/api/projects/${p.id}/conversations`, { method: 'POST', body: worktree ? { worktree } : {} });
-    await loadProjects();
-    openConv(c.id);
-  });
-  const deleteConv = (c) => guarded(async () => {
-    const id = c.id;
-    if (!confirm(c.worktree
-      ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
-      : 'Delete this chat and its history? The project and its files stay.')) return;
-    await api(`/api/conversations/${id}`, { method: 'DELETE' });
-    if (state.current === id) {
-      if (stopStream) { stopStream(); stopStream = null; }
-      state.current = null;
-      history.replaceState(null, '', `${location.pathname}${location.search}`);
-      drawMain(null);
-    }
-    await loadProjects();
-  });
-  function drawSidebar() {
-    const blocks = state.projects.map((p) => {
-      const convs = state.convs.get(p.id) || [];
-      const collapsed = state.collapsedProjects.has(p.id);
-      return h('section', { class: 'proj' },
-        h('div', { class: 'projhead' },
-          h('button', { class: 'project-toggle', 'aria-expanded': String(!collapsed), onclick: () => {
-            if (collapsed) state.collapsedProjects.delete(p.id); else state.collapsedProjects.add(p.id);
-            drawSidebar();
-          } },
-            icon(collapsed ? 'chevron-right' : 'chevron-down'),
-            icon('folder'),
-            h('span', { class: 'pname' }, h('strong', {}, p.name), h('span', { class: `small backend-tag ${p.backend}` }, `${p.backend === 'claude' ? 'Claude Code' : 'Codex'} · ${p.sandbox}`))),
-          h('button', { class: 'iconbtn', title: 'New chat', 'aria-label': 'New chat', onclick: newChat(p) }, icon('plus')),
-          h('details', { class: 'more' }, h('summary', { 'aria-label': 'Project options' }, icon('ellipsis')),
-            h('div', { class: 'pop' },
-              h('button', { title: 'A new git branch and folder for this chat only; merge it back from Changes', onclick: newChat(p, true) }, 'New chat in own worktree'),
-              isAdmin && h('button', { class: 'danger', onclick: guarded(async () => {
-                if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
-                await api(`/api/projects/${p.id}`, { method: 'DELETE' });
-                if ((state.convs.get(p.id) || []).some((c) => c.id === state.current)) {
-                  if (stopStream) { stopStream(); stopStream = null; } // else it keeps retrying a chat that no longer exists
-                  state.current = null;
-                  history.replaceState(null, '', `${location.pathname}${location.search}`);
-                  drawMain(null);
-                }
-                await loadProjects();
-              }) }, 'Remove project')))),
-        !collapsed && (convs.length ? h('div', { class: 'project-sessions' }, ...convs.map((c) => {
-          const title = c.title || 'New chat';
-          const shortTitle = title.length > 40 ? `${title.slice(0, 39)}…` : title;
-          return h('div', { class: 'conv-row' },
-            h('button', { class: `conv ${c.id === state.current ? 'active' : ''}`, onclick: () => openConv(c.id) },
-              h('span', { class: `dot ${c.status}`, title: c.status }), h('span', { class: 'ct', title }, shortTitle),
-              c.worktree && h('span', { class: 'conv-branch', title: `own worktree on ${c.branch}` }, icon('git-branch'))),
-            h('button', { class: 'conv-delete', title: `Delete ${title}`, 'aria-label': `Delete chat ${title}`, onclick: deleteConv(c) }, icon('trash-2')));
-        })) : h('div', { class: 'small hint' }, 'No chats yet')));
-    });
-    sidebar.replaceChildren(...[
-      h('div', { class: 'explorer-head' }, h('span', {}, 'WORKSPACE'), h('span', { class: 'explorer-caption' }, `${state.projects.length} PROJECT${state.projects.length === 1 ? '' : 'S'}`)),
-      searchBox, isAdmin ? addProjectBtn : null, ...blocks,
-      !blocks.length ? h('div', { class: 'small empty-projects' }, 'No projects yet') : null].filter(Boolean));
-  }
-
   /** `focusEvent`: the id of a message to scroll to and mark (from a search result). */
-  async function openConv(id, focusEvent) {
-    if (stopStream) { stopStream(); stopStream = null; }
-    const exists = state.projects.some((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
-    if (!exists) {
-      state.current = null;
-      history.replaceState(null, '', `${location.pathname}${location.search}`);
-      drawMain(null);
-      return;
-    }
+  function openConv(id, focusEvent) {
+    stopChat();
+    if (!lookup(id)) { leaveConv(); return; }
     state.current = id;
     history.replaceState(null, '', `${location.pathname}${location.search}#c=${encodeURIComponent(id)}`);
     document.body.classList.remove('nav');
-    drawSidebar();
+    side.draw();
     drawMain(id, focusEvent);
   }
-
   function drawMain(id, focusEvent) {
-    leavePage();
+    stopChat();
     if (!id) {
       main.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Dalang'), h('p', {}, 'Pick a chat, or start a new one with the + next to a project.'),
         h('button', { class: 'primary mobonly', onclick: () => document.body.classList.add('nav') }, 'Open chats')));
       return;
     }
-    const project = state.projects.find((p) => (state.convs.get(p.id) || []).some((c) => c.id === id));
-    const initial = (state.convs.get(project?.id) || []).find((c) => c.id === id);
-    const chatTitle = h('strong', { class: 'chat-title', title: initial?.title || 'New conversation' }, initial?.title || 'New conversation');
-    const chatProject = h('span', { class: 'chat-project' }, project?.name || 'Project');
-    const chatState = h('span', { class: `chat-state ${initial?.status || 'idle'}` }, initial?.status || 'idle');
-    // What git sees in the folder this chat's agent works in; hidden when that folder is not a repository.
-    const changesBtn = h('button', { class: 'changes-btn', hidden: true, title: 'Uncommitted changes: review, commit, revert', onclick: () =>
-      openPage(changesPage({ id, guarded, flash, close: closePage, onChange: () => loadProjects().catch(() => {}) })) },
-      icon('git-branch'), h('span', {}, initial?.branch || 'Changes'));
-    const refreshChanges = async () => {
-      const s = await api(`/api/conversations/${id}/git`);
-      changesBtn.hidden = !s.repo;
-      if (s.repo) changesBtn.lastChild.textContent = `${s.branch || 'HEAD'}${s.files.length ? ` · ${s.files.length} changed` : ''}`;
-    };
-    const schedulesBtn = h('button', { class: 'iconbtn', title: 'Scheduled prompts for this chat', 'aria-label': 'Scheduled prompts', onclick: () =>
-      openPage(schedulesPage({ convId: id, guarded, flash, close: closePage })) }, icon('clock'));
-    const chatHead = h('div', { class: 'chathead' },
-      h('div', { class: 'chat-context' }, chatProject, h('span', { class: 'crumb' }, '/'), chatTitle),
-      h('div', { class: 'chat-tools' }, schedulesBtn), changesBtn, chatState);
-    const log = h('div', { class: 'log' });
-    const queueBox = h('div', { class: 'queue' });
-    const text = h('textarea', { placeholder: 'Message Codex…', rows: '1' });
-    const files = h('input', { type: 'file', multiple: true });
-    let modelList = [];
-    let currentModel = '';
-    let currentEffort = '';
-    let globalModel = '';
-    let globalEffort = '';
-    let backendName = 'Codex';
-    const model = h('select', { title: 'Model', onchange: guarded(async () => {
-      currentModel = model.value;
-      updateEffortOptions();
-      await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: currentModel } });
-      flash(currentModel ? `model: ${currentModel}` : 'using global model default');
-    }) });
-    const effort = h('select', { title: 'Reasoning effort', onchange: guarded(async () => {
-      currentEffort = effort.value;
-      await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: currentEffort } });
-      flash(currentEffort ? `effort: ${currentEffort}` : 'effort: default');
-    }) });
-    function updateModelOptions() {
-      const options = [h('option', { value: '' }, globalModel || `${backendName} default`), ...modelList.filter((m) => m.slug !== globalModel).map((m) => h('option', { value: m.slug }, `${m.name} (${m.slug})`))];
-      if (currentModel && currentModel !== globalModel && !modelList.some((m) => m.slug === currentModel)) options.push(h('option', { value: currentModel }, currentModel));
-      model.replaceChildren(...options);
-      model.value = currentModel === globalModel ? '' : currentModel;
-    }
-    function updateEffortOptions() {
-      const supported = modelList.find((m) => m.slug === (model.value || globalModel))?.efforts;
-      const choices = (supported?.length ? supported : ['low', 'medium', 'high', 'xhigh', 'max']).filter((v) => v !== globalEffort);
-      const selectedEffort = currentEffort === globalEffort ? '' : currentEffort;
-      const values = [...new Set(['', ...choices, ...(selectedEffort && !choices.includes(selectedEffort) ? [selectedEffort] : [])])];
-      effort.replaceChildren(...values.map((v) => h('option', { value: v }, v || globalEffort || `${backendName} default`)));
-      effort.value = selectedEffort;
-    }
-    updateModelOptions();
-    updateEffortOptions();
-    api(`/api/conversations/${id}`).then((c) => {
-      const claude = c.backend === 'claude';
-      backendName = claude ? 'Claude Code' : 'Codex';
-      text.placeholder = `Message ${backendName}…`;
-      return Promise.all([
-        api(`/api/models${claude ? '?backend=claude' : ''}`),
-        api(`/api/settings/default-model${claude ? '?backend=claude' : ''}`).catch(() => ({ model: '' })),
-        api(`/api/settings/default-effort${claude ? '?backend=claude' : ''}`).catch(() => ({ effort: '' })),
-      ]);
-    }).then(([list, m, e]) => {
-      modelList = list;
-      globalModel = m.model;
-      globalEffort = e.effort;
-      updateModelOptions();
-      updateEffortOptions();
-    }).catch(() => {});
-
-    async function refreshQueue() {
-      const q = await api(`/api/conversations/${id}/queue`);
-      queueBox.replaceChildren(...q.map((item) => h('span', { class: 'chip' }, item.prompt.slice(0, 40),
-        h('button', { class: 'iconbtn', title: 'Remove from queue', 'aria-label': 'Remove from queue', onclick: guarded(async () => { await api(`/api/queue/${item.id}`, { method: 'DELETE' }); refreshQueue(); }) }, icon('x')))));
-    }
-    async function refreshConv() {
-      const c = await api(`/api/conversations/${id}`);
-      currentModel = c.model || '';
-      currentEffort = c.effort || '';
-      if (document.activeElement !== model) updateModelOptions();
-      updateEffortOptions();
-      if (!text.value && c.draft) text.value = c.draft;
-      const list = state.projects.flatMap((p) => state.convs.get(p.id) || []);
-      const known = list.find((x) => x.id === id);
-      const running = c.status === 'running';
-      stop.hidden = !running;
-      sendButton.hidden = running;
-      const title = c.title || null; // the generated title, or the start of the first prompt until there is one
-      chatTitle.textContent = title || 'New conversation';
-      chatTitle.title = title || 'New conversation';
-      chatState.textContent = c.status;
-      chatState.className = `chat-state ${c.status}`;
-      if (known && (known.status !== c.status || (title && known.title !== title))) { known.status = c.status; if (title) known.title = title; drawSidebar(); }
-    }
-
-    const send = guarded(async () => {
-      const prompt = text.value.trim();
-      if (!prompt) return;
-      const attachments = [];
-      for (const f of files.files) {
-        const form = new FormData();
-        form.append('file', f);
-        attachments.push((await api('/api/uploads', { method: 'POST', form })).path);
-      }
-      await api(`/api/conversations/${id}/prompts`, { method: 'POST', body: { prompt, attachments } });
-      text.value = '';
-      files.value = '';
-      await api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: '' } });
-      refreshQueue();
-    });
-    // Desktop: Enter sends, Shift+Enter is a new line. Touch keyboards keep Enter as a new line (the send button sends).
-    const mouse = matchMedia('(pointer: fine)');
-    text.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && (e.ctrlKey || e.metaKey || (mouse.matches && !e.shiftKey))) { e.preventDefault(); send(); } });
-    let draftTimer;
-    text.addEventListener('input', () => {
-      clearTimeout(draftTimer);
-      draftTimer = setTimeout(() => api(`/api/conversations/${id}/draft`, { method: 'PUT', body: { draft: text.value } }).catch(() => {}), 800);
-    });
-
-    const attachCount = h('span', {});
-    files.addEventListener('change', () => { attachCount.textContent = files.files.length ? ` ${files.files.length}` : ''; });
-    const settings = h('div', { class: 'settings' },
-      h('label', {}, 'Model', model), h('label', {}, 'Effort', effort));
-    const initiallyRunning = initial?.status === 'running';
-    const stop = h('button', { class: 'stop', hidden: !initiallyRunning, title: 'Stop', 'aria-label': 'Stop', onclick: guarded(async () => {
-      const r = await api(`/api/conversations/${id}/cancel`, { method: 'POST' }); flash(r.cancelled ? 'cancelled' : 'nothing running');
-    }) }, icon('square'));
-    const sendButton = h('button', { class: 'primary send', hidden: initiallyRunning, 'aria-label': 'Send', onclick: send }, icon('arrow-up'));
-    main.replaceChildren(chatHead, log, h('div', { class: 'composer' },
-      queueBox,
-      h('div', { class: 'box' },
-        h('div', { class: 'inputrow' },
-          h('label', { class: 'iconbtn', title: 'Attach files' }, icon('paperclip'), attachCount, files),
-          text,
-          stop,
-          sendButton),
-        settings)));
-
-    let pinnedUntil = 0;
-    stopStream = startStream(id, (e) => {
-      const el = renderEvent(e);
-      if (el) {
-        const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-        log.append(el);
-        if (focusEvent && e.id === focusEvent) {
-          el.classList.add('hit');
-          el.scrollIntoView({ block: 'center' });
-          pinnedUntil = Date.now() + 2000; // the rest of the history replays right after: it must not scroll the hit away
-        } else if (nearBottom && Date.now() > pinnedUntil) log.scrollTop = log.scrollHeight;
-      }
-      if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.status' || e.type === 'process.exit' || e.type === 'user.prompt') {
-        refreshQueue().catch(() => {});
-        refreshConv().catch(() => {});
-      }
-      if (e.type === 'turn.status') refreshChanges().catch(() => {});
-      if (e.type === 'conversation.title') refreshConv().catch(() => {});
-    });
-    refreshQueue().catch(() => {});
-    refreshConv().catch(() => {});
-    refreshChanges().catch(() => {});
+    const view = chatView({ id, focusEvent, lookup, ...page, openPage, onChange: () => loadProjects().catch(() => {}), onUpdate: () => side.draw() });
+    main.replaceChildren(...view.nodes);
+    stopStream = view.stop;
   }
+
+  const side = createSidebar({ state, isAdmin, ...page, reload: loadProjects, openConv, leaveConv, openPage,
+    openSearch: (query) => openPage(searchPage({ query, ...page, open: openConv })) });
+  const approvals = createApprovals({ guarded, openPage, close: closePage });
+
+  document.body.classList.remove('nav');
+  const menu = h('details', { class: 'menu' },
+    h('summary', {}, h('span', { class: 'avatar' }, me.name.slice(0, 1).toUpperCase()), h('span', { class: 'uname' }, me.name)),
+    h('div', { class: 'pop', onclick: () => { menu.open = false; } },
+      h('div', { class: 'small who' }, `${me.name} · ${me.role}`),
+      isAdmin && h('button', { onclick: () => openPage(accountsPage({ backend: 'codex', ...page })) }, 'Codex accounts'),
+      isAdmin && h('button', { onclick: () => openPage(accountsPage({ backend: 'claude', ...page })) }, 'Claude Code accounts'),
+      isAdmin && h('button', { onclick: () => openPage(defaultsPage(page)) }, 'Model & effort defaults'),
+      isAdmin && h('button', { onclick: () => openPage(promptsPage(page)) }, 'Generate prompts'),
+      isAdmin && h('button', { onclick: () => openPage(usersPage(page)) }, 'Manage users'),
+      h('button', { onclick: () => openPage(schedulesPage({ ...page, open: (id) => openConv(id) })) }, 'Scheduled prompts'),
+      h('button', { onclick: guarded(async () => { await enableNotifications(); flash('notifications on'); }) }, 'Enable notifications'),
+      h('button', { onclick: guarded(async () => { await registerPasskey(); flash('passkey registered'); }) }, 'Add passkey'),
+      h('button', { class: 'danger', onclick: signOut }, 'Sign out')));
+  document.onclick = (e) => { if (!menu.contains(e.target)) menu.open = false; };
+  const header = h('header', {},
+    h('button', { class: 'navtoggle', 'aria-label': 'chats', onclick: () => document.body.classList.toggle('nav') }, icon('panel-left')),
+    h('span', { class: 'title' }, 'Dalang'), approvals.button,
+    h('span', { class: 'spacer' }), status, menu);
+  root.replaceChildren(h('div', { class: 'shell' }, header, side.el, main));
+  notificationOpensChat = (id) => openConv(id);
 
   drawMain(null);
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) flash(e.message); return; }
-  const tick = () => { if (isAdmin) refreshApprovals(); };
-  // First run: nothing works until an account exists, so an admin lands straight in the sign-in step.
-  if (isAdmin) Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')]).then(([a, c]) => { if (!a.length && !c.length) addAccountDialog(); }).catch(() => {});
-  if (isAdmin) refreshApprovals();
-  clearInterval(accountTimer);
-  accountTimer = setInterval(tick, 15000);
+  if (isAdmin) {
+    // First run: nothing works until an account exists, so an admin lands straight in the sign-in step.
+    Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')])
+      .then(([a, c]) => { if (!a.length && !c.length) openPage(accountsPage({ backend: 'codex', ...page })); }).catch(() => {});
+    approvals.refresh();
+  }
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => { if (isAdmin) approvals.refresh(); }, 15000);
 
   const fromHash = /#c=([\w-]+)/.exec(location.hash);
   if (fromHash) openConv(fromHash[1]);
