@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sessionHash } from '../src/passkeys.js';
+import { sessionHash } from '../src/auth.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { mkUser, setupApp } from './setup-app.js';
 
@@ -97,7 +97,7 @@ describe('adding accounts from the panel', () => {
     expect(list[0]).toMatchObject({ loggedIn: false });
   });
 
-  it('is for admins only: a dev cannot link new accounts, an admin (including a passkey session) can', async () => {
+  it('is for admins only: a dev cannot link new accounts, an admin (including an owner session) can', async () => {
     const t = setupApp();
     const dev = { authorization: `Bearer ${(await mkUser(t, 'budi', 'dev')).token}` };
     expect((await login(t, 'x', dev)).statusCode).toBe(403);
@@ -105,7 +105,7 @@ describe('adding accounts from the panel', () => {
     expect((await t.app.inject({ method: 'DELETE', url: '/api/accounts/login/anything', headers: dev })).statusCode).toBe(403);
     expect((await t.app.inject({ url: '/api/accounts', headers: dev })).statusCode).toBe(200); // reading is fine
 
-    t.store.createSession(sessionHash('owner-session'), Date.now() + 60_000); // owner signed in with a passkey
+    t.store.createSession(sessionHash('owner-session'), Date.now() + 60_000); // owner signed in by email
     const bad = await login(t, '../x', { authorization: 'Bearer owner-session' });
     expect(bad.statusCode).toBe(400); // got past the permission check, then failed name validation
     expect((await login(t, 'x', {})).statusCode).toBe(401);

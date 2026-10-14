@@ -5,7 +5,7 @@ import { api } from './api.js';
 import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, me, toast, ui } from './store.js';
 import { PALETTES, THEMES, palette, theme } from './theme.js';
-import { enableNotifications, registerPasskey } from './passkeys.js';
+import { enableNotifications } from './notifications.js';
 import { AccountsSection } from './accounts.js';
 import { UsersSection } from './users.js';
 import { signOut } from './session.js';
@@ -30,10 +30,6 @@ function Device() {
     <div class="setting-row">
       <div><strong>Notifications</strong><div class="dim small">A push notification when a turn finishes, fails or needs input, on this device.</div></div>
       <${AsyncButton} class="btn" icon="bell" onClick=${guarded(async () => { await enableNotifications(); toast('Notifications on'); })}>Enable<//>
-    </div>
-    <div class="setting-row">
-      <div><strong>Passkey</strong><div class="dim small">Sign in on this device without the token next time.</div></div>
-      <${AsyncButton} class="btn" icon="key-round" onClick=${guarded(async () => { await registerPasskey(); toast('Passkey registered'); })}>Add passkey<//>
     </div>
     <div class="setting-row">
       <div><strong>Sign out</strong><div class="dim small">Signed in as ${me.value?.name} (${me.value?.role}).</div></div>

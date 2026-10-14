@@ -20,7 +20,7 @@ export function showLogin(message = '') {
   });
 }
 
-/** Revoke the session on the server (passkey sessions last 30 days), then forget the token here. */
+/** Revoke the session on the server (sessions last 30 days), then forget the token here. */
 export async function signOut() {
   try { await fetch('/api/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${currentToken()}` } }); } catch { /* offline: still sign out locally */ }
   showLogin();

@@ -181,7 +181,7 @@ export class Block extends Component {
   render({ b, hit, active, root }) {
     let body;
     if (b.type === 'user') {
-      body = html`<div class="msg user"><div class="bubble">${b.text}</div><div class="msg-meta">${clock(b.at)}</div></div>`;
+      body = html`<div class="msg user"><div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
     } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} />`;
     else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} />`;
     else body = html`<div class=${cx('note', b.tone)}><${Icon} name=${b.tone === 'err' ? 'circle-alert' : b.tone === 'warn' ? 'triangle-alert' : 'info'} /><span>${b.text}</span></div>`;

@@ -14,7 +14,7 @@ describe('users', () => {
     expect(r.json()).toMatchObject({ name: 'budi', role: 'dev', token: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
     const list = (await call(t, 'GET', '/api/users', AUTH)).json();
-    expect(list).toEqual([{ id: expect.any(String), name: 'budi', role: 'dev', email: null, createdAt: expect.any(String), passkeys: 0 }]);
+    expect(list).toEqual([{ id: expect.any(String), name: 'budi', role: 'dev', email: null, createdAt: expect.any(String) }]);
     expect(JSON.stringify(list)).not.toContain(r.json().token);
     // the database keeps a hash, never the token itself
     expect(JSON.stringify(t.store.db.prepare('SELECT * FROM users').all())).not.toContain(r.json().token);
@@ -72,15 +72,13 @@ describe('users', () => {
     expect((await call(t, 'PATCH', '/api/users/nope', AUTH, { role: 'dev' })).statusCode).toBe(404);
   });
 
-  it('deleting a user ends their access, including sessions and passkeys', async () => {
+  it('deleting a user ends their access, including sessions', async () => {
     const t = setupApp();
     const dev = await mkUser(t, 'budi', 'dev');
     t.store.createSession('sess-hash', Date.now() + 60_000, dev.id);
-    t.store.addPasskey({ id: 'pk', publicKey: new Uint8Array([1]), counter: 0 }, dev.id);
     expect((await call(t, 'DELETE', `/api/users/${dev.id}`, AUTH)).statusCode).toBe(204);
     expect((await call(t, 'GET', '/api/me', bearer(dev.token))).statusCode).toBe(401);
     expect(t.store.hasSession('sess-hash', Date.now())).toBe(false);
-    expect(t.store.getPasskey('pk')).toBeNull();
     expect((await call(t, 'DELETE', `/api/users/${dev.id}`, AUTH)).statusCode).toBe(404);
   });
 

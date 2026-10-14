@@ -1,10 +1,9 @@
-// The sign-in screen: a code mailed to your email, or a passkey when one is registered on the server.
+// The sign-in screen: a code mailed to your email.
 // The access token stays as a fallback for when the mailer is not set up.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
 import { publicApi, tokenStore } from './api.js';
-import { Icon, Logo, Spinner } from './ui.js';
-import { loginWithPasskey } from './passkeys.js';
+import { Logo, Spinner } from './ui.js';
 import { loginMessage, startSession } from './session.js';
 
 export function Login() {
@@ -16,7 +15,7 @@ export function Login() {
   const [useToken, setUseToken] = useState(false);
   const [error, setError] = useState(loginMessage.value);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState({ passkeys: false, email: true });
+  const [status, setStatus] = useState({ email: true });
   useEffect(() => {
     publicApi('/api/auth/status').then((s) => {
       if (s.bypass) { startSession(); return; } // AUTH_BYPASS (local development): nothing to sign in with
@@ -73,10 +72,6 @@ export function Login() {
       throw new Error(!res ? 'Cannot reach the server' : res.status === 429 ? 'Too many attempts, wait a minute' : 'Wrong token');
     });
   };
-  const passkey = async () => {
-    setError('');
-    try { await loginWithPasskey(); startSession(); } catch (e) { setError(e.message); }
-  };
 
   // One form: Send code mails the code, Sign in (or Enter) trades it in.
   const emailForm = html`<form class="login-fields" onSubmit=${verify}>
@@ -104,7 +99,6 @@ export function Login() {
       <${Logo} size=${44} />
       <div><h1>Sign in to Dalang</h1><p class="dim">The control room for your coding agents.</p></div>
       ${useToken ? tokenForm : emailForm}
-      ${status.passkeys && html`<button class="btn lg" type="button" onClick=${passkey}><${Icon} name="key-round" />Sign in with passkey</button>`}
       ${status.email && html`<button class="btn ghost sm" type="button" onClick=${() => { setUseToken(!useToken); setError(''); }}>
         ${useToken ? 'Sign in with email' : 'Use an access token'}</button>`}
       <div class="form-error" role="alert">${error}</div>

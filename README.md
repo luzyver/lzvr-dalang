@@ -62,7 +62,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   **Scheduled** in the sidebar. Anyone who may send prompts may schedule them.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
-- **Email sign-in + passkeys + push**: sign in with a 6-digit code mailed to you (through the GEM Mailer), or a passkey, installable PWA, Web Push when a turn finishes,
+- **Email sign-in + push**: sign in with a 6-digit code mailed to you (through the GEM Mailer), installable PWA, Web Push when a turn finishes,
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 
@@ -98,8 +98,7 @@ Environment=LZVR_TOKEN=<64-char token>
 Environment=WORKSPACE_ROOT=/
 Environment=STATE_DIR=/opt/lzvr-dalang/state
 Environment=HOST=127.0.0.1
-# Passkeys and the installable app need HTTPS. Set both once a TLS proxy serves the panel:
-# Environment=LZVR_RP_ID=panel.example.com
+# Push and the installable app need HTTPS. Set these once a TLS proxy serves the panel:
 # Environment=LZVR_ORIGIN=https://panel.example.com
 # Environment=TRUST_PROXY=1
 Restart=on-failure
@@ -123,8 +122,8 @@ so it cannot be forged). To use it:
 1. Replace `panel.example.com` in the file and copy it to `/etc/nginx/conf.d/lzvr-dalang.conf`, then
    `nginx -t && systemctl reload nginx`.
 2. Let certbot add TLS: `certbot --nginx -d panel.example.com`.
-3. Add to the service environment and restart it: `LZVR_RP_ID=panel.example.com`,
-   `LZVR_ORIGIN=https://panel.example.com`, `TRUST_PROXY=1`.
+3. Add to the service environment and restart it: `LZVR_ORIGIN=https://panel.example.com`,
+   `TRUST_PROXY=1`.
 
 **Only certain IPs can open it.** The `geo $lzvr_allowed { ... }` block at the top of `nginx.conf` is the allowlist: list
 the addresses or CIDR ranges that may reach the panel and API (yours, your office, your VPN) and everyone else gets
@@ -135,8 +134,8 @@ nginx sees that proxy's address instead of the visitor's, so you would need ngin
 anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw allow from <ip> to any port 443`), but keep
 80 open to everyone until the certificate is issued, and again at renewal time unless you renew with the DNS challenge.
 
-Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), sign in by email (see below), then use
-**Add passkey** and **Notifications** in Settings → This device. Passkeys, push and "install app" only work over HTTPS (or localhost).
+Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), sign in by email (see below), then turn on
+**Notifications** in Settings → This device. Push and "install app" only work over HTTPS (or localhost).
 
 ### Signing in
 
@@ -163,9 +162,8 @@ goes wrong. From it (or any admin) open **Users** in the panel to create people:
 | Create / delete users, change roles, issue new tokens | yes | no |
 
 Each user has an email (set when creating them, editable in the list): that is what they sign in with. Creating a user also
-prints a personal API token **once** (only a hash is stored), for the HTTP/MCP API or signing in without email. After signing in they can press
-**Add passkey** to register their own; passkey logins sign in as that user. **New token** replaces a user's token and signs
-out all their sessions; **Delete** removes their token, sessions and passkeys at once. Over `/mcp`, a dev's token gets the
+prints a personal API token **once** (only a hash is stored), for the HTTP/MCP API or signing in without email. **New token** replaces a user's token and signs
+out all their sessions; **Delete** removes their token and sessions at once. Over `/mcp`, a dev's token gets the
 everyday tools only; an admin's gets all 18.
 
 Devs share the same project list (there is no per-project assignment). Note that a dev chatting in a project whose sandbox is
@@ -233,7 +231,7 @@ Known limits:
 | `STATE_DIR` | `./state` | Database and uploads. |
 | `HOST` / `PORT` | `127.0.0.1` / `9876` | Listen address. Keep loopback and put a TLS proxy in front. |
 | `TRUST_PROXY` | off | Set `1` when a reverse proxy **on this machine** (nginx/Caddy) fronts the gateway, or list its IPs/CIDRs (`10.0.0.5,10.0.1.0/24`). Rate limiting then uses the client address that proxy saw. Without it, every visitor looks like `127.0.0.1` and ten bad tokens from anyone lock everyone out. Never trust addresses that are not your proxy. |
-| `LZVR_RP_ID`, `LZVR_ORIGIN` | unset | Enable passkeys (hostname and full `https://` origin of the panel). |
+| `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset. |
 | `LZVR_VAPID_SUBJECT` | origin | Contact URL for Web Push (`mailto:` or `https:`). |
 | `LIMIT_BLOCK_MINUTES` | `60` | How long an account is skipped after a usage limit. |
 | `LIMIT_REGEX` | built in | Case-insensitive regex that recognises a usage-limit error (see below). |
@@ -278,7 +276,7 @@ bash scripts/smoke.sh        # create a project + chat, send a prompt, stream th
 REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": true}` for an own worktree),
 `/api/conversations/:id/{prompts,queue,cancel,draft,events}`, `/api/conversations/:id/git` and `.../git/{diff,message,mr-description,commit,revert,discard,pull,branches,branch,branch/delete,pull-request}`,
 `/api/search?q=`, `/api/conversations/:id/schedules`, `/api/schedules` (`/:id`, `/:id/run`, `/preview?cron=`),
-`/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`, `/api/passkey/*`.
+`/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`.
 Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 
 ### MCP
@@ -317,7 +315,7 @@ allows no inline import map. Colours come from Radix Colors scales (Settings →
 
 ## Scope
 
-Built: core gateway, multi-account failover, panel + PWA + passkeys + Web Push, MCP gateway.
+Built: core gateway, multi-account failover, panel + PWA + Web Push, MCP gateway.
 Dropped: Docker-in-Docker test sandbox (the gateway runs directly on the VM).
-Not verified against the real services in development: the real Codex limit message and cross-account resume, passkeys
-and push in a real browser/phone, and the panel UI in a browser (all were tested with fakes or unit tests).
+Not verified against the real services in development: the real Codex limit message and cross-account resume, push
+in a real browser/phone, and the panel UI in a browser (all were tested with fakes or unit tests).

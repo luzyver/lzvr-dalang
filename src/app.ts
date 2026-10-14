@@ -10,14 +10,13 @@ import { GitError } from './git.js';
 import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
-import { passkeyRoutes, sessionHash } from './passkeys.js';
+import { authRoutes, sessionHash } from './auth.js';
 import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
 import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
 import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
-import { realWebAuthn, type WebAuthn } from './webauthn.js';
 import type { Store } from './store.js';
 
 declare module 'fastify' {
@@ -55,7 +54,7 @@ export function snippet(text: string, terms: string[], width = 220): string {
 
 export function buildApp(
   deps: {
-    cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins; webauthn?: WebAuthn;
+    cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins;
     maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail;
   },
 ): FastifyInstance {
@@ -91,7 +90,7 @@ export function buildApp(
 
   /**
    * The main token is the owner (always an admin, the break-glass login). Anything else is looked up by the hash of
-   * the token: a panel user's personal token, or a session created by a passkey login (which may belong to a user).
+   * the token: a panel user's personal token, or a session created by an email sign-in (which may belong to a user).
    */
   const resolveUser = (token: string, now: number): AuthUser | null => {
     if (timingSafeEqual(digest(token), want)) return { id: null, name: 'owner', role: 'admin', main: true };
@@ -101,7 +100,7 @@ export function buildApp(
     if (personal) return asUser(personal);
     const session = store.getSession(h, now);
     if (!session) return null;
-    if (session.user_id === null) return { id: null, name: 'owner', role: 'admin', main: false }; // owner signed in by passkey
+    if (session.user_id === null) return { id: null, name: 'owner', role: 'admin', main: false }; // owner signed in by email
     const u = store.getUser(session.user_id);
     return u ? asUser(u) : null;
   };
@@ -138,7 +137,7 @@ export function buildApp(
   });
 
   panelRoutes(app);
-  passkeyRoutes(app, { cfg, store, webauthn: deps.webauthn ?? realWebAuthn, noteFailure });
+  authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   mcpRoutes(app, { cfg, store, dispatcher, push });
   gitRoutes(app, { store, dispatcher, cfg });
@@ -441,7 +440,7 @@ export function buildApp(
       if (!real || !statSync(real).isFile()) return reply.code(400).send({ error: `attachment must be an uploaded file: ${a}` });
       files.push(real);
     }
-    const queueId = store.enqueue(conv.id, req.body.prompt, files);
+    const queueId = store.enqueue(conv.id, req.body.prompt, files, req.user!.name);
     store.setDraft(conv.id, ''); // sent now, so the saved draft must not come back into the composer
     dispatcher.kick(conv.id);
     return reply.code(202).send({ queueId });

@@ -8,7 +8,6 @@ import { Logins } from '../src/login.js';
 import { Push, type PushSend } from '../src/push.js';
 import type { SendMail } from '../src/otp.js';
 import { Store } from '../src/store.js';
-import type { WebAuthn } from '../src/webauthn.js';
 import { FAKE, TOKEN } from './helpers.js';
 
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -23,7 +22,6 @@ export async function mkUser(t: { app: { inject: (o: any) => Promise<any> } }, n
 export interface AppExtras {
   maxUploadBytes?: number;
   authMaxFailures?: number;
-  webauthn?: WebAuthn;
   pushSend?: PushSend;
   sendMail?: SendMail;
   cfg?: Partial<Config>;
@@ -40,7 +38,7 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   const cfg: Config = {
     token: TOKEN, workspaceRoot: root, limitBlockMs: 3_600_000,
     stateDir: join(base, 'state'), port: 0, host: '127.0.0.1', trustProxy: [], codexCommand: FAKE, claudeCommand: FAKE,
-    rpId: 'localhost', origin: 'http://localhost:9876', mcpCrossSend: 'approve', ownerEmails: [], authBypass: false,
+    origin: 'http://localhost:9876', mcpCrossSend: 'approve', ownerEmails: [], authBypass: false,
     ...extra.cfg,
   };
   const store = new Store();

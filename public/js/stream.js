@@ -74,7 +74,7 @@ function steps(item, id, at) {
 /**
  * The thread of one chat. `apply(events)` folds new events in; `blocks` is what to render (`v` goes up whenever a
  * block changes in place, so its view knows to redraw):
- *   { type: 'user', text, at, eventId } · { type: 'agent', text, at, eventId, usage } ·
+ *   { type: 'user', text, author, at, eventId } · { type: 'agent', text, at, eventId, usage } ·
  *   { type: 'steps', items, start, end, done } · { type: 'note', text, tone }
  * plus `live` (what the agent is doing right now), `startedAt` (the running turn's start) and `account`.
  */
@@ -101,7 +101,7 @@ export class ThreadModel {
       case 'user.prompt':
         this.#closeSteps();
         this.#turnAgent = null;
-        this.blocks.push({ type: 'user', key: `u${e.id}`, text: d.text || '', at, eventId: e.id, v: 0 });
+        this.blocks.push({ type: 'user', key: `u${e.id}`, text: d.text || '', author: d.author || '', at, eventId: e.id, v: 0 });
         this.#mark = at;
         break;
       case 'turn.started': this.startedAt = at; this.#mark = at; break;

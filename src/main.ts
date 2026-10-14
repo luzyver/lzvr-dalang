@@ -62,6 +62,6 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   });
 }
 if (cfg.authBypass) console.warn('AUTH_BYPASS is on: anyone reaching this port is the owner. Local development only.');
-else if (!cfg.mailerUrl) console.warn('MAILER_URL is not set: email sign-in is off (passkeys and the API token still work)');
+else if (!cfg.mailerUrl) console.warn('MAILER_URL is not set: email sign-in is off (the API token still works)');
 else if (!cfg.ownerEmails.length) console.warn('LZVR_OWNER_EMAILS is empty: only panel users with an email can sign in by email');
 console.log(`lzvr-dalang listening on ${cfg.host}:${cfg.port} with ${dispatcher.accounts.homes.length} account(s)`);

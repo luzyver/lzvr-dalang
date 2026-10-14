@@ -23,8 +23,7 @@ export interface Config {
   limitBlockMs: number;
   /** Overrides the built-in usage-limit detection regex. */
   limitRegex?: RegExp;
-  /** Passkeys: the site's hostname (e.g. panel.example.com) and its full origin (https://panel.example.com). */
-  rpId?: string;
+  /** The panel's full origin (https://panel.example.com): the Web Push contact when vapidSubject is unset. */
   origin?: string;
   /** Web Push contact (mailto: or https: URL) sent to push services. */
   vapidSubject?: string;
@@ -86,7 +85,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     limitBlockMs: blockMinutes * 60_000,
     mcpUrl: env.MCP_INJECT === '1' ? env.MCP_URL || `http://127.0.0.1:${port}/mcp` : undefined,
     limitRegex: env.LIMIT_REGEX ? new RegExp(env.LIMIT_REGEX, 'i') : undefined,
-    rpId: env.LZVR_RP_ID || undefined,
     origin: env.LZVR_ORIGIN || undefined,
     vapidSubject: env.LZVR_VAPID_SUBJECT || undefined,
     mcpCrossSend: env.MCP_CROSS_SEND === 'auto' ? 'auto' : 'approve',

@@ -29,9 +29,6 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
   role TEXT NOT NULL CHECK (role IN ('admin','dev')),
   token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS passkeys (
-  id TEXT PRIMARY KEY, public_key BLOB NOT NULL, counter INTEGER NOT NULL, transports TEXT,
-  user_id TEXT REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE);
@@ -53,12 +50,9 @@ export interface Approval {
   status: 'pending' | 'approved' | 'rejected'; created_at: string;
 }
 
-/** `userId` null means the owner (the person holding the main token); otherwise the panel user who registered it. */
-export interface Passkey { id: string; publicKey: Uint8Array<ArrayBuffer>; counter: number; transports?: string[]; userId?: string | null }
-
 export type Role = 'admin' | 'dev';
 export interface User { id: string; name: string; role: Role; email: string | null; created_at: string }
-export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string; passkeys: number }
+export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string }
 
 /** `backend` is the agent CLI every chat in the project runs on. */
 export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend }
@@ -84,7 +78,8 @@ export interface Conversation {
   pr_url: string | null;
   pr_branch: string | null;
 }
-export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[] }
+/** `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it. */
+export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[]; author: string }
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
@@ -113,7 +108,7 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string }
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
 
 export class Store {
@@ -125,7 +120,6 @@ export class Store {
     this.db.exec(SCHEMA);
     // Databases made by earlier versions lack these columns; CREATE TABLE IF NOT EXISTS does not add them.
     this.ensureColumn('sessions', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
-    this.ensureColumn('passkeys', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
@@ -138,7 +132,9 @@ export class Store {
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
     this.ensureColumn('users', 'email', 'TEXT');
+    this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
+    this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
   }
 
@@ -157,25 +153,6 @@ export class Store {
     return this.db.prepare(sql).run(...args);
   }
 
-  // --- passkeys, login sessions, push subscriptions, small key/value settings ---
-  addPasskey(p: Passkey, userId: string | null = null): void {
-    this.run('INSERT OR REPLACE INTO passkeys (id,public_key,counter,transports,user_id) VALUES (?,?,?,?,?)',
-      p.id, p.publicKey, p.counter, p.transports ? JSON.stringify(p.transports) : null, userId);
-  }
-  private toPasskey(r: { id: string; public_key: Uint8Array; counter: number; transports: string | null; user_id: string | null }): Passkey {
-    return {
-      id: r.id, publicKey: new Uint8Array(r.public_key), counter: r.counter,
-      transports: r.transports ? JSON.parse(r.transports) : undefined, userId: r.user_id,
-    };
-  }
-  /** All passkeys, or only one owner's when `userId` is given (null = the owner / main-token holder). */
-  listPasskeys(userId?: string | null): Passkey[] {
-    const rows = userId === undefined
-      ? this.all<any>('SELECT * FROM passkeys ORDER BY rowid')
-      : this.db.prepare('SELECT * FROM passkeys WHERE user_id IS ? ORDER BY rowid').all(userId) as unknown as any[];
-    return rows.map((r) => this.toPasskey(r));
-  }
-
   // --- panel users (role admin or dev); the personal token is stored only as a hash ---
   /** `email` is stored lowercased; it is what the user signs in with (a one-time code is mailed to it). */
   createUser(name: string, role: Role, tokenHash: string, email: string | null = null): User {
@@ -191,8 +168,7 @@ export class Store {
     return Number(this.run('UPDATE users SET email=? WHERE id=?', email?.toLowerCase() ?? null, id).changes) > 0;
   }
   listUsers(): UserSummary[] {
-    return this.all(`SELECT u.id, u.name, u.role, u.email, u.created_at AS createdAt,
-      (SELECT COUNT(*) FROM passkeys p WHERE p.user_id = u.id) AS passkeys FROM users u ORDER BY u.rowid`);
+    return this.all('SELECT id, name, role, email, created_at AS createdAt FROM users ORDER BY rowid');
   }
   setUserRole(id: string, role: Role): boolean { return Number(this.run('UPDATE users SET role=? WHERE id=?', role, id).changes) > 0; }
   /** New token for a user; their old token and every open session stop working. */
@@ -202,13 +178,9 @@ export class Store {
     return changed;
   }
   deleteUser(id: string): boolean { return Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0; }
-  getPasskey(id: string): Passkey | null {
-    const r = this.get<any>('SELECT * FROM passkeys WHERE id=?', id);
-    return r ? this.toPasskey(r) : null;
-  }
-  setPasskeyCounter(id: string, counter: number): void { this.run('UPDATE passkeys SET counter=? WHERE id=?', counter, id); }
 
-  /** `userId` null = a session of the owner (passkey login without a panel user). */
+  // --- login sessions, push subscriptions, small key/value settings ---
+  /** `userId` null = a session of the owner (an owner email sign-in, not a panel user). */
   createSession(tokenHash: string, expiresAt: number, userId: string | null = null): void {
     this.run('DELETE FROM sessions WHERE expires_at<=?', Date.now()); // opportunistic cleanup
     this.run('INSERT OR REPLACE INTO sessions (token_hash,expires_at,user_id) VALUES (?,?,?)', tokenHash, expiresAt, userId);
@@ -270,8 +242,8 @@ export class Store {
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
-  enqueue(convId: string, prompt: string, attachments: string[]): number {
-    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments) VALUES (?,?,?)', convId, prompt, JSON.stringify(attachments));
+  enqueue(convId: string, prompt: string, attachments: string[], author = ''): number {
+    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author) VALUES (?,?,?,?)', convId, prompt, JSON.stringify(attachments), author);
     return Number(r.lastInsertRowid);
   }
   listQueue(convId: string): QueueItem[] {

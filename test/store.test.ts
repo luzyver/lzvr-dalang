@@ -52,7 +52,7 @@ describe('Store', () => {
     expect(store.listTurns(conv.id)[0]).toMatchObject({ status: 'completed', usage: '{"input_tokens":1}' });
   });
 
-  it('keeps users, finds them by token hash, and cascades a delete to their sessions and passkeys', () => {
+  it('keeps users, finds them by token hash, and cascades a delete to their sessions', () => {
     const { store } = fresh();
     const u = store.createUser('budi', 'dev', 'hash-1');
     expect(store.getUser(u.id)).toMatchObject({ name: 'budi', role: 'dev' });
@@ -62,10 +62,8 @@ describe('Store', () => {
     expect(() => store.createUser('other', 'admin', 'hash-1')).toThrow(); // unique token
 
     store.createSession('s1', Date.now() + 60_000, u.id);
-    store.addPasskey({ id: 'pk', publicKey: new Uint8Array([1, 2]), counter: 3 }, u.id);
     expect(store.getSession('s1', Date.now())).toEqual({ user_id: u.id });
-    expect(store.getPasskey('pk')).toMatchObject({ userId: u.id, counter: 3 });
-    expect(store.listUsers()[0]).toMatchObject({ name: 'budi', passkeys: 1 });
+    expect(store.listUsers()[0]).toMatchObject({ name: 'budi' });
 
     store.setUserToken(u.id, 'hash-3'); // rotating drops the old token and every session
     expect(store.getUserByTokenHash('hash-1')).toBeNull();
@@ -75,7 +73,6 @@ describe('Store', () => {
     store.createSession('s2', Date.now() + 60_000, u.id);
     expect(store.deleteUser(u.id)).toBe(true);
     expect(store.getSession('s2', Date.now())).toBeNull();
-    expect(store.getPasskey('pk')).toBeNull();
     expect(store.deleteUser(u.id)).toBe(false);
   });
 
@@ -89,7 +86,8 @@ describe('Store', () => {
     old.close();
     const store = new Store(file);
     expect(store.getSession('old-session', Date.now())).toEqual({ user_id: null }); // still valid, as the owner
-    expect(store.getPasskey('old-pk')).toMatchObject({ userId: null, counter: 1 });
+    // passkey sign-in is gone, and its table with it
+    expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='passkeys'").get()).toBeUndefined();
   });
 
   it('resetRunning fails stale rows and reports conversations that still have a queue', () => {

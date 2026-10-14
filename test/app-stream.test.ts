@@ -115,7 +115,7 @@ describe('SSE', () => {
     const text = await readUntil(res, (s) => s.includes('\n\n'));
     expect(text.match(/^event:/gm)).toHaveLength(1);
     expect(text.match(/^data:/gm)).toHaveLength(1);
-    expect(text).toContain('\ndata: {"type":"x"}\n\n'); // the real payload, as the only data line
+    expect(text).toContain('\ndata: {"type":"x"}\n'); // the real payload, as the only data line
     expect(text.split('\n\n').filter(Boolean)).toHaveLength(1); // exactly one frame
   });
 

@@ -41,7 +41,7 @@ export function UsersSection() {
     setReveal({ who: u.name, token: (await api(`/api/users/${u.id}/token`, { method: 'POST' })).token });
   });
   const remove = (u) => guarded(async () => {
-    if (!confirm(`Delete user "${u.name}"? Their token, sessions and passkeys stop working.`)) return;
+    if (!confirm(`Delete user "${u.name}"? Their token and sessions stop working.`)) return;
     await api(`/api/users/${u.id}`, { method: 'DELETE' });
     await load();
   });
@@ -57,13 +57,12 @@ export function UsersSection() {
         <button class="icon-btn" aria-label="Hide token" onClick=${() => setReveal(null)}><${Icon} name="x" /></button></div>
     </section>`}
     ${users == null ? html`<div class="pane-loading"><${Spinner} /></div>` : html`<div class="table-wrap"><table class="users">
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Passkeys</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
       <tbody>${users.map((u) => html`<tr key=${u.id}>
         <td><strong>${u.name}</strong></td>
         <td><input type="email" key=${u.email || ''} value=${u.email || ''} placeholder="no email" aria-label=${`Email of ${u.name}`}
           onChange=${changeEmail(u)} onKeyDown=${(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></td>
         <td><select value=${u.role} aria-label=${`Role of ${u.name}`} onChange=${changeRole(u)}>${ROLES.map((r) => html`<option value=${r}>${r}</option>`)}</select></td>
-        <td class="dim">${u.passkeys}</td>
         <td class="actions"><button class="btn ghost sm" onClick=${newToken(u)}>New API token</button>
           <button class="icon-btn sm danger" aria-label=${`Delete ${u.name}`} title="Delete" onClick=${remove(u)}><${Icon} name="trash-2" /></button></td>
       </tr>`)}</tbody>

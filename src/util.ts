@@ -5,7 +5,7 @@ export interface AuthUser {
   id: string | null;
   name: string;
   role: 'admin' | 'dev';
-  /** True only for the main access token itself, not for a passkey session or a panel user. */
+  /** True only for the main access token itself, not for a session or a panel user. */
   main: boolean;
 }
 

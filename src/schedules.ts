@@ -12,7 +12,7 @@ export const serverTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
  */
 export function runSchedule(store: Store, dispatcher: Dispatcher, s: Schedule): boolean {
   if (store.listQueue(s.conversation_id).some((q) => q.prompt === s.prompt)) return false;
-  store.enqueue(s.conversation_id, s.prompt, []);
+  store.enqueue(s.conversation_id, s.prompt, [], s.created_by);
   dispatcher.kick(s.conversation_id);
   return true;
 }

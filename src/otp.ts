@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
-import { SESSION_TTL_MS, sessionHash } from './passkeys.js';
+import { SESSION_TTL_MS, sessionHash } from './auth.js';
 import type { Store } from './store.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
@@ -26,7 +26,7 @@ export const mailerSend = (url: string): SendMail => async (mail) => {
 
 /**
  * Email sign-in: a 6-digit code is mailed to a known address (an owner email or a panel user's), and trading it in
- * returns a session token like a passkey login does. Unknown addresses get the same answer, so the form does not tell
+ * returns a session token. Unknown addresses get the same answer, so the form does not tell
  * who has an account.
  */
 export function otpRoutes(
