@@ -236,6 +236,7 @@ export class Store {
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
   }
+  setBranch(id: string, branch: string): void { this.run('UPDATE conversations SET branch=? WHERE id=?', branch, id); }
   setPrUrl(id: string, url: string, branch: string): void { this.run('UPDATE conversations SET pr_url=?, pr_branch=? WHERE id=?', url, branch, id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }

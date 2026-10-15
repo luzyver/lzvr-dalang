@@ -111,6 +111,50 @@ describe('git actions', () => {
     expect((await t.call('GET', `/api/conversations/${conv.id}/git/diff?path=../etc/passwd`)).statusCode).toBe(400);
   });
 
+  it('lists the history of every branch, newest first, with their names', async () => {
+    const t = await gitProject();
+    const conv = (await t.chat(false)).json();
+    sh(t.repo, 'switch', '-q', '-c', 'feat/x');
+    sh(t.repo, 'commit', '-q', '--allow-empty', '-m', 'on x');
+    sh(t.repo, 'switch', '-q', 'main');
+    sh(t.repo, 'tag', 'v1');
+    sh(t.repo, 'merge', '-q', '--no-ff', '-m', 'merge x', 'feat/x');
+    const log = (q = '') => t.call('GET', `/api/conversations/${conv.id}/git/log${q}`).then((r) => r.json());
+    const r = await log();
+    expect(r.commits.map((c: { subject: string }) => c.subject)).toEqual(['merge x', 'on x', 'init']);
+    expect(r.commits[0]).toMatchObject({ refs: ['HEAD -> main'], author: 'Test' });
+    expect(r.commits[0].parents).toHaveLength(2);
+    expect(r.commits[1].refs).toEqual(['feat/x']);
+    expect(r.commits[2].refs).toEqual(['tag: v1']);
+    expect(r).toMatchObject({ more: false, remotes: [] });
+    expect((await log('?limit=1'))).toMatchObject({ more: true, commits: [{ subject: 'merge x' }] });
+  });
+
+  it('shows what one commit changed, file by file', async () => {
+    const t = await gitProject();
+    const conv = (await t.chat(false)).json();
+    const init = sh(t.repo, 'rev-parse', 'HEAD');
+    sh(t.repo, 'mv', 'a.txt', 'b.txt');
+    writeFileSync(join(t.repo, 'c.txt'), 'new\n');
+    sh(t.repo, 'add', '.');
+    sh(t.repo, 'commit', '-q', '-m', 'feat: Move a', '-m', 'Because b reads better.');
+    const head = sh(t.repo, 'rev-parse', 'HEAD');
+    const get = (url: string) => t.call('GET', `/api/conversations/${conv.id}/git/commits/${url}`);
+
+    const c = (await get(head.slice(0, 8))).json();
+    expect(c).toMatchObject({ hash: head, parents: [init], subject: 'feat: Move a', body: 'Because b reads better.', author: 'Test' });
+    expect(c.files).toEqual([{ status: 'R', from: 'a.txt', path: 'b.txt' }, { status: 'A', path: 'c.txt' }]);
+    expect((await get(`${head}/diff?path=c.txt`)).json().diff).toContain('+new');
+    expect((await get(`${head}/diff?path=a.txt`)).statusCode).toBe(400); // only paths the commit lists
+
+    const root = (await get(init)).json(); // nothing before it: everything is added
+    expect(root.files).toEqual([{ status: 'A', path: 'a.txt' }]);
+    expect((await get(`${init}/diff?path=a.txt`)).json().diff).toMatch(/^@@[\s\S]*\+one/);
+
+    expect((await get('deadbeef')).statusCode).toBe(404);
+    expect((await get('--all')).statusCode).toBe(404);
+  });
+
   it('reports a folder without git', async () => {
     const t = setupApp();
     const p = (await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: 'p', path: 'proj' } })).json();
@@ -319,6 +363,28 @@ describe('push after commit', () => {
     expect(sh(bare, 'log', '-1', '--format=%s', conv.branch)).toBe('feat: Add b');
     expect(sh(conv.worktree, 'rev-parse', '--abbrev-ref', '@{u}')).toBe(`origin/${conv.branch}`); // tracked from now on
     expect(sh(bare, 'log', '-1', '--format=%s', 'main')).toBe('init'); // main only changes through a Merge Request
+  });
+
+  it('renames a worktree chat branch, here and on the remote', async () => {
+    const t = await gitProject();
+    const bare = addRemote(t);
+    const conv = (await t.chat(true)).json();
+    const rename = (name: string) => t.call('POST', `/api/conversations/${conv.id}/git/branch/rename`, { name });
+    // never pushed: only the local name changes
+    expect((await rename('feat/first')).json()).toEqual({ branch: 'feat/first', push: null });
+    expect(sh(conv.worktree, 'branch', '--show-current')).toBe('feat/first');
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'feat: Add b' });
+    expect(sh(bare, 'branch', '--list', 'feat/first')).toContain('feat/first');
+    // pushed: the new name goes up and is tracked, the old one is gone from the remote
+    expect((await rename('feat/add-b')).json()).toEqual({ branch: 'feat/add-b', push: { pushed: 'origin/feat/add-b' } });
+    expect(sh(bare, 'branch', '--list', 'feat/*')).toBe('feat/add-b');
+    expect(sh(conv.worktree, 'rev-parse', '--abbrev-ref', '@{u}')).toBe('origin/feat/add-b');
+    expect((await t.call('GET', `/api/conversations/${conv.id}`)).json().branch).toBe('feat/add-b');
+    expect((await rename('main')).statusCode).toBe(400); // taken
+    expect((await rename('bad..name')).statusCode).toBe(400);
+    const plain = (await t.chat(false)).json();
+    expect((await t.call('POST', `/api/conversations/${plain.id}/git/branch/rename`, { name: 'x' })).statusCode).toBe(400);
   });
 
   it('deletes a merged branch on the remote with the chat, and keeps an unmerged one', async () => {

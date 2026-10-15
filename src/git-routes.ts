@@ -391,6 +391,36 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     } catch (e) { return gitFailed(reply, e); }
   });
 
+  // The commit history of every branch, newest first, for the History graph. Changes nothing.
+  app.get<{ Params: { id: string }; Querystring: { limit?: number } }>('/api/conversations/:id/git/log', {
+    schema: { querystring: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 2000 } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    return git.log(c.cwd, req.query.limit ?? 150);
+  });
+
+  // One commit from the History: its message and the files it changed, then a file's diff. Only files the commit changed
+  // may be named. Changes nothing.
+  app.get<{ Params: { id: string; hash: string } }>('/api/conversations/:id/git/commits/:hash', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    return (await git.commitDetail(c.cwd, req.params.hash)) ?? reply.code(404).send({ error: 'no such commit' });
+  });
+
+  app.get<{ Params: { id: string; hash: string }; Querystring: { path?: string } }>('/api/conversations/:id/git/commits/:hash/diff', {
+    schema: { querystring: { type: 'object', required: ['path'], properties: { path: { type: 'string', minLength: 1 } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    const commit = await git.commitDetail(c.cwd, req.params.hash);
+    if (!commit) return reply.code(404).send({ error: 'no such commit' });
+    const file = commit.files.find((f) => f.path === req.query.path);
+    if (!file) return reply.code(400).send({ error: `not changed in this commit: ${req.query.path}` });
+    return { diff: await git.commitFileDiff(c.cwd, commit, file) };
+  });
+
   // `?fetch=1` asks the remote for its branches first.
   app.get<{ Params: { id: string }; Querystring: { fetch?: string } }>('/api/conversations/:id/git/branches', async (req, reply) => {
     const c = load(req.params.id, reply);
@@ -414,6 +444,27 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     try {
       await git.switchBranch(c.cwd, name, { create: req.body.create, from: req.body.from?.trim() || undefined });
       return { branch: name };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Rename a worktree chat's own branch (`dalang/<id>` says little on the remote). A pushed one moves there too; one with
+  // a Merge Request open stays, since the Merge Request would be left pointing at the old name.
+  app.post<{ Params: { id: string }; Body: { name: string } }>('/api/conversations/:id/git/branch/rename', {
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    const from = c.conv.branch;
+    if (!c.conv.worktree || !from) return reply.code(400).send({ error: "only a worktree chat's own branch is renamed here" });
+    if (prFor(c.conv, from)) return reply.code(400).send({ error: 'a Merge Request is open for this branch: renaming it would leave that behind' });
+    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    const name = req.body.name.trim();
+    if (name === from) return { branch: name, push: null };
+    try {
+      const push = await git.renameBranch(c.cwd, from, name);
+      store.setBranch(c.conv.id, name);
+      return { branch: name, push };
     } catch (e) { return gitFailed(reply, e); }
   });
 

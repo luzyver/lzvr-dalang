@@ -245,6 +245,30 @@ export async function switchBranch(cwd: string, name: string, opts: { create?: b
   else throw new GitError(`no such branch: ${name}`);
 }
 
+/**
+ * Rename the checked-out branch `from` to `name`. One that was pushed moves on the remote too: the new name is pushed and
+ * tracked, and the old one deleted there while it still points where ours did. Returns how that push went, or null when
+ * the branch was never pushed. Once renamed it never throws: a failed push is reported and the next push retries it.
+ */
+export async function renameBranch(cwd: string, from: string, name: string): Promise<PushResult | null> {
+  await checkBranchName(cwd, name);
+  if ((await currentBranch(cwd)) !== from) throw new GitError(`${from} is not checked out here`);
+  if (await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).then(() => true, () => false)) {
+    throw new GitError(`a branch named ${name} already exists`);
+  }
+  const cfg = (key: string) => git(cwd, ['config', `branch.${from}.${key}`]).then((v) => v.trim(), () => '');
+  const [remote, ref, tip] = await Promise.all([cfg('remote'), cfg('merge'), git(cwd, ['rev-parse', from]).then((v) => v.trim(), () => '')]);
+  await git(cwd, ['branch', '-m', from, name]); // its upstream settings come along, still naming the old remote branch
+  if (!remote || !ref) return null;
+  await git(cwd, ['branch', '--unset-upstream', name]).catch(() => '');
+  const pushed = await push(cwd);
+  if (pushed.pushed && tip) {
+    await git(cwd, ['push', `--force-with-lease=${ref}:${tip}`, remote, `:${ref}`], 120_000)
+      .catch((e: Error) => console.warn(`kept ${remote}/${ref.replace(/^refs\/heads\//, '')}: ${e.message}`));
+  }
+  return pushed;
+}
+
 /** A branch with commits that are neither in HEAD nor on its upstream: deleting it would lose them. */
 export class UnmergedError extends GitError {}
 
@@ -267,6 +291,74 @@ export async function deleteBranch(cwd: string, name: string, force = false): Pr
     }
   }
   await git(cwd, ['branch', '-D', '--', name]);
+}
+
+export interface LogCommit {
+  hash: string;
+  parents: string[];
+  author: string;
+  /** Unix seconds. */
+  date: number;
+  /** Branches, tags and HEAD pointing here, as `git log --decorate` names them (`HEAD -> main`, `origin/main`, `tag: v1`). */
+  refs: string[];
+  subject: string;
+}
+
+/**
+ * The newest `limit` commits on HEAD and every local and remote branch and tag, children before their parents, so the
+ * branches can be drawn as a graph. `more` says whether older ones were left out; `remotes` tells remote branches
+ * (`origin/feat/x`) from local ones with a slash in their name (`feat/x`).
+ */
+export async function log(cwd: string, limit = 150): Promise<{ commits: LogCommit[]; more: boolean; remotes: string[] }> {
+  const head = await git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(() => true, () => false);
+  const out = await git(cwd, ['log', '--topo-order', '-z', `-n${limit + 1}`, '--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s',
+    ...(head ? ['HEAD'] : []), '--branches', '--remotes', '--tags', '--']).catch(() => '');
+  const commits = out.split('\0').filter((r) => r.trim()).map((r) => {
+    const [hash = '', parents = '', author = '', date = '0', refs = '', subject = ''] = r.replace(/^\n/, '').split('\x1f');
+    return { hash, parents: parents.split(' ').filter(Boolean), author, date: Number(date), refs: refs ? refs.split(', ') : [], subject };
+  });
+  return { commits: commits.slice(0, limit), more: commits.length > limit, remotes: (await remotesOf(cwd)).all };
+}
+
+export interface CommitDetail extends LogCommit {
+  /** The message below the subject. */
+  body: string;
+  /** What the commit changed against its first parent (a root commit: everything is added). `status` is git's letter. */
+  files: GitFile[];
+}
+
+/** The full hash of commit `ref`, or null when there is none. Only hex is accepted, so it cannot be read as an option. */
+async function commitOf(cwd: string, ref: string): Promise<string | null> {
+  if (!/^[0-9a-f]{4,64}$/i.test(ref)) return null;
+  return (await git(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).catch(() => '')).trim() || null;
+}
+
+/** `git diff` (or, for a root commit, `diff-tree --root`) of a commit against its first parent. */
+const commitDiffArgs = (hash: string, parent: string | undefined, opts: string[]) =>
+  parent ? ['diff', '--no-color', '-M', ...opts, parent, hash] : ['diff-tree', '--no-color', '-r', '-M', '--root', '--no-commit-id', ...opts, hash];
+
+/** One commit: who made it, its message and the files it changed. Null when there is no such commit. */
+export async function commitDetail(cwd: string, ref: string): Promise<CommitDetail | null> {
+  const hash = await commitOf(cwd, ref);
+  if (!hash) return null;
+  const out = await git(cwd, ['show', '-s', '-z', '--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1f%b', hash]);
+  const [, parents = '', author = '', date = '0', refs = '', subject = '', body = ''] = out.replace(/\0$/, '').split('\x1f');
+  const parent = parents.split(' ').filter(Boolean);
+  const raw = (await git(cwd, commitDiffArgs(hash, parent[0], ['--name-status', '-z']))).split('\0');
+  const files: GitFile[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const st = raw[i]!;
+    if (!st) continue;
+    if (/^[RC]/.test(st)) { files.push({ status: st[0]!, from: raw[i + 1], path: raw[i + 2]! }); i += 2; }
+    else { files.push({ status: st[0]!, path: raw[++i]! }); }
+  }
+  return { hash, parents: parent, author, date: Number(date), refs: refs ? refs.split(', ') : [], subject, body: body.trim(), files };
+}
+
+/** The diff of one file a commit changed (as `commitDetail` lists it), against the commit's first parent. */
+export async function commitFileDiff(cwd: string, commit: CommitDetail, file: GitFile): Promise<string> {
+  const paths = file.from ? [file.from, file.path] : [file.path];
+  return capDiff(hunksOnly(await git(cwd, [...commitDiffArgs(commit.hash, commit.parents[0], ['-p']), '--', ...paths])));
 }
 
 /** Put the given files back as they are in HEAD; untracked ones are deleted. */

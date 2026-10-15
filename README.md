@@ -10,14 +10,17 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Worktree per chat** (optional, git projects): "New chat in own worktree" in a project's `⋯` menu gives the chat a
   branch `dalang/<id>` from the project's HEAD, checked out under `<STATE_DIR>/worktrees/<chat id>`. Its agent works only
   there, so parallel chats never write over each other. Deleting the chat removes the worktree (uncommitted work there is
-  lost) and the branch too, locally and on the remote, unless it has commits that were never merged.
+  lost) and the branch too, locally and on the remote, unless it has commits that were never merged. The branch name in
+  Changes renames it (say to `feat/login`); a pushed branch moves on the remote too, unless a Merge Request is open for it.
 - **Changes**: the branch button in a chat's header opens the **Changes** tab of the inspector beside the chat: what git
   sees in the folder that chat works in, with each file's diff (unified or side by side, syntax highlighted). Commit all or selected files, revert one file, discard everything, and open a Merge
   Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
   a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
   `read-only` projects they are admin only.
   **Pull** (the arrow next to Refresh) fast-forwards the checked-out branch from its upstream (or the same name on
-  `origin`); a branch that has gone its own way is refused rather than merged. In a chat on the project folder, the
+  `origin`); a branch that has gone its own way is refused rather than merged. **History** (the clock next to the
+  branch name) lists the commits of every local and remote branch and tag as a graph, like `git log --graph`; a commit
+  opens to its message, the files it changed and each file's diff (a merge: against its first parent). In a chat on the project folder, the
   branch name opens **Branches**: switch to a local branch, check out a remote one (it becomes a local branch tracking
   it), or type a new name to create a branch from the current HEAD (it gets its own branch on the remote with its first
   commit). Uncommitted changes come along; git refuses a switch that would overwrite them. The bin next to a local

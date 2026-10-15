@@ -1,5 +1,5 @@
 // The Changes tab: what git sees in the folder the chat's agent works in. Pick files, read their diffs, commit and push,
-// revert, discard, pull, switch or create a branch, and open a Merge Request for the chat's branch.
+// revert, discard, pull, switch or create a branch, browse the history, and open a Merge Request for the chat's branch.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
@@ -8,6 +8,7 @@ import { guarded, loadProjects, toast } from './store.js';
 import { chat, refreshGit } from './chat-view.js';
 import { DiffView, diffStats } from './diff.js';
 import { copyText } from './code.js';
+import { History } from './history.js';
 import { plural } from './format.js';
 
 /** How the push after a commit or Merge Request went. */
@@ -93,6 +94,33 @@ function Branches({ id, current, onClose, onDone }) {
   </div>`;
 }
 
+/**
+ * Rename a worktree chat's own branch, so it reads better than `dalang/<id>` on the remote. A pushed branch moves there
+ * too; one with a Merge Request open cannot be renamed.
+ */
+function RenameBranch({ id, current, onClose, onDone }) {
+  const [name, setName] = useState(current || '');
+  const [error, setError] = useState('');
+  const save = async (e) => {
+    e?.preventDefault();
+    const n = name.trim();
+    if (!n || n === current) return onClose();
+    setError('');
+    try {
+      const r = await api(`/api/conversations/${id}/git/branch/rename`, { method: 'POST', body: { name: n } });
+      onClose();
+      await onDone(`Renamed to ${n}${r.push ? pushNote(r.push) : ''}`);
+    } catch (err) { setError(err.message); }
+  };
+  return html`<form class="dialog-body" onSubmit=${save}>
+    <div class="dialog-head"><h2>Rename branch</h2><button type="button" class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button></div>
+    <input class="mono" value=${name} onInput=${(e) => setName(e.currentTarget.value)} autofocus placeholder="feat/my-change" />
+    ${error && html`<div class="form-error">${error}</div>`}
+    <div class="row"><${AsyncButton} class="btn primary sm" icon="check" onClick=${save}>Rename<//></div>
+    <div class="dim small">If the branch is already on the remote, it is pushed under the new name and the old one is deleted there.</div>
+  </form>`;
+}
+
 /** The chat's branch and where its Merge Request goes: a worktree chat's own branch, or the project folder's feature branch. */
 function MergeRequest({ id, s, onDone }) {
   const w = s.mr;
@@ -168,9 +196,11 @@ export function ChangesPane({ id }) {
   const [mode, setMode] = useState(innerWidth > 1100 ? 'split' : 'unified');
   const [message, setMessage] = useState('');
   const [branching, setBranching] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [history, setHistory] = useState(false);
   const [diffs, loadDiff] = useDiffs(id, files);
 
-  useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); setBranching(false); }, [id]);
+  useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); setBranching(false); setRenaming(false); setHistory(false); }, [id]);
   // The file whose diff is open in the dialog; it closes by itself when that file is no longer changed.
   const current = files.find((f) => f.path === selected) || null;
   useEffect(() => { if (current) loadDiff(current.path); }, [current?.path]);
@@ -225,20 +255,28 @@ export function ChangesPane({ id }) {
 
   return html`<div class="changes">
     <div class="head-row">
-      <div class="dim small">
+      <div class="head-branch dim small">
         ${s.worktree
-          ? html`<span title="A worktree chat stays on its own branch"><${Icon} name="git-branch" class="tiny" /> ${s.branch}</span>`
+          ? html`<button class="btn ghost sm branch-btn" title="Rename this chat's branch" onClick=${() => setRenaming(true)}>
+              <${Icon} name="git-branch" class="tiny" /><span class="mono">${s.branch}</span><${Icon} name="file-pen" class="tiny" /></button>`
           : html`<button class="btn ghost sm branch-btn" title="Switch or create a branch" onClick=${() => setBranching(true)}>
               <${Icon} name="git-branch" class="tiny" /><span class="mono">${s.branch || 'detached HEAD'}</span><${Icon} name="chevron-down" class="tiny" /></button>`}
-        <span>${s.head ? `${s.head.hash} ${s.head.subject}` : 'no commits yet'}</span>
+        <button class="icon-btn sm" aria-label="History" title="History: the commits of every branch" onClick=${() => setHistory(true)}><${Icon} name="history" /></button>
       </div>
-      <div>
+      <div class="head-actions">
         <${AsyncButton} class="icon-btn sm" icon="arrow-down-to-line" title="Pull: fast-forward this branch from the remote" onClick=${pull} />
         <button class="icon-btn sm" aria-label="Refresh" title="Refresh" onClick=${guarded(() => refreshGit(id))}><${Icon} name="refresh-cw" /></button>
       </div>
     </div>
+    <div class="head-commit dim small" title=${s.head ? `${s.head.hash} ${s.head.subject}` : ''}>${s.head ? html`<span class="mono">${s.head.hash}</span> ${s.head.subject}` : 'No commits yet'}</div>
+    <${Modal} open=${history} label="History" class="history-modal" onClose=${() => setHistory(false)}>
+      <${History} id=${id} onClose=${() => setHistory(false)} />
+    <//>
     <${Modal} open=${branching} label="Branches" class="dialog" onClose=${() => setBranching(false)}>
       <${Branches} id=${id} current=${s.branch} onClose=${() => setBranching(false)} onDone=${after} />
+    <//>
+    <${Modal} open=${renaming} label="Rename branch" class="dialog" onClose=${() => setRenaming(false)}>
+      <${RenameBranch} id=${id} current=${s.branch} onClose=${() => setRenaming(false)} onDone=${after} />
     <//>
     ${s.mr && html`<${MergeRequest} key=${s.mr.branch} id=${id} s=${s} onDone=${() => after()} />`}
     ${!files.length ? html`<${Empty} icon="circle-check" title="No uncommitted changes">Everything in this folder is committed.<//>` : html`
