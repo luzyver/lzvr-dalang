@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
+import { fakeClickUp } from './fake-clickup.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { mkUser, setupApp, type AppExtras } from './setup-app.js';
 
@@ -236,5 +237,99 @@ describe('cross-conversation sends', () => {
     const t = await boot();
     expect((await t.app.inject({ method: 'POST', url: '/api/approvals/999/approve', headers: AUTH })).statusCode).toBe(404);
     expect((await t.app.inject({ url: '/api/approvals' })).statusCode).toBe(401);
+  });
+});
+
+describe('ClickUp tools', () => {
+  const CLICKUP = ['clickup_chat_history', 'clickup_list_channels', 'clickup_whoami'];
+  const clickupNames = async (c: C) => (await c.listTools()).tools.map((x) => x.name).filter((n) => n.startsWith('clickup_'));
+  /** Boot with the fake ClickUp API and, unless told otherwise, a token saved in Settings → ClickUp. */
+  async function withClickUp(token = 'pk_test') {
+    const t = await boot({ clickupFetch: fakeClickUp() });
+    const r = await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token, workspaceId: '', timeZone: '', workHours: '' } });
+    expect(r.statusCode).toBe(200);
+    return t;
+  }
+
+  it('are not there until a ClickUp token is saved, and go away when it is removed', async () => {
+    const t = await withClickUp('');
+    expect(await clickupNames(await t.connect())).toEqual([]);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token: 'pk_test', workspaceId: '', timeZone: '', workHours: '' } });
+    expect((await clickupNames(await t.connect())).sort()).toEqual(CLICKUP);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token: '', workspaceId: '', timeZone: '', workHours: '' } });
+    expect(await clickupNames(await t.connect())).toEqual([]);
+  });
+
+  it('are given to the owner only, not to other admins or devs', async () => {
+    const t = await withClickUp();
+    const owner = await t.connect();
+    expect((await clickupNames(owner)).sort()).toEqual(CLICKUP);
+    const r = await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-10', overtime_only: true });
+    expect(r.json.messages.map((m: { id: string }) => m.id)).toEqual(['m3', 'm4']);
+    expect((await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-01' })).isError).toBe(true);
+    for (const role of ['admin', 'dev'] as const) {
+      const u = await mkUser(t, `u-${role}`, role);
+      expect(await clickupNames(await t.connect({ authorization: `Bearer ${u.token}` }))).toEqual([]);
+    }
+  });
+
+  it('use the work hours saved in Settings', async () => {
+    const t = await withClickUp();
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', workHours: '08:00-21:00' } });
+    const r = await call(await t.connect(), 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-08', overtime_only: true });
+    expect(r.json).toMatchObject({ work_hours: '08:00-21:00', messages: [] });
+  });
+
+  it('reach an agent only during a turn the owner sent', async () => {
+    const t = await withClickUp();
+    const { a } = await twoConvs(await t.connect());
+    const as = (author: string) => t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` });
+    expect((await clickupNames(await as('owner'))).sort()).toEqual(CLICKUP);
+    for (const author of ['', 'budi']) expect(await clickupNames(await as(author))).toEqual([]);
+  });
+});
+
+describe('Settings → ClickUp', () => {
+  const put = (t: Booted, payload: object, headers: Record<string, string> = AUTH) =>
+    t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers, payload });
+
+  it('saves the settings and never sends the token back', async () => {
+    const t = await boot({ clickupFetch: fakeClickUp() });
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
+      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', workHours: '', defaultWorkHours: '09:00-18:00' });
+    const saved = await put(t, { token: ' pk_test ', workspaceId: '900', timeZone: 'Asia/Jakarta', workHours: '08:00-17:00' });
+    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', workHours: '08:00-17:00', defaultWorkHours: '09:00-18:00' });
+    expect(saved.body).not.toContain('pk_test');
+    // leaving the token out keeps it
+    expect((await put(t, { workspaceId: '', timeZone: '', workHours: '' })).json()).toMatchObject({ configured: true, tokenHint: '…test' });
+    expect(t.store.getKv('clickup')).toContain('pk_test');
+  });
+
+  it('rejects a bad time zone or work hours', async () => {
+    const t = await boot();
+    expect((await put(t, { token: 'pk_1', workspaceId: '', timeZone: 'Mars/Base', workHours: '' })).statusCode).toBe(400);
+    expect((await put(t, { token: 'pk_1', workspaceId: '', timeZone: '', workHours: '9 to 5' })).statusCode).toBe(400);
+    expect((await put(t, { token: 'pk_1', workspaceId: 'abc', timeZone: '', workHours: '' })).statusCode).toBe(400);
+    expect(t.store.getKv('clickup')).toBeNull();
+  });
+
+  it('tests the saved token against ClickUp', async () => {
+    const t = await boot({ clickupFetch: fakeClickUp() });
+    expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(400);
+    await put(t, { token: 'pk_test', workspaceId: '', timeZone: '', workHours: '' });
+    const r = await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH });
+    expect(r.json()).toMatchObject({ user: { username: 'luz' }, workspace: { id: '900' }, time_zone: 'Asia/Jakarta' });
+    await put(t, { token: 'pk_wrong', workspaceId: '', timeZone: '', workHours: '' });
+    expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(502);
+  });
+
+  it('is for the owner only', async () => {
+    const t = await boot();
+    for (const role of ['admin', 'dev'] as const) {
+      const h = { authorization: `Bearer ${(await mkUser(t, `u-${role}`, role)).token}` };
+      expect((await t.app.inject({ url: '/api/settings/clickup', headers: h })).statusCode).toBe(403);
+      expect((await put(t, { token: 'pk_x', workspaceId: '', timeZone: '', workHours: '' }, h)).statusCode).toBe(403);
+      expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(403);
+    }
   });
 });

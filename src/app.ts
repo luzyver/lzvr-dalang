@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { clickupClient, clickupRoutes } from './clickup-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { GitError } from './git.js';
@@ -23,6 +24,8 @@ declare module 'fastify' {
   interface FastifyRequest {
     /** Set on /mcp when the caller is an agent's per-turn token: the conversation that agent runs in. */
     mcpConv?: string;
+    /** With mcpConv: the panel user who sent the prompt of that agent's turn ('owner', a user's name, or '' for none). */
+    mcpAuthor?: string;
     /** Who is calling (set for every authenticated request except an agent's /mcp token). */
     user?: AuthUser;
   }
@@ -55,7 +58,7 @@ export function snippet(text: string, terms: string[], width = 220): string {
 export function buildApp(
   deps: {
     cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins;
-    maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail;
+    maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail; clickupFetch?: typeof fetch;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -127,7 +130,7 @@ export function buildApp(
 
     // An agent's per-turn token opens /mcp and nothing else, and says which conversation the agent is in.
     const agentConv = m && path === '/mcp' ? dispatcher.mcpConversation(m[1]!) : null;
-    if (agentConv) { req.mcpConv = agentConv; return; }
+    if (agentConv) { req.mcpConv = agentConv; req.mcpAuthor = dispatcher.mcpAuthor(m![1]!); return; }
 
     // Local development (AUTH_BYPASS): whoever calls is the owner. loadConfig refuses it unless HOST is loopback.
     if (cfg.authBypass) { req.user = { id: null, name: 'owner', role: 'admin', main: false }; return; }
@@ -139,7 +142,9 @@ export function buildApp(
   panelRoutes(app);
   authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
-  mcpRoutes(app, { cfg, store, dispatcher, push });
+  const clickup = clickupClient(store, deps.clickupFetch);
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup });
+  clickupRoutes(app, { store, client: clickup });
   gitRoutes(app, { store, dispatcher, cfg });
   scheduleRoutes(app, { store, dispatcher });
 

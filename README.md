@@ -65,6 +65,8 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **Email sign-in + push**: sign in with a 6-digit code mailed to you (through the GEM Mailer), installable PWA, Web Push when a turn finishes,
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
+- **ClickUp Chat history** (optional): read-only MCP tools that let the owner's chats read their ClickUp Chat
+  messages, e.g. "when did I work overtime last month, and on what?" (see "ClickUp" below).
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
@@ -299,6 +301,35 @@ It is not a wall against a hostile agent on the same machine: an agent that
 can read files and runs as root can still read `/etc/systemd/system/lzvr-dalang.service` (which holds the main token)
 or the database. The gateway removes its own `LZVR_*` variables from the environment of every Codex process, but
 keep secrets out of what Codex can read if that matters to you. Agents can also read other chats' events via `get_events`.
+
+### ClickUp
+
+Set up in the panel: **Settings → ClickUp** (shown to the owner only). Paste a personal API token (ClickUp → Settings
+→ Apps → API Token) and Save; **Test connection** shows which ClickUp user and workspace it reads as. Optional: a
+workspace ID (when the token has several; default the first), the time zone (default your ClickUp profile's) and the
+work hours (default `09:00-18:00`; messages outside them, or on Saturday/Sunday, count as overtime). The token is stored
+in the database and never sent back to the panel, only its last four characters. **Remove token** turns the tools off.
+
+Once a token is saved, `/mcp` has three more read-only tools:
+
+- `clickup_whoami`: the ClickUp user and workspace it reads as, the time zone and the work hours.
+- `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date).
+- `clickup_chat_history`: messages between two dates (at most 93 days per call), oldest first, each with local date,
+  time, weekday, channel and an `overtime` flag, plus one line per day (first and last message, counts). Options:
+  `overtime_only`, `mine_only` (default: only your own messages), `channel_ids`, `work_hours` (e.g. `08:00-17:00`),
+  `include_replies` (thread replies; one more request per thread) and `limit`.
+
+So in a chat you can ask: *"cek chat ClickUp gue bulan September, kapan aja gue lembur dan ngerjain apa?"* The agent asks
+for the overtime days, then reads those days' messages to tell what the work was. Overtime is judged by when you wrote
+messages, so it is an estimate: public holidays are not known, and work you did not chat about does not show.
+
+**Only the owner gets them**, since they read with the owner's ClickUp token: the main token or the owner's own email
+sign-in from outside, and inside a chat only during a turn the owner sent (prompts from other panel users, agents,
+approvals or their schedules do not get them), and Settings → ClickUp is refused to everyone else, admins included.
+The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp token sits where an
+agent that reads files as root could find it (the database), so the "What this does and does not protect" note above
+applies to it too. One call makes at most 250 ClickUp requests (ClickUp allows about 100 a minute on most plans); a busy workspace over a long
+range may stop early with a warning, so ask for a shorter range or particular channels.
 
 **Verify before relying on it.** The `-c mcp_servers...` keys follow Codex's documented MCP config for HTTP servers
 but were not run against a real Codex here. With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;

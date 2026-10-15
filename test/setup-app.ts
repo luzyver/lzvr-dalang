@@ -20,6 +20,7 @@ export async function mkUser(t: { app: { inject: (o: any) => Promise<any> } }, n
 }
 
 export interface AppExtras {
+  clickupFetch?: typeof fetch;
   maxUploadBytes?: number;
   authMaxFailures?: number;
   pushSend?: PushSend;

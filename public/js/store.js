@@ -5,6 +5,7 @@ import { api, Unauthorized } from './api.js';
 
 export const me = signal(null);
 export const isAdmin = computed(() => me.value?.role === 'admin'); // the server enforces this; the panel only hides what would be refused
+export const isOwner = computed(() => me.value?.name === 'owner'); // the main token or the owner's sign-in (no panel user may take the name)
 export const projects = signal([]);
 /** project id -> its chats */
 export const convs = signal(new Map());

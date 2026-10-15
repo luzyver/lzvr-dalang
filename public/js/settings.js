@@ -1,9 +1,10 @@
-// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, accounts and users for admins.
+// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, accounts and users for admins;
+// ClickUp for the owner.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
-import { guarded, isAdmin, me, toast, ui } from './store.js';
+import { guarded, isAdmin, isOwner, me, toast, ui } from './store.js';
 import { PALETTES, THEMES, palette, theme } from './theme.js';
 import { enableNotifications } from './notifications.js';
 import { AccountsSection } from './accounts.js';
@@ -104,6 +105,63 @@ const Prompts = () => html`
   <${PromptFor} path="commit-prompt" title="Commit message" help=${COMMIT_HELP} />
   <${PromptFor} path="mr-prompt" title="Merge Request description" help=${MR_HELP} />`;
 
+/** The owner's ClickUp token and how overtime is judged, for the read-only ClickUp Chat tools on /mcp. */
+function ClickUpSection() {
+  const [s, setS] = useState(null);
+  const [token, setToken] = useState('');
+  const [result, setResult] = useState(null);
+  const load = (v) => { setS(v); setToken(''); setResult(null); };
+  useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
+  const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
+  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, workHours: s.workHours, ...extra });
+  // An empty token field keeps the saved token.
+  const save = guarded(async () => {
+    load(await api('/api/settings/clickup', { method: 'PUT', body: body(token.trim() ? { token } : {}) }));
+    toast('ClickUp settings saved');
+  });
+  const remove = guarded(async () => {
+    if (!confirm('Remove the ClickUp token? The ClickUp tools stop working until a new one is saved.')) return;
+    load(await api('/api/settings/clickup', { method: 'PUT', body: body({ token: '' }) }));
+    toast('ClickUp token removed');
+  });
+  const test = async () => {
+    try { setResult({ ok: true, ...(await api('/api/settings/clickup/test', { method: 'POST' })) }); }
+    catch (e) { setResult({ ok: false, error: e.message }); }
+  };
+  if (s == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+  return html`
+    <p class="dim">Lets your chats read your ClickUp Chat messages, e.g. "when did I work overtime last month, and on what?".
+      Read only, and only for you: other users' prompts never get it. Chats reach it through this gateway's MCP (<span class="mono">MCP_INJECT=1</span>).</p>
+    <section class="form-card">
+      <strong>Connection</strong>
+      <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
+        <input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)}
+          placeholder=${s.configured ? '••••••••' : 'pk_...'} /><//>
+      <${Field} label="Workspace ID" hint="Only when the token has several workspaces; empty = the first one.">
+        <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="first workspace" /><//>
+    </section>
+    <section class="form-card">
+      <strong>Overtime</strong>
+      <div class="row wrap">
+        <${Field} label="Time zone" hint="Empty = your ClickUp profile's time zone.">
+          <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>
+        <${Field} label="Work hours" hint="Messages outside these hours, or on Saturday/Sunday, count as overtime.">
+          <input class="mono" value=${s.workHours} onInput=${set('workHours')} placeholder=${s.defaultWorkHours} /><//>
+      </div>
+      <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
+    </section>
+    <div class="row wrap">
+      <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
+      <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.configured}>Test connection<//>
+      ${s.configured && html`<button class="btn ghost danger sm" onClick=${remove}><${Icon} name="trash-2" />Remove token</button>`}
+    </div>
+    ${result && (result.ok
+      ? html`<p class="small"><${Icon} name="circle-check" /> Connected as <strong>${result.user.username || result.user.email}</strong>
+          in <strong>${result.workspace.name || result.workspace.id}</strong>, time zone ${result.time_zone}, work hours ${result.work_hours}.</p>`
+      : html`<div class="form-error" role="alert">${result.error}</div>`)}`;
+}
+
 const SECTIONS = [
   ['appearance', 'Appearance', 'palette', Appearance, false],
   ['device', 'This device', 'monitor', Device, false],
@@ -112,11 +170,12 @@ const SECTIONS = [
   ['codex', 'Codex accounts', 'key-round', () => html`<${AccountsSection} backend="codex" />`, true],
   ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
   ['users', 'Users', 'users', UsersSection, true],
+  ['clickup', 'ClickUp', 'message-square', ClickUpSection, 'owner'],
 ];
 
 function Settings() {
   const current = ui.settings.value;
-  const visible = SECTIONS.filter((s) => !s[4] || isAdmin.value);
+  const visible = SECTIONS.filter((s) => !s[4] || (s[4] === 'owner' ? isOwner.value : isAdmin.value));
   const [, title, , Body] = visible.find((s) => s[0] === current) || visible[0];
   const go = (k) => { ui.settings.value = k; };
   return html`<div class="settings-layout">

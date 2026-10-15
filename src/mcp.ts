@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { type ClickUp, startOfDay } from './clickup.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
@@ -10,7 +11,7 @@ import type { Push } from './push.js';
 import type { Store } from './store.js';
 import { SANDBOXES } from './util.js';
 
-type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push };
+type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined };
 
 const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
@@ -31,7 +32,7 @@ const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'unblock_accoun
  * could forge), or null for an outside client holding the main token. Only a send from one conversation into a
  * different one counts as "cross-conversation" and may need approval.
  */
-function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): McpServer {
+function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean): McpServer {
   const { cfg, store, dispatcher, push } = d;
   const server = new McpServer({ name: 'dalang', version: '0.1.0' });
   const tools = new Map<string, { remove(): void }>();
@@ -157,13 +158,55 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev'): Mcp
   // An agent inside a conversation is restricted most; otherwise the caller's role decides.
   const hidden = source ? (name: string) => !AGENT_TOOLS.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
+  const cu = owner ? d.clickup?.() : undefined;
+  if (cu) clickupTools(server, cu);
   return server;
+}
+
+const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
+
+/**
+ * Read-only ClickUp Chat tools. They read with the owner's personal ClickUp token, so only the owner gets them: the
+ * main token or the owner's own sign-in from outside, and inside a chat only during a turn the owner sent.
+ */
+function clickupTools(server: McpServer, cu: ClickUp): void {
+  const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
+
+  server.registerTool('clickup_whoami', {
+    description: 'The ClickUp user and workspace the ClickUp tools read as, the time zone dates are given in, and the normal work hours.',
+  }, async () => run(() => cu.whoami()));
+
+  server.registerTool('clickup_list_channels', {
+    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type). With since, only those with a message since that date.',
+    inputSchema: { since: DATE.optional() },
+  }, async ({ since }) => run(async () => cu.channels(since ? startOfDay(since, await cu.timeZone()) : undefined)));
+
+  server.registerTool('clickup_chat_history', {
+    description: 'Read ClickUp Chat messages between two local dates (both included, at most 93 days), oldest first, each with '
+      + 'local date, time, weekday, channel and an overtime flag (outside work hours, or on a weekend). Also returns a per-day '
+      + 'summary (first/last message time, message and overtime counts). By default only messages the ClickUp user wrote. '
+      + 'To find overtime ("lembur"): overtime_only=true, then read the messages of those days (mine_only=false shows the '
+      + 'conversation around them). Public holidays are not known: treat them as overtime yourself.',
+    inputSchema: {
+      from: DATE, to: DATE,
+      channel_ids: z.array(z.string()).optional().describe('only these channels (ids from clickup_list_channels)'),
+      mine_only: z.boolean().optional().describe('default true'),
+      overtime_only: z.boolean().optional(),
+      work_hours: z.string().optional().describe('override the normal work hours, e.g. 08:00-17:00'),
+      include_replies: z.boolean().optional().describe('also read thread replies (slower, more requests)'),
+      limit: z.number().int().min(1).max(1000).optional().describe('max messages listed, default 300'),
+    },
+  }, async (a) => run(() => cu.history({
+    from: a.from, to: a.to, channelIds: a.channel_ids, mineOnly: a.mine_only, overtimeOnly: a.overtime_only,
+    workHours: a.work_hours, includeReplies: a.include_replies, limit: a.limit,
+  })));
 }
 
 /** Stateless Streamable HTTP MCP endpoint: every POST gets its own server+transport and answers with plain JSON. */
 export function mcpRoutes(app: FastifyInstance, d: Deps): void {
   app.post('/mcp', async (req, reply) => {
-    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin');
+    const owner = req.mcpConv ? req.mcpAuthor === 'owner' : req.user?.id === null;
+    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => { void transport.close(); void server.close(); });

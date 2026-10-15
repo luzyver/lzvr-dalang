@@ -72,7 +72,7 @@ export class Dispatcher {
   private active = new Map<string, AbortController>();
   private bus = new EventEmitter();
   private stopping = false;
-  private mcpTokens = new Map<string, string>(); // token -> the conversation whose turn it was minted for
+  private mcpTokens = new Map<string, { convId: string; author: string }>(); // token -> the turn it was minted for
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
 
   constructor(private store: Store, private opts: DispatcherOpts) {
@@ -131,13 +131,15 @@ export class Dispatcher {
   /**
    * A bearer token that only works on /mcp and identifies the calling agent as running in `convId`.
    * The agent cannot choose who it is: the identity comes from the token, never from a header it sends.
+   * `author` is the panel user who sent the turn's prompt ('owner' for the owner, '' for an agent or approval).
    */
-  issueMcpToken(convId: string): string {
+  issueMcpToken(convId: string, author = ''): string {
     const token = randomBytes(32).toString('hex');
-    this.mcpTokens.set(token, convId);
+    this.mcpTokens.set(token, { convId, author });
     return token;
   }
-  mcpConversation(token: string): string | null { return this.mcpTokens.get(token) ?? null; }
+  mcpConversation(token: string): string | null { return this.mcpTokens.get(token)?.convId ?? null; }
+  mcpAuthor(token: string): string { return this.mcpTokens.get(token)?.author ?? ''; }
   revokeMcpToken(token: string): void { this.mcpTokens.delete(token); }
 
   /**
@@ -297,7 +299,7 @@ export class Dispatcher {
     let lastMessage = '';
     let workDone = false; // did an earlier attempt of THIS turn already do something (run a command, answer, ...)?
     // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
-    const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId) : null;
+    const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
     const extraArgs = this.opts.mcpUrl && !claude
       ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"']
       : [];
