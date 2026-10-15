@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 service=${SERVICE:-lzvr-dalang}
 
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-info() { printf '\033[90m%s\033[0m\n' "$*"; }
+info() { printf '\033[36m%s\033[0m\n' "$*"; }
 SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 
 systemctl cat "$service" >/dev/null 2>&1 || fail "No $service service: set it up first (README, \"Install on the VM\")."
