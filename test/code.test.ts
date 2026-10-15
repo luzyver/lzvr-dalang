@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'no
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { badName, globList, searchRegExp } from '../src/code-routes.js';
-import { Terminals } from '../src/terminals.js';
+import { asUser, shellUser, Terminals, userShell } from '../src/terminals.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -285,5 +285,58 @@ describe('code editor: terminals', () => {
     const r = await t.call('POST', '/terminals', {});
     expect(r.statusCode).toBe(409);
     expect(r.json().error).toMatch(/not available/);
+  });
+});
+
+describe('code editor: terminals as another account (TERMINAL_USER)', () => {
+  const passwd = [
+    'root:x:0:0:root:/root:/bin/bash',
+    'dalang:x:1001:1001::/home/dalang:/bin/bash',
+    'svc:x:998:998::/var/lib/svc:/usr/sbin/nologin',
+    'ops:x:1002:1002::/home/ops:/bin/zsh',
+    'boss:x:1003:27::/home/boss:/bin/bash',
+  ].join('\n');
+  const group = ['root:x:0:', 'sudo:x:27:ops', 'wheel:x:10:', 'dalang:x:1001:', 'svc:x:998:'].join('\n');
+  const files = (sudoers: string[] = []) => ({ passwd, group, sudoers });
+
+  it('finds an ordinary account', () => {
+    expect(shellUser('dalang', files())).toEqual({ name: 'dalang', uid: 1001, gid: 1001, home: '/home/dalang', shell: '/bin/bash' });
+  });
+
+  it('refuses root, a missing account, and anyone who could use sudo', () => {
+    expect(() => shellUser('root', files())).toThrow(/is root/);
+    expect(() => shellUser('nobody-here', files())).toThrow(/does not exist/);
+    expect(() => shellUser('ops', files())).toThrow(/sudo group/); // a supplementary member
+    expect(() => shellUser('boss', files())).toThrow(/sudo group/); // sudo as primary group
+    expect(() => shellUser('dalang', files(['# comment\ndalang ALL=(ALL) NOPASSWD: ALL\n']))).toThrow(/sudoers/);
+    expect(() => shellUser('dalang', files(['# dalang ALL=(ALL) ALL\n%admins ALL=(ALL) ALL\n']))).not.toThrow();
+  });
+
+  it('starts the shell through setpriv with no_new_privs, so sudo can never work there', () => {
+    const user = shellUser('dalang', files());
+    const cmd = asUser(user, ['/bin/bash', '-l'], '/usr/bin/setpriv');
+    expect(cmd[0]).toBe('/usr/bin/setpriv');
+    expect(cmd).toContain('--no-new-privs');
+    expect(cmd.slice(cmd.indexOf('--'))).toEqual(['--', '/bin/bash', '-l']);
+    if (process.getuid?.() !== 1001) expect(cmd).toEqual(expect.arrayContaining(['--reuid=1001', '--regid=1001', '--init-groups']));
+    expect(() => asUser(user, ['/bin/bash'], undefined)).toThrow(/setpriv/);
+  });
+
+  it('uses the account\'s login shell, and bash for one without (nologin)', () => {
+    expect(userShell(shellUser('dalang', files()), {})).toEqual(['/bin/bash', '-l']);
+    expect(userShell(shellUser('svc', files()), {})[0]).toMatch(/\/bin\/(ba)?sh$/);
+    expect(userShell(shellUser('dalang', files()), { TERMINAL_SHELL: '/usr/bin/fish' })).toEqual(['/usr/bin/fish']);
+  });
+
+  it.skipIf(process.platform !== 'linux')('refuses to open a terminal for an account that may not be used', async () => {
+    const t = await withChat({ terminals: new Terminals({ user: 'root' }) });
+    const r = await t.call('POST', '/terminals', {});
+    expect(r.statusCode).toBe(409);
+    expect(r.json().error).toMatch(/is root/);
+  });
+
+  it('is for Linux only: on Windows and macOS shells run as the server user', () => {
+    const term = new Terminals({ user: 'dalang' });
+    expect(term.userName).toBe(process.platform === 'linux' ? 'dalang' : null);
   });
 });

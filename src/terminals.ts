@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import websocket from '@fastify/websocket';
 import type { IPty } from '@lydell/node-pty';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -36,6 +36,60 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env, platform = pr
   return ['bash', 'zsh', 'fish'].includes(basename(shell)) ? [shell, '-l'] : [shell];
 }
 
+/** The account terminals run as when TERMINAL_USER is set (Linux), from /etc/passwd. */
+export interface ShellUser { name: string; uid: number; gid: number; home: string; shell: string }
+
+/** Groups whose members may use sudo on the usual distributions. */
+const SUDO_GROUPS = ['sudo', 'wheel', 'admin', 'root'];
+
+/**
+ * Look up the account terminals run as, and refuse one that is root or may use sudo: a member (primary or
+ * supplementary) of sudo/wheel/admin/root, or named in a sudoers file. `files` is for tests.
+ */
+export function shellUser(name: string, files?: { passwd: string; group: string; sudoers: string[] }): ShellUser {
+  const read = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
+  const sudoersFiles = () => {
+    const dir = '/etc/sudoers.d';
+    let extra: string[] = [];
+    try { extra = readdirSync(dir).map((f) => read(join(dir, f))); } catch { /* none */ }
+    return [read('/etc/sudoers'), ...extra];
+  };
+  const { passwd, group, sudoers } = files ?? { passwd: read('/etc/passwd'), group: read('/etc/group'), sudoers: sudoersFiles() };
+  const row = passwd.split('\n').map((l) => l.split(':')).find((f) => f[0] === name && f.length >= 7);
+  if (!row) throw new TerminalError(`TERMINAL_USER ${name} does not exist on this server (create it: useradd -m -s /bin/bash ${name})`);
+  const user = { name, uid: Number(row[2]), gid: Number(row[3]), home: row[5] || '/', shell: row[6]!.trim() };
+  if (!Number.isInteger(user.uid) || user.uid === 0) throw new TerminalError(`TERMINAL_USER ${name} is root: pick an account without root rights`);
+  for (const line of group.split('\n')) {
+    const [g, , gid, members = ''] = line.split(':');
+    if (!g || !SUDO_GROUPS.includes(g)) continue;
+    if (Number(gid) === user.gid || members.trim().split(',').includes(name)) {
+      throw new TerminalError(`TERMINAL_USER ${name} is in the ${g} group and could use sudo: remove it (gpasswd -d ${name} ${g})`);
+    }
+  }
+  const named = new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`, 'm');
+  if (sudoers.some((text) => named.test(text))) throw new TerminalError(`TERMINAL_USER ${name} is named in sudoers: remove that rule`);
+  return user;
+}
+
+const SETPRIV = ['/usr/bin/setpriv', '/bin/setpriv'];
+
+/**
+ * The command that starts a terminal's shell as `user`: setpriv (util-linux) switches to the account and sets
+ * no_new_privs, so nothing started in that shell can ever gain rights again (sudo, su and other setuid programs fail).
+ */
+export function asUser(user: ShellUser, shell: string[], setpriv = SETPRIV.find((p) => existsSync(p))): string[] {
+  if (!setpriv) throw new TerminalError('TERMINAL_USER needs setpriv (package util-linux) to drop rights safely');
+  const switching = process.getuid?.() !== user.uid;
+  return [setpriv, ...(switching ? [`--reuid=${user.uid}`, `--regid=${user.gid}`, '--init-groups'] : []), '--no-new-privs', '--', ...shell];
+}
+
+/** The login shell of the terminal account; an account without one (nologin) gets bash. */
+export function userShell(user: ShellUser, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (env.TERMINAL_SHELL) return [env.TERMINAL_SHELL];
+  const shell = /(nologin|false)$/.test(user.shell) || !user.shell ? (existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh') : user.shell;
+  return ['bash', 'zsh', 'fish'].includes(basename(shell)) ? [shell, '-l'] : [shell];
+}
+
 /**
  * Shells in the code editor, one set per chat, running in that chat's folder. A terminal outlives the browser tab
  * that opened it (a reload re-attaches and replays its recent output) until it is closed, its shell exits and nobody
@@ -45,7 +99,17 @@ export class Terminals {
   #pty: Promise<PtyModule | null> | null = null;
   readonly #terms = new Map<string, Term>();
 
-  constructor(private readonly opts: { shell?: string[]; idleMs?: number; load?: () => Promise<PtyModule> } = {}) {}
+  /**
+   * `user`: the account shells run as (default TERMINAL_USER; Linux only, ignored on Windows and macOS). Unset, they
+   * run as the user Dalang runs as.
+   */
+  constructor(private readonly opts: { shell?: string[]; idleMs?: number; load?: () => Promise<PtyModule>; user?: string } = {}) {}
+
+  /** The account terminals run as, or null for the server's own. */
+  get userName(): string | null {
+    const name = this.opts.user ?? process.env.TERMINAL_USER;
+    return name && process.platform === 'linux' ? name : null;
+  }
 
   /** node-pty is a native module: without a build for this machine the panel works on, only without terminals. */
   #module(): Promise<PtyModule | null> {
@@ -68,11 +132,22 @@ export class Terminals {
     if (!mod) throw new TerminalError('terminals are not available on this server (node-pty did not load)');
     if (this.list(convId).length >= MAX_PER_CHAT) throw new TerminalError(`at most ${MAX_PER_CHAT} terminals per chat: close one first`);
     if (this.#terms.size >= MAX_TOTAL) throw new TerminalError('too many terminals are open on this server: close some first');
-    const [file, ...args] = this.opts.shell ?? defaultShell();
-    const pty = mod.spawn(file!, args, { name: 'xterm-256color', cols: o.cols, rows: o.rows, cwd: o.cwd, env: o.env });
+    let command = this.opts.shell ?? defaultShell();
+    let env = o.env;
+    const name = this.userName;
+    // Checked on every new terminal, so a change to the account (a group added) counts straight away.
+    const user = name ? shellUser(name) : null;
+    if (user) {
+      command = this.opts.shell ?? userShell(user);
+      env = Object.fromEntries(Object.entries(env).filter(([k]) => !/^(XDG_|SUDO_)/.test(k)));
+      Object.assign(env, { HOME: user.home, USER: user.name, LOGNAME: user.name, SHELL: command[0]! });
+    }
+    const shellName = basename(command[0]!).replace(/\.exe$/i, '');
+    const [file, ...args] = user ? asUser(user, command) : command;
+    const pty = mod.spawn(file!, args, { name: 'xterm-256color', cols: o.cols, rows: o.rows, cwd: o.cwd, env });
     const n = Math.max(0, ...this.list(convId).map((t) => Number(/\d+$/.exec(t.title)?.[0] ?? 0))) + 1;
     const t: Term = {
-      info: { id: randomUUID(), title: `${basename(file!).replace(/\.exe$/i, '')} ${n}`, createdAt: Date.now(), exitCode: null },
+      info: { id: randomUUID(), title: `${name ? `${name} · ` : ''}${shellName} ${n}`, createdAt: Date.now(), exitCode: null },
       convId, pty, scrollback: '', sockets: new Set(),
     };
     this.#terms.set(t.info.id, t);
@@ -159,11 +234,14 @@ export function terminalRoutes(app: FastifyInstance, deps: {
   app.addHook('onClose', async () => terminals.killAll());
   const size = (v: unknown, fallback: number, max: number) => (Number.isInteger(v) ? Math.min(Math.max(v as number, 2), max) : fallback);
 
-  /** What a shell gets: the server's environment without its secrets, and the caller's own git setup. */
+  /**
+   * What a shell gets: the server's environment without its secrets, and the caller's own git setup. A shell that runs
+   * as TERMINAL_USER uses that account's own git config and keys instead (Dalang's are not readable to it).
+   */
   const envFor = (user: AuthUser, projectId: string): Record<string, string> => {
     const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => !e[0].startsWith('LZVR_') && e[1] !== undefined));
     // Agent turns may never stop at a prompt; a person at a terminal can answer one.
-    const { GIT_TERMINAL_PROMPT: _p, GCM_INTERACTIVE: _g, ...git } = dispatcher.gitEnvFor?.(user.name, projectId) ?? {};
+    const { GIT_TERMINAL_PROMPT: _p, GCM_INTERACTIVE: _g, ...git } = terminals.userName ? {} : dispatcher.gitEnvFor?.(user.name, projectId) ?? {};
     return { ...env, ...git, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'dalang' };
   };
 
