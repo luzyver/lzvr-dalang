@@ -17,6 +17,12 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
   a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
   `read-only` projects they are admin only.
+  Under the commit button the tab says which credentials are used: the author (and whether the repository sets its own;
+  **Change** sets one for this repository only, `git config --local`, shared by its worktrees, and **Use the global
+  author** drops it again),
+  the remote branch the push goes to, and how: over SSH with which key (`ssh -G`, so `~/.ssh/config` aliases count) or
+  over HTTPS with which credential helper. The Merge Request card names the CLI and host that open it. **Check account**
+  asks the forge who that is (`ssh -T`, `gh`/`glab auth status`), e.g. "GitHub knows this key as luzyver".
   **Pull** (the arrow next to Refresh) fast-forwards the checked-out branch from its upstream (or the same name on
   `origin`); a branch that has gone its own way is refused rather than merged. **History** (the clock next to the
   branch name) lists the commits of every local and remote branch and tag as a graph, like `git log --graph`; a commit
@@ -52,7 +58,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   `glab auth login` once on the VM, as the user Dalang runs as) and never prompts. GitHub or GitLab is told from the
   remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept per chat and branch and shown on the Changes page;
   later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
-  address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab".
+  address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab", or **Settings → Git & forges** in the panel.
 - **Search and commands**: `Ctrl K` / `⌘K` (or the box at the top of the sidebar) opens the command palette. It finds
   chats by title and searches every project's chats: generated titles, prompts and the agents' answers (not commands or
   their output). Every word has to occur; a result opens the chat scrolled to that message. It also runs actions: a new
@@ -207,6 +213,57 @@ glab auth login                                      # self-hosted: glab auth lo
 Then restart Dalang so the new binary is on its `PATH`, or point `GH_BIN` / `GLAB_BIN` at it (on Windows the full path
 to `gh.exe` / `glab.exe`). The account needs write access to the repository; `git push` itself still uses the VM's SSH key
 or credential helper, as for commits.
+
+**From the panel instead of a shell**: **Settings → Git & forges** does the same setup for the owner as the user Dalang
+runs as (one tab each: Identity, SSH, GitHub, GitLab). The CLIs still have to be installed; everything else lands where
+a manual setup would, and Dalang stores no token itself. The menu items of each account (**⋯**) upload a key or set
+up HTTPS. Panel users other than the owner get their own setup there instead (see "Each user's own git setup" below).
+
+- **Commit identity**: `git config --global user.name` / `user.email`.
+- **SSH** (remotes like `git@host:owner/repo.git`): lists the public keys in `~/.ssh` with their fingerprints and
+  creates new ed25519 keys (no passphrase, any name such as `id_ed25519_work`; an existing file is never overwritten).
+  **Test SSH** runs `ssh -T git@<host>`. A host seen for the first time is added to `known_hosts` there
+  (`StrictHostKeyChecking=accept-new`), so the first push does not stop at the "continue connecting?" question.
+- **SSH aliases**, for several accounts on one forge: lists the single-name `Host` blocks of `~/.ssh/config` and adds
+  new ones (`Host github.com-work` → `HostName github.com`, `User git`, the chosen key, `IdentitiesOnly yes`), marked
+  with a `# Added by Dalang` comment. A remote then reads `git@github.com-work:owner/repo.git`; Merge Requests still
+  resolve the real host (see below). Removing an alias deletes only its own block (and that marker); the rest of the
+  file, wildcard blocks and other comments included, stays as it is.
+- **GitHub / GitLab**: signs `gh` / `glab` in with a personal access token (passed on stdin), or for GitHub with the
+  browser sign-in (one-time code, like adding a Codex account; it asks for `admin:public_key` too). **Add id_ed25519** (one button per key)
+  uploads one of the server's public keys to the signed-in account (`gh ssh-key add` / `glab ssh-key add`).
+- **HTTPS** (remotes like `https://host/owner/repo.git`): "Also use this login for git over HTTPS" (or **Use for HTTPS**)
+  makes git ask the CLI for the password: `gh auth setup-git` for GitHub, and for GitLab a
+  `credential.https://<host>.helper` of `glab auth git-credential` (needs a glab recent enough to have that command).
+  Signing out of a host's last account removes that helper again. Git that Dalang runs never opens a login prompt or
+  window (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`): a missing login fails with a message instead. A helper for
+  `https://host` does not cover an `http://host` remote; switch the remote to https.
+
+### Each user's own git setup
+
+Only the owner (main token or owner sign-in) works with the server's git setup above. Every other panel user, admins
+included, has their own under `<STATE_DIR>/git-users/<user id>/`, managed in their own **Settings → Git & forges**:
+
+- `gitconfig`: their author and HTTPS credential helpers (`GIT_CONFIG_GLOBAL`). It starts with an empty
+  `credential.helper`, which drops system-wide helpers such as Git Credential Manager and the logins stored there.
+- `ssh/`: their keys, aliases (`config`, keys named by full path) and `known_hosts`. ssh runs with `-F` that config,
+  `-i` each of their keys, `IdentitiesOnly=yes` and no agent keys, so it never falls back to the server's `~/.ssh`.
+- `gh/`, `glab/`: their forge logins (`GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`; gh with `--insecure-storage`, so the token
+  stays in that folder rather than the shared OS keyring).
+
+That setup is used whenever Dalang works for them: their commits, pulls, pushes and Merge Requests from the Changes
+tab, and the agent turns of their prompts (whose own `git commit` / `git push` get the same environment). A prompt one
+agent sends another (MCP `send_prompt`, approved or not) runs for the user the sending agent worked for. Their author
+is set with `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, which beats a repository's own `user.name`; **Edit** in the Changes tab
+gives them another author for one project, kept by Dalang rather than in the repository's config (which is shared).
+
+A user who has not set anything up has no credentials at all: commits are refused until they set an author, and pushes,
+pulls of private remotes and Merge Requests fail with a pointer to Settings → Git & forges. They never fall back to the
+server's. Deleting a user deletes their folder.
+
+This decides which account is used and who authors a commit. It is not isolation: everything runs as one OS user, so an
+agent (or anything it is told to run) could read another user's files under `git-users/`. Real separation needs one
+OS user or container per user.
 
 How Dalang picks the CLI and the repository:
 

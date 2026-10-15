@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildApp } from '../src/app.js';
 import type { Config } from '../src/config.js';
 import { Dispatcher } from '../src/dispatcher.js';
+import type { GitAuth } from '../src/git-auth.js';
 import { Logins } from '../src/login.js';
 import { Push, type PushSend } from '../src/push.js';
 import type { SendMail } from '../src/otp.js';
@@ -25,6 +26,8 @@ export interface AppExtras {
   authMaxFailures?: number;
   pushSend?: PushSend;
   sendMail?: SendMail;
+  gitAuth?: GitAuth;
+  gitSshCommand?: string[];
   cfg?: Partial<Config>;
   /** Codex homes the app starts with (default: one). Pass [] to test the "no account yet" state. */
   homes?: string[];
