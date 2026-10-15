@@ -323,6 +323,9 @@ function Crumbs({ doc }) {
   const parts = doc.path.split('/');
   return html`<div class="editor-crumbs">
     ${parts.map((p, i) => html`${i > 0 && html`<${Icon} name="chevron-right" class="tiny" />`}<span class=${cx(i === parts.length - 1 && 'last')}>${p}</span>`)}
+    <div class="spacer"></div>
+    ${doc.kind === 'text' && html`<button class=${cx('crumb-btn', wrapOn.value && 'on')} aria-pressed=${wrapOn.value}
+      title=${`Word wrap: ${wrapOn.value ? 'on' : 'off'} (Alt+Z)`} onClick=${() => setWrap(!wrapOn.value)}><${Icon} name="wrap-text" /><span>Wrap</span></button>`}
   </div>`;
 }
 

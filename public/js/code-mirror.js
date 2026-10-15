@@ -13,7 +13,7 @@ export { EditorState, EditorView, openSearchPanel };
 /** Word wrap, shared by every open file (Alt+Z switches it). */
 export const wrapping = new Compartment();
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
-export const wrapOn = { value: pref('dalang-code-wrap', false) };
+export const wrapOn = { value: pref('dalang-code-wrap', innerWidth <= 760) }; // phones start with it on
 
 const theme = EditorView.theme({
   '&': { height: '100%', fontSize: 'var(--code-fs, 13px)', color: 'var(--text)', backgroundColor: 'var(--bg)' },
