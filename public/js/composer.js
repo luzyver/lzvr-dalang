@@ -88,6 +88,17 @@ export function Composer({ id, project }) {
     }
   });
 
+  // Ctrl+V with a screenshot or copied files attaches them; plain text pastes as usual. Screenshots all arrive as
+  // "image.png", so they get a unique name.
+  const onPaste = (e) => {
+    const pasted = [...(e.clipboardData?.files || [])];
+    if (!pasted.length) return;
+    e.preventDefault();
+    const stamp = Date.now();
+    setFiles((fs) => [...fs, ...pasted.map((f, i) => (f.name && f.name !== 'image.png' ? f
+      : new File([f], `pasted-${stamp}-${i + 1}.${(f.type.split('/')[1] || 'bin').replace('jpeg', 'jpg')}`, { type: f.type })))]);
+  };
+
   // Desktop: Enter sends, Shift+Enter is a new line. Touch keyboards keep Enter as a new line (the button sends).
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.isComposing && (e.ctrlKey || e.metaKey || (matchMedia('(pointer: fine)').matches && !e.shiftKey))) {
@@ -136,7 +147,7 @@ export function Composer({ id, project }) {
       </div>`}
       <textarea ref=${box} rows="1" value=${text} aria-label="Message"
         placeholder=${running ? 'Queue a follow-up…' : `Message ${backend}…`}
-        onInput=${(e) => { setText(e.currentTarget.value); saveDraft(e.currentTarget.value); }} onKeyDown=${onKeyDown}></textarea>
+        onInput=${(e) => { setText(e.currentTarget.value); saveDraft(e.currentTarget.value); }} onKeyDown=${onKeyDown} onPaste=${onPaste}></textarea>
       <div class="composer-bar">
         <button class="icon-btn" aria-label="Attach files" title="Attach files" onClick=${() => fileInput.current.click()}><${Icon} name="paperclip" /></button>
         <input ref=${fileInput} type="file" multiple hidden onChange=${(e) => { setFiles([...files, ...e.currentTarget.files]); e.currentTarget.value = ''; }} />
