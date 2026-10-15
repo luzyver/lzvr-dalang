@@ -4,7 +4,7 @@ import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
+import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
 import {
   approvals, convs, goHome, guarded, isAdmin, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
@@ -62,9 +62,14 @@ export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} 
 function ChatRow({ c, active }) {
   const title = c.title || 'New chat';
   const remove = guarded(async () => {
-    if (!confirm(c.worktree
-      ? `Delete this chat and its history? Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
-      : 'Delete this chat and its history? The project and its files stay.')) return;
+    if (!await confirmDialog({
+      title: 'Delete this chat and its history?',
+      message: c.worktree
+        ? `Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
+        : 'The project and its files stay.',
+      confirmText: 'Delete',
+      danger: true,
+    })) return;
     await api(`/api/conversations/${c.id}`, { method: 'DELETE' });
     if (active) goHome();
     await loadProjects();
@@ -79,12 +84,21 @@ function ChatRow({ c, active }) {
   </div>`;
 }
 
+const SANDBOX_TAGS = {
+  'read-only': { name: 'eye', label: 'read-only' },
+  'workspace-write': { name: 'pencil', label: 'workspace-write' },
+  'danger-full-access': { name: 'shield-alert', label: 'danger-full-access', danger: true },
+};
+
+const Tag = ({ name, label, danger }) => name
+  && html`<span class=${cx('project-tag', danger && 'danger')} title=${label} aria-label=${label} role="img"><${Icon} name=${name} /></span>`;
+
 function Project({ p }) {
   const list = convs.value.get(p.id) || [];
   const collapsed = ui.collapsed.value.has(p.id);
   const current = route.value.view === 'chat' ? route.value.id : null;
   const remove = guarded(async () => {
-    if (!confirm(`Remove project "${p.name}" and its chats from the panel? Files stay untouched.`)) return;
+    if (!await confirmDialog({ title: `Remove project "${p.name}"?`, message: 'It and its chats leave the panel. Files stay untouched.', confirmText: 'Remove', danger: true })) return;
     await api(`/api/projects/${p.id}`, { method: 'DELETE' });
     await loadProjects();
   });
@@ -93,8 +107,10 @@ function Project({ p }) {
       <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
         <${Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} class="caret" />
         <span class="project-name" title=${p.path}>${p.name}</span>
-        ${p.backend === 'claude' && html`<span class="badge-cc" title="Claude Code">CC</span>`}
-        ${p.sandbox !== 'workspace-write' && html`<span class="project-meta">${p.sandbox}</span>`}
+        <span class="project-meta">
+          <${Tag} name=${p.backend === 'claude' ? 'asterisk' : 'code-xml'} label=${p.backend === 'claude' ? 'Claude Code' : 'Codex'} />
+          <${Tag} ...${SANDBOX_TAGS[p.sandbox]} />
+        </span>
       </button>
       <button class="icon-btn sm row-action" aria-label=${`New chat in ${p.name}`} title="New chat" onClick=${newChat(p)}><${Icon} name="plus" /></button>
       <${Menu} label="Project options" buttonClass="sm row-action">

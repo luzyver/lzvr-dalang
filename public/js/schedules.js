@@ -5,7 +5,7 @@ import { signal } from '../vendor/signals.js';
 import cronstrue from '../vendor/cronstrue.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Empty, Field, Icon, Spinner, Switch } from './ui.js';
+import { AsyncButton, confirmDialog, Empty, Field, Icon, Spinner, Switch } from './ui.js';
 import { guarded, openChat, toast, toggleSidebar } from './store.js';
 import { dateTime, until } from './format.js';
 
@@ -32,7 +32,7 @@ function ScheduleCard({ s, overview, reload }) {
   const toggle = guarded(async (enabled) => { await api(`/api/schedules/${s.id}`, { method: 'PATCH', body: { enabled } }); await reload(); });
   const run = guarded(async () => { await api(`/api/schedules/${s.id}/run`, { method: 'POST' }); toast('Queued'); });
   const remove = guarded(async () => {
-    if (!confirm('Delete this scheduled prompt?')) return;
+    if (!await confirmDialog({ title: 'Delete this scheduled prompt?', confirmText: 'Delete', danger: true })) return;
     await api(`/api/schedules/${s.id}`, { method: 'DELETE' });
     await reload();
   });

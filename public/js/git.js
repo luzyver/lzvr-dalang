@@ -3,7 +3,7 @@
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Empty, Icon, Modal, Seg, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, Empty, Icon, Modal, Seg, Spinner } from './ui.js';
 import { guarded, loadProjects, toast } from './store.js';
 import { chat, refreshGit } from './chat-view.js';
 import { DiffView, diffStats } from './diff.js';
@@ -59,13 +59,13 @@ function Branches({ id, current, onClose, onDone }) {
   };
   // Local only; the remote keeps its copy. A branch with commits found nowhere else is deleted only after a second ask.
   const remove = (b) => async () => {
-    if (!confirm(`Delete the local branch ${b}? The remote keeps its copy.`)) return;
+    if (!await confirmDialog({ title: `Delete the local branch ${b}?`, message: 'The remote keeps its copy.', confirmText: 'Delete', danger: true })) return;
     setError('');
     const del = (force) => api(`/api/conversations/${id}/git/branch/delete`, { method: 'POST', body: { name: b, ...(force && { force }) } });
     try {
       try { await del(false); } catch (e) {
         if (e.status !== 409) throw e;
-        if (!confirm(`${e.message}. Delete ${b} anyway?`)) return;
+        if (!await confirmDialog({ title: `Delete ${b} anyway?`, message: `${e.message}.`, confirmText: 'Delete anyway', danger: true })) return;
         await del(true);
       }
       toast(`Deleted ${b}`);
@@ -133,7 +133,7 @@ function MergeRequest({ id, s, onDone }) {
   });
   // Pushes the branch and opens a Merge Request (GitLab) or pull request (GitHub) into its target branch.
   const create = guarded(async () => {
-    if (!confirm(`Push ${w.branch} and open a Merge Request into ${w.base}?`)) return;
+    if (!await confirmDialog({ title: 'Open a Merge Request?', message: `Push ${w.branch} and open a Merge Request into ${w.base}.`, confirmText: 'Push and open' })) return;
     const [title = '', ...rest] = mrText.trim().split('\n');
     const r = await api(`/api/conversations/${id}/git/pull-request`, { method: 'POST', body: { title: title.trim(), body: rest.join('\n').trim() } });
     toast(r.existed ? 'A Merge Request was already open for this branch' : `Merge Request opened${pushNote(r.push)}`);
@@ -236,12 +236,14 @@ export function ChangesPane({ id }) {
     await after(`Committed ${r.commit}${pushNote(r.push)}`);
   });
   const revert = (f) => guarded(async () => {
-    if (!confirm(f.status === '??' ? `Delete the new file ${f.path}?` : `Undo every change to ${f.path}?`)) return;
+    if (!await confirmDialog(f.status === '??'
+      ? { title: 'Delete the new file?', message: f.path, confirmText: 'Delete', danger: true }
+      : { title: 'Undo every change to this file?', message: f.path, confirmText: 'Undo changes', danger: true })) return;
     await api(`/api/conversations/${id}/git/revert`, { method: 'POST', body: { paths: [f.path] } });
     await after(`Reverted ${f.path}`);
   });
   const discard = guarded(async () => {
-    if (!confirm('Throw away every uncommitted change in this folder, including new files? This cannot be undone.')) return;
+    if (!await confirmDialog({ title: 'Discard all changes?', message: 'Every uncommitted change in this folder is thrown away, including new files. This cannot be undone.', confirmText: 'Discard', danger: true })) return;
     await api(`/api/conversations/${id}/git/discard`, { method: 'POST' });
     await after('Changes discarded');
   });

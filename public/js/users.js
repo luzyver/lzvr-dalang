@@ -2,7 +2,7 @@
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Icon, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, Icon, Spinner } from './ui.js';
 import { guarded, toast } from './store.js';
 import { copyText } from './code.js';
 
@@ -37,11 +37,11 @@ export function UsersSection() {
     toast(value ? `${u.name} signs in with ${value}` : `${u.name} can no longer sign in by email`);
   });
   const newToken = (u) => guarded(async () => {
-    if (!confirm(`Issue a new token for ${u.name}? Their old token stops working.`)) return;
+    if (!await confirmDialog({ title: 'Issue a new token?', message: `${u.name}'s old token stops working.`, confirmText: 'Issue token' })) return;
     setReveal({ who: u.name, token: (await api(`/api/users/${u.id}/token`, { method: 'POST' })).token });
   });
   const remove = (u) => guarded(async () => {
-    if (!confirm(`Delete user "${u.name}"? Their token and sessions stop working.`)) return;
+    if (!await confirmDialog({ title: `Delete user "${u.name}"?`, message: 'Their token and sessions stop working.', confirmText: 'Delete', danger: true })) return;
     await api(`/api/users/${u.id}`, { method: 'DELETE' });
     await load();
   });

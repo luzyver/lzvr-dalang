@@ -1,5 +1,6 @@
 // Shared UI primitives: icons, dialogs, menus, segmented controls, switches, toasts and empty states.
 import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
+import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { toasts, dismissToast } from './store.js';
 
@@ -37,6 +38,33 @@ export function Modal({ open, onClose, class: cls, label, children }) {
   return html`<dialog ref=${ref} class=${cx('modal', cls)} aria-label=${label}
     onClose=${() => open && onClose()} onCancel=${(e) => { e.preventDefault(); onClose(); }}
     onClick=${(e) => { if (e.target === ref.current) onClose(); }}>${open && children}</dialog>`;
+}
+
+const asking = signal(null);
+
+/**
+ * Asks the user to confirm an action in a modal, in place of window.confirm. Resolves true when they confirm, false
+ * when they cancel or close it. `danger` styles the confirm button for actions that delete or throw work away.
+ */
+export function confirmDialog({ title, message, confirmText = 'Confirm', danger = false }) {
+  asking.value?.resolve(false);
+  return new Promise((resolve) => { asking.value = { title, message, confirmText, danger, resolve }; });
+}
+
+/** Renders the dialog `confirmDialog` asks; mounted once at the app root. */
+export function ConfirmDialog() {
+  const a = asking.value;
+  const done = (ok) => { asking.value = null; a.resolve(ok); };
+  return html`<${Modal} open=${!!a} label=${a?.title} class="dialog confirm" onClose=${() => done(false)}>
+    ${a && html`<div class="dialog-body">
+      <div class="dialog-head"><h2>${a.title}</h2></div>
+      ${a.message && html`<p class="confirm-message">${a.message}</p>`}
+      <div class="row end">
+        <button class="btn" onClick=${() => done(false)}>Cancel</button>
+        <button class=${cx('btn primary', a.danger && 'danger')} autofocus onClick=${() => done(true)}>${a.confirmText}</button>
+      </div>
+    </div>`}
+  <//>`;
 }
 
 /**

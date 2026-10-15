@@ -349,6 +349,11 @@ if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else ke
 
 `LZVR_TOKEN=<32+ chars> WORKSPACE_ROOT=. npm run dev`, `npm test`, `npm run typecheck`.
 
+On native Windows, `run.cmd` (or `scripts\run.ps1`) does it in one go: checks Node, runs `npm ci` when the lockfile
+changed, writes `.env` from `.env.example` with a fresh `LZVR_TOKEN` on the first run, finds `codex.exe`, `claude.exe`,
+`gh.exe` and `glab.exe` when `.env` does not set `CODEX_BIN` / `CLAUDE_BIN` / `GH_BIN` / `GLAB_BIN`, then builds and
+starts. `run.cmd -Dev` runs `src/main.ts` through tsx without building; `-Install` forces `npm ci`.
+
 The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in
 `@preact/signals`. Its libraries and fonts are copied from `node_modules` into `public/vendor` and `public/fonts` by
 `npm run vendor` (run it after updating one of them); bare imports are rewritten to relative ones there, since the CSP

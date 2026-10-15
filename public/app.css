@@ -117,6 +117,8 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .btn.ghost { background: none; border-color: transparent; box-shadow: none; }
 .btn.ghost:hover:not(:disabled) { background: var(--hover); }
 .btn.danger { color: var(--err); }
+.btn.primary.danger { background: var(--err); color: #fff; }
+.btn.primary.danger:hover:not(:disabled) { background: var(--err); filter: brightness(1.08); }
 .btn kbd { margin-left: 4px; }
 .icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-md); background: none; color: var(--text-dim); flex: none; }
 .icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
@@ -224,8 +226,10 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .project-toggle { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 0 4px 0 8px; border: 0; background: none; text-align: left; font-size: var(--fs-sm); }
 .project-toggle .caret { width: 13px; height: 13px; color: var(--text-faint); }
 .project-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-meta { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; margin-left: auto; }
-.badge-cc { font: 600 10px var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--surface-3); border: 1px solid var(--line); color: var(--text-dim); flex: none; }
+.project-meta { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; color: var(--text-faint); }
+.project-tag { display: inline-flex; }
+.project-tag .i { width: 13px; height: 13px; }
+.project-tag.danger { color: var(--err); }
 .row-action { opacity: 0; transition: opacity .1s; }
 .project-row:hover .row-action, .chat-row:hover .row-action, .row-action:focus-visible, .row-action[aria-expanded=true], .menu:has([aria-expanded=true]) .row-action { opacity: 1; }
 @media (hover: none) { .row-action { opacity: 1; } .chat-row .row-action { display: none; } }
@@ -478,6 +482,8 @@ dialog.modal::backdrop { background: rgb(0 0 0 / .35); backdrop-filter: blur(2px
 dialog.modal[open] { animation: pop .18s var(--ease); }
 @keyframes pop { from { opacity: 0; scale: .97; translate: 0 -6px; } }
 .dialog { width: 520px; }
+.dialog.confirm { width: 420px; }
+.confirm-message { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
 dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px, calc(100dvh - 32px)); }
 .history { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; }
 .history > .log { flex: 1; }

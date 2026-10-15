@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Empty, Field, Icon, Spinner, Switch } from './ui.js';
+import { AsyncButton, confirmDialog, Empty, Field, Icon, Spinner, Switch } from './ui.js';
 import { guarded, toast } from './store.js';
 import { refreshUsage } from './sidebar.js';
 import { copyText } from './code.js';
@@ -91,7 +91,7 @@ export function AccountsSection({ backend }) {
     await load();
   });
   const remove = (a) => guarded(async () => {
-    if (!confirm(`Remove account "${a.name}"? Its ${label} login is deleted from this server. Chats and projects stay.`)) return;
+    if (!await confirmDialog({ title: `Remove account "${a.name}"?`, message: `Its ${label} login is deleted from this server. Chats and projects stay.`, confirmText: 'Remove', danger: true })) return;
     await api(`/api/accounts/${encodeURIComponent(a.name)}${q}`, { method: 'DELETE' });
     toast(`Removed ${a.name}`);
     await load();

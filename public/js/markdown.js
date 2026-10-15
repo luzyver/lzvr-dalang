@@ -3,6 +3,7 @@
 import { html } from './lib.js';
 import { CodeBlock } from './code.js';
 import { downloadFile } from './api.js';
+import { toast } from './store.js';
 
 const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+|sandbox:[^\s)]+|<(?:sandbox:|\/)[^>]+>|\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
@@ -32,7 +33,7 @@ function inline(text, conversationId) {
         event.preventDefault();
         void downloadFile(file.href, file.filename).catch((error) => {
           console.error('File download failed:', error);
-          window.alert(`Could not download file: ${error.message}`);
+          toast(`Could not download file: ${error.message}`, 'err');
         });
       }}>${m[4]}</a>`);
       else if (/^https?:\/\//i.test(m[5])) out.push(html`<a href=${m[5]} target="_blank" rel="noopener noreferrer">${m[4]}</a>`);

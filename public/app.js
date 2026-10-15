@@ -3,7 +3,7 @@
 // js/highlight.js).
 import { render } from './vendor/preact.js';
 import { html, cx } from './js/lib.js';
-import { Toasts } from './js/ui.js';
+import { ConfirmDialog, Toasts } from './js/ui.js';
 import { openChat, route, ui } from './js/store.js';
 import './js/theme.js';
 import { session, startSession } from './js/session.js';
@@ -38,7 +38,7 @@ function Shell() {
 
 function App() {
   const s = session.value;
-  return html`${s === 'in' ? html`<${Shell} />` : s === 'out' ? html`<${Login} />` : html`<div class="boot"></div>`}<${Toasts} />`;
+  return html`${s === 'in' ? html`<${Shell} />` : s === 'out' ? html`<${Login} />` : html`<div class="boot"></div>`}<${Toasts} /><${ConfirmDialog} />`;
 }
 
 // ---------- boot ----------

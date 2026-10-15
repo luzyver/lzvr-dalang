@@ -3,7 +3,7 @@
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, Field, Icon, Modal, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, isOwner, me, toast, ui } from './store.js';
 import { PALETTES, THEMES, palette, theme } from './theme.js';
 import { enableNotifications } from './notifications.js';
@@ -120,7 +120,7 @@ function ClickUpSection() {
     toast('ClickUp settings saved');
   });
   const remove = guarded(async () => {
-    if (!confirm('Remove the ClickUp token? The ClickUp tools stop working until a new one is saved.')) return;
+    if (!await confirmDialog({ title: 'Remove the ClickUp token?', message: 'The ClickUp tools stop working until a new one is saved.', confirmText: 'Remove', danger: true })) return;
     load(await api('/api/settings/clickup', { method: 'PUT', body: body({ token: '' }) }));
     toast('ClickUp token removed');
   });
