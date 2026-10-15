@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
-import { createPullRequest, remoteRepo } from './forge.js';
+import { createPullRequest, parseRemote, remoteRepo, sshHostName } from './forge.js';
 import * as git from './git.js';
 import type { GitUsers } from './git-users.js';
 import { gitContext } from './git.js';
@@ -406,8 +406,17 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!push.pushed) return reply.code(400).send({ error: push.error ? `push failed: ${push.error}` : 'the repository has no remote to open a Merge Request on' });
     const remote = push.pushed.slice(0, push.pushed.indexOf('/'));
     const url = (await git.git(c.cwd, ['remote', 'get-url', remote]).catch(() => '')).trim();
-    const target = await remoteRepo(url, cfg.forge);
-    if (!target) return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: set GIT_FORGE` });
+    // A host named neither github nor gitlab: whichever CLI the caller is signed in to it with.
+    let target = await remoteRepo(url, cfg.forge);
+    const r = !target ? parseRemote(url) : null;
+    if (r) {
+      const host = r.ssh ? await sshHostName(r.host) : r.host;
+      const forge = await users.auth(req.user?.id ?? null).forgeForHost(host);
+      if (forge) target = await remoteRepo(url, forge);
+    }
+    if (!target) {
+      return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: sign gh or glab in to that host (Settings → Git & forges), or set GIT_FORGE` });
+    }
     const { forge, repo } = target;
 
     const title = rawTitle.trim() || (await git.git(c.cwd, ['log', '-1', '--format=%s', branch])).trim();

@@ -240,7 +240,7 @@ function CommitCredentials({ id, c, onCheck, onSaved }) {
 /** "gh · github.com ✓ luzyver" in the Merge Request card. */
 function MrCredentials({ c, onCheck }) {
   if (!c?.remote) return null;
-  if (!c.forge) return html`<div class="mr-cred warn small"><${Icon} name="circle-alert" class="tiny" />Cannot tell whether this remote is GitHub or GitLab: set GIT_FORGE.</div>`;
+  if (!c.forge) return html`<div class="mr-cred warn small"><${Icon} name="circle-alert" class="tiny" />Cannot tell whether this server is GitHub or GitLab: sign gh or glab in to it under Settings → Git & forges.</div>`;
   const ch = c.check;
   return html`<div class="mr-cred">
     <span class="dim small">Opens with</span><span class="chip cli">${c.forge.cli}</span><span class="mono small ellip">${c.forge.host}</span>

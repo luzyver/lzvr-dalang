@@ -225,7 +225,27 @@ export class GitAuth {
     const { command } = this.cli(forge);
     const r = await this.run(command, ['auth', 'status'], { timeoutMs: 30_000 });
     if (r.missing) return { installed: false, accounts: [], output: '' };
-    return { installed: true, accounts: parseAuthStatus(r.out), output: r.out.trim() };
+    const status = { installed: true, accounts: parseAuthStatus(r.out), output: r.out.trim() };
+    this.knownHosts.set(forge, { hosts: new Set(status.accounts.map((a) => a.host)), at: Date.now() });
+    return status;
+  }
+
+  private knownHosts = new Map<Forge, { hosts: Set<string>; at: number }>();
+
+  /**
+   * GitHub or GitLab for a host whose name says neither (`git.example.com`): the one whose CLI is signed in to it.
+   * `gh`/`glab auth status` are asked at most every few minutes; null when neither knows the host.
+   */
+  async forgeForHost(host: string): Promise<Forge | null> {
+    const h = host.toLowerCase();
+    const named = forgeOf(h);
+    if (named) return named;
+    for (const forge of ['gitlab', 'github'] as const) {
+      const hit = this.knownHosts.get(forge);
+      const hosts = hit && Date.now() - hit.at < 5 * 60_000 ? hit.hosts : new Set((await this.forgeStatus(forge)).accounts.map((a) => a.host));
+      if (hosts.has(h)) return forge;
+    }
+    return null;
   }
 
   /** Sign the CLI in with a personal access token, passed on stdin so it never shows up in a process list. */
@@ -238,6 +258,7 @@ export class GitAuth {
       ? ['auth', 'login', '--hostname', host, '--with-token', '--git-protocol', protocol, '--skip-ssh-key', ...(this.opts.ghInsecureStorage ? ['--insecure-storage'] : [])]
       : ['auth', 'login', '--hostname', host, '--stdin', '--git-protocol', protocol];
     await this.must(command, name, args, { input: `${token}\n` });
+    this.knownHosts.delete(forge); // a host signed in just now must count for forgeForHost at once
     if (https) await this.setupHttps(forge, host);
   }
 
@@ -300,6 +321,7 @@ export class GitAuth {
     child.once('close', (code) => {
       if (st.status !== 'pending') return;
       if (code !== 0) return settle('failed', st.output.trim().split('\n').pop() || `gh exited with code ${code}`);
+      this.knownHosts.delete('github');
       if (!https) return settle('success');
       this.setupHttps('github', host).then(() => settle('success'), (e: Error) => settle('failed', e.message));
     });
@@ -475,7 +497,7 @@ export class GitAuth {
       };
     }
 
-    const forge = o.forge ?? (realHost ? forgeOf(realHost) : null);
+    const forge = o.forge ?? (realHost ? await this.forgeForHost(realHost.replace(/:\d+$/, '')) : null);
     if (forge && realHost) out.forge = { forge, cli: forge === 'github' ? 'gh' : 'glab', host: realHost.replace(/:\d+$/, '') };
     if (!o.check) return out;
 

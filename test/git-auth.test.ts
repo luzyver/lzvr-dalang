@@ -288,6 +288,14 @@ describe('which credentials a commit and push use', () => {
     });
   });
 
+  it('tells GitLab from GitHub for a neutrally named host by which CLI is signed in to it', async () => {
+    const t = repo('https://git.example.com/acme/app.git');
+    expect((await t.auth.credentials(t.cwd)).forge).toBeUndefined();
+    await t.auth.login('gitlab', 'git.example.com', 'good-token', false);
+    expect((await t.auth.credentials(t.cwd)).forge).toEqual({ forge: 'gitlab', cli: 'glab', host: 'git.example.com' });
+    expect(await t.auth.forgeForHost('github.com')).toBe('github'); // the name alone is enough there
+  });
+
   it('tells a plain http remote apart, and that a helper for https:// does not cover it', async () => {
     const t = repo('http://gitlab.example.com/acme/app.git');
     sh(t.cwd, 'config', 'credential.https://gitlab.example.com.helper', '!glab auth git-credential');
