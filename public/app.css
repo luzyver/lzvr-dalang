@@ -708,4 +708,24 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
   .meter-row { grid-template-columns: 70px minmax(40px, 1fr) 36px; }
   .meter-row > :last-child { display: none; }
 }
+@media (max-width: 600px) {
+  /* File changes lives in the mobile inspector sheet; give its controls room to wrap cleanly. */
+  .insp-body { padding: 12px; }
+  .changes { gap: 12px; }
+  .head-row { align-items: flex-start; gap: 6px; }
+  .head-row > .head-branch { flex: 1 1 auto; min-width: 0; }
+  .head-branch .branch-btn { max-width: min(68vw, 260px); }
+  .head-actions { padding-top: 1px; }
+  .file { min-height: 42px; gap: 7px; padding-inline: 9px; }
+  .file-list-head { padding-inline: 9px; }
+  .commit-box > .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .commit-box > .row > .spacer { display: none; }
+  .commit-box > .row > .btn { justify-content: center; min-width: 0; padding-inline: 9px; }
+  .diff-dialog-head { gap: 6px; padding-inline: 10px; }
+  .diff-dialog-head > .spacer { display: none; }
+  .diff-dialog-path { flex: 1 1 45%; }
+  .diff-dialog-head > .seg { order: 1; }
+  .diff-nav { order: 2; margin-left: auto; }
+  .diff-dialog-head > .icon-btn { order: 3; }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
