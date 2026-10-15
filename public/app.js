@@ -2,11 +2,12 @@
 // Every server-provided string is rendered as text, never parsed as HTML (highlighted code is the one exception: see
 // js/highlight.js).
 import { render } from './vendor/preact.js';
+import { useEffect, useState } from './vendor/preact-hooks.js';
 import { html, cx } from './js/lib.js';
 import { ConfirmDialog, Toasts } from './js/ui.js';
-import { openChat, route, ui } from './js/store.js';
+import { openChat, route, toast, ui } from './js/store.js';
 import './js/theme.js';
-import { session, startSession } from './js/session.js';
+import { bootSession, session } from './js/session.js';
 import { Login } from './js/login.js';
 import { AddProjectModal, Sidebar } from './js/sidebar.js';
 import { ChatView } from './js/chat-view.js';
@@ -36,9 +37,19 @@ function Shell() {
   </div>`;
 }
 
+/** The code editor fills its own tab; its module (with CodeMirror and xterm.js) loads only there. */
+function CodeTab({ id }) {
+  const [mod, setMod] = useState(null);
+  useEffect(() => { import('./js/code-editor.js').then(setMod, (e) => toast(`the code editor did not load: ${e.message}`, 'err')); }, []);
+  return mod ? html`<${mod.CodeEditor} id=${id} />` : html`<div class="boot"></div>`;
+}
+
 function App() {
   const s = session.value;
-  return html`${s === 'in' ? html`<${Shell} />` : s === 'out' ? html`<${Login} />` : html`<div class="boot"></div>`}<${Toasts} /><${ConfirmDialog} />`;
+  const r = route.value;
+  const main = s !== 'in' ? (s === 'out' ? html`<${Login} />` : html`<div class="boot"></div>`)
+    : r.view === 'code' ? html`<${CodeTab} id=${r.id} />` : html`<${Shell} />`;
+  return html`${main}<${Toasts} /><${ConfirmDialog} />`;
 }
 
 // ---------- boot ----------
@@ -46,8 +57,8 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   // A tapped notification opens its chat in the panel that is already open.
   navigator.serviceWorker.addEventListener('message', (m) => {
-    if (m.data && m.data.convId && session.value === 'in') openChat(m.data.convId);
+    if (m.data && m.data.convId && session.value === 'in' && route.value.view !== 'code') openChat(m.data.convId);
   });
 }
 render(html`<${App} />`, document.getElementById('root'));
-if (session.value === 'checking') startSession();
+bootSession();

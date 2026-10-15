@@ -9,6 +9,7 @@ import { Logins } from '../src/login.js';
 import { Push, type PushSend } from '../src/push.js';
 import type { SendMail } from '../src/otp.js';
 import { Store } from '../src/store.js';
+import type { Terminals } from '../src/terminals.js';
 import { FAKE, TOKEN } from './helpers.js';
 
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -28,6 +29,7 @@ export interface AppExtras {
   sendMail?: SendMail;
   gitAuth?: GitAuth;
   gitSshCommand?: string[];
+  terminals?: Terminals;
   cfg?: Partial<Config>;
   /** Codex homes the app starts with (default: one). Pass [] to test the "no account yet" state. */
   homes?: string[];

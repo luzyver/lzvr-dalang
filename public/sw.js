@@ -17,7 +17,8 @@ self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const convId = e.notification.data && e.notification.data.convId;
   e.waitUntil((async () => {
-    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // A code editor tab is not where a chat opens.
+    const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((w) => !new URL(w.url).pathname.startsWith('/code'));
     for (const w of wins) {
       await w.focus();
       w.postMessage({ convId });

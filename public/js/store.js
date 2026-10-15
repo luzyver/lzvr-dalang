@@ -9,7 +9,10 @@ export const isOwner = computed(() => me.value?.name === 'owner'); // the main t
 export const projects = signal([]);
 /** project id -> its chats */
 export const convs = signal(new Map());
-/** What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' } */
+/**
+ * What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' },
+ * or, in a tab of its own, { view: 'code', id }: the code editor on a chat's folder.
+ */
 export const route = signal({ view: 'home' });
 export const approvals = signal([]);
 
@@ -119,6 +122,11 @@ export function openView(view) {
     ui.palette.value = false;
   });
   setHash('');
+}
+
+/** The code editor on a chat's folder, in a new browser tab (it signs in with the same stored token). */
+export function openCodeEditor(id) {
+  window.open(`/code#code=${encodeURIComponent(id)}`, `dalang-code-${id}`);
 }
 
 /** `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project. */

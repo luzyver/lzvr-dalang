@@ -59,6 +59,26 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   remote's host name (`GIT_FORGE` overrides it for hosts named otherwise). The link is kept per chat and branch and shown on the Changes page;
   later commits are pushed to the same branch, so the MR follows them. When one is already open for the branch, its
   address is returned instead (GitHub). Setup: see "Merge Requests: gh and glab", or **Settings → Git & forges** in the panel.
+- **Code editor**: the code icon in a chat's header opens the folder that chat works in (its worktree, else the project
+  folder) in a new browser tab, laid out like VS Code: a file tree on the left with git's marks (M, U, A, D), open files
+  as tabs (CodeMirror 6: highlighting for most languages, find and replace, folding, multiple cursors) and terminals
+  below. The tree creates, renames, deletes, uploads (also by dropping files onto a folder) and downloads files and
+  folders. The keys are VS Code's: `Ctrl P` goes to a file, `Ctrl Shift P` lists every command with its key, `Ctrl Shift O`
+  goes to a symbol of the file, `Ctrl G` to a line, `Ctrl Shift F` / `Ctrl Shift H` search and replace across all files
+  (case, whole word, regex, files to include/exclude), `Ctrl K S` saves all, `Ctrl B` hides the side bar, ``Ctrl ` ``
+  the terminal (``Ctrl Shift ` `` opens another), `Alt Z` wraps lines, `Ctrl =` / `Ctrl -` zoom; in the file `Ctrl D`,
+  `Ctrl Shift L`, `Ctrl Alt ↑/↓` (cursors), `Alt ↑/↓` (move line), `Ctrl /` (comment), `Ctrl Shift [` (fold) and the rest.
+  The few the browser keeps for itself have stand-ins: `Alt W` closes a tab (`Ctrl W`), `Alt N` makes a new file,
+  `Alt Shift T` reopens a closed tab, `Ctrl Alt ←/→` and `Alt 1`–`9` switch tabs (`Ctrl Tab`). A file
+  that changes on disk (the agent, a terminal) reloads by itself, or, with unsaved edits, says so and lets you pick
+  whose version stays; a save never silently overwrites a newer file. Saving and every other change follow the agent's
+  rules: refused in a `read-only` project, and while an agent is working in that folder (the status bar says so).
+  `.git` is never touched. **Terminals** are for admins only (a shell can do anything the user Dalang runs as can):
+  PowerShell on Windows, the login shell elsewhere (`TERMINAL_SHELL` picks another), started in the chat's folder with
+  your own git setup and without Dalang's `LZVR_*` secrets. They outlive the tab: reopening the editor re-attaches and
+  replays their recent output; one nobody has looked at for an hour is closed, as are a chat's when it is deleted. On a
+  phone the editor shows one pane at a time (Files, Editor, Terminal). Files over 5 MB and binary files open as a
+  download only.
 - **Search and commands**: `Ctrl K` / `⌘K` (or the box at the top of the sidebar) opens the command palette. It finds
   chats by title and searches every project's chats: generated titles, prompts and the agents' answers (not commands or
   their output). Every word has to occur; a result opens the chat scrolled to that message. It also runs actions: a new
@@ -133,8 +153,8 @@ scripts/update.sh'`. Don't run it from a Dalang chat: the restart stops the serv
 
 Dalang listens on `127.0.0.1:9876` only, so put nginx in front. `nginx.conf` in this repo is a ready server block on
 port 80 with **no ssl**: certbot adds the https block and the redirect itself. It keeps the live event stream unbuffered,
-allows 60 MB uploads, rate-limits the sign-in endpoints, and passes the real client address (replacing `X-Forwarded-For`,
-so it cannot be forged). To use it:
+allows 60 MB uploads, rate-limits the sign-in endpoints, passes the WebSocket of the code editor's terminals on, and
+passes the real client address (replacing `X-Forwarded-For`, so it cannot be forged). To use it:
 
 1. Replace `panel.example.com` in the file and copy it to `/etc/nginx/conf.d/lzvr-dalang.conf`, then
    `nginx -t && systemctl reload nginx`.
@@ -310,6 +330,7 @@ Known limits:
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
 | `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. |
+| `TERMINAL_SHELL` | PowerShell / login shell | The shell the code editor's terminals start (a path, no arguments). |
 
 ### Security
 
@@ -424,7 +445,11 @@ pulls (`--ff-only`; `-NoPull` skips it), stops the task, frees the port and star
 The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in
 `@preact/signals`. Its libraries and fonts are copied from `node_modules` into `public/vendor` and `public/fonts` by
 `npm run vendor` (run it after updating one of them); bare imports are rewritten to relative ones there, since the CSP
-allows no inline import map. Colours come from Radix Colors scales (Settings → Appearance switches the accent palette).
+allows no inline import map. The code editor's CodeMirror and xterm.js are the exception: many small packages, so
+`npm run vendor` bundles them with esbuild into `public/vendor/code` (`scripts/code-editor.entry.mjs` lists what is
+used; each language is its own chunk, loaded when a file of it opens). The editor's page is the same shell under `/code`,
+whose CSP also allows inline styles (both libraries write `<style>` elements); the rest of the panel stays strict.
+Colours come from Radix Colors scales (Settings → Appearance switches the accent palette).
 
 ## Scope
 

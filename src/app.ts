@@ -21,6 +21,8 @@ import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
 import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
+import { codeRoutes } from './code-routes.js';
+import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
 import type { Store } from './store.js';
 
@@ -73,6 +75,8 @@ export function buildApp(
     gitUsers?: GitUsers;
     /** The ssh panel users' setups run (tests: a fake). */
     gitSshCommand?: string[];
+    /** The code editor's shells (tests: another shell, or a node-pty that fails to load). */
+    terminals?: Terminals;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -137,6 +141,7 @@ export function buildApp(
     else if (f && f.count >= maxFailures) return reply.code(429).header('retry-after', Math.ceil((f.resetAt - now) / 1000)).send({ error: 'too many attempts' });
 
     if (path.startsWith('/api/auth/')) return; // login endpoints; their handlers report failures via noteFailure
+    if (path === '/api/terminals/socket') return; // a browser WebSocket cannot send the token: its route checks a ticket
 
     const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
     const user = m ? resolveUser(m[1]!, now) : null;
@@ -170,6 +175,9 @@ export function buildApp(
   gitRoutes(app, { store, dispatcher, cfg, users: gitUsers });
   gitAuthRoutes(app, { users: gitUsers });
   scheduleRoutes(app, { store, dispatcher });
+  const terminals = deps.terminals ?? new Terminals();
+  codeRoutes(app, { store, dispatcher, terminalAvailable: () => terminals.available() });
+  terminalRoutes(app, { store, dispatcher, terminals, noteFailure });
 
   // Search the chats: titles, prompts and the agents' answers. Every word has to occur (in any order).
   app.get<{ Querystring: { q: string; project?: string } }>('/api/search', {
@@ -393,7 +401,7 @@ export function buildApp(
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
     const convs = store.listConversations(project.id);
-    for (const c of convs) dispatcher.cancel(c.id);
+    for (const c of convs) { dispatcher.cancel(c.id); terminals.killConv(c.id); }
     store.deleteProject(project.id);
     void dropWorktrees(dispatcher, project, convs);
     return reply.code(204).send();
@@ -406,6 +414,7 @@ export function buildApp(
     const project = conv && store.getProject(conv.project_id);
     if (!conv) return notFound(reply);
     dispatcher.cancel(conv.id);
+    terminals.killConv(conv.id);
     store.deleteConversation(conv.id);
     if (project) void dropWorktrees(dispatcher, project, [conv]);
     return reply.code(204).send();

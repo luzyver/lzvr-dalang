@@ -40,6 +40,10 @@ export async function dropWorktrees(dispatcher: Dispatcher, project: Project, co
   }
 }
 
+/** Any chat whose agent works in one of these folders and is running right now. */
+export const agentBusy = (store: Store, dispatcher: Dispatcher, project: Project, dirs: string[]) =>
+  store.listConversations(project.id).some((c) => dirs.includes(c.worktree ?? project.path) && dispatcher.isRunning(c.id));
+
 type Reply = FastifyReply;
 
 const MAX_PROMPT_DIFF = 60_000; // characters of diff given to the agent; the rest is only named
@@ -220,9 +224,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     return { conv, project, cwd: conv.worktree ?? project.path };
   };
 
-  /** Any chat whose agent works in one of these folders and is running right now. */
-  const busy = (project: Project, dirs: string[]) =>
-    store.listConversations(project.id).some((c) => dirs.includes(c.worktree ?? project.path) && dispatcher.isRunning(c.id));
+  const busy = (project: Project, dirs: string[]) => agentBusy(store, dispatcher, project, dirs);
 
   /**
    * Changing files is refused while an agent works in the same folder (both would edit it at once), and in a

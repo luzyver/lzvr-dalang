@@ -5,7 +5,7 @@ import { batch, signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { Icon } from './ui.js';
-import { approvals, findConv, patchConv, route, toggleInspector, toggleSidebar, ui } from './store.js';
+import { approvals, findConv, openCodeEditor, patchConv, route, toggleInspector, toggleSidebar, ui } from './store.js';
 import { startStream, ThreadModel } from './stream.js';
 import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
@@ -57,6 +57,7 @@ function ChatHead({ project, conv }) {
       <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
     ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
     <div class="spacer"></div>
+    <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
     <button class="icon-btn" aria-label="Scheduled prompts" title="Scheduled prompts" onClick=${() => toggleInspector(true, 'schedules')}><${Icon} name="clock" /></button>
     ${git?.repo && html`<button class="branch-btn" title="Changes: review, commit, revert" onClick=${() => toggleInspector(true, 'changes')}>
       <${Icon} name="git-branch" /><span class="branch-name">${git.branch || 'HEAD'}</span>
