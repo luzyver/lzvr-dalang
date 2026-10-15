@@ -16,8 +16,8 @@ SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 systemctl cat "$service" >/dev/null 2>&1 || fail "No $service service: set it up first (README, \"Install on the VM\")."
 
 # PORT from the unit's Environment=, then .env, then the default.
-port=$(systemctl show -p Environment --value "$service" | tr ' ' '\n' | sed -n 's/^PORT=//p' | tail -n1)
-[ -n "$port" ] || port=$(sed -nE 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*["'\'']?([0-9]+).*/\1/p' .env 2>/dev/null | tail -n1)
+port=$(systemctl show -p Environment --value "$service" | tr ' ' '\n' | sed -n 's/^PORT=//p' | tail -n1 || true)
+[ -n "$port" ] || port=$(sed -nE 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*["'\'']?([0-9]+).*/\1/p' .env 2>/dev/null | tail -n1 || true)
 port=${port:-9876}
 
 if [ "${1:-}" != --no-pull ]; then
