@@ -232,7 +232,7 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .project-tag.danger { color: var(--err); }
 .row-action { opacity: 0; transition: opacity .1s; }
 .project-row:hover .row-action, .chat-row:hover .row-action, .row-action:focus-visible, .row-action[aria-expanded=true], .menu:has([aria-expanded=true]) .row-action { opacity: 1; }
-@media (hover: none) { .row-action { opacity: 1; } .chat-row .row-action { display: none; } }
+@media (hover: none) { .row-action { opacity: 1; } .chat-row .chat { padding-right: 38px; } }
 .chats { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; padding-left: 14px; }
 .chat-row { position: relative; display: flex; align-items: center; min-width: 0; border-radius: var(--r-md); }
 .chat-row:hover { background: var(--hover); }
