@@ -6,11 +6,19 @@ export {
   crosshairCursor, drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars,
   keymap, lineNumbers, rectangularSelection,
 } from '@codemirror/view';
-export { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-export { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search';
-export { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
 export {
-  bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, indentUnit, LanguageDescription, syntaxHighlighting,
+  addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, cursorMatchingBracket, defaultKeymap, deleteLine, history,
+  historyKeymap, indentLess, indentMore, indentSelection, indentWithTab, insertBlankLine, moveLineDown, moveLineUp,
+  selectLine, selectParentSyntax, toggleBlockComment, toggleComment, undoSelection,
+} from '@codemirror/commands';
+export {
+  closeSearchPanel, findNext, findPrevious, highlightSelectionMatches, openSearchPanel, searchKeymap,
+  selectNextOccurrence, selectSelectionMatches,
+} from '@codemirror/search';
+export { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from '@codemirror/autocomplete';
+export {
+  bracketMatching, ensureSyntaxTree, foldAll, foldCode, foldGutter, foldKeymap, HighlightStyle, indentOnInput, indentUnit,
+  LanguageDescription, syntaxHighlighting, unfoldAll, unfoldCode,
 } from '@codemirror/language';
 export { tags } from '@lezer/highlight';
 export { languages } from '@codemirror/language-data';

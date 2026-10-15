@@ -1,15 +1,21 @@
-// The code editor: a chat's folder in its own browser tab, with the file tree on the left, open files as tabs in the
-// middle and terminals below (VS Code's layout, kept as quiet as the rest of the panel). Phones get one pane at a
-// time. Saving follows the agent's rules: never in a read-only project, and not while an agent works in the folder.
+// The code editor: a chat's folder in its own browser tab, with the file tree (or Search) on the left, open files as
+// tabs in the middle and terminals below (VS Code's layout and keys, kept as quiet as the rest of the panel). Phones
+// get one pane at a time. Saving follows the agent's rules: never in a read-only project, and not while an agent works
+// in the folder.
 import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { batch, signal } from '../vendor/signals.js';
+import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api, downloadFile } from './api.js';
 import { confirmDialog, Empty, Icon, Logo, Seg, Spinner } from './ui.js';
 import { guarded, toast } from './store.js';
-import { createState, EditorView, loadLanguage, languageOf } from './code-mirror.js';
-import { FileTree, QuickOpen, quickOpen, refreshGitMarks, refreshTree, reveal, tree } from './code-files.js';
-import { TerminalPanel } from './code-terminal.js';
+import { theme } from './theme.js';
+import { copyText } from './code.js';
+import { createState, EditorView, loadLanguage, languageOf, openSearchPanel, symbolsOf, wrapOn, wrapping } from './code-mirror.js';
+import { beginNew, FileTree, refreshGitMarks, refreshTree, reveal, tree } from './code-files.js';
+import { Keys, openPalette, Palette } from './code-palette.js';
+import { search, SearchView } from './code-search.js';
+import { focusTerminal, newTerminal, setTerminalFontSize, TerminalPanel } from './code-terminal.js';
 
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
@@ -18,8 +24,8 @@ const nameOf = (p) => p.slice(p.lastIndexOf('/') + 1);
 
 /**
  * Open files. A doc: { path, name, kind: 'loading'|'text'|'binary'|'large'|'error', state, lang, saved (the text last
- * read or written), mtime, dirty, changedOnDisk, deletedOnDisk, langName, error }. Docs are mutated in place and
- * `version` goes up when the tabs should re-render.
+ * read or written), mtime, dirty, changedOnDisk, deletedOnDisk, langName, error, reveal }. Docs are mutated in place
+ * and `version` goes up when the tabs should re-render.
  */
 const ed = {
   convId: null,
@@ -32,15 +38,20 @@ const ed = {
   cursor: signal({ line: 1, col: 1, sel: 0 }),
   /** phones: which pane shows */
   pane: signal('editor'),
+  /** the first key of a chord (Ctrl+K) while the second is awaited */
+  chord: signal(null),
 };
 /** The one CodeMirror view; switching tabs swaps its state. `view.dalangDoc` is the doc it shows. */
 let view = null;
+/** Closed tabs, most recent last, for "Reopen Closed Editor". */
+const closed = [];
 
 const bump = () => { ed.version.value++; };
 const docOf = (path) => ed.docs.value.find((d) => d.path === path);
 const activeDoc = () => docOf(ed.active.value);
 const stateOf = (doc) => (view?.dalangDoc === doc ? view.state : doc.state);
 const readOnly = () => !!ed.info.value?.readOnly;
+const textDoc = () => (view && activeDoc()?.kind === 'text' ? activeDoc() : null);
 
 function persistTabs() {
   if (ed.convId) keep(`dalang-code-tabs:${ed.convId}`, { tabs: ed.docs.value.map((d) => d.path), active: ed.active.value });
@@ -57,20 +68,25 @@ function onEdit(doc, u) {
   }
 }
 
+// VS Code's meaning for keys CodeMirror binds otherwise: Ctrl+G goes to a line.
+const PRIORITY_KEYS = [{ key: 'Mod-g', preventDefault: true, run: () => { openPalette(':'); return true; } }];
+
 function fill(doc, file) {
   doc.mtime = file.mtime;
   doc.size = file.size;
   if (file.tooLarge) { doc.kind = 'large'; return; }
   if (file.binary) { doc.kind = 'binary'; return; }
-  const made = createState(file.content, doc.path, { readOnly: readOnly(), onSave: () => save(doc), onChange: (u) => onEdit(doc, u) });
+  const made = createState(file.content, doc.path, { readOnly: readOnly(), onSave: () => save(doc), onChange: (u) => onEdit(doc, u), keys: PRIORITY_KEYS });
   Object.assign(doc, { kind: 'text', state: made.state, lang: made.lang, crlf: made.crlf, indent: made.indent, saved: made.state.doc, dirty: false, changedOnDisk: false, deletedOnDisk: false });
   doc.langName = languageOf(doc.path)?.name || 'Plain Text';
   loadLanguage(view, doc, doc.path);
 }
 
-export function openFile(path) {
+/** Open a file in a tab (or show its tab); `at` ({ line, col, len } or { pos, len }) selects a place in it. */
+export function openFile(path, at) {
   if (mobile()) ed.pane.value = 'editor';
   if (!docOf(path)) ed.docs.value = [...ed.docs.value, { path, name: nameOf(path), kind: 'loading', lazy: true }];
+  if (at) docOf(path).reveal = at;
   activate(path);
   reveal(ed.convId, path);
 }
@@ -99,6 +115,22 @@ function activate(path) {
   if (doc.lazy) load(doc); else show(doc);
 }
 
+/** Select a place in the shown file and scroll it to the middle. */
+function revealAt(at) {
+  if (!view) return;
+  const doc = view.state.doc;
+  let pos = at.pos;
+  if (pos == null) {
+    const line = doc.line(Math.min(Math.max(at.line, 1), doc.lines));
+    pos = line.from + Math.min(Math.max((at.col || 1) - 1, 0), line.length);
+  }
+  pos = Math.min(pos, doc.length);
+  const head = Math.min(pos + (at.len || 0), doc.length);
+  view.dispatch({ selection: { anchor: pos, head }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+  if (view.dalangDoc) view.dalangDoc.state = view.state;
+  view.focus();
+}
+
 /** Put the doc into the view (text only) and focus it. */
 function show(doc) {
   if (!view || doc.kind !== 'text') return;
@@ -106,27 +138,47 @@ function show(doc) {
     view.setState(doc.state);
     view.dalangDoc = doc;
   }
+  if (doc.reveal) {
+    const at = doc.reveal;
+    doc.reveal = null;
+    requestAnimationFrame(() => { if (view?.dalangDoc === doc) revealAt(at); });
+  }
   const r = doc.state.selection.main;
   const line = doc.state.doc.lineAt(r.head);
   ed.cursor.value = { line: line.number, col: r.head - line.from + 1, sel: Math.abs(r.to - r.from) };
-  if (!mobile()) requestAnimationFrame(() => view.focus());
+  if (!mobile()) requestAnimationFrame(() => view?.focus());
 }
 
 async function close(doc, force = false) {
+  if (!doc) return false;
   if (!force && doc.dirty && !await confirmDialog({
     title: `Close ${doc.name}?`, message: 'It has changes that are not saved. Closing it throws them away.', confirmText: 'Discard changes', danger: true,
-  })) return;
+  })) return false;
   const list = ed.docs.value;
   const i = list.indexOf(doc);
   const next = list.filter((d) => d !== doc);
   if (view?.dalangDoc === doc) view.dalangDoc = null;
+  closed.push(doc.path);
+  if (closed.length > 30) closed.shift();
   batch(() => {
     ed.docs.value = next;
     if (ed.active.value === doc.path) ed.active.value = (next[i] || next[i - 1])?.path ?? null;
   });
   persistTabs();
   const now = activeDoc();
-  if (now) show(now);
+  if (now) { if (now.lazy) load(now); else show(now); }
+  return true;
+}
+
+/** Close several tabs; with unsaved changes among them, ask once. */
+async function closeMany(docs) {
+  const dirty = docs.filter((d) => d.dirty);
+  if (dirty.length && !await confirmDialog({
+    title: `Close ${docs.length} ${docs.length === 1 ? 'tab' : 'tabs'}?`,
+    message: `${dirty.map((d) => d.name).join(', ')} ${dirty.length === 1 ? 'has' : 'have'} changes that are not saved. Closing throws them away.`,
+    confirmText: 'Discard changes', danger: true,
+  })) return;
+  for (const d of docs) await close(d, true);
 }
 
 async function save(doc, { force = false } = {}) {
@@ -165,6 +217,12 @@ async function save(doc, { force = false } = {}) {
   }
 }
 
+async function saveAll() {
+  const dirty = ed.docs.value.filter((d) => d.dirty);
+  if (!dirty.length) { toast('nothing to save'); return; }
+  for (const d of dirty) await save(d);
+}
+
 /** Read the file again: the version on disk replaces what the editor has (one undo step). */
 async function reload(doc) {
   let file;
@@ -200,6 +258,36 @@ async function poll() {
   if (changed) bump();
 }
 
+/** Word wrap on or off for every open file. */
+function setWrap(on) {
+  wrapOn.value = on;
+  keep('dalang-code-wrap', on);
+  const effects = wrapping.reconfigure(on ? EditorView.lineWrapping : []);
+  for (const d of ed.docs.value) {
+    if (d.kind !== 'text') continue;
+    if (view?.dalangDoc === d) { view.dispatch({ effects }); d.state = view.state; } else d.state = d.state.update({ effects }).state;
+  }
+  bump();
+}
+
+// ---------- keys ----------
+
+/** A key press as written in the command list: 'Ctrl+Shift+P', 'Alt+W', 'Ctrl+Alt+Left', 'Ctrl+`'. */
+function comboOf(e) {
+  const c = e.code;
+  if (/^(Control|Shift|Alt|Meta|OS)/.test(c) || /^(Control|Shift|Alt|Meta)$/.test(e.key)) return null;
+  const key = c.startsWith('Key') ? c.slice(3) : c.startsWith('Digit') ? c.slice(5) : c.startsWith('Arrow') ? c.slice(5)
+    : c.startsWith('Numpad') && /\d$/.test(c) ? c.slice(-1)
+      : { Backquote: '`', Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-', BracketLeft: '[', BracketRight: ']',
+        Backslash: '\\', Slash: '/', Period: '.', Comma: ',', Semicolon: ';', Quote: "'", Space: 'Space', NumpadEnter: 'Enter' }[c]
+      || (e.key.length === 1 ? e.key.toUpperCase() : e.key);
+  return [(e.ctrlKey || e.metaKey) && 'Ctrl', e.shiftKey && 'Shift', e.altKey && 'Alt', key].filter(Boolean).join('+');
+}
+
+/** Where the keyboard is: in a terminal, in a text field (not the editor's own search box), or elsewhere. */
+const focusIn = (e) => (e.target.closest?.('.term-panel') ? 'terminal'
+  : e.target.closest?.('input, textarea, select') && !e.target.closest('.cm-editor') ? 'field' : 'page');
+
 // ---------- components ----------
 
 function EditorHost() {
@@ -225,7 +313,7 @@ function Tabs() {
       class=${cx('editor-tab', d.path === active && 'active', d.dirty && 'dirty', d.deletedOnDisk && 'gone')}
       onClick=${() => activate(d.path)} onAuxClick=${(e) => { if (e.button === 1) close(d); }}>
       <span class="editor-tab-name">${d.name}</span>
-      ${d.saving ? html`<${Spinner} class="tiny" />` : html`<button class="icon-btn xs editor-tab-close" aria-label=${`Close ${d.name}`} title="Close"
+      ${d.saving ? html`<${Spinner} class="tiny" />` : html`<button class="icon-btn xs editor-tab-close" aria-label=${`Close ${d.name}`} title="Close (Alt+W)"
         onClick=${(e) => { e.stopPropagation(); close(d); }}><span class="dirty-dot"></span><${Icon} name="x" /></button>`}
     </div>`)}
   </div>`;
@@ -260,12 +348,12 @@ function EditorArea() {
   const placeholder = !doc ? html`<${Empty} icon="code-xml" title="No file open">
         Pick a file in the tree, or go to one by name.
         <div class="ide-keys">
-          <span><kbd>Ctrl</kbd> <kbd>P</kbd> Go to file</span>
-          <span><kbd>Ctrl</kbd> <kbd>S</kbd> Save</span>
-          <span><kbd>Ctrl</kbd> <kbd>F</kbd> Find</span>
-          ${ed.info.value?.terminal && html`<span><kbd>Ctrl</kbd> <kbd>\`</kbd> Terminal</span>`}
+          <span><${Keys} keys="Ctrl+P" /> Go to file</span>
+          <span><${Keys} keys="Ctrl+Shift+P" /> All commands</span>
+          <span><${Keys} keys="Ctrl+Shift+F" /> Search in files</span>
+          ${ed.info.value?.terminal && html`<span><${Keys} keys="Ctrl+\`" /> Terminal</span>`}
         </div>
-        <button class="btn sm" onClick=${() => { quickOpen.value = true; }}><${Icon} name="search" />Go to file</button>
+        <button class="btn sm" onClick=${() => openPalette('')}><${Icon} name="search" />Go to file</button>
       <//>`
     : doc.kind === 'loading' ? html`<div class="editor-loading"><${Spinner} /></div>`
       : doc.kind === 'error' ? html`<${Empty} icon="circle-alert" title="Could not open this file">${doc.error}<//>`
@@ -294,12 +382,14 @@ function StatusBar() {
     ${info?.conv.branch && html`<span class="ide-stat" title="Branch of this chat's worktree"><${Icon} name="git-branch" />${info.conv.branch}</span>`}
     ${ed.busy.value && html`<span class="ide-stat warn"><${Spinner} />Agent working · saving paused</span>`}
     ${info?.readOnly && html`<span class="ide-stat"><${Icon} name="shield-alert" />Read-only</span>`}
+    ${ed.chord.value && html`<span class="ide-stat accent">(${ed.chord.value}) was pressed. Waiting for the second key…</span>`}
     <div class="spacer"></div>
     ${text && html`
-      <span class="ide-stat">Ln ${c.line}, Col ${c.col}${c.sel ? ` (${c.sel} selected)` : ''}</span>
+      <button class="ide-stat" title="Go to line (Ctrl+G)" onClick=${() => openPalette(':')}>Ln ${c.line}, Col ${c.col}${c.sel ? ` (${c.sel} selected)` : ''}</button>
       <span class="ide-stat hide-mobile">${doc.indent === '\t' ? 'Tabs' : `Spaces: ${doc.indent.length}`}</span>
       <span class="ide-stat hide-mobile">${doc.crlf ? 'CRLF' : 'LF'}</span>
       <span class="ide-stat hide-mobile">UTF-8</span>
+      <button class="ide-stat hide-mobile" title="Toggle word wrap (Alt+Z)" onClick=${() => setWrap(!wrapOn.value)}>${wrapOn.value ? 'Wrap' : 'No wrap'}</button>
       <span class="ide-stat">${doc.langName}</span>
       <span class=${cx('ide-stat', doc.dirty && 'accent')}>${doc.saving ? 'Saving…' : doc.dirty ? 'Unsaved' : 'Saved'}</span>`}
   </footer>`;
@@ -330,10 +420,12 @@ function Resizer({ dir, onMove, onEnd }) {
 export function CodeEditor({ id }) {
   const info = ed.info.value;
   const [filesShown, setFilesShown] = useState(pref('dalang-code-files', true));
+  const [side, setSide] = useState('files');
   const [termShown, setTermShown] = useState(pref('dalang-code-term', false));
   const [termMax, setTermMax] = useState(false);
   const [treeW, setTreeW] = useState(pref('dalang-code-tree-w', 260));
   const [termH, setTermH] = useState(pref('dalang-code-term-h', 280));
+  const [fontPx, setFontPx] = useState(pref('dalang-code-fs', 13));
   const sizes = useRef({ treeW, termH });
   sizes.current = { treeW, termH };
   const start = useRef(null);
@@ -363,6 +455,12 @@ export function CodeEditor({ id }) {
     document.title = t ? `${t} · Dalang` : 'Dalang';
   });
 
+  // The editor's zoom: CodeMirror reads --code-fs, the terminals get the size directly.
+  useEffect(() => {
+    setTerminalFontSize(fontPx);
+    requestAnimationFrame(() => view?.requestMeasure());
+  }, [fontPx]);
+
   // Watch for changes made outside the editor: open files often, the tree and git marks every third time.
   useEffect(() => {
     if (!info) return undefined;
@@ -384,23 +482,152 @@ export function CodeEditor({ id }) {
     if (mobile()) { ed.pane.value = ed.pane.value === 'terminal' ? 'editor' : 'terminal'; return; }
     setTermShown(v);
     keep('dalang-code-term', v);
-    if (!v) { setTermMax(false); requestAnimationFrame(() => view?.focus()); }
+    if (v) focusTerminal();
+    else { setTermMax(false); requestAnimationFrame(() => view?.focus()); }
+  };
+  const showSide = (which) => {
+    setSide(which);
+    if (mobile()) ed.pane.value = 'files';
+    else toggleFiles(true);
+  };
+  const zoom = (px) => { const v = Math.min(Math.max(px, 9), 28); setFontPx(v); keep('dalang-code-fs', v); };
+
+  const canWrite = !!info && !info.readOnly && !ed.busy.value;
+  const writeBlocked = info?.readOnly ? 'read-only project: files cannot be changed here'
+    : 'an agent is working in this folder: wait for its turn to finish or stop it';
+
+  /** Run a CodeMirror command on the open file, with the keyboard in it. */
+  const inEditor = (command) => () => {
+    if (!textDoc()) return;
+    view.focus();
+    command(view);
+  };
+  const tabStep = (step) => {
+    const list = ed.docs.value;
+    if (list.length < 2) return;
+    const i = list.findIndex((d) => d.path === ed.active.value);
+    activate(list[(i + step + list.length) % list.length].path);
+  };
+  const findInFiles = (replace) => {
+    const sel = textDoc() && view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
+    if (sel && !sel.includes('\n')) search.query.value = sel;
+    if (replace) search.showReplace.value = true;
+    showSide('search');
+    search.focus.value++;
   };
 
+  /**
+   * Everything the palette (Ctrl+Shift+P) lists, with VS Code's keys. `scope`: 'any' works even in a terminal or a
+   * text field, 'page' everywhere but a terminal, 'editor' needs an open text file. Keys the editor handles itself
+   * while it has the focus (Ctrl+D, Alt+↑ ...) run here when the focus is elsewhere.
+   */
+  const commands = [
+    { id: 'quickOpen', title: 'Go to File…', keys: 'Ctrl+P', scope: 'any', run: () => openPalette('') },
+    { id: 'commands', title: 'Show All Commands', keys: 'Ctrl+Shift+P', scope: 'any', run: () => openPalette('>') },
+    { id: 'symbol', title: 'Go to Symbol in Editor…', keys: 'Ctrl+Shift+O', run: () => openPalette('@') },
+    { id: 'line', title: 'Go to Line/Column…', keys: 'Ctrl+G', run: () => openPalette(':') },
+    { id: 'save', title: 'File: Save', keys: 'Ctrl+S', scope: 'any', run: () => save(activeDoc()) },
+    { id: 'saveAll', title: 'File: Save All', keys: 'Ctrl+K S', run: saveAll },
+    { id: 'newFile', title: 'File: New File…', keys: 'Alt+N', run: () => { if (!canWrite) { toast(writeBlocked, 'err'); return; } showSide('files'); beginNew(id, 'file'); } },
+    { id: 'newFolder', title: 'File: New Folder…', run: () => { if (!canWrite) { toast(writeBlocked, 'err'); return; } showSide('files'); beginNew(id, 'folder'); } },
+    { id: 'revert', title: 'File: Revert File (reload from disk)', run: () => { const d = textDoc(); if (d) reload(d); } },
+    { id: 'copyPath', title: 'File: Copy Path of Active File', keys: 'Shift+Alt+C', run: () => { const d = activeDoc(); if (d) copyText(d.path, 'path copied'); } },
+    { id: 'reveal', title: 'File: Reveal Active File in Explorer', run: () => { const d = activeDoc(); if (d) { showSide('files'); reveal(id, d.path); } } },
+    { id: 'download', title: 'File: Download Active File', run: () => { const d = activeDoc(); if (d) downloadFile(`/api/conversations/${id}/files/download?path=${encodeURIComponent(d.path)}`, d.name).catch((e) => toast(e.message, 'err')); } },
+    { id: 'close', title: 'View: Close Editor', keys: 'Alt+W', run: () => close(activeDoc()) },
+    { id: 'closeAll', title: 'View: Close All Editors', keys: 'Ctrl+K W', run: () => closeMany([...ed.docs.value]) },
+    { id: 'closeSaved', title: 'View: Close Saved Editors', keys: 'Ctrl+K U', run: () => closeMany(ed.docs.value.filter((d) => !d.dirty)) },
+    { id: 'closeOthers', title: 'View: Close Other Editors', run: () => closeMany(ed.docs.value.filter((d) => d.path !== ed.active.value)) },
+    { id: 'reopen', title: 'View: Reopen Closed Editor', keys: 'Shift+Alt+T', run: () => { const p = closed.pop(); if (p) openFile(p); } },
+    { id: 'nextTab', title: 'View: Open Next Editor', keys: 'Ctrl+Alt+Right', run: () => tabStep(1) },
+    { id: 'prevTab', title: 'View: Open Previous Editor', keys: 'Ctrl+Alt+Left', run: () => tabStep(-1) },
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ id: `tab${n}`, title: `View: Open Editor ${n}`, keys: `Alt+${n}`, hidden: true,
+      run: () => { const d = n === 9 ? ed.docs.value.at(-1) : ed.docs.value[n - 1]; if (d) activate(d.path); } })),
+    { id: 'sidebar', title: 'View: Toggle Side Bar', keys: 'Ctrl+B', run: () => toggleFiles() },
+    { id: 'explorer', title: 'View: Show Explorer', keys: 'Ctrl+Shift+E', scope: 'any', run: () => {
+      showSide('files');
+      requestAnimationFrame(() => document.querySelector('.tree .tree-row.selected, .tree .tree-row')?.focus());
+    } },
+    { id: 'find', title: 'Find', keys: 'Ctrl+F', scope: 'editor', run: inEditor(openSearchPanel) },
+    { id: 'replace', title: 'Replace', keys: 'Ctrl+H', scope: 'editor', run: inEditor(openSearchPanel) },
+    { id: 'findNext', title: 'Find Next', keys: 'F3', scope: 'editor', run: inEditor(cm.findNext) },
+    { id: 'findPrev', title: 'Find Previous', keys: 'Shift+F3', scope: 'editor', run: inEditor(cm.findPrevious) },
+    { id: 'findInFiles', title: 'Search: Find in Files', keys: 'Ctrl+Shift+F', scope: 'any', run: () => findInFiles(false) },
+    { id: 'replaceInFiles', title: 'Search: Replace in Files', keys: 'Ctrl+Shift+H', scope: 'any', run: () => findInFiles(true) },
+    ...(info?.terminal ? [
+      { id: 'terminal', title: 'View: Toggle Terminal', keys: 'Ctrl+`', scope: 'any', run: () => toggleTerm() },
+      { id: 'newTerminal', title: 'Terminal: Create New Terminal', keys: 'Ctrl+Shift+`', scope: 'any', run: () => {
+        if (mobile()) ed.pane.value = 'terminal'; else if (!termShown) toggleTerm(true);
+        newTerminal(id).then(() => focusTerminal());
+      } },
+      { id: 'termMax', title: 'Terminal: Toggle Maximized Panel', run: () => { if (!termShown) toggleTerm(true); setTermMax(!termMax); } },
+    ] : []),
+    { id: 'wrap', title: 'View: Toggle Word Wrap', keys: 'Alt+Z', run: () => setWrap(!wrapOn.value) },
+    { id: 'zoomIn', title: 'View: Zoom In (editor and terminal)', keys: 'Ctrl+=', scope: 'any', run: () => zoom(fontPx + 1) },
+    { id: 'zoomOut', title: 'View: Zoom Out (editor and terminal)', keys: 'Ctrl+-', scope: 'any', run: () => zoom(fontPx - 1) },
+    { id: 'zoomReset', title: 'View: Reset Zoom', keys: 'Ctrl+0', scope: 'any', run: () => zoom(13) },
+    { id: 'theme', title: 'Preferences: Toggle Light/Dark Theme', run: () => { theme.value = document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark'; } },
+    { id: 'nextMatch', title: 'Add Selection to Next Find Match', keys: 'Ctrl+D', scope: 'editor', run: inEditor(cm.selectNextOccurrence) },
+    { id: 'allMatches', title: 'Select All Occurrences of Find Match', keys: 'Ctrl+Shift+L', scope: 'editor', run: inEditor(cm.selectSelectionMatches) },
+    { id: 'cursorAbove', title: 'Add Cursor Above', keys: 'Ctrl+Alt+Up', scope: 'editor', run: inEditor(cm.addCursorAbove) },
+    { id: 'cursorBelow', title: 'Add Cursor Below', keys: 'Ctrl+Alt+Down', scope: 'editor', run: inEditor(cm.addCursorBelow) },
+    { id: 'cursorUndo', title: 'Cursor Undo', keys: 'Ctrl+U', scope: 'editor', run: inEditor(cm.undoSelection) },
+    { id: 'lineUp', title: 'Move Line Up', keys: 'Alt+Up', scope: 'editor', run: inEditor(cm.moveLineUp) },
+    { id: 'lineDown', title: 'Move Line Down', keys: 'Alt+Down', scope: 'editor', run: inEditor(cm.moveLineDown) },
+    { id: 'copyUp', title: 'Copy Line Up', keys: 'Shift+Alt+Up', scope: 'editor', run: inEditor(cm.copyLineUp) },
+    { id: 'copyDown', title: 'Copy Line Down', keys: 'Shift+Alt+Down', scope: 'editor', run: inEditor(cm.copyLineDown) },
+    { id: 'deleteLine', title: 'Delete Line', keys: 'Ctrl+Shift+K', scope: 'editor', run: inEditor(cm.deleteLine) },
+    { id: 'insertBelow', title: 'Insert Line Below', keys: 'Ctrl+Enter', scope: 'editor', run: inEditor(cm.insertBlankLine) },
+    { id: 'selectLine', title: 'Expand Line Selection', keys: 'Ctrl+L', scope: 'editor', run: inEditor(cm.selectLine) },
+    { id: 'expandSel', title: 'Expand Selection', keys: 'Shift+Alt+Right', scope: 'editor', run: inEditor(cm.selectParentSyntax) },
+    { id: 'comment', title: 'Toggle Line Comment', keys: 'Ctrl+/', scope: 'editor', run: inEditor(cm.toggleComment) },
+    { id: 'blockComment', title: 'Toggle Block Comment', keys: 'Shift+Alt+A', scope: 'editor', run: inEditor(cm.toggleBlockComment) },
+    { id: 'indent', title: 'Indent Line', keys: 'Ctrl+]', scope: 'editor', run: inEditor(cm.indentMore) },
+    { id: 'outdent', title: 'Outdent Line', keys: 'Ctrl+[', scope: 'editor', run: inEditor(cm.indentLess) },
+    { id: 'reindent', title: 'Reindent Lines', keys: 'Ctrl+Alt+\\', scope: 'editor', run: inEditor(cm.indentSelection) },
+    { id: 'bracket', title: 'Go to Bracket', keys: 'Ctrl+Shift+\\', scope: 'editor', run: inEditor(cm.cursorMatchingBracket) },
+    { id: 'fold', title: 'Fold', keys: 'Ctrl+Shift+[', scope: 'editor', run: inEditor(cm.foldCode) },
+    { id: 'unfold', title: 'Unfold', keys: 'Ctrl+Shift+]', scope: 'editor', run: inEditor(cm.unfoldCode) },
+    { id: 'foldAll', title: 'Fold All', keys: 'Ctrl+K Ctrl+0', scope: 'editor', run: inEditor(cm.foldAll) },
+    { id: 'unfoldAll', title: 'Unfold All', keys: 'Ctrl+K Ctrl+J', scope: 'editor', run: inEditor(cm.unfoldAll) },
+    { id: 'suggest', title: 'Trigger Suggest', keys: 'Ctrl+Space', scope: 'editor', run: inEditor(cm.startCompletion) },
+  ];
+  const byKeys = new Map(commands.filter((c) => c.keys).map((c) => [c.keys, c]));
+
   useEffect(() => {
+    let chordTimer = 0;
     const key = (e) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      const k = e.key.toLowerCase();
-      if (k === 'p' && !e.shiftKey) { e.preventDefault(); quickOpen.value = true; }
-      else if (k === 's') { e.preventDefault(); save(activeDoc()); }
-      else if (k === 'b' && !e.shiftKey && !e.target.closest?.('.term-panel')) { e.preventDefault(); toggleFiles(); }
-      else if (e.code === 'Backquote') { e.preventDefault(); toggleTerm(); }
+      if (e.isComposing) return;
+      const combo = comboOf(e);
+      if (!combo) return;
+      const where = focusIn(e);
+      const allowed = (c) => c && (c.scope === 'any' || (where !== 'terminal' && (c.scope !== 'editor' || (where === 'page' && textDoc()))));
+      if (ed.chord.value) {
+        const full = `${ed.chord.value} ${combo}`;
+        clearTimeout(chordTimer);
+        ed.chord.value = null;
+        e.preventDefault();
+        const c = byKeys.get(full);
+        if (allowed(c)) c.run(); else toast(`(${full}) is not a command`, 'err');
+        return;
+      }
+      // The first half of a chord (not in a terminal, where Ctrl+K is the shell's).
+      if (combo === 'Ctrl+K' && where !== 'terminal') {
+        e.preventDefault();
+        ed.chord.value = 'Ctrl+K';
+        chordTimer = setTimeout(() => { ed.chord.value = null; }, 3000);
+        return;
+      }
+      if (e.defaultPrevented) return; // the editor (or a field) already did it
+      const c = byKeys.get(combo);
+      if (!allowed(c)) return;
+      e.preventDefault();
+      c.run();
     };
     const leave = (e) => { if (ed.docs.value.some((d) => d.dirty)) { e.preventDefault(); e.returnValue = ''; } };
     addEventListener('keydown', key);
     addEventListener('beforeunload', leave);
-    return () => { removeEventListener('keydown', key); removeEventListener('beforeunload', leave); };
+    return () => { clearTimeout(chordTimer); removeEventListener('keydown', key); removeEventListener('beforeunload', leave); };
   });
 
   const onRenamed = (from, to) => {
@@ -429,12 +656,9 @@ export function CodeEditor({ id }) {
   }
   if (!info) return html`<div class="ide-error"><${Spinner} /></div>`;
 
-  const canWrite = !info.readOnly && !ed.busy.value;
-  const writeBlocked = info.readOnly ? 'read-only project: files cannot be changed here'
-    : 'an agent is working in this folder: wait for its turn to finish or stop it';
   const panes = [['files', 'Files', 'folder'], ['editor', 'Editor', 'code-xml'], ...(info.terminal ? [['terminal', 'Terminal', 'terminal']] : [])];
   return html`<div class=${cx('ide', !filesShown && 'no-files', !termShown && 'no-term', termMax && 'term-max')} data-pane=${pane}
-    style=${{ '--tree-w': `${treeW}px`, '--term-h': `${termH}px` }}>
+    style=${{ '--tree-w': `${treeW}px`, '--term-h': `${termH}px`, '--code-fs': `${fontPx}px` }}>
     <header class="ide-head">
       <a class="ide-brand" href=${`/#c=${encodeURIComponent(id)}`} title="Back to the chat" aria-label="Back to the chat"><${Logo} size=${22} /></a>
       <div class="crumbs">
@@ -444,15 +668,28 @@ export function CodeEditor({ id }) {
       </div>
       ${info.conv.worktree && html`<span class="ide-chip" title="This chat works in its own worktree"><${Icon} name="git-branch" />${info.conv.branch}</span>`}
       <div class="spacer"></div>
-      <button class="ide-search" onClick=${() => { quickOpen.value = true; }} title="Go to file (Ctrl+P)">
+      <button class="ide-search" onClick=${() => openPalette('')} title="Go to file (Ctrl+P); type > for commands">
         <${Icon} name="search" /><span>Go to file</span><kbd class="hide-mobile">Ctrl P</kbd></button>
-      <button class=${cx('icon-btn hide-mobile', filesShown && 'on')} aria-pressed=${filesShown} aria-label="Files" title="Files (Ctrl+B)" onClick=${() => toggleFiles()}><${Icon} name="panel-left" /></button>
+      <button class="icon-btn hide-mobile" aria-label="All commands" title="All commands (Ctrl+Shift+P)" onClick=${() => openPalette('>')}><${Icon} name="chevron-right" /></button>
+      <button class=${cx('icon-btn hide-mobile', filesShown && 'on')} aria-pressed=${filesShown} aria-label="Side bar" title="Side bar (Ctrl+B)" onClick=${() => toggleFiles()}><${Icon} name="panel-left" /></button>
       ${info.terminal && html`<button class=${cx('icon-btn hide-mobile', termShown && 'on')} aria-pressed=${termShown} aria-label="Terminal" title="Terminal (Ctrl+\`)" onClick=${() => toggleTerm()}><${Icon} name="panel-bottom" /></button>`}
     </header>
     <div class="ide-body">
       <div class="ide-files">
-        <${FileTree} convId=${id} rootName=${info.root} canWrite=${canWrite} writeBlocked=${writeBlocked}
-          onOpen=${openFile} onRenamed=${onRenamed} onDeleted=${onDeleted} />
+        <div class="side-tabs" role="tablist">
+          <button role="tab" aria-selected=${side === 'files'} class=${cx(side === 'files' && 'active')} title="Explorer (Ctrl+Shift+E)" onClick=${() => setSide('files')}>
+            <${Icon} name="folder" />Explorer</button>
+          <button role="tab" aria-selected=${side === 'search'} class=${cx(side === 'search' && 'active')} title="Search (Ctrl+Shift+F)" onClick=${() => { setSide('search'); search.focus.value++; }}>
+            <${Icon} name="search" />Search</button>
+        </div>
+        <div class="side-body" hidden=${side !== 'files'}>
+          <${FileTree} convId=${id} rootName=${info.root} canWrite=${canWrite} writeBlocked=${writeBlocked}
+            onOpen=${(p) => openFile(p)} onRenamed=${onRenamed} onDeleted=${onDeleted} />
+        </div>
+        <div class="side-body" hidden=${side !== 'search'}>
+          <${SearchView} convId=${id} shown=${side === 'search'} canWrite=${canWrite} writeBlocked=${writeBlocked}
+            onOpen=${openFile} onReplaced=${() => { poll(); refreshTree(id); refreshGitMarks(id); }} />
+        </div>
       </div>
       <${Resizer} dir="v" onMove=${(dx) => {
         start.current ??= sizes.current.treeW;
@@ -471,6 +708,9 @@ export function CodeEditor({ id }) {
     </div>
     <${StatusBar} />
     <nav class="ide-nav"><${Seg} value=${pane} label="Pane" options=${panes} onChange=${(v) => { ed.pane.value = v; }} /></nav>
-    <${QuickOpen} convId=${id} onOpen=${openFile} />
+    <${Palette} convId=${id} commands=${commands.filter((c) => !c.hidden)} recent=${ed.docs.value.map((d) => d.path)}
+      symbols=${() => (textDoc() ? symbolsOf(view.state) : null)} lines=${() => (textDoc() ? view.state.doc.lines : null)}
+      onOpenFile=${(p) => openFile(p)} onGoto=${(line, col) => revealAt({ line, col })}
+      onSymbol=${(s) => revealAt({ pos: s.pos, len: s.name.length })} />
   </div>`;
 }

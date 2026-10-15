@@ -63,7 +63,13 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   folder) in a new browser tab, laid out like VS Code: a file tree on the left with git's marks (M, U, A, D), open files
   as tabs (CodeMirror 6: highlighting for most languages, find and replace, folding, multiple cursors) and terminals
   below. The tree creates, renames, deletes, uploads (also by dropping files onto a folder) and downloads files and
-  folders; `Ctrl P` goes to a file by name, `Ctrl S` saves, `Ctrl B` hides the tree and ``Ctrl ` `` the terminal. A file
+  folders. The keys are VS Code's: `Ctrl P` goes to a file, `Ctrl Shift P` lists every command with its key, `Ctrl Shift O`
+  goes to a symbol of the file, `Ctrl G` to a line, `Ctrl Shift F` / `Ctrl Shift H` search and replace across all files
+  (case, whole word, regex, files to include/exclude), `Ctrl K S` saves all, `Ctrl B` hides the side bar, ``Ctrl ` ``
+  the terminal (``Ctrl Shift ` `` opens another), `Alt Z` wraps lines, `Ctrl =` / `Ctrl -` zoom; in the file `Ctrl D`,
+  `Ctrl Shift L`, `Ctrl Alt ↑/↓` (cursors), `Alt ↑/↓` (move line), `Ctrl /` (comment), `Ctrl Shift [` (fold) and the rest.
+  The few the browser keeps for itself have stand-ins: `Alt W` closes a tab (`Ctrl W`), `Alt N` makes a new file,
+  `Alt Shift T` reopens a closed tab, `Ctrl Alt ←/→` and `Alt 1`–`9` switch tabs (`Ctrl Tab`). A file
   that changes on disk (the agent, a terminal) reloads by itself, or, with unsaved edits, says so and lets you pick
   whose version stays; a save never silently overwrites a newer file. Saving and every other change follow the agent's
   rules: refused in a `read-only` project, and while an agent is working in that folder (the status bar says so).

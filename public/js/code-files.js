@@ -1,10 +1,10 @@
 // The code editor's file manager: a lazily loaded tree of the chat's folder with git's marks, and what can be done to
-// a file or folder there (new, rename, delete, upload, download, copy path), plus "Go to file".
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from '../vendor/preact-hooks.js';
+// a file or folder there (new, rename, delete, upload, download, copy path).
+import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { batch, signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api, currentToken, downloadFile, handleUnauthorized } from './api.js';
-import { confirmDialog, Icon, Modal } from './ui.js';
+import { confirmDialog, Icon } from './ui.js';
 import { guarded, toast } from './store.js';
 import { copyText } from './code.js';
 
@@ -58,6 +58,21 @@ export async function refreshGitMarks(convId) {
 
 const mark = (st) => (!st ? null : st === 'dir' ? ['•', 'modified'] : st === '??' ? ['U', 'untracked'] : st[0] === 'A' ? ['A', 'added']
   : st.includes('D') ? ['D', 'deleted'] : st.includes('R') ? ['R', 'renamed'] : ['M', 'modified']);
+
+/** New things go into the selected folder, or next to the selected file. */
+export function selectedDir() {
+  const s = tree.selected.value;
+  if (!s) return '';
+  const parent = parentOf(s);
+  const isDir = (tree.dirs.value.get(parent) || []).some((e) => e.name === nameOf(s) && e.dir);
+  return isDir ? s : parent;
+}
+
+/** Start typing the name of a new file or folder in `parent` (default: next to the selection). */
+export async function beginNew(convId, kind, parent = selectedDir()) {
+  if (parent && !tree.open.value.has(parent)) await toggleDir(convId, parent, true);
+  tree.editing.value = { kind, parent };
+}
 
 export async function toggleDir(convId, dir, open = !tree.open.value.has(dir)) {
   const next = new Set(tree.open.value);
@@ -182,11 +197,7 @@ export function FileTree({ convId, rootName, canWrite, writeBlocked, onOpen, onR
 
   const blocked = () => { if (canWrite) return false; toast(writeBlocked, 'err'); return true; };
 
-  const startNew = async (kind, parent) => {
-    if (blocked()) return;
-    if (parent && !open.has(parent)) await toggleDir(convId, parent, true);
-    tree.editing.value = { kind, parent };
-  };
+  const startNew = (kind, parent) => { if (!blocked()) beginNew(convId, kind, parent); };
   const create = guarded(async (kind, parent, name) => {
     const path = join(parent, name);
     try {
@@ -314,77 +325,4 @@ export function FileTree({ convId, rootName, canWrite, writeBlocked, onOpen, onR
         <${Item} icon="trash-2" danger disabled=${!canWrite} onClick=${() => remove(target.path, target.dir)}>Delete</${Item}>`}
     </${ContextMenu}>`}
   </section>`;
-
-  /** New things go into the selected folder, or next to the selected file. */
-  function selectedDir() {
-    const s = tree.selected.value;
-    if (!s) return '';
-    const parent = parentOf(s);
-    const isDir = (dirs.get(parent) || []).some((e) => e.name === nameOf(s) && e.dir);
-    return isDir ? s : parent;
-  }
-}
-
-// ---------- Go to file ----------
-
-/** Characters of `q` in order in `path`; a higher score for matches in the file name, at word starts and in a row. */
-export function fuzzyScore(path, q) {
-  const p = path.toLowerCase();
-  const nameAt = p.lastIndexOf('/') + 1;
-  let score = 0;
-  let at = -1;
-  let run = 0;
-  for (const ch of q.toLowerCase()) {
-    if (ch === ' ') continue;
-    const i = p.indexOf(ch, at + 1);
-    if (i === -1) return -1;
-    run = i === at + 1 ? run + 1 : 0;
-    score += 1 + run * 2 + (i >= nameAt ? 2 : 0) + (i === 0 || '/._-'.includes(p[i - 1]) ? 3 : 0);
-    at = i;
-  }
-  return score - path.length * 0.01;
-}
-
-export const quickOpen = signal(false);
-
-export function QuickOpen({ convId, onOpen }) {
-  const shown = quickOpen.value;
-  const [files, setFiles] = useState(null);
-  const [q, setQ] = useState('');
-  const [sel, setSel] = useState(0);
-  const list = useRef(null);
-  const input = useRef(null);
-  useEffect(() => {
-    if (!shown) return;
-    input.current?.focus();
-    setQ('');
-    setSel(0);
-    api(`/api/conversations/${convId}/fs/files`).then((r) => setFiles(r.files), (e) => { toast(e.message, 'err'); setFiles([]); });
-  }, [shown]);
-  const hits = useMemo(() => {
-    if (!files) return [];
-    if (!q.trim()) return files.slice(0, 200);
-    return files.map((f) => [f, fuzzyScore(f, q)]).filter(([, s]) => s >= 0).sort((a, b) => b[1] - a[1]).slice(0, 200).map(([f]) => f);
-  }, [files, q]);
-  useEffect(() => { list.current?.querySelector('.palette-item.active')?.scrollIntoView({ block: 'nearest' }); }, [sel, hits]);
-  const close = () => { quickOpen.value = false; };
-  const pick = (f) => { close(); if (f) onOpen(f); };
-  return html`<${Modal} open=${shown} onClose=${close} label="Go to file" class="palette qo">
-    <div class="palette-input"><${Icon} name="search" />
-      <input ref=${input} autofocus placeholder="Go to file…" value=${q} spellcheck="false" autocomplete="off"
-        onInput=${(e) => { setQ(e.currentTarget.value); setSel(0); }}
-        onKeyDown=${(e) => {
-          if (e.key === 'ArrowDown') { e.preventDefault(); setSel((i) => Math.min(i + 1, hits.length - 1)); }
-          else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((i) => Math.max(i - 1, 0)); }
-          else if (e.key === 'Enter') { e.preventDefault(); pick(hits[sel]); }
-        }} />
-    </div>
-    <div class="palette-list" ref=${list} role="listbox">
-      ${files === null ? html`<div class="palette-empty">Loading…</div>`
-        : !hits.length ? html`<div class="palette-empty">No matching file.</div>`
-          : hits.map((f, i) => html`<button key=${f} role="option" aria-selected=${i === sel} class=${cx('palette-item qo-item', i === sel && 'active')}
-            onClick=${() => pick(f)} onMouseMove=${() => i !== sel && setSel(i)}>
-            <${Icon} name="file" /><span class="qo-name">${nameOf(f)}</span><span class="qo-dir">${parentOf(f)}</span></button>`)}
-    </div>
-  <//>`;
 }

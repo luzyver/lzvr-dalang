@@ -1,17 +1,22 @@
 // CodeMirror for the code editor: one editor state per open file, styled from the panel's own tokens so it follows the
 // theme and accent palette, and the language of each file loaded on demand (vendor/code has a chunk per language).
 import {
-  autocompletion, bracketMatching, closeBrackets, closeBracketsKeymap, Compartment, completionKeymap, crosshairCursor,
-  defaultKeymap, drawSelection, dropCursor, EditorState, EditorView, foldGutter, foldKeymap, highlightActiveLine,
-  highlightActiveLineGutter, highlightSelectionMatches, highlightSpecialChars, HighlightStyle, history, historyKeymap,
-  indentOnInput, indentUnit, indentWithTab, keymap, LanguageDescription, languages, lineNumbers, rectangularSelection,
-  searchKeymap, syntaxHighlighting, tags as t,
+  addCursorAbove, addCursorBelow, autocompletion, bracketMatching, closeBrackets, closeBracketsKeymap, Compartment,
+  completionKeymap, crosshairCursor, defaultKeymap, drawSelection, dropCursor, EditorState, EditorView, ensureSyntaxTree,
+  foldGutter, foldKeymap, highlightActiveLine, highlightActiveLineGutter, highlightSelectionMatches, highlightSpecialChars,
+  HighlightStyle, history, historyKeymap, indentOnInput, indentUnit, indentWithTab, keymap, LanguageDescription, languages,
+  lineNumbers, openSearchPanel, rectangularSelection, searchKeymap, syntaxHighlighting, tags as t,
 } from '../vendor/code/editor.js';
 
-export { EditorState, EditorView };
+export { EditorState, EditorView, openSearchPanel };
+
+/** Word wrap, shared by every open file (Alt+Z switches it). */
+export const wrapping = new Compartment();
+const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
+export const wrapOn = { value: pref('dalang-code-wrap', false) };
 
 const theme = EditorView.theme({
-  '&': { height: '100%', fontSize: '13px', color: 'var(--text)', backgroundColor: 'var(--bg)' },
+  '&': { height: '100%', fontSize: 'var(--code-fs, 13px)', color: 'var(--text)', backgroundColor: 'var(--bg)' },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
   '.cm-content': { caretColor: 'var(--accent)', padding: '6px 0 40vh' },
@@ -87,10 +92,10 @@ function detectIndent(text) {
 }
 
 /**
- * A fresh editor state for a file. `onSave` runs on Ctrl/Cmd+S. CRLF files keep their line breaks (the document
+ * A fresh editor state for a file. `onSave` runs on Ctrl/Cmd+S; `keys` are bindings that win over CodeMirror's. CRLF files keep their line breaks (the document
  * joins lines with them), and the language is filled in once its chunk has loaded.
  */
-export function createState(text, path, { readOnly = false, onSave, onChange } = {}) {
+export function createState(text, path, { readOnly = false, onSave, onChange, keys = [] } = {}) {
   const lang = new Compartment();
   const crlf = /\r\n/.test(text);
   const indent = detectIndent(text);
@@ -103,9 +108,15 @@ export function createState(text, path, { readOnly = false, onSave, onChange } =
       syntaxHighlighting(highlight, { fallback: true }), theme, lang.of([]),
       indentUnit.of(indent), EditorState.tabSize.of(indent === '\t' ? 4 : indent.length),
       crlf ? EditorState.lineSeparator.of('\r\n') : [],
-      EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),
+      wrapping.of(wrapOn.value ? EditorView.lineWrapping : []),
+      EditorState.readOnly.of(readOnly), // still focusable: the cursor, selection and find work
       keymap.of([
         { key: 'Mod-s', preventDefault: true, run: () => { onSave?.(); return true; } },
+        // VS Code's keys where CodeMirror's differ (`keys`, e.g. Ctrl+G: go to line rather than find next), and
+        // Ctrl+Alt+↑/↓ to add a cursor.
+        ...keys,
+        { key: 'Mod-Alt-ArrowUp', preventDefault: true, run: addCursorAbove },
+        { key: 'Mod-Alt-ArrowDown', preventDefault: true, run: addCursorBelow },
         ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, indentWithTab,
       ]),
       EditorView.updateListener.of((u) => { if (u.docChanged || u.selectionSet) onChange?.(u); }),
@@ -124,4 +135,54 @@ export async function loadLanguage(view, doc, path) {
     if (view && view.dalangDoc === doc) { view.dispatch({ effects }); doc.state = view.state; } else doc.state = doc.state.update({ effects }).state;
   } catch { /* stays plain text */ }
   return desc.name;
+}
+
+// ---------- symbols, for "Go to symbol" (Ctrl+Shift+O) ----------
+
+/** Syntax nodes that declare something worth jumping to, across the Lezer grammars (JS/TS, Python, Rust, Go, Java, ...). */
+const DECL = /^(FunctionDeclaration|FunctionDefinition|ClassDeclaration|ClassDefinition|MethodDeclaration|MethodDefinition|InterfaceDeclaration|TypeAliasDeclaration|EnumDeclaration|FunctionItem|StructItem|EnumItem|TraitItem|ImplItem|ModItem|TypeItem|MacroDefinition|FunctionDecl|MethodDecl|TypeSpec|ConstructorDeclaration|RuleSet)$/;
+const NAME = /^(VariableDefinition|PropertyDefinition|TypeDefinition|VariableName|BoundIdentifier|TypeIdentifier|Identifier|DefName|FieldIdentifier|PropertyName|TypeName|Definition)$/;
+const KIND = (node) => (/Class|Struct|Impl|Trait/.test(node) ? 'class' : /Interface|Type|Enum/.test(node) ? 'type'
+  : /Method|Constructor/.test(node) ? 'method' : /Mod/.test(node) ? 'module' : /RuleSet/.test(node) ? 'rule' : 'function');
+/** For grammars without a tree (the legacy modes) or without those nodes: declarations by their usual words. */
+const DECL_LINE = /^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:static\s+)?(function\*?|class|def|fn|func|interface|type|struct|enum|trait|impl|module|sub|proc)\s+([A-Za-z_$][\w$]*)/;
+
+/** The declarations in a file: { name, kind, line, pos } in document order. */
+export function symbolsOf(state) {
+  const out = [];
+  const doc = state.doc;
+  const tree = ensureSyntaxTree(state, doc.length, 300);
+  if (tree) {
+    tree.iterate({
+      enter(n) {
+        if (/^ATXHeading[1-6]$|^SetextHeading[12]$/.test(n.name)) { // Markdown headings
+          const text = doc.sliceString(n.from, n.to).replace(/^#+\s*|\s*#*$/g, '').split('\n')[0];
+          out.push({ name: text, kind: `h${n.name.slice(-1)}`, pos: n.from });
+          return false;
+        }
+        if (n.name === 'VariableDeclaration' && /^(Script|ExportDeclaration)$/.test(n.node.parent?.name)) {
+          const def = n.node.getChild('VariableDefinition');
+          if (def) out.push({ name: doc.sliceString(def.from, def.to), kind: 'variable', pos: def.from });
+          return false;
+        }
+        if (!DECL.test(n.name)) return undefined;
+        if (n.name === 'RuleSet') {
+          out.push({ name: doc.sliceString(n.from, Math.min(n.to, doc.lineAt(n.from).to)).replace(/\s*\{.*$/, ''), kind: 'rule', pos: n.from });
+          return false;
+        }
+        for (let c = n.node.firstChild; c; c = c.nextSibling) {
+          if (NAME.test(c.name)) { out.push({ name: doc.sliceString(c.from, c.to), kind: KIND(n.name), pos: c.from }); break; }
+        }
+        return undefined;
+      },
+    });
+  }
+  if (!out.length) {
+    for (let i = 1; i <= doc.lines && out.length < 2000; i++) {
+      const line = doc.line(i);
+      const m = DECL_LINE.exec(line.text);
+      if (m) out.push({ name: m[2], kind: /class|struct|impl|trait/.test(m[1]) ? 'class' : /interface|type|enum/.test(m[1]) ? 'type' : 'function', pos: line.from + m.index + m[0].length - m[2].length });
+    }
+  }
+  return out.map((sym) => ({ ...sym, line: doc.lineAt(sym.pos).number }));
 }

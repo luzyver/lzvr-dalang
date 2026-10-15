@@ -17,6 +17,17 @@ if (!document.querySelector('link[href="/vendor/code/xterm.css"]')) {
 export const terms = { list: signal([]), active: signal(null), loaded: signal(false) };
 /** id -> { xterm, fit, el, ws, opened, disposed } */
 const sessions = new Map();
+let fontSize = 13;
+
+/** The editor's zoom (Ctrl+= / Ctrl+-) applies to the terminals too. */
+export function setTerminalFontSize(px) {
+  fontSize = px;
+  for (const s of sessions.values()) s.xterm.options.fontSize = px;
+  requestAnimationFrame(() => fitActive());
+}
+
+/** Put the keyboard in the shown terminal. */
+export const focusTerminal = () => requestAnimationFrame(() => fitActive(true));
 
 // ANSI colours that read well on the panel's light and dark backgrounds (Radix steps 9-11).
 const ANSI = {
@@ -100,7 +111,7 @@ async function connect(s) {
 function session(info) {
   if (sessions.has(info.id)) return sessions.get(info.id);
   const xterm = new Terminal({
-    fontFamily: "'Geist Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace", fontSize: 13, lineHeight: 1.25,
+    fontFamily: "'Geist Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace", fontSize, lineHeight: 1.25,
     cursorBlink: true, scrollback: 5000, allowProposedApi: false, theme: themeNow(),
   });
   const fit = new FitAddon();

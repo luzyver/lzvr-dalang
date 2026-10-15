@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { badName } from '../src/code-routes.js';
+import { badName, globList, searchRegExp } from '../src/code-routes.js';
 import { Terminals } from '../src/terminals.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -165,6 +165,72 @@ describe('code editor: files', () => {
   it('404s for an unknown chat', async () => {
     const { app } = setupApp();
     expect((await app.inject({ url: '/api/conversations/nope/fs/list', headers: AUTH })).statusCode).toBe(404);
+  });
+});
+
+describe('code editor: search and replace in files', () => {
+  it('finds every match with its line, column and a preview', async () => {
+    const { call, dir } = await withChat();
+    writeFileSync(join(dir, 'src', 'b.ts'), 'const alpha = 1;\nconst beta = alpha + alpha;\n');
+    const r = await call('POST', '/fs/search', { query: 'alpha' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ count: 3, truncated: false, results: [{ path: 'src/b.ts' }] });
+    const m = r.json().results[0].matches;
+    expect(m.map((x: { line: number; col: number }) => [x.line, x.col])).toEqual([[1, 7], [2, 14], [2, 22]]);
+    expect(m[1].preview.slice(m[1].at, m[1].at + m[1].len)).toBe('alpha');
+    // Binary files and .git are never searched.
+    expect((await call('POST', '/fs/search', { query: 'PNG' })).json().count).toBe(0);
+  });
+
+  it('honours case, whole word, regex and the include/exclude globs', async () => {
+    const { call, dir } = await withChat();
+    writeFileSync(join(dir, 'src', 'b.ts'), 'Foo foo food\n');
+    writeFileSync(join(dir, 'notes.md'), 'foo\n');
+    const count = async (q: object) => (await call('POST', '/fs/search', q)).json().count;
+    expect(await count({ query: 'foo' })).toBe(4);
+    expect(await count({ query: 'foo', matchCase: true })).toBe(3);
+    expect(await count({ query: 'foo', word: true })).toBe(3);
+    expect(await count({ query: 'fo+d?', regex: true, matchCase: true })).toBe(3);
+    expect(await count({ query: 'foo', include: 'src/**' })).toBe(3);
+    expect(await count({ query: 'foo', exclude: '*.md' })).toBe(3);
+    expect(await count({ query: 'a.b' })).toBe(0); // literal unless regex
+    expect((await call('POST', '/fs/search', { query: '(', regex: true })).statusCode).toBe(400);
+  });
+
+  it('replaces in the files named, literally or with regex groups', async () => {
+    const { call, dir } = await withChat();
+    writeFileSync(join(dir, 'src', 'b.ts'), 'let x = old(1);\nold(2);\n');
+    writeFileSync(join(dir, 'src', 'c.ts'), 'old(3);\n');
+    const lit = await call('POST', '/fs/replace', { query: 'old(', replace: 'neu(', paths: ['src/b.ts'] });
+    expect(lit.json()).toEqual({ files: 1, replacements: 2 });
+    expect(readFileSync(join(dir, 'src', 'b.ts'), 'utf8')).toBe('let x = neu(1);\nneu(2);\n');
+    expect(readFileSync(join(dir, 'src', 'c.ts'), 'utf8')).toBe('old(3);\n'); // not named
+    const re = await call('POST', '/fs/replace', { query: 'neu\\((\\d)\\)', regex: true, replace: 'call($1, 0)', paths: ['src/b.ts', '../outside.ts', '.git/x'] });
+    expect(re.json()).toEqual({ files: 1, replacements: 2 });
+    expect(readFileSync(join(dir, 'src', 'b.ts'), 'utf8')).toBe('let x = call(1, 0);\ncall(2, 0);\n');
+  });
+
+  it('replaces nothing in a read-only project or while an agent works there', async () => {
+    const ro = await withChat({ sandbox: 'read-only' });
+    expect((await ro.call('POST', '/fs/replace', { query: 'hi', replace: 'x', paths: ['README.md'] })).statusCode).toBe(403);
+    const busy = await withChat();
+    busy.dispatcher.isRunning = () => true;
+    expect((await busy.call('POST', '/fs/replace', { query: 'hi', replace: 'x', paths: ['README.md'] })).statusCode).toBe(409);
+    expect(readFileSync(join(busy.dir, 'README.md'), 'utf8')).toBe('# hi\n');
+  });
+
+  it('turns globs and queries into the right expressions', () => {
+    const [ts, src, docs, deep] = [globList('*.ts')[0]!, globList('src/**')[0]!, globList('docs/')[0]!, globList('**/test/*.js')[0]!];
+    expect(ts.test('a/b/c.ts')).toBe(true);
+    expect(ts.test('c.tsx')).toBe(false);
+    expect(src.test('src/a/b.js')).toBe(true);
+    expect(src.test('lib/src/b.js')).toBe(false);
+    expect(docs.test('docs/x.md')).toBe(true);
+    expect(deep.test('test/a.js')).toBe(true);
+    expect(deep.test('pkg/test/a.js')).toBe(true);
+    expect(globList(' , ')).toEqual([]);
+    expect(searchRegExp({ query: 'a.b' }).test('axb')).toBe(false);
+    expect(searchRegExp({ query: 'cat', word: true }).test('concat')).toBe(false);
   });
 });
 
