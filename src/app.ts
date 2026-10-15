@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
@@ -8,6 +9,9 @@ import { clickupClient, clickupRoutes } from './clickup-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { GitError } from './git.js';
+import { GitAuth } from './git-auth.js';
+import { GitUsers } from './git-users.js';
+import { gitAuthRoutes } from './git-auth-routes.js';
 import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
@@ -59,6 +63,12 @@ export function buildApp(
   deps: {
     cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins;
     maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail; clickupFetch?: typeof fetch;
+    /** Settings → Git for the owner; by default the real git, ssh, gh and glab of the user Dalang runs as. */
+    gitAuth?: GitAuth;
+    /** Every other panel user's own git setup (tests: fake CLIs); by default under `<STATE_DIR>/git-users`. */
+    gitUsers?: GitUsers;
+    /** The ssh panel users' setups run (tests: a fake). */
+    gitSshCommand?: string[];
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -145,7 +155,16 @@ export function buildApp(
   const clickup = clickupClient(store, deps.clickupFetch);
   mcpRoutes(app, { cfg, store, dispatcher, push, clickup });
   clickupRoutes(app, { store, client: clickup });
-  gitRoutes(app, { store, dispatcher, cfg });
+  const ghCommand = cfg.ghCommand ?? ['gh'];
+  const glabCommand = cfg.glabCommand ?? ['glab'];
+  const gitUsers = deps.gitUsers ?? new GitUsers({
+    baseDir: join(cfg.stateDir, 'git-users'), store, ghCommand, glabCommand, sshCommand: deps.gitSshCommand,
+    server: deps.gitAuth ?? new GitAuth({ ghCommand, glabCommand, sshDir: join(homedir(), '.ssh') }),
+  });
+  // An agent turn works with the git setup of whoever it runs for, and never stops at a login prompt.
+  dispatcher.gitEnvFor = (name, projectId) => ({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...gitUsers.forName(name, projectId)?.env });
+  gitRoutes(app, { store, dispatcher, cfg, users: gitUsers });
+  gitAuthRoutes(app, { users: gitUsers });
   scheduleRoutes(app, { store, dispatcher });
 
   // Search the chats: titles, prompts and the agents' answers. Every word has to occur (in any order).
@@ -166,7 +185,7 @@ export function buildApp(
     if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
     if (status === 'approved') {
       if (!store.getConversation(a.to_conv)) return reply.code(410).send({ error: 'target conversation no longer exists' });
-      store.enqueue(a.to_conv, a.prompt, []);
+      store.enqueue(a.to_conv, a.prompt, [], '', a.on_behalf);
       dispatcher.kick(a.to_conv);
     }
     store.setApprovalStatus(a.id, status);
@@ -342,8 +361,12 @@ export function buildApp(
     if (email !== undefined) store.setUserEmail(req.params.id, email || null);
     return reply.code(204).send();
   });
-  app.delete<{ Params: { id: string } }>('/api/users/:id', { onRequest: requireAdmin }, (req, reply) =>
-    store.deleteUser(req.params.id) ? reply.code(204).send() : notFound(reply));
+  // Their own git setup (keys, gh/glab logins) goes with them.
+  app.delete<{ Params: { id: string } }>('/api/users/:id', { onRequest: requireAdmin }, (req, reply) => {
+    if (!store.deleteUser(req.params.id)) return notFound(reply);
+    gitUsers.remove(req.params.id);
+    return reply.code(204).send();
+  });
 
   app.get('/api/projects', () => store.listProjects());
 

@@ -1,5 +1,5 @@
 // The Settings dialog: appearance and this device for everyone; defaults, generate prompts, accounts and users for admins;
-// ClickUp for the owner.
+// Git & forges for everyone (the owner: the server's setup) and ClickUp for the owner.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
@@ -9,6 +9,7 @@ import { PALETTES, THEMES, palette, theme } from './theme.js';
 import { enableNotifications } from './notifications.js';
 import { AccountsSection } from './accounts.js';
 import { UsersSection } from './users.js';
+import { GitSection } from './git-auth.js';
 import { signOut } from './session.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -171,6 +172,7 @@ const SECTIONS = [
   ['codex', 'Codex accounts', 'key-round', () => html`<${AccountsSection} backend="codex" />`, true],
   ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
   ['users', 'Users', 'users', UsersSection, true],
+  ['git', 'Git & forges', 'git-branch', GitSection, false],
   ['clickup', 'ClickUp', 'message-square', ClickUpSection, 'owner'],
 ];
 

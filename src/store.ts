@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS schedules (
 export interface Approval {
   id: number; from_conv: string; to_conv: string; prompt: string;
   status: 'pending' | 'approved' | 'rejected'; created_at: string;
+  /** The panel user the sending agent was working for (see QueueItem.on_behalf). */
+  on_behalf: string;
 }
 
 export type Role = 'admin' | 'dev';
@@ -78,8 +80,12 @@ export interface Conversation {
   pr_url: string | null;
   pr_branch: string | null;
 }
-/** `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it. */
-export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[]; author: string }
+/**
+ * `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it.
+ * `on_behalf`: whose git setup the turn uses ('owner' = the server's): the author, or for a prompt one agent sent another
+ * the user that agent was working for.
+ */
+export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[]; author: string; on_behalf: string }
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
@@ -108,7 +114,7 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string }
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
 
 export class Store {
@@ -133,6 +139,8 @@ export class Store {
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
     this.ensureColumn('users', 'email', 'TEXT');
     this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('queue', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('approvals', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
@@ -195,8 +203,8 @@ export class Store {
   removePushSub(endpoint: string): void { this.run('DELETE FROM push_subs WHERE endpoint=?', endpoint); }
   listPushSubs(): { endpoint: string; sub: string }[] { return this.all('SELECT endpoint, sub FROM push_subs ORDER BY rowid'); }
 
-  createApproval(fromConv: string, toConv: string, prompt: string): number {
-    return Number(this.run('INSERT INTO approvals (from_conv,to_conv,prompt) VALUES (?,?,?)', fromConv, toConv, prompt).lastInsertRowid);
+  createApproval(fromConv: string, toConv: string, prompt: string, onBehalf = ''): number {
+    return Number(this.run('INSERT INTO approvals (from_conv,to_conv,prompt,on_behalf) VALUES (?,?,?,?)', fromConv, toConv, prompt, onBehalf).lastInsertRowid);
   }
   getApproval(id: number): Approval | null { return this.get('SELECT * FROM approvals WHERE id=?', id); }
   listApprovals(status: Approval['status']): Approval[] { return this.all('SELECT * FROM approvals WHERE status=? ORDER BY id', status); }
@@ -243,8 +251,9 @@ export class Store {
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
-  enqueue(convId: string, prompt: string, attachments: string[], author = ''): number {
-    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author) VALUES (?,?,?,?)', convId, prompt, JSON.stringify(attachments), author);
+  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author): number {
+    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf) VALUES (?,?,?,?,?)',
+      convId, prompt, JSON.stringify(attachments), author, onBehalf);
     return Number(r.lastInsertRowid);
   }
   listQueue(convId: string): QueueItem[] {

@@ -122,7 +122,136 @@ function RenameBranch({ id, current, onClose, onDone }) {
 }
 
 /** The chat's branch and where its Merge Request goes: a worktree chat's own branch, or the project folder's feature branch. */
-function MergeRequest({ id, s, onDone }) {
+const FORGE_LABEL = { github: 'GitHub', gitlab: 'GitLab' };
+const HELPER_LABEL = {
+  gh: 'gh login', glab: 'glab login', manager: 'Credential Manager', store: 'stored password', cache: 'cached password', osxkeychain: 'macOS keychain',
+};
+const base = (p) => p.split(/[\\/]/).pop();
+/** One or two letters for the author's avatar: the first of the first and of the last word. */
+const initials = (name) => {
+  const w = name.trim().split(/\s+/).filter(Boolean).map((x) => [...x][0]);
+  return (w.length > 1 ? w[0] + w[w.length - 1] : w[0] || '?').toUpperCase();
+};
+
+/**
+ * Which identity and credentials this folder's commits, pushes and Merge Requests use. The forge is asked who that
+ * is only on "Verify" (ssh -T, gh/glab auth status), since that goes over the network.
+ */
+function useCredentials(id, branch) {
+  const [c, setC] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setC(null);
+    api(`/api/conversations/${id}/git/credentials`).then((v) => live && setC(v)).catch(() => live && setC(false));
+    return () => { live = false; };
+  }, [id, branch]);
+  const check = guarded(async () => setC(await api(`/api/conversations/${id}/git/credentials?check=1`)));
+  return [c, check, setC];
+}
+
+/** A verified account (✓ name) or why it could not be verified, at the end of a credentials row. */
+const Verified = ({ ok, children, title }) => html`<span class=${cx('pill', ok ? 'ok' : 'warn', 'id-verified')} title=${title}>
+  <${Icon} name=${ok ? 'circle-check' : 'circle-alert'} class="tiny" />${children}</span>`;
+
+/**
+ * The author of this repository's commits, set in its own config (`git config --local`) rather than the server's global
+ * one. "Use global" drops the repository's own, and the global author applies again.
+ */
+function RepoAuthor({ id, c, onSaved, onClose }) {
+  const local = c.localAuthor || { name: '', email: '' };
+  const [name, setName] = useState(local.name || c.author?.name || '');
+  const [email, setEmail] = useState(local.email || c.author?.email || '');
+  const save = (n, e) => guarded(async () => {
+    onSaved(await api(`/api/conversations/${id}/git/identity`, { method: 'PUT', body: { name: n.trim(), email: e.trim() } }));
+    toast(n.trim() ? 'Author set for this repository' : 'This repository uses the global author again');
+    onClose();
+  });
+  return html`<div class="id-form">
+    <div class="id-form-head"><strong>Author for this repository</strong>
+      <span class="dim">Saved in its <span class="mono">.git/config</span> (worktree chats share it). The global author is not changed.</span></div>
+    <div class="id-form-fields">
+      <label><span>Name</span><input value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="Your Name" /></label>
+      <label><span>Email</span><input type="email" value=${email} onInput=${(e) => setEmail(e.currentTarget.value)} placeholder="you@example.com" /></label>
+    </div>
+    <div class="row">
+      ${(local.name || local.email) && html`<${AsyncButton} class="btn ghost sm" icon="undo-2" onClick=${save('', '')}>Use global<//>`}
+      <div class="spacer"></div>
+      <button class="btn ghost sm" onClick=${onClose}>Cancel</button>
+      <${AsyncButton} class="btn primary sm" onClick=${save(name, email)} disabled=${!name.trim() || !email.trim()}>Save<//>
+    </div>
+  </div>`;
+}
+
+/** Who commits and where the push goes, as a small card between the message and the commit button. */
+function CommitCredentials({ id, c, onCheck, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [id]);
+  if (!c) return html`<div class="id-card id-loading"><div class="id-row"><${Spinner} /><span class="dim small">Reading git config…</span></div></div>`;
+  const a = c.author;
+  const push = c.check?.push;
+  // HTTPS through the gh/glab login: the forge account is also who pushes.
+  const viaCli = c.transport === 'https' && c.forge && c.https.helperKind === c.forge.cli;
+  const verifiable = c.transport === 'ssh' || viaCli;
+
+  let via = null;
+  if (c.transport === 'ssh') {
+    const s = c.ssh;
+    const keys = s.sshCommand ? [] : s.keys;
+    via = html`<span class="chip">SSH</span>
+      <span class="ellip mono" title=${`${s.user || 'git'}@${s.alias}${s.alias !== s.hostName ? ` → ${s.hostName}` : ''}${s.port !== '22' ? `:${s.port}` : ''}`}>${s.alias}${
+        !s.alias.includes(s.hostName) ? html`<span class="faint"> → ${s.hostName}</span>` : ''}</span>
+      ${s.sshCommand ? html`<span class="id-key ellip" title=${s.sshCommand}><${Icon} name="terminal" class="tiny" />core.sshCommand</span>`
+        : keys.length ? html`<span class="id-key ellip" title=${keys.join('\n')}><${Icon} name="key-round" class="tiny" />${keys.map(base).join(', ')}</span>`
+          : html`<span class="warn">no SSH key</span>`}`;
+  } else if (c.transport === 'https') {
+    const h = c.https;
+    via = html`${h.scheme === 'http'
+      ? html`<span class="chip warn" title="Plain HTTP: the password or token travels unencrypted. Use an https:// remote if the server offers it.">HTTP</span>`
+      : html`<span class="chip">HTTPS</span>`}<span class="ellip mono">${h.host}</span>
+      ${h.helper ? html`<span class="id-key ellip" title=${h.helper}><${Icon} name="key-round" class="tiny" />${HELPER_LABEL[h.helperKind] || 'credential helper'}${h.username ? ` · ${h.username}` : ''}</span>`
+        : html`<span class="warn">no credential helper</span>`}`;
+  } else if (c.transport === 'local') via = html`<span class="chip">LOCAL</span><span class="ellip mono">${c.remote.url}</span>`;
+
+  const verified = push ? html`<${Verified} ok=${push.ok} title=${push.output}>${push.ok ? push.account || 'accepted' : 'refused'}<//>`
+    : viaCli && c.check ? html`<${Verified} ok=${!!c.check.forgeAccount}>${c.check.forgeAccount || 'not signed in'}<//>` : null;
+
+  return html`<div class="id-card">
+    ${editing ? html`<${RepoAuthor} id=${id} c=${c} onSaved=${onSaved} onClose=${() => setEditing(false)} />` : html`<div class="id-row">
+      <span class=${cx('id-avatar', !a && 'warn')}>${a ? initials(a.name) : html`<${Icon} name="circle-alert" />`}</span>
+      <div class="id-main">
+        ${a ? html`<div class="id-title">${a.name}<span class=${cx('chip', a.scope === 'local' && 'accent')} title=${a.scope === 'local' ? 'Set in this repository\'s .git/config' : 'From the server\'s global git config'}>${a.scope === 'local' ? 'This repo' : 'Global'}</span></div>
+          <div class="id-sub"><span class="ellip">${a.email}</span></div>`
+          : html`<div class="id-title warn">No commit author</div><div class="id-sub"><span class="ellip" title=${c.authorError}>Set one here or in Settings → Git & forges</span></div>`}
+      </div>
+      <button class="btn ghost sm" title="Use another author for this repository" onClick=${() => setEditing(true)}><${Icon} name="pencil" />${a ? 'Edit' : 'Set'}</button>
+    </div>`}
+    <div class="id-row">
+      <span class="id-avatar icon"><${Icon} name="arrow-up" /></span>
+      <div class="id-main">
+        ${c.remote ? html`<div class="id-title"><span class="ellip mono" title=${c.remote.url}>${c.remote.branch}</span></div>
+          <div class="id-sub">${via}</div>`
+          : html`<div class="id-title">No remote</div><div class="id-sub">The commit stays on this server</div>`}
+      </div>
+      ${verified || (verifiable && html`<${AsyncButton} class="btn ghost sm" icon="shield-check" title="Ask the forge which account this is" onClick=${onCheck}>Verify<//>`)}
+    </div>
+  </div>`;
+}
+
+/** "gh · github.com ✓ luzyver" in the Merge Request card. */
+function MrCredentials({ c, onCheck }) {
+  if (!c?.remote) return null;
+  if (!c.forge) return html`<div class="mr-cred warn small"><${Icon} name="circle-alert" class="tiny" />Cannot tell whether this remote is GitHub or GitLab: set GIT_FORGE.</div>`;
+  const ch = c.check;
+  return html`<div class="mr-cred">
+    <span class="dim small">Opens with</span><span class="chip cli">${c.forge.cli}</span><span class="mono small ellip">${c.forge.host}</span>
+    <div class="spacer"></div>
+    ${!ch ? html`<${AsyncButton} class="btn ghost sm" icon="shield-check" title=${`Ask ${c.forge.cli} which account it is signed in as`} onClick=${onCheck}>Verify<//>`
+      : ch.forgeInstalled === false ? html`<${Verified} ok=${false}>${c.forge.cli} not installed<//>`
+        : html`<${Verified} ok=${!!ch.forgeAccount} title=${ch.forgeAccount ? '' : 'Sign in under Settings → Git & forges'}>${ch.forgeAccount || 'not signed in'}<//>`}
+  </div>`;
+}
+
+function MergeRequest({ id, s, creds, onCheck, onDone }) {
   const w = s.mr;
   const [mrText, setMrText] = useState('');
   const [description, setDescription] = useState('');
@@ -143,6 +272,7 @@ function MergeRequest({ id, s, onDone }) {
     <div class="branch-line"><${Icon} name="git-branch" /><code>${w.branch}</code><${Icon} name="chevron-right" class="tiny dim" /><code>${w.base || 'detached HEAD'}</code></div>
     <div class="dim small">${s.worktree ? 'Own worktree' : 'Project folder'} · ${w.ahead ? `${plural(w.ahead, 'commit')} not in ${w.base || 'the project folder'} yet` : 'nothing to propose yet'}</div>
     ${w.pr && html`<a class="mr-link" href=${w.pr} target="_blank" rel="noopener noreferrer"><${Icon} name="git-pull-request" /><span>${w.pr}</span><${Icon} name="external-link" class="tiny" /></a>`}
+    ${w.ahead > 0 && !w.pr && html`<${MrCredentials} c=${creds} onCheck=${onCheck} />`}
     ${w.ahead > 0 && html`<div class="mr-box">
       <textarea rows="4" value=${mrText} onInput=${(e) => setMrText(e.currentTarget.value)}
         placeholder="Merge Request title on the first line, description below (empty title: the last commit's subject)"></textarea>
@@ -199,6 +329,7 @@ export function ChangesPane({ id }) {
   const [renaming, setRenaming] = useState(false);
   const [history, setHistory] = useState(false);
   const [diffs, loadDiff] = useDiffs(id, files);
+  const [creds, checkCreds, setCreds] = useCredentials(id, s?.branch);
 
   useEffect(() => { setUnpicked(new Set()); setSelected(null); setMessage(''); setBranching(false); setRenaming(false); setHistory(false); }, [id]);
   // The file whose diff is open in the dialog; it closes by itself when that file is no longer changed.
@@ -280,7 +411,7 @@ export function ChangesPane({ id }) {
     <${Modal} open=${renaming} label="Rename branch" class="dialog" onClose=${() => setRenaming(false)}>
       <${RenameBranch} id=${id} current=${s.branch} onClose=${() => setRenaming(false)} onDone=${after} />
     <//>
-    ${s.mr && html`<${MergeRequest} key=${s.mr.branch} id=${id} s=${s} onDone=${() => after()} />`}
+    ${s.mr && html`<${MergeRequest} key=${s.mr.branch} id=${id} s=${s} creds=${creds} onCheck=${checkCreds} onDone=${() => after()} />`}
     ${!files.length ? html`<${Empty} icon="circle-check" title="No uncommitted changes">Everything in this folder is committed.<//>` : html`
       <section class="file-list">
         <div class="file-list-head">
@@ -309,6 +440,7 @@ export function ChangesPane({ id }) {
         <div class="field-head"><span>Commit message</span>
           <${AsyncButton} class="btn ghost sm" icon="sparkles" busyText="Generating…" title="Let the agent write a message for the selected files" onClick=${generate}>Generate<//></div>
         <textarea rows="2" value=${message} placeholder="feat: …" onInput=${(e) => setMessage(e.currentTarget.value)}></textarea>
+        <${CommitCredentials} id=${id} c=${creds} onCheck=${checkCreds} onSaved=${setCreds} />
         <div class="row">
           <${AsyncButton} class="btn primary" icon="git-commit-horizontal" onClick=${commit} disabled=${!picked.length}>
             ${allPicked ? 'Commit & push' : `Commit ${picked.length} & push`}<//>

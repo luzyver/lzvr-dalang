@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -6,14 +7,38 @@ import { capDiff, wholeFile } from './diff.js';
 export class GitError extends Error {}
 
 /**
+ * Whose git setup the commands of the current request use: the environment that points git, gh, glab and ssh at a
+ * panel user's own config, keys and logins, and the `ssh` command that goes with it. Unset: the server's own (the owner).
+ */
+export interface GitContext { env: Record<string, string>; ssh: string[] }
+export const gitContext = new AsyncLocalStorage<GitContext>();
+
+/** The environment for a git/gh/glab child process: no gateway secrets, never a prompt, and the current user's setup. */
+export function gitEnv(): Record<string, string> {
+  const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => !e[0].startsWith('LZVR_') && e[1] !== undefined));
+  return { ...env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...gitContext.getStore()?.env };
+}
+
+const LOGIN_FAILED = /could not read (Username|Password)|Authentication failed|Permission denied \(publickey|terminal prompts disabled|Host key verification failed|auth login|HTTP 401|401 Unauthorized|not logged in/i;
+
+/**
+ * A failure because a panel user (not the owner) has no login for that server yet says where to add one: they never
+ * fall back to the server's credentials.
+ */
+export function withLoginHint(message: string): string {
+  return gitContext.getStore() && LOGIN_FAILED.test(message)
+    ? `${message}\n\nSign in for this server under Settings → Git & forges (your own login: pushes never use the server's).`
+    : message;
+}
+
+/**
  * Run git in `cwd` without a shell. Repository hooks may run (commit, merge), so like the agent they must not see the
  * gateway's own secrets.
  */
 export function git(cwd: string, args: string[], timeoutMs = 60_000): Promise<string> {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('LZVR_')));
   return new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, ...args], { env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout: timeoutMs, maxBuffer: 32e6 }, (err, out, stderr) => {
-      if (err) reject(new GitError((String(stderr).trim() || err.message).slice(-2000)));
+    execFile('git', ['-C', cwd, ...args], { env: gitEnv(), timeout: timeoutMs, maxBuffer: 32e6 }, (err, out, stderr) => {
+      if (err) reject(new GitError(withLoginHint((String(stderr).trim() || err.message).slice(-2000))));
       else resolve(out);
     });
   });
@@ -154,19 +179,25 @@ export interface PushResult {
  * same name, which then becomes its upstream. Never throws: a failed push is reported, the local commit stays.
  */
 export async function push(cwd: string): Promise<PushResult> {
-  const branch = await currentBranch(cwd);
-  const { main } = await remotesOf(cwd);
-  if (!branch || !main) return { pushed: null };
-  const cfg = (key: string) => git(cwd, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
-  const [upstreamRemote, upstreamRef] = await Promise.all([cfg('remote'), cfg('merge')]);
-  const remote = upstreamRemote || main;
-  const target = upstreamRef || `refs/heads/${branch}`;
+  const t = await pushTarget(cwd);
+  if (!t) return { pushed: null };
+  const { branch, remote, target, upstream } = t;
   try {
-    await git(cwd, ['push', ...(upstreamRef ? [] : ['-u']), remote, `${branch}:${target}`], 120_000);
+    await git(cwd, ['push', ...(upstream ? [] : ['-u']), remote, `${branch}:${target}`], 120_000);
     return { pushed: `${remote}/${target.replace(/^refs\/heads\//, '')}` };
   } catch (e) {
     return { pushed: null, error: (e as Error).message };
   }
+}
+
+/** Where `push` sends the checked-out branch: its upstream, else the same name on `origin` (or the only remote). */
+export async function pushTarget(cwd: string): Promise<{ branch: string; remote: string; target: string; upstream: boolean } | null> {
+  const branch = await currentBranch(cwd);
+  const { main } = await remotesOf(cwd);
+  if (!branch || !main) return null;
+  const cfg = (key: string) => git(cwd, ['config', `branch.${branch}.${key}`]).then((v) => v.trim(), () => '');
+  const [upstreamRemote, upstreamRef] = await Promise.all([cfg('remote'), cfg('merge')]);
+  return { branch, remote: upstreamRemote || main, target: upstreamRef || `refs/heads/${branch}`, upstream: !!upstreamRef };
 }
 
 /** The remotes, and the one to use by default: `origin`, else the first. */

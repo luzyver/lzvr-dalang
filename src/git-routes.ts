@@ -4,6 +4,9 @@ import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createPullRequest, remoteRepo } from './forge.js';
 import * as git from './git.js';
+import type { GitUsers } from './git-users.js';
+import { gitContext } from './git.js';
+import type { AuthUser } from './util.js';
 import type { Conversation, Project, Store } from './store.js';
 
 /**
@@ -194,8 +197,19 @@ export function cleanMessage(text: string): string {
   return m;
 }
 
-export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher; cfg: Config }): void {
-  const { store, dispatcher, cfg } = deps;
+export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher; cfg: Config; users: GitUsers }): void {
+  const { store, dispatcher, cfg, users } = deps;
+
+  // Every git, gh, glab and ssh these routes run works as the caller: the owner with the server's setup, anyone else
+  // with their own (see GitUsers). A callback hook, so the context carries into the handler (as @fastify/request-context does).
+  app.addHook('preHandler', (req, _reply, done) => {
+    const id = /^\/api\/conversations\/([^/?]+)\/git(?:[/?]|$)/.exec(req.url)?.[1];
+    if (id && req.user && req.user.id !== null) {
+      const conv = store.getConversation(decodeURIComponent(id));
+      gitContext.enterWith(users.context(req.user.id, conv?.project_id));
+    }
+    done();
+  });
   const notFound = (reply: Reply) => reply.code(404).send({ error: 'not found' });
 
   /** The chat, its project and the folder git runs in, or null after replying 404. */
@@ -252,6 +266,54 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     // Commits on the branch that its target (or, if a worktree had none, the project folder's HEAD) does not have yet.
     const mr = t && { branch: t.branch, base: t.base.name, ahead: await aheadOf(c.project.path, t), pr: prFor(c.conv, t.branch) };
     return { ...s, worktree: c.conv.worktree ? mr : null, mr };
+  });
+
+  /**
+   * What the credentials card shows, for whoever asks: the owner sees the server's setup; anyone else their own, with
+   * the author Dalang sets for them (their project author, else their global one) rather than the repository's.
+   */
+  const credentialsFor = async (req: { user?: AuthUser }, c: { cwd: string; project: Project }, check: boolean) => {
+    const userId = req.user?.id ?? null;
+    const ctx = users.forUser(userId, c.project.id);
+    const out = await users.auth(userId).credentials(c.cwd, { forge: cfg.forge, check, env: ctx?.env });
+    if (userId === null) return out;
+    const id = users.identity(userId, c.project.id);
+    const repo = users.repoIdentity(userId, c.project.id);
+    return {
+      ...out, author: id, localAuthor: repo ?? { name: '', email: '' },
+      ...(id ? { authorError: undefined } : { authorError: 'set your name and email in Settings → Git & forges' }),
+    };
+  };
+
+  // Who a commit here is by and which credentials its push and Merge Request use. `check=1` also asks the forge
+  // which account that is (ssh -T, gh/glab auth status): slower, so the panel asks for it on demand.
+  app.get<{ Params: { id: string }; Querystring: { check?: string } }>('/api/conversations/:id/git/credentials', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    return credentialsFor(req, c, req.query.check === '1');
+  });
+
+  // The author for this repository only; both empty: the global one again. For the owner that is the repository's own
+  // config (`git config --local`, shared by its worktrees); for anyone else Dalang keeps it per user and project.
+  app.put<{ Params: { id: string }; Body: { name: string; email: string } }>('/api/conversations/:id/git/identity', {
+    schema: { body: { type: 'object', required: ['name', 'email'], additionalProperties: false, properties: {
+      name: { type: 'string', maxLength: 200 }, email: { type: 'string', maxLength: 200 },
+    } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    const name = req.body.name.trim();
+    const email = req.body.email.trim();
+    if (email && !/^[^\s@]+@[^\s@]+$/.test(email)) return reply.code(400).send({ error: 'that does not look like an email address' });
+    if (!name !== !email) return reply.code(400).send({ error: 'give both a name and an email, or neither to use the global ones' });
+    const userId = req.user?.id ?? null;
+    if (userId === null) {
+      try { await users.server.setIdentity(name, email, c.cwd); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    } else users.setRepoIdentity(userId, c.project.id, name ? { name, email } : null);
+    return credentialsFor(req, c, false);
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>('/api/conversations/:id/git/diff', {

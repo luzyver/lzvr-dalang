@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { GitError } from './git.js';
+import { GitError, gitContext, gitEnv, withLoginHint } from './git.js';
 
 /** Where a repository is hosted, which decides the CLI that opens the Merge Request: `gh` or `glab`. */
 export type Forge = 'github' | 'gitlab';
@@ -27,8 +27,10 @@ export function forgeOf(host: string): Forge | null {
  * common, and neither `gh` nor `glab` knows them; `ssh -G` prints what the alias stands for. The name itself if that fails.
  */
 export function sshHostName(alias: string): Promise<string> {
+  // The current user's ssh (their own ~/.ssh/config stand-in), so their aliases resolve too.
+  const [ssh, ...pre] = gitContext.getStore()?.ssh ?? ['ssh'];
   return new Promise((resolve) => {
-    execFile('ssh', ['-G', '--', alias], { timeout: 10_000 }, (err, out) => {
+    execFile(ssh!, [...pre, '-G', '--', alias], { timeout: 10_000, env: gitEnv() }, (err, out) => {
       const name = err ? null : /^hostname\s+(\S+)/im.exec(String(out))?.[1];
       resolve((name ?? alias).toLowerCase());
     });
@@ -75,13 +77,13 @@ const lastUrl = (text: string) => [...text.matchAll(URL_RE)].map((m) => m[0]).po
  */
 export function createPullRequest(o: PullRequestOpts): Promise<{ url: string; existed: boolean }> {
   const [cmd, ...pre] = o.command;
-  // Like git: the CLI must not see the gateway's secrets, and must never wait for an answer on a terminal.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('LZVR_')));
+  // Like git: the CLI must not see the gateway's secrets, must never wait for an answer on a terminal, and signs in as
+  // whoever asked (gitEnv: the panel user's own gh/glab login, or the server's for the owner).
   const name = o.forge === 'github' ? 'gh' : 'glab';
   return new Promise((resolve, reject) => {
     execFile(cmd!, [...pre, ...pullRequestArgs(o)], {
       cwd: o.cwd, timeout: 120_000, maxBuffer: 8e6,
-      env: { ...env, GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', GIT_TERMINAL_PROMPT: '0' },
+      env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1' },
     }, (err, out, stderr) => {
       const text = `${out}\n${stderr}`;
       if (!err) {
@@ -91,7 +93,7 @@ export function createPullRequest(o: PullRequestOpts): Promise<{ url: string; ex
       const existing = /already exists/i.test(text) ? lastUrl(text) : null;
       if (existing) return resolve({ url: existing, existed: true });
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new GitError(`${name} is not installed on the server (or not on PATH)`));
-      reject(new GitError(`${name} failed: ${(String(stderr).trim() || err.message).slice(-1500)}`));
+      reject(new GitError(withLoginHint(`${name} failed: ${(String(stderr).trim() || err.message).slice(-1500)}`)));
     });
   });
 }

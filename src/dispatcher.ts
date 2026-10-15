@@ -73,6 +73,11 @@ export class Dispatcher {
   private bus = new EventEmitter();
   private stopping = false;
   private mcpTokens = new Map<string, { convId: string; author: string }>(); // token -> the turn it was minted for
+  /**
+   * The environment that makes git, gh, glab and ssh inside a turn work as the panel user it runs for (QueueItem.on_behalf,
+   * by name; 'owner' = the server's own setup). Set by the app; unset, turns use whatever the server has.
+   */
+  gitEnvFor?: (name: string, projectId: string) => Record<string, string>;
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
 
   constructor(private store: Store, private opts: DispatcherOpts) {
@@ -300,6 +305,8 @@ export class Dispatcher {
     let workDone = false; // did an earlier attempt of THIS turn already do something (run a command, answer, ...)?
     // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
     const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
+    // The agent's own git commands (commit, push) work as the user this turn runs for, never as someone else.
+    const gitEnv = this.gitEnvFor?.(item.on_behalf || item.author, project.id) ?? {};
     // `codex exec` cannot ask before an MCP call (it fails with "requires approval, but approval policy is never"), so
     // the gateway's tools are approved up front; the per-turn token already limits them to what this chat may do.
     const extraArgs = this.opts.mcpUrl && !claude
@@ -340,7 +347,7 @@ export class Dispatcher {
           ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
-        const env = mcpToken ? { ...this.opts.env, LZVR_MCP_TOKEN: mcpToken } : this.opts.env;
+        const env = { ...this.opts.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,

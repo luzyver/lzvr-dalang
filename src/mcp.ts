@@ -30,9 +30,10 @@ const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'unblock_accoun
 /**
  * `source` is the conversation the calling agent runs in, taken from its per-turn token (never from a header it
  * could forge), or null for an outside client holding the main token. Only a send from one conversation into a
- * different one counts as "cross-conversation" and may need approval.
+ * different one counts as "cross-conversation" and may need approval. `onBehalf`: the panel user the caller works for
+ * (an agent: whoever sent its turn's prompt), so a prompt it sends runs with that user's git setup, not the server's.
  */
-function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean): McpServer {
+function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean, onBehalf = ''): McpServer {
   const { cfg, store, dispatcher, push } = d;
   const server = new McpServer({ name: 'dalang', version: '0.1.0' });
   const tools = new Map<string, { remove(): void }>();
@@ -97,11 +98,11 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   }, async ({ conversation_id, prompt }) => {
     if (!conv(conversation_id)) return noConv(conversation_id);
     if (source && source !== conversation_id && cfg.mcpCrossSend === 'approve') {
-      const approvalId = store.createApproval(source, conversation_id, prompt);
+      const approvalId = store.createApproval(source, conversation_id, prompt, onBehalf);
       void push.notify({ title: 'Approval needed', body: `A chat wants to message another one: ${prompt.slice(0, 80)}`, convId: source });
       return text({ status: 'pending_approval', approval_id: approvalId });
     }
-    const queueId = store.enqueue(conversation_id, prompt, []);
+    const queueId = store.enqueue(conversation_id, prompt, [], '', onBehalf);
     dispatcher.kick(conversation_id);
     return text({ status: 'queued', queue_id: queueId });
   });
@@ -208,7 +209,8 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
 export function mcpRoutes(app: FastifyInstance, d: Deps): void {
   app.post('/mcp', async (req, reply) => {
     const owner = req.mcpConv ? req.mcpAuthor === 'owner' : req.user?.id === null;
-    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner);
+    const onBehalf = req.mcpConv ? req.mcpAuthor ?? '' : req.user?.name ?? '';
+    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner, onBehalf);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => { void transport.close(); void server.close(); });

@@ -461,6 +461,37 @@ dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, c
 .lines.split td.no:nth-child(3) { border-left: 1px solid var(--line); }
 .commit-box { display: grid; gap: 8px; }
 .field-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); font-weight: 550; }
+/* who commits and where the push goes (Changes tab) */
+.id-card { display: grid; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
+.id-row { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 10px; min-width: 0; }
+.id-row + .id-row, .id-form + .id-row, .id-row + .id-form { border-top: 1px solid var(--line); }
+.id-avatar { flex: none; width: 28px; height: 28px; border-radius: 99px; display: grid; place-items: center; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  background: var(--accent-soft); color: var(--accent-text); }
+.id-avatar.icon { background: var(--surface-3); color: var(--text-dim); border-radius: var(--r-md); }
+.id-avatar.warn { background: var(--warn-soft); color: var(--warn); }
+.id-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.id-title { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; overflow: hidden; }
+.id-sub { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; }
+.id-card .ellip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.id-card .faint { color: var(--text-faint); }
+.id-key { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.id-key::before { content: '·'; color: var(--text-faint); margin-right: 2px; }
+.chip { flex: none; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; line-height: 16px; padding: 0 6px; border-radius: 5px;
+  background: var(--surface-3); color: var(--text-dim); }
+.chip.accent { background: var(--accent-soft); color: var(--accent-text); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.cli { text-transform: none; letter-spacing: 0; font: 600 11px var(--mono); }
+.id-sub > .ellip { flex: 0 1 auto; }
+.id-sub > .id-key { flex: 0 0 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.id-verified { display: inline-flex; align-items: center; gap: 4px; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-loading .id-row { color: var(--text-dim); }
+.id-form { display: grid; gap: 10px; padding: 12px; }
+.id-form-head { display: grid; gap: 2px; font-size: var(--fs-sm); }
+.id-form-head .dim { font-size: 12px; }
+.id-form-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.id-form-fields label { display: grid; gap: 4px; font-size: 12px; color: var(--text-dim); min-width: 0; }
+.mr-cred { display: flex; align-items: center; gap: 7px; min-width: 0; padding-top: 2px; }
+.mr-cred > .i.tiny { margin-right: 2px; }
 .commit-box textarea { font: 13px var(--mono); }
 .info { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px 14px; margin: 0; font-size: var(--fs-sm); }
 .info dt { color: var(--text-faint); }
@@ -578,6 +609,25 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .login-code { font-size: 16px; font-weight: 600; letter-spacing: .08em; padding: 2px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-sm); user-select: all; }
 .login-log summary { cursor: pointer; font-size: 12.5px; color: var(--text-faint); }
 .login-log pre { margin: 6px 0 0; padding: 10px; background: var(--surface-3); border-radius: var(--r-md); font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+/* Settings → Git & forges: a tab per topic, each a list of rows (.id-card, as in the Changes tab) */
+.git-settings { display: grid; gap: 12px; }
+.git-settings > .seg { justify-self: start; }
+.git-scope { display: flex; align-items: flex-start; gap: 9px; padding: 9px 12px; border-radius: var(--r-md); font-size: var(--fs-sm); line-height: 1.45;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text-dim); }
+.git-scope strong { color: var(--text); }
+.git-scope > .i { margin-top: 2px; }
+.git-scope.user { background: var(--accent-soft); border-color: var(--accent-line); }
+.git-lead { margin: 0; }
+.git-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 -4px; min-height: 28px; font-size: var(--fs-sm); }
+.git-settings .id-card { background: var(--surface); }
+.git-settings .id-row { padding: 9px 8px 9px 12px; }
+.git-settings .id-row > input.grow { flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.git-settings .id-row .menu { flex: none; }
+.id-form-fields.three { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.git-alt { display: grid; gap: 8px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.git-alt > .btn { justify-self: start; }
+.ssh-out { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--surface-2); font-size: 12px; max-height: 160px; overflow: auto; white-space: pre-wrap;
+  border-radius: 0 0 var(--r-lg) var(--r-lg); }
 .users td.actions { text-align: right; white-space: nowrap; }
 .users select { min-height: 30px; padding-top: 3px; padding-bottom: 3px; width: auto; }
 
