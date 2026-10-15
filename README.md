@@ -411,6 +411,11 @@ changed, writes `.env` from `.env.example` with a fresh `LZVR_TOKEN` on the firs
 `gh.exe` and `glab.exe` when `.env` does not set `CODEX_BIN` / `CLAUDE_BIN` / `GH_BIN` / `GLAB_BIN`, then builds and
 starts. `run.cmd -Dev` runs `src/main.ts` through tsx without building; `-Install` forces `npm ci`.
 
+To keep it running in the background from every logon, `autostart.cmd install` registers a `Dalang` Task Scheduler
+task that runs `scripts\run.ps1` hidden, logging to `state\autostart.log`. After an update, `autostart.cmd restart`
+pulls (`--ff-only`; `-NoPull` skips it), stops the task, frees the port and starts it again, which rebuilds. Also
+`stop`, `status` and `uninstall`. Don't run `restart` or `stop` from a Dalang chat: it stops the server running it.
+
 The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in
 `@preact/signals`. Its libraries and fonts are copied from `node_modules` into `public/vendor` and `public/fonts` by
 `npm run vendor` (run it after updating one of them); bare imports are rewritten to relative ones there, since the CSP
