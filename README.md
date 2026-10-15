@@ -124,6 +124,11 @@ WantedBy=multi-user.target
 systemctl daemon-reload && systemctl enable --now lzvr-dalang
 ```
 
+To update later, run `scripts/update.sh` in the checkout: it pulls (`--ff-only`; `--no-pull` skips it), runs `npm ci`
+when the lockfile changed, builds, restarts the service and waits for the port, printing the journal if it does not come
+up. A failed pull or build leaves the running service alone. From your machine: `ssh server 'cd /opt/lzvr-dalang &&
+scripts/update.sh'`. Don't run it from a Dalang chat: the restart stops the server running that chat.
+
 ### nginx (HTTPS)
 
 Dalang listens on `127.0.0.1:9876` only, so put nginx in front. `nginx.conf` in this repo is a ready server block on
