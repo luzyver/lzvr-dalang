@@ -265,7 +265,9 @@ describe('ClickUp tools', () => {
     const owner = await t.connect();
     expect((await clickupNames(owner)).sort()).toEqual(CLICKUP);
     const r = await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-10', overtime_only: true });
-    expect(r.json.messages.map((m: { id: string }) => m.id)).toEqual(['m3', 'm4']);
+    expect(r.json.messages.map((m: { id: string }) => m.id)).toEqual(['m3', 'd1m', 'm4']);
+    const only = await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-10', workspace_ids: ['901'] });
+    expect(only.json.messages.map((m: { id: string }) => m.id)).toEqual(['d1m']);
     expect((await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-01' })).isError).toBe(true);
     for (const role of ['admin', 'dev'] as const) {
       const u = await mkUser(t, `u-${role}`, role);
@@ -318,7 +320,7 @@ describe('Settings → ClickUp', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(400);
     await put(t, { token: 'pk_test', workspaceId: '', timeZone: '', workHours: '' });
     const r = await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH });
-    expect(r.json()).toMatchObject({ user: { username: 'luz' }, workspace: { id: '900' }, time_zone: 'Asia/Jakarta' });
+    expect(r.json()).toMatchObject({ user: { username: 'luz' }, workspaces: [{ id: '900' }, { id: '901' }], time_zone: 'Asia/Jakarta' });
     await put(t, { token: 'pk_wrong', workspaceId: '', timeZone: '', workHours: '' });
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(502);
   });

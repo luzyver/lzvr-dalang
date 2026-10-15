@@ -138,8 +138,8 @@ function ClickUpSection() {
       <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
         <input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)}
           placeholder=${s.configured ? '••••••••' : 'pk_...'} /><//>
-      <${Field} label="Workspace ID" hint="Only when the token has several workspaces; empty = the first one.">
-        <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="first workspace" /><//>
+      <${Field} label="Default workspace ID" hint="Empty = every workspace the token can see. A chat can still ask for a particular one.">
+        <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="all workspaces" /><//>
     </section>
     <section class="form-card">
       <strong>Overtime</strong>
@@ -158,7 +158,8 @@ function ClickUpSection() {
     </div>
     ${result && (result.ok
       ? html`<p class="small"><${Icon} name="circle-check" /> Connected as <strong>${result.user.username || result.user.email}</strong>
-          in <strong>${result.workspace.name || result.workspace.id}</strong>, time zone ${result.time_zone}, work hours ${result.work_hours}.</p>`
+          with ${result.workspaces.length} workspace(s): ${result.workspaces.map((w) => `${w.name || 'unnamed'} (${w.id})`).join(', ')}.
+          Time zone ${result.time_zone}, work hours ${result.work_hours}.</p>`
       : html`<div class="form-error" role="alert">${result.error}</div>`)}`;
 }
 

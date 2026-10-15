@@ -305,18 +305,21 @@ keep secrets out of what Codex can read if that matters to you. Agents can also 
 ### ClickUp
 
 Set up in the panel: **Settings → ClickUp** (shown to the owner only). Paste a personal API token (ClickUp → Settings
-→ Apps → API Token) and Save; **Test connection** shows which ClickUp user and workspace it reads as. Optional: a
-workspace ID (when the token has several; default the first), the time zone (default your ClickUp profile's) and the
+→ Apps → API Token) and Save; **Test connection** shows which ClickUp user it reads as and the workspaces it can see.
+One token reads every workspace that ClickUp user is in (a workspace under another ClickUp login needs that login's
+token, which is not supported). Optional: a default workspace ID (default: all of them; a chat can still ask for
+particular ones), the time zone (default your ClickUp profile's) and the
 work hours (default `09:00-18:00`; messages outside them, or on Saturday/Sunday, count as overtime). The token is stored
 in the database and never sent back to the panel, only its last four characters. **Remove token** turns the tools off.
 
 Once a token is saved, `/mcp` has three more read-only tools:
 
-- `clickup_whoami`: the ClickUp user and workspace it reads as, the time zone and the work hours.
-- `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date).
+- `clickup_whoami`: the ClickUp user it reads as, its workspaces (and the default), the time zone and the work hours.
+- `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date), with
+  their workspace. DMs are named after who they are with (`DM with sari`).
 - `clickup_chat_history`: messages between two dates (at most 93 days per call), oldest first, each with local date,
-  time, weekday, channel and an `overtime` flag, plus one line per day (first and last message, counts). Options:
-  `overtime_only`, `mine_only` (default: only your own messages), `channel_ids`, `work_hours` (e.g. `08:00-17:00`),
+  time, weekday, workspace, channel (DMs and group DMs included) and an `overtime` flag, plus one line per day (first and last message, counts). Options:
+  `workspace_ids`, `overtime_only`, `mine_only` (default: only your own messages), `channel_ids`, `work_hours` (e.g. `08:00-17:00`),
   `include_replies` (thread replies; one more request per thread) and `limit`.
 
 So in a chat you can ask: *"cek chat ClickUp gue bulan September, kapan aja gue lembur dan ngerjain apa?"* The agent asks

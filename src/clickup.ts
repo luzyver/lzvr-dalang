@@ -6,7 +6,7 @@
 
 export interface ClickUpOpts {
   token: string;
-  /** Workspace (team) id; the token's first workspace when unset. */
+  /** Workspace (team) id read when a call names none; every workspace the token can see when unset. */
   workspaceId?: string;
   /** IANA time zone the dates are read in; the ClickUp user's own time zone when unset. */
   timeZone?: string;
@@ -20,6 +20,8 @@ export interface HistoryQuery {
   /** Local dates `YYYY-MM-DD`, both included. */
   from: string;
   to: string;
+  /** Default: the configured workspace, else all of them. */
+  workspaceIds?: string[];
   channelIds?: string[];
   /** Only messages written by the token's own user (default true). */
   mineOnly?: boolean;
@@ -30,7 +32,8 @@ export interface HistoryQuery {
   limit?: number;
 }
 
-interface Channel { id: string; name: string; type: string }
+interface Channel { id: string; name: string; type: string; workspace_id: string; workspace: string }
+interface Workspace { id: string; name: string; members: Map<string, string> }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; replies_count?: number; parent_message?: string }
 
 export const DEFAULT_WORK_HOURS = '09:00-18:00';
@@ -90,7 +93,8 @@ export class ClickUp {
   private readonly base: string;
   private readonly fetch: typeof fetch;
   private me?: Promise<{ id: string; username: string; email: string; timezone: string | null }>;
-  private team?: Promise<{ id: string; name: string; members: Map<string, string> }>;
+  private teams?: Promise<Workspace[]>;
+  private dmNames = new Map<string, string>(); // DM channel id -> "DM with ...", learned once
 
   constructor(private readonly o: ClickUpOpts) {
     parseWorkHours(o.workHours);
@@ -128,17 +132,28 @@ export class ClickUp {
     return this.me;
   }
 
-  private workspace() {
-    this.team ??= this.get('/api/v2/team').then((r) => {
-      const teams: any[] = r.teams ?? [];
-      const t = this.o.workspaceId ? teams.find((x) => String(x.id) === this.o.workspaceId) : teams[0];
-      if (!t) throw new ClickUpError(this.o.workspaceId ? `the token has no workspace ${this.o.workspaceId}` : 'the token has no workspace');
+  /** Every workspace the token can see, with its members' names. */
+  private allWorkspaces() {
+    this.teams ??= this.get('/api/v2/team').then((r) => ((r.teams ?? []) as any[]).map((t) => {
       const members = new Map<string, string>();
       for (const m of t.members ?? []) if (m.user) members.set(String(m.user.id), m.user.username || m.user.email || String(m.user.id));
       return { id: String(t.id), name: String(t.name ?? ''), members };
-    });
-    this.team.catch(() => { this.team = undefined; });
-    return this.team;
+    }));
+    this.teams.catch(() => { this.teams = undefined; });
+    return this.teams;
+  }
+
+  /** The workspaces a call reads: the ones it names, else the configured one, else all. */
+  private async workspaces(ids?: string[]): Promise<Workspace[]> {
+    const all = await this.allWorkspaces();
+    const want = ids?.length ? ids : this.o.workspaceId ? [this.o.workspaceId] : null;
+    if (!want) {
+      if (!all.length) throw new ClickUpError('the token has no workspace');
+      return all;
+    }
+    const unknown = want.filter((id) => !all.some((w) => w.id === id));
+    if (unknown.length) throw new ClickUpError(`the token has no workspace ${unknown.join(', ')} (it has: ${all.map((w) => `${w.id} ${w.name}`).join(', ')})`);
+    return all.filter((w) => want.includes(w.id));
   }
 
   async timeZone(): Promise<string> {
@@ -148,22 +163,48 @@ export class ClickUp {
   }
 
   async whoami() {
-    const [me, ws, tz] = await Promise.all([this.user(), this.workspace(), this.timeZone()]);
-    return { user: { id: me.id, username: me.username, email: me.email }, workspace: { id: ws.id, name: ws.name }, time_zone: tz, work_hours: this.o.workHours };
+    const [me, all, tz] = await Promise.all([this.user(), this.allWorkspaces(), this.timeZone()]);
+    return {
+      user: { id: me.id, username: me.username, email: me.email }, workspaces: all.map((w) => ({ id: w.id, name: w.name })),
+      default_workspace: this.o.workspaceId ?? 'all', time_zone: tz, work_hours: this.o.workHours,
+    };
   }
 
-  /** Chat channels, DMs and group DMs the user can see; with `sinceMs`, only those with a message since then. */
-  async channels(sinceMs?: number, budget: { left: number } = { left: MAX_REQUESTS }): Promise<Channel[]> {
-    const ws = await this.workspace();
+  /**
+   * Chat channels, DMs and group DMs the user can see, in the given workspaces (default: see `workspaces`); with
+   * `sinceMs`, only those with a message since then. DMs are named after who they are with.
+   */
+  async channels(sinceMs?: number, workspaceIds?: string[], budget: { left: number } = { left: MAX_REQUESTS }): Promise<Channel[]> {
     const out: Channel[] = [];
-    let cursor: string | undefined;
-    do {
-      const r = await this.get(`/api/v3/workspaces/${ws.id}/chat/channels`,
-        { limit: 100, cursor, with_message_since: sinceMs, include_closed: true }, budget);
-      for (const c of r.data ?? []) out.push({ id: String(c.id), name: channelName(c), type: String(c.type ?? '') });
-      cursor = r.next_cursor || undefined;
-    } while (cursor);
+    for (const ws of await this.workspaces(workspaceIds)) {
+      let cursor: string | undefined;
+      do {
+        const r = await this.get(`/api/v3/workspaces/${ws.id}/chat/channels`,
+          { limit: 100, cursor, with_message_since: sinceMs, include_closed: true }, budget);
+        for (const c of r.data ?? []) {
+          const id = String(c.id);
+          out.push({ id, name: this.dmNames.get(id) ?? channelName(c), type: String(c.type ?? ''), workspace_id: ws.id, workspace: ws.name });
+        }
+        cursor = r.next_cursor || undefined;
+      } while (cursor);
+    }
+    await this.nameDms(out, budget);
     return out;
+  }
+
+  /** "DM with sari" / "Group DM: sari, budi" for unnamed DMs: one request each (first page of members), best effort. */
+  private async nameDms(channels: Channel[], budget: { left: number }): Promise<void> {
+    const me = await this.user();
+    for (const c of channels) {
+      if ((c.type !== 'DM' && c.type !== 'GROUP_DM') || this.dmNames.has(c.id) || budget.left <= 0) continue;
+      try {
+        const r = await this.get(`/api/v3/workspaces/${c.workspace_id}/chat/channels/${c.id}/members`, { limit: 100 }, budget);
+        const others = ((r.data ?? []) as any[]).filter((m) => String(m.id) !== me.id).map((m) => m.username || m.name || m.email);
+        if (!others.length) continue;
+        c.name = c.type === 'DM' ? `DM with ${others[0]}` : `Group DM: ${others.join(', ')}`;
+        this.dmNames.set(c.id, c.name);
+      } catch { /* keep the generic name */ }
+    }
   }
 
   /** Top-level messages of a channel from `fromMs` on (newest first from the API), and optionally their replies. */
@@ -199,7 +240,8 @@ export class ClickUp {
   async history(q: HistoryQuery) {
     if (!DATE_RE.test(q.from) || !DATE_RE.test(q.to)) throw new ClickUpError('from and to must be dates like 2026-10-01');
     const hours = parseWorkHours(q.workHours ?? this.o.workHours);
-    const [me, ws, tz] = await Promise.all([this.user(), this.workspace(), this.timeZone()]);
+    const [me, workspaces, tz] = await Promise.all([this.user(), this.workspaces(q.workspaceIds), this.timeZone()]);
+    const members = new Map(workspaces.map((w) => [w.id, w.members]));
     const fromMs = startOfDay(q.from, tz);
     const [y, m, d] = q.to.split('-').map(Number);
     const endMs = startOfDay(new Date(Date.UTC(y!, m! - 1, d! + 1)).toISOString().slice(0, 10), tz); // midnight after `to`
@@ -208,14 +250,14 @@ export class ClickUp {
 
     const budget = { left: MAX_REQUESTS };
     const warnings: string[] = [];
-    const all = await this.channels(fromMs - (q.includeReplies ? REPLY_LOOKBACK_MS : 0), budget);
+    const all = await this.channels(fromMs - (q.includeReplies ? REPLY_LOOKBACK_MS : 0), workspaces.map((w) => w.id), budget);
     const channels = q.channelIds?.length ? all.filter((c) => q.channelIds!.includes(c.id)) : all;
     for (const id of q.channelIds ?? []) if (!all.some((c) => c.id === id)) warnings.push(`channel ${id} not found or has no messages in the range`);
 
     const raw: { m: RawMessage; c: Channel }[] = [];
     for (const c of channels) {
       try {
-        for (const m of await this.channelMessages(ws.id, c.id, fromMs, endMs, Boolean(q.includeReplies), budget)) raw.push({ m, c });
+        for (const m of await this.channelMessages(c.workspace_id, c.id, fromMs, endMs, Boolean(q.includeReplies), budget)) raw.push({ m, c });
       } catch (e) {
         warnings.push(`${c.name}: ${(e as Error).message}`);
         if (budget.left <= 0) { warnings.push('stopped early: too many ClickUp requests for one call; narrow the range or pick channels'); break; }
@@ -230,7 +272,7 @@ export class ClickUp {
         const content = (m.content ?? '').trim();
         return {
           id: m.id, date: p.date, time: p.time, weekday: p.weekday, overtime: isOvertime(p.weekday, p.minutes, hours),
-          channel: c.name, channel_id: c.id, author: ws.members.get(String(m.user_id)) ?? String(m.user_id),
+          workspace: c.workspace, channel: c.name, channel_id: c.id, author: members.get(c.workspace_id)?.get(String(m.user_id)) ?? String(m.user_id),
           ...(m.parent_message && { reply_to: m.parent_message }),
           content: content.length > MAX_CONTENT ? `${content.slice(0, MAX_CONTENT)}…` : content,
           ts: m.date,
@@ -251,7 +293,7 @@ export class ClickUp {
     if (picked.length > limit) warnings.push(`${picked.length} messages matched; only the last ${limit} are listed (raise limit or narrow the range)`);
     return {
       time_zone: tz, work_hours: q.workHours ?? this.o.workHours, overtime_rule: 'outside work hours, or any time on Saturday/Sunday',
-      range: { from: q.from, to: q.to }, user: mineOnly ? me.username : 'everyone', channels_read: channels.length,
+      range: { from: q.from, to: q.to }, user: mineOnly ? me.username : 'everyone', workspaces: workspaces.map((w) => w.name), channels_read: channels.length,
       days: [...days.values()].filter((d) => !q.overtimeOnly || d.overtime_messages > 0),
       messages: picked.slice(-limit).map(({ ts: _ts, ...r }) => r),
       ...(warnings.length && { warnings }),

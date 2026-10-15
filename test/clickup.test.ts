@@ -29,11 +29,15 @@ describe('ClickUp chat history', () => {
     const r = await fakeClient(calls).history({ from: '2026-10-05', to: '2026-10-11' });
     expect(r.time_zone).toBe('Asia/Jakarta');
     expect(r.messages.map((m) => [m.id, m.date, m.time, m.overtime])).toEqual([
-      ['m1', '2026-10-08', '10:00', false], ['m3', '2026-10-08', '20:30', true], ['m4', '2026-10-10', '10:00', true],
+      ['m1', '2026-10-08', '10:00', false], ['m3', '2026-10-08', '20:30', true], ['d1m', '2026-10-09', '23:00', true], ['m4', '2026-10-10', '10:00', true],
     ]);
-    expect(r.messages[0]).toMatchObject({ channel: 'dev-team', author: 'luz', weekday: 'Thu' });
+    expect(r.messages[0]).toMatchObject({ workspace: 'GEM', channel: 'dev-team', author: 'luz', weekday: 'Thu' });
+    // every workspace by default; a DM is named after who it is with
+    expect(r.workspaces).toEqual(['GEM', 'Side']);
+    expect(r.messages[2]).toMatchObject({ workspace: 'Side', channel: 'DM with Budi', channel_id: 'd1' });
     expect(r.days).toEqual([
       { date: '2026-10-08', weekday: 'Thu', messages: 2, overtime_messages: 1, first: '10:00', last: '20:30' },
+      { date: '2026-10-09', weekday: 'Fri', messages: 1, overtime_messages: 1, first: '23:00', last: '23:00' },
       { date: '2026-10-10', weekday: 'Sat', messages: 1, overtime_messages: 1, first: '10:00', last: '10:00' },
     ]);
     // stops paging once it reaches messages older than the range; no replies unless asked
@@ -46,6 +50,25 @@ describe('ClickUp chat history', () => {
     expect(r.messages.map((m) => [m.id, m.author])).toEqual([['m3', 'luz'], ['r1', 'luz']]);
     expect(r.messages[1]).toMatchObject({ reply_to: 'm3', content: 'done, deployed', time: '22:15' });
     expect(r.days).toEqual([{ date: '2026-10-08', weekday: 'Thu', messages: 4, overtime_messages: 2, first: '10:00', last: '22:15' }]);
+  });
+
+  it('reads only the workspaces asked for, or the configured default', async () => {
+    const side = await fakeClient().history({ from: '2026-10-05', to: '2026-10-11', workspaceIds: ['901'] });
+    expect(side.messages.map((m) => m.id)).toEqual(['d1m']);
+    const calls: string[] = [];
+    const gem = await fakeClient(calls, '900').history({ from: '2026-10-05', to: '2026-10-11' });
+    expect(gem.workspaces).toEqual(['GEM']);
+    expect(calls.some((c) => c.includes('/901/'))).toBe(false);
+    await expect(fakeClient().history({ from: '2026-10-05', to: '2026-10-11', workspaceIds: ['777'] })).rejects.toThrow('no workspace 777 (it has: 900 GEM, 901 Side)');
+  });
+
+  it('lists channels across workspaces with DMs named, asking each DM for its members only once', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    const list = await c.channels();
+    expect(list.map((x) => [x.workspace, x.name, x.type])).toEqual([['GEM', 'dev-team', 'CHANNEL'], ['GEM', 'DM with sari', 'DM'], ['Side', 'DM with Budi', 'DM']]);
+    await c.channels();
+    expect(calls.filter((x) => x.includes('/members')).length).toBe(2);
   });
 
   it('takes other work hours, channel filters and a limit', async () => {
@@ -66,8 +89,8 @@ describe('ClickUp chat history', () => {
 
   it('reports who it reads as', async () => {
     expect(await fakeClient().whoami()).toEqual({
-      user: { id: '11', username: 'luz', email: 'luz@example.com' }, workspace: { id: '900', name: 'GEM' },
-      time_zone: 'Asia/Jakarta', work_hours: '09:00-18:00',
+      user: { id: '11', username: 'luz', email: 'luz@example.com' }, workspaces: [{ id: '900', name: 'GEM' }, { id: '901', name: 'Side' }],
+      default_workspace: 'all', time_zone: 'Asia/Jakarta', work_hours: '09:00-18:00',
     });
   });
 });

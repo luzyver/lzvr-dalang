@@ -163,6 +163,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   return server;
 }
 
+const WORKSPACES = z.array(z.string()).optional()
+  .describe('ClickUp workspace ids (from clickup_whoami); default: the one set in Settings, else every workspace');
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
@@ -173,22 +175,22 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
-    description: 'The ClickUp user and workspace the ClickUp tools read as, the time zone dates are given in, and the normal work hours.',
+    description: 'The ClickUp user the ClickUp tools read as, every workspace it can see (and which one is read by default), the time zone dates are given in, and the normal work hours.',
   }, async () => run(() => cu.whoami()));
 
   server.registerTool('clickup_list_channels', {
-    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type). With since, only those with a message since that date.',
-    inputSchema: { since: DATE.optional() },
-  }, async ({ since }) => run(async () => cu.channels(since ? startOfDay(since, await cu.timeZone()) : undefined)));
+    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type, workspace). With since, only those with a message since that date.',
+    inputSchema: { since: DATE.optional(), workspace_ids: WORKSPACES },
+  }, async ({ since, workspace_ids }) => run(async () => cu.channels(since ? startOfDay(since, await cu.timeZone()) : undefined, workspace_ids)));
 
   server.registerTool('clickup_chat_history', {
-    description: 'Read ClickUp Chat messages between two local dates (both included, at most 93 days), oldest first, each with '
-      + 'local date, time, weekday, channel and an overtime flag (outside work hours, or on a weekend). Also returns a per-day '
+    description: 'Read ClickUp Chat messages (channels, DMs and group DMs) between two local dates (both included, at most 93 days), '
+      + 'oldest first, each with local date, time, weekday, workspace, channel and an overtime flag (outside work hours, or on a weekend). Also returns a per-day '
       + 'summary (first/last message time, message and overtime counts). By default only messages the ClickUp user wrote. '
       + 'To find overtime ("lembur"): overtime_only=true, then read the messages of those days (mine_only=false shows the '
       + 'conversation around them). Public holidays are not known: treat them as overtime yourself.',
     inputSchema: {
-      from: DATE, to: DATE,
+      from: DATE, to: DATE, workspace_ids: WORKSPACES,
       channel_ids: z.array(z.string()).optional().describe('only these channels (ids from clickup_list_channels)'),
       mine_only: z.boolean().optional().describe('default true'),
       overtime_only: z.boolean().optional(),
@@ -197,7 +199,7 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
       limit: z.number().int().min(1).max(1000).optional().describe('max messages listed, default 300'),
     },
   }, async (a) => run(() => cu.history({
-    from: a.from, to: a.to, channelIds: a.channel_ids, mineOnly: a.mine_only, overtimeOnly: a.overtime_only,
+    from: a.from, to: a.to, workspaceIds: a.workspace_ids, channelIds: a.channel_ids, mineOnly: a.mine_only, overtimeOnly: a.overtime_only,
     workHours: a.work_hours, includeReplies: a.include_replies, limit: a.limit,
   })));
 }
