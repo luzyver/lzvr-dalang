@@ -27,7 +27,7 @@ describe('panel', () => {
   it('serves every module the panel imports, with the names it imports', async () => {
     const { app } = setupApp();
     const seen = new Set<string>();
-    const queue = ['/app.js'];
+    const queue = ['/app.js', '/js/code-editor.js']; // the editor's module loads with import(), so it is walked too
     // Our modules export one declaration at a time; the vendored (minified) ones end with `export{a as b,...}`.
     const exports = (src: string, name: string) => new RegExp(`^export (async )?(function|const|class|let) ${name}\\b`, 'm').test(src)
       || [...src.matchAll(/export\s*\{([^}]*)\}/g)].some(([, list = '']) => list.split(',').some((e) => e.trim().split(/\s+as\s+/).pop() === name))
@@ -82,6 +82,11 @@ describe('panel', () => {
     expect(h['content-security-policy']).toContain("default-src 'self'");
     expect(h['content-security-policy']).not.toContain('unsafe-inline');
     expect(h['x-frame-options']).toBe('DENY');
+    // The code editor's page alone lets CodeMirror and xterm.js write <style> elements; scripts stay locked down.
+    const code = (await app.inject({ url: '/code' })).headers['content-security-policy'] as string;
+    expect(code).toContain("style-src 'self' 'unsafe-inline'");
+    expect(code).not.toMatch(/script-src[^;]*unsafe/);
+    expect(code).toContain("frame-ancestors 'none'");
     expect(h['x-content-type-options']).toBe('nosniff');
   });
 
