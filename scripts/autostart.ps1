@@ -69,8 +69,10 @@ switch ($Action) {
     if (-not (Test-Path '.env')) { Fail 'No .env yet: run run.cmd once first, it prints the new LZVR_TOKEN.' }
     New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
     $command = "& '$repo\scripts\run.ps1' *>&1 | Out-File -FilePath '$log' -Encoding utf8"
-    $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $repo `
-      -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$command`""
+    # conhost --headless gives it no window at all: with Windows Terminal as the default terminal (the Windows 11
+    # default), -WindowStyle Hidden still leaves a terminal window open.
+    $taskAction = New-ScheduledTaskAction -Execute 'conhost.exe' -WorkingDirectory $repo `
+      -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$command`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
       -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
