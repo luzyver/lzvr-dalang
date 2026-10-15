@@ -37,7 +37,7 @@ export function panelRoutes(app: FastifyInstance): void {
         .header('content-type', type)
         .header('cache-control', 'no-cache')
         .header('etag', etag)
-        .header('content-security-policy', "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+        .header('content-security-policy', "default-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'")
         .header('x-frame-options', 'DENY')
         .header('x-content-type-options', 'nosniff')
         .header('referrer-policy', 'no-referrer');
