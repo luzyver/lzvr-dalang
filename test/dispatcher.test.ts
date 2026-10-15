@@ -175,6 +175,7 @@ describe('Dispatcher', () => {
       expect(item.leaked).toBeUndefined();
       expect(item.args).toContain('mcp_servers.dalang.url="http://127.0.0.1:9876/mcp"');
       expect(item.args).toContain('mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"');
+      expect(item.args).toContain('mcp_servers.dalang.default_tools_approval_mode="approve"');
       expect(d.mcpConversation(item.mcpToken)).toBeNull(); // revoked once the turn ended
     } finally {
       if (saved === undefined) delete process.env.LZVR_TOKEN; else process.env.LZVR_TOKEN = saved;

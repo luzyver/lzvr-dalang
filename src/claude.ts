@@ -22,9 +22,12 @@ export interface ClaudeTurnOpts {
 
 // Claude Code has no OS sandbox, only tool permissions. In headless mode nothing can ask, so each project
 // sandbox maps to the closest fixed policy.
+// read-only is the default mode, not plan mode: headless, default refuses every tool that would need asking (edits,
+// Bash that changes things) while reads still work, and the edit tools are refused outright in case the account's own
+// settings allow them. Plan mode would also refuse MCP tools even when allowed, and end turns asking to leave plan mode.
 // ponytail: workspace-write allows Bash unrestricted (Codex confines it to the workspace); use read-only for untrusted projects.
 const PERMISSION: Record<string, string[]> = {
-  'read-only': ['--permission-mode', 'plan'],
+  'read-only': ['--permission-mode', 'default', '--disallowedTools=Edit,Write,NotebookEdit'],
   'workspace-write': ['--permission-mode', 'acceptEdits', '--allowedTools=Bash'],
   'danger-full-access': ['--permission-mode', 'bypassPermissions'],
 };
@@ -36,6 +39,9 @@ export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' |
   if (o.mcpUrl) {
     const server = { type: 'http', url: o.mcpUrl, headers: { Authorization: 'Bearer ${LZVR_MCP_TOKEN}' } };
     a.push('--mcp-config', JSON.stringify({ mcpServers: { dalang: server } }));
+    // Nothing can ask before an MCP call either, so the gateway's own tools are allowed up front (the per-turn token
+    // already limits them to what this chat may do).
+    a.push('--allowedTools=mcp__dalang');
   }
   a.push(...(o.extraArgs ?? []));
   if (o.threadId) a.push('--resume', o.threadId);

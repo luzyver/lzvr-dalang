@@ -230,7 +230,7 @@ describe('commit message drafts', () => {
 
   it('gives Claude Code no tools and no session either', () => {
     const a = buildClaudeArgs({ sandbox: 'read-only', extraArgs: ['--no-session-persistence', '--tools', ''] });
-    expect(a).toEqual(expect.arrayContaining(['--permission-mode', 'plan', '--no-session-persistence', '--tools', '']));
+    expect(a).toEqual(expect.arrayContaining(['--permission-mode', 'default', '--no-session-persistence', '--tools', '']));
   });
 
   it('strips fences and quotes agents wrap the message in', () => {

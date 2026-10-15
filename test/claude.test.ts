@@ -80,7 +80,16 @@ describe('buildClaudeArgs', () => {
   it('maps the project sandbox to a permission policy and resumes the session', () => {
     const a = buildClaudeArgs({ sandbox: 'workspace-write', threadId: 'sid', model: 'opus', effort: 'high' });
     expect(a).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools=Bash', '--model', 'opus', '--effort', 'high', '--resume', 'sid']));
-    expect(buildClaudeArgs({ sandbox: 'read-only' })).toContain('plan');
-    expect(buildClaudeArgs({ sandbox: 'nonsense' })).toContain('plan'); // unknown sandbox falls back to the safest policy
+    const readOnly = ['--permission-mode', 'default', '--disallowedTools=Edit,Write,NotebookEdit'];
+    expect(buildClaudeArgs({ sandbox: 'read-only' })).toEqual(expect.arrayContaining(readOnly));
+    expect(buildClaudeArgs({ sandbox: 'nonsense' })).toEqual(expect.arrayContaining(readOnly)); // unknown sandbox falls back to the safest policy
+    expect(buildClaudeArgs({ sandbox: 'read-only' })).not.toContain('plan');
+  });
+
+  it('allows the gateway MCP tools when the gateway is given', () => {
+    for (const sandbox of ['read-only', 'workspace-write']) {
+      expect(buildClaudeArgs({ sandbox, mcpUrl: 'http://127.0.0.1:9876/mcp' })).toEqual(expect.arrayContaining(['--mcp-config', '--allowedTools=mcp__dalang']));
+    }
+    expect(buildClaudeArgs({ sandbox: 'read-only' })).not.toContain('--allowedTools=mcp__dalang');
   });
 });

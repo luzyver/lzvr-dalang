@@ -70,7 +70,8 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
-  `CLAUDE_CONFIG_DIR`, with the same failover. Claude Code has no OS sandbox: `read-only` runs in plan mode,
+  `CLAUDE_CONFIG_DIR`, with the same failover. Claude Code has no OS sandbox: `read-only` runs in the default permission mode, where a headless run is refused
+  every tool that would need asking (edits, Bash that changes things) but can read and use this gateway's MCP tools,
   `workspace-write` allows edits and Bash unrestricted, `danger-full-access` bypasses all permission checks.
 
 Not included: running project tests in an isolated Docker-in-Docker sandbox (dropped; see "Scope").
@@ -290,7 +291,9 @@ Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HT
 
 **Two kinds of caller.** An outside client using the main token gets all 15 tools. An agent running inside a chat
 (with `MCP_INJECT=1`, each turn gets its own short-lived token bound to that chat, set up through
-`-c mcp_servers.dalang.url=... -c mcp_servers.dalang.bearer_token_env_var=LZVR_MCP_TOKEN`) gets only
+`-c mcp_servers.dalang.url=... -c mcp_servers.dalang.bearer_token_env_var=LZVR_MCP_TOKEN`, plus
+`default_tools_approval_mode="approve"` since `codex exec` cannot ask before an MCP call; Claude Code gets
+`--mcp-config` and `--allowedTools=mcp__dalang` for the same reason) gets only
 `list_projects`, `list_conversations`, `create_conversation`, `get_conversation`, `send_prompt`, `list_queue`,
 `get_events`, `list_accounts`, `get_approval`. Its token works only on `/mcp`, dies when the turn ends, and the chat
 it claims to be comes from the token, not from anything it sends. A `send_prompt` from an agent into a *different*
@@ -334,9 +337,10 @@ agent that reads files as root could find it (the database), so the "What this d
 applies to it too. One call makes at most 250 ClickUp requests (ClickUp allows about 100 a minute on most plans); a busy workspace over a long
 range may stop early with a warning, so ask for a shorter range or particular channels.
 
-**Verify before relying on it.** The `-c mcp_servers...` keys follow Codex's documented MCP config for HTTP servers
-but were not run against a real Codex here. With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
-if Codex rejects the config, unset `MCP_INJECT` (everything else keeps working).
+**Verify on your versions.** The injected config was run against Codex CLI 0.162.1 (`read-only`: MCP calls work,
+writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then
+refuses every MCP call ("requires approval"). With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
+if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else keeps working).
 
 ## Develop
 

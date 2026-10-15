@@ -300,8 +300,11 @@ export class Dispatcher {
     let workDone = false; // did an earlier attempt of THIS turn already do something (run a command, answer, ...)?
     // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
     const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
+    // `codex exec` cannot ask before an MCP call (it fails with "requires approval, but approval policy is never"), so
+    // the gateway's tools are approved up front; the per-turn token already limits them to what this chat may do.
     const extraArgs = this.opts.mcpUrl && !claude
-      ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"']
+      ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"',
+        '-c', 'mcp_servers.dalang.default_tools_approval_mode="approve"']
       : [];
     const model = conv.model || this.store.getDefaultModel(conv.backend);
     const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
