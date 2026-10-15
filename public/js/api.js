@@ -41,7 +41,8 @@ export async function publicApi(path, body) {
   return res.json();
 }
 
-export async function downloadFile(path, filename) {
+/** A file from the API as a Blob: an <img> or a link cannot send the bearer token itself. */
+export async function fetchBlob(path) {
   const res = await fetch(path, { headers: { authorization: `Bearer ${currentToken()}` } });
   if (res.status === 401) { handleUnauthorized(); throw new Unauthorized(); }
   if (!res.ok) {
@@ -49,7 +50,11 @@ export async function downloadFile(path, filename) {
     try { message = (await res.json()).error || message; } catch { /* not JSON */ }
     throw Object.assign(new Error(message), { status: res.status });
   }
-  const url = URL.createObjectURL(await res.blob());
+  return res.blob();
+}
+
+export async function downloadFile(path, filename) {
+  const url = URL.createObjectURL(await fetchBlob(path));
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;

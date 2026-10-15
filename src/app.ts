@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -38,6 +38,10 @@ declare module 'fastify' {
 const USER_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const digest = (s: string) => createHash('sha256').update(s).digest();
+
+const UPLOAD_IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+};
 
 /** A filename that is safe on Linux and Windows: no directory part, no reserved/illegal characters or device names. */
 function safeName(raw: string): string {
@@ -525,6 +529,23 @@ export function buildApp(
       return reply.code(413).send({ error: `file exceeds ${maxUpload} bytes` });
     }
     return reply.code(201).send({ path: dest });
+  });
+
+  // A file attached to a prompt, for the thread to show it. Images get their type so the panel can preview them; SVG is
+  // left out of that list since it can carry script.
+  app.get<{ Params: { dir: string; name: string } }>('/api/uploads/:dir/:name', (req, reply) => {
+    const real = insideRoot(uploads, join(req.params.dir, req.params.name));
+    if (!real) return notFound(reply);
+    let stat;
+    try { stat = statSync(real); } catch { return notFound(reply); }
+    if (!stat.isFile()) return notFound(reply);
+    return reply
+      .header('content-type', UPLOAD_IMAGE_TYPES[extname(real).toLowerCase()] ?? 'application/octet-stream')
+      .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName(real))}`)
+      .header('content-length', stat.size)
+      .header('cache-control', 'private, max-age=86400')
+      .header('x-content-type-options', 'nosniff')
+      .send(createReadStream(real));
   });
 
   app.get<{ Params: { id: string }; Querystring: { after?: string } }>('/api/conversations/:id/events', (req, reply) => {

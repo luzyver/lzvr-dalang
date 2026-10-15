@@ -6,6 +6,8 @@ import { Icon, Modal, Seg, Spinner } from './ui.js';
 import { Markdown } from './markdown.js';
 import { DiffView, diffStats } from './diff.js';
 import { copyText } from './code.js';
+import { downloadFile, fetchBlob } from './api.js';
+import { toast } from './store.js';
 import { clock, duration, plural, tokens } from './format.js';
 
 /** Re-renders every second: for "running for 2m 14s". */
@@ -181,12 +183,46 @@ export class Block extends Component {
   render({ b, hit, active, root, conversationId }) {
     let body;
     if (b.type === 'user') {
-      body = html`<div class="msg user"><div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
+      body = html`<div class="msg user">${b.files.length > 0 && html`<div class="msg-files">${b.files.map((p) => html`<${Attachment} key=${p} path=${p} />`)}</div>`}
+        <div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
     } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} conversationId=${conversationId} />`;
     else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} />`;
     else body = html`<div class=${cx('note', b.tone)}><${Icon} name=${b.tone === 'err' ? 'circle-alert' : b.tone === 'warn' ? 'triangle-alert' : 'info'} /><span>${b.text}</span></div>`;
     return html`<div class=${cx('block', hit && 'hit')} data-event=${b.eventId}>${body}</div>`;
   }
+}
+
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+
+/** A file sent with a prompt: images as a thumbnail that opens larger, anything else as a chip that downloads it. */
+function Attachment({ path }) {
+  const [dir, name] = path.split(/[\\/]/).slice(-2);
+  const url = `/api/uploads/${encodeURIComponent(dir)}/${encodeURIComponent(name)}`;
+  const image = IMAGE.test(name);
+  const [src, setSrc] = useState(null);
+  const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!image) return;
+    let objectUrl = null;
+    let live = true;
+    fetchBlob(url).then((blob) => { objectUrl = URL.createObjectURL(blob); if (live) setSrc(objectUrl); else URL.revokeObjectURL(objectUrl); })
+      .catch(() => live && setFailed(true));
+    return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [url]);
+  const download = () => downloadFile(url, name).catch((e) => toast(e.message, 'err'));
+  if (image && !failed) {
+    return html`<button class="msg-thumb" title=${name} aria-label=${`Open ${name}`} onClick=${() => setOpen(true)}>
+        ${src ? html`<img src=${src} alt=${name} />` : html`<${Spinner} />`}
+      </button>
+      <${Modal} open=${open} label=${name} class="image-modal" onClose=${() => setOpen(false)}>
+        <img src=${src} alt=${name} />
+        <div class="image-modal-bar"><span class="chip-text">${name}</span>
+          <button class="btn sm" onClick=${download}><${Icon} name="arrow-down-to-line" />Download</button>
+          <button class="icon-btn" aria-label="Close" onClick=${() => setOpen(false)}><${Icon} name="x" /></button></div>
+      <//>`;
+  }
+  return html`<button class="chip msg-file" title=${`Download ${name}`} onClick=${download}><${Icon} name="paperclip" /><span class="chip-text">${name}</span></button>`;
 }
 
 export function Live({ live, since }) {

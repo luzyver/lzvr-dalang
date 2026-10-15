@@ -295,7 +295,8 @@ export class Dispatcher {
 
     const turnId = this.store.startTurn(convId, item.prompt);
     this.store.setStatus(convId, 'running');
-    this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }) }); // so replayed history shows what was asked
+    this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }),
+      ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
     if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
       void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
     }

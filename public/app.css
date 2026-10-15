@@ -284,6 +284,17 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .block.hit > * { outline: 2px solid var(--warn); outline-offset: 6px; border-radius: var(--r-lg); }
 .msg.user { display: grid; justify-items: end; gap: 3px; }
 .msg.user .bubble { max-width: min(85%, 640px); background: var(--surface-3); border: 1px solid var(--line); border-radius: var(--r-xl) var(--r-xl) 6px var(--r-xl); padding: 9px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: min(85%, 640px); }
+.msg-thumb { display: grid; place-items: center; width: 120px; height: 90px; padding: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-3); overflow: hidden; cursor: zoom-in; }
+.msg-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.msg-thumb:hover { border-color: var(--text-faint); }
+.msg .chip.msg-file { height: 26px; padding: 0 10px; gap: 5px; font-family: inherit; font-size: 12.5px; font-weight: 500; line-height: normal; letter-spacing: 0; text-transform: none; border: 1px solid var(--line); border-radius: 99px; background: var(--surface); color: var(--text); cursor: pointer; }
+.msg .chip.msg-file:hover { background: var(--hover); }
+dialog.image-modal { display: none; flex-direction: column; width: auto; }
+dialog.image-modal[open] { display: flex; }
+dialog.image-modal img { display: block; max-width: calc(100vw - 48px); max-height: calc(100dvh - 100px); object-fit: contain; background: var(--surface-3); }
+.image-modal-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); font-size: var(--fs-sm); }
+.image-modal-bar .chip-text { flex: 1; min-width: 0; }
 .msg-meta { font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .msg-author { color: var(--text-dim); font-weight: 500; }
 .msg.agent { font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }

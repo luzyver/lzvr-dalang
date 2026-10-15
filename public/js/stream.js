@@ -101,7 +101,7 @@ export class ThreadModel {
       case 'user.prompt':
         this.#closeSteps();
         this.#turnAgent = null;
-        this.blocks.push({ type: 'user', key: `u${e.id}`, text: d.text || '', author: d.author || '', at, eventId: e.id, v: 0 });
+        this.blocks.push({ type: 'user', key: `u${e.id}`, text: d.text || '', author: d.author || '', files: d.attachments || [], at, eventId: e.id, v: 0 });
         this.#mark = at;
         break;
       case 'turn.started': this.startedAt = at; this.#mark = at; break;
