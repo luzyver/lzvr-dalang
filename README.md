@@ -232,9 +232,21 @@ prints a personal API token **once** (only a hash is stored), for the HTTP/MCP A
 out all their sessions; **Delete** removes their token and sessions at once. Over `/mcp`, a dev's token gets the
 everyday tools only; an admin's gets all 18.
 
-Devs share the same project list (there is no per-project assignment). Note that a dev chatting in a project whose sandbox is
-`danger-full-access` is effectively running commands as root, so keep such projects for admins you trust or give devs only
-`workspace-write`/`read-only` projects.
+Each project has an **access** level, picked when it is added and changeable from its menu in the sidebar:
+
+| Access | Who may open it |
+|---|---|
+| `all` (default) | the owner, admins and devs |
+| `dev` | the owner, admins and devs |
+| `admin` | the owner and admins |
+| `owner` | the owner only |
+
+The owner always sees every project. Anyone else gets a 404 for a project they may not open, its chats and everything in
+them (git, files, terminals, schedules, queue, approvals), and does not find it in lists, search or over `/mcp`. An agent sees
+the projects of the user who sent its turn's prompt (plus its own); one with no such user sees only `all` projects (plus its
+own). An admin may set anything but `owner`, so they cannot lock themselves out; `owner` is set by the owner. Note that a dev chatting in a project whose sandbox is
+`danger-full-access` is effectively running commands as root, so keep such projects for admins you trust (access `admin`)
+or give devs only `workspace-write`/`read-only` projects.
 
 ### Adding Codex accounts
 

@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
 import {
-  approvals, convs, goHome, guarded, isAdmin, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
+  approvals, convs, goHome, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -29,8 +29,12 @@ export async function refreshUsage() {
   } catch { /* shown on the next refresh */ }
 }
 
+/** Who may open a project (the server enforces it). The owner always may; an admin may only pick what keeps them in. */
+const ACCESS = { all: 'Everyone', dev: 'Owner, admins and devs', admin: 'Owner and admins', owner: 'Owner only' };
+const grantable = () => Object.keys(ACCESS).filter((k) => isOwner.value || k !== 'owner');
+
 function AddProject() {
-  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write' });
+  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write', access: 'all' });
   const [error, setError] = useState('');
   const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
   const close = () => { ui.addProject.value = false; };
@@ -51,6 +55,8 @@ function AddProject() {
         <option value="codex">Codex</option><option value="claude">Claude Code</option></select><//>
       <${Field} label="Sandbox"><select value=${form.sandbox} onChange=${set('sandbox')}>
         ${['workspace-write', 'read-only', 'danger-full-access'].map((v) => html`<option value=${v}>${v}</option>`)}</select><//>
+      <${Field} label="Access"><select value=${form.access} onChange=${set('access')}>
+        ${grantable().map((k) => html`<option value=${k}>${ACCESS[k]}</option>`)}</select><//>
     </div>
     ${error && html`<div class="form-error">${error}</div>`}
     <div class="row end"><button class="btn" onClick=${close}>Cancel</button><${AsyncButton} class="btn primary" icon="folder-plus" onClick=${create}>Create<//></div>
@@ -102,6 +108,10 @@ function Project({ p }) {
     await api(`/api/projects/${p.id}`, { method: 'DELETE' });
     await loadProjects();
   });
+  const setAccess = (access) => guarded(async () => {
+    await api(`/api/projects/${p.id}`, { method: 'PATCH', body: { access } });
+    await loadProjects();
+  });
   return html`<div class="project">
     <div class="project-row">
       <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
@@ -110,12 +120,17 @@ function Project({ p }) {
         <span class="project-meta">
           <${Tag} name=${p.backend === 'claude' ? 'asterisk' : 'code-xml'} label=${p.backend === 'claude' ? 'Claude Code' : 'Codex'} />
           <${Tag} ...${SANDBOX_TAGS[p.sandbox]} />
+          ${p.access && p.access !== 'all' && html`<${Tag} name=${p.access === 'owner' ? 'user' : 'users'} label=${`Access: ${ACCESS[p.access]}`} />`}
         </span>
       </button>
       <button class="icon-btn sm row-action" aria-label=${`New chat in ${p.name}`} title="New chat" onClick=${newChat(p)}><${Icon} name="plus" /></button>
       <${Menu} label="Project options" buttonClass="sm row-action">
         <${MenuItem} icon="git-branch" title="A new git branch and folder for this chat only; open a Merge Request for it from Changes" onClick=${newChat(p, true)}>New chat in own worktree<//>
-        ${isAdmin.value && html`<${MenuItem} icon="trash-2" danger onClick=${remove}>Remove project<//>`}
+        ${isAdmin.value && html`<div class="menu-label">Access</div>
+          ${grantable().map((k) => html`<button key=${k} role="menuitemradio" aria-checked=${p.access === k} class="menu-item"
+            onClick=${p.access === k ? undefined : setAccess(k)}><${Icon} name="check" class=${cx(p.access !== k && 'invisible')} /><span>${ACCESS[k]}</span></button>`)}
+          <div class="menu-sep"></div>
+          <${MenuItem} icon="trash-2" danger onClick=${remove}>Remove project<//>`}
       <//>
     </div>
     ${!collapsed && html`<div class="chats">

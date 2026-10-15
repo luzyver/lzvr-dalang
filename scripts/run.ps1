@@ -6,7 +6,9 @@
 # found on PATH / in the global npm folder when .env does not set CODEX_BIN, CLAUDE_BIN, GH_BIN or GLAB_BIN, since a
 # headless spawn cannot run the .cmd shims npm installs. Written for Windows PowerShell 5.1 and PowerShell 7.
 param([switch]$Dev, [switch]$Install)
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': under autostart's *>&1, Windows PowerShell 5.1 turns any stderr line of a native command (an npm warning,
+# a server log line) into a terminating error. Native failures are caught through $LASTEXITCODE instead.
+$ErrorActionPreference = 'Continue'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 function Fail($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }

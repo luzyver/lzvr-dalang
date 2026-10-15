@@ -179,6 +179,9 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .menu-item:hover { background: var(--hover); }
 .menu-item .i { color: var(--text-dim); }
 .menu-item.danger, .menu-item.danger .i { color: var(--err); }
+.menu-label { padding: 6px 10px 2px; font-size: var(--fs-xs); font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
+.menu-item .i.invisible { visibility: hidden; }
+.menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
 
 /* toasts */
 .toasts { position: fixed; left: 50%; top: max(16px, env(safe-area-inset-top)); translate: -50% 0; z-index: 300; display: grid; gap: 8px; justify-items: center; width: min(520px, calc(100vw - 24px)); pointer-events: none; }

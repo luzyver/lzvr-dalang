@@ -18,6 +18,7 @@ function InfoPane({ id }) {
     ['Folder', c?.worktree || project?.path],
     ['Branch', c?.branch && `${c.branch}${c.base_branch ? ` (from ${c.base_branch})` : ''}`],
     ['Sandbox', project?.sandbox],
+    ['Access', project?.access],
     ['Model', c?.model || 'default'],
     ['Effort', c?.effort || 'default'],
     ['Session', c?.thread_id],

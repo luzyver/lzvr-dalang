@@ -9,7 +9,7 @@ import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import type { Store } from './store.js';
-import { SANDBOXES } from './util.js';
+import { canAccess, SANDBOXES } from './util.js';
 
 type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined };
 
@@ -33,7 +33,10 @@ const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'unblock_accoun
  * different one counts as "cross-conversation" and may need approval. `onBehalf`: the panel user the caller works for
  * (an agent: whoever sent its turn's prompt), so a prompt it sends runs with that user's git setup, not the server's.
  */
-function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean, onBehalf = ''): McpServer {
+type Viewer = { id: string | null; role: 'admin' | 'dev' | null };
+
+/** `viewer`: whose project access applies (see canAccess); an agent may always reach its own chat's project. */
+function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean, viewer: Viewer, onBehalf = ''): McpServer {
   const { cfg, store, dispatcher, push } = d;
   const server = new McpServer({ name: 'dalang', version: '0.1.0' });
   const tools = new Map<string, { remove(): void }>();
@@ -42,10 +45,17 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
       tools.set(name, server.registerTool(name, config as any, cb as any));
     },
   };
-  const conv = (id: string) => store.getConversation(id);
+  const ownProject = source ? store.getConversation(source)?.project_id : undefined;
+  const open = (p: { id: string; access: string }) => p.id === ownProject || canAccess(viewer, p.access);
+  // A project, or a chat in one, that the viewer may not open is reported as not existing.
+  const getProject = (id: string) => { const p = store.getProject(id); return p && open(p) ? p : null; };
+  const conv = (id: string | null | undefined) => {
+    const c = id ? store.getConversation(id) : null;
+    return c && getProject(c.project_id) ? c : null;
+  };
   const noConv = (id: string) => fail(`no such conversation: ${id}`);
 
-  s.registerTool('list_projects', { description: 'List registered projects.' }, async () => text(store.listProjects()));
+  s.registerTool('list_projects', { description: 'List registered projects.' }, async () => text(store.listProjects().filter(open)));
 
   s.registerTool('create_project', {
     description: 'Register an existing folder (inside the allowed workspace root) as a project.',
@@ -60,7 +70,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     description: 'Remove a project and its conversations from the gateway (files on disk are untouched).',
     inputSchema: { project_id: z.string() },
   }, async ({ project_id }) => {
-    const project = store.getProject(project_id);
+    const project = getProject(project_id);
     if (!project) return fail(`no such project: ${project_id}`);
     const convs = store.listConversations(project_id);
     for (const c of convs) dispatcher.cancel(c.id);
@@ -71,13 +81,13 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
 
   s.registerTool('list_conversations', {
     description: 'List the conversations of a project.', inputSchema: { project_id: z.string() },
-  }, async ({ project_id }) => (store.getProject(project_id) ? text(store.listConversations(project_id)) : fail(`no such project: ${project_id}`)));
+  }, async ({ project_id }) => (getProject(project_id) ? text(store.listConversations(project_id)) : fail(`no such project: ${project_id}`)));
 
   s.registerTool('create_conversation', {
     description: 'Start a new conversation (a fresh agent session) in a project. With worktree, it works on its own git branch and folder.',
     inputSchema: { project_id: z.string(), worktree: z.boolean().optional() },
   }, async ({ project_id, worktree }) => {
-    const project = store.getProject(project_id);
+    const project = getProject(project_id);
     if (!project) return fail(`no such project: ${project_id}`);
     if (!worktree) return text(store.createConversation(project_id));
     try { return text(await createWorktreeChat(store, cfg, project)); } catch (e) { return fail((e as Error).message); }
@@ -113,7 +123,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
 
   s.registerTool('remove_queue_item', {
     description: 'Remove a queued prompt.', inputSchema: { queue_id: z.number().int() },
-  }, async ({ queue_id }) => (store.deleteQueueItem(queue_id) ? text({ removed: true }) : fail(`no such queue item: ${queue_id}`)));
+  }, async ({ queue_id }) => (conv(store.queueConversation(queue_id)) && store.deleteQueueItem(queue_id) ? text({ removed: true }) : fail(`no such queue item: ${queue_id}`)));
 
   s.registerTool('cancel_turn', {
     description: 'Stop the turn that is currently running in a conversation.', inputSchema: { conversation_id: z.string() },
@@ -153,7 +163,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     const a = store.getApproval(approval_id);
-    return a ? text(a) : fail(`no such approval: ${approval_id}`);
+    return a && conv(a.to_conv) ? text(a) : fail(`no such approval: ${approval_id}`);
   });
 
   // An agent inside a conversation is restricted most; otherwise the caller's role decides.
@@ -210,7 +220,11 @@ export function mcpRoutes(app: FastifyInstance, d: Deps): void {
   app.post('/mcp', async (req, reply) => {
     const owner = req.mcpConv ? req.mcpAuthor === 'owner' : req.user?.id === null;
     const onBehalf = req.mcpConv ? req.mcpAuthor ?? '' : req.user?.name ?? '';
-    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner, onBehalf);
+    // An agent sees the projects of the user whose prompt it runs; with none (an approval, another agent), the shared ones.
+    const author = req.mcpConv && !owner ? d.store.listUsers().find((u) => u.name === req.mcpAuthor) : undefined;
+    const viewer: Viewer = !req.mcpConv ? { id: req.user?.id ?? null, role: req.user?.role ?? 'admin' }
+      : owner ? { id: null, role: 'admin' } : { id: author?.id ?? '', role: author?.role ?? null };
+    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner, viewer, onBehalf);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => { void transport.close(); void server.close(); });

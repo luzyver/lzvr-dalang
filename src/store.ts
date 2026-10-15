@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { Backend } from './util.js';
+import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
-  sandbox TEXT NOT NULL DEFAULT 'workspace-write', backend TEXT NOT NULL DEFAULT 'codex');
+  sandbox TEXT NOT NULL DEFAULT 'workspace-write', backend TEXT NOT NULL DEFAULT 'codex', access TEXT NOT NULL DEFAULT 'all');
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -56,8 +56,8 @@ export type Role = 'admin' | 'dev';
 export interface User { id: string; name: string; role: Role; email: string | null; created_at: string }
 export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string }
 
-/** `backend` is the agent CLI every chat in the project runs on. */
-export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend }
+/** `backend` is the agent CLI every chat in the project runs on; `access` who may open it (see canAccess). */
+export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend; access: ProjectAccess }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
   /** For display: the title the agent gave the chat, or else the start of its first prompt (null before any). */
@@ -129,6 +129,7 @@ export class Store {
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
+    this.ensureColumn('projects', 'access', "TEXT NOT NULL DEFAULT 'all'");
     this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('events', 'created_at', 'TEXT');
     this.ensureColumn('conversations', 'worktree', 'TEXT');
@@ -219,10 +220,13 @@ export class Store {
   getDefaultEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_effort', backend)) ?? ''; }
   setDefaultEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_effort', backend), effort); }
 
-  createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex'): Project {
-    const p = { id: randomUUID(), name, path, sandbox, backend };
-    this.run('INSERT INTO projects (id,name,path,sandbox,backend) VALUES (?,?,?,?,?)', p.id, name, path, sandbox, backend);
+  createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
+    const p = { id: randomUUID(), name, path, sandbox, backend, access };
+    this.run('INSERT INTO projects (id,name,path,sandbox,backend,access) VALUES (?,?,?,?,?,?)', p.id, name, path, sandbox, backend, access);
     return p;
+  }
+  setProjectAccess(id: string, access: ProjectAccess): boolean {
+    return Number(this.run('UPDATE projects SET access=? WHERE id=?', access, id).changes) > 0;
   }
   listProjects(): Project[] { return this.all('SELECT * FROM projects ORDER BY name'); }
   getProject(id: string): Project | null { return this.get('SELECT * FROM projects WHERE id=?', id); }
@@ -258,6 +262,10 @@ export class Store {
   }
   listQueue(convId: string): QueueItem[] {
     return this.all<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY id', convId).map(toItem);
+  }
+  /** The chat a queued prompt waits in, or null. */
+  queueConversation(id: number): string | null {
+    return this.get<{ conversation_id: string }>('SELECT conversation_id FROM queue WHERE id=?', id)?.conversation_id ?? null;
   }
   deleteQueueItem(id: number): boolean { return Number(this.run('DELETE FROM queue WHERE id=?', id).changes) > 0; }
   popQueue(convId: string): QueueItem | null {

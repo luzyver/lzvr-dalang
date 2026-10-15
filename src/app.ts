@@ -23,7 +23,7 @@ import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
-import { type AuthUser, type Backend, BACKENDS, SANDBOXES } from './util.js';
+import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
 import type { Store } from './store.js';
 
 declare module 'fastify' {
@@ -158,6 +158,27 @@ export function buildApp(
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
+  // A project the caller may not open does not exist for them: every route about it, one of its chats or something in
+  // such a chat (schedule, queued prompt, terminal, approval) answers 404. Lists are filtered where they are made.
+  const convProject = (id: string | null | undefined) => (id ? store.getConversation(id)?.project_id : undefined);
+  const routeProject = (url: string, p: Record<string, string>): string | undefined => {
+    if (url.startsWith('/api/projects/:id')) return p.id;
+    if (url.startsWith('/api/conversations/:id')) return convProject(p.id);
+    if (url.startsWith('/api/schedules/:id')) return convProject(store.getSchedule(Number(p.id))?.conversation_id);
+    if (url.startsWith('/api/queue/:id')) return convProject(store.queueConversation(Number(p.id)));
+    if (url.startsWith('/api/approvals/:id')) return convProject(store.getApproval(Number(p.id))?.to_conv);
+    if (url.startsWith('/api/terminals/:tid')) return convProject(terminals.convOf(p.tid ?? ''));
+    return undefined;
+  };
+  app.addHook('onRequest', async (req, reply) => {
+    if (!req.user || !req.routeOptions.url) return;
+    const projectId = routeProject(req.routeOptions.url, req.params as Record<string, string>);
+    const project = projectId && store.getProject(projectId);
+    if (project && !canAccess(req.user, project.access)) return notFound(reply);
+  });
+  /** The ids of the projects this caller may open. */
+  const openable = (user: AuthUser) => new Set(store.listProjects().filter((p) => canAccess(user, p.access)).map((p) => p.id));
+
   panelRoutes(app);
   authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
@@ -186,11 +207,16 @@ export function buildApp(
   }, (req, reply) => {
     const terms = [...new Set(req.query.q.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, 8);
     if (!terms.length) return reply.code(400).send({ error: 'type something to search for' });
-    return store.search(terms, { projectId: req.query.project || undefined }).map((hit) => ({ ...hit, text: snippet(hit.text, terms) }));
+    const ok = openable(req.user!);
+    return store.search(terms, { projectId: req.query.project || undefined }).filter((hit) => ok.has(hit.project_id))
+      .map((hit) => ({ ...hit, text: snippet(hit.text, terms) }));
   });
 
   // Sends that one conversation (via MCP) wants to make into another wait here for a human decision.
-  app.get('/api/approvals', { onRequest: requireAdmin }, () => store.listApprovals('pending'));
+  app.get('/api/approvals', { onRequest: requireAdmin }, (req) => {
+    const ok = openable(req.user!);
+    return store.listApprovals('pending').filter((a) => ok.has(convProject(a.to_conv) ?? ''));
+  });
   const decide = (status: 'approved' | 'rejected') => (req: { params: { id: string } }, reply: any) => {
     const a = store.getApproval(Number(req.params.id));
     if (!a) return notFound(reply);
@@ -380,21 +406,32 @@ export function buildApp(
     return reply.code(204).send();
   });
 
-  app.get('/api/projects', () => store.listProjects());
+  app.get('/api/projects', (req) => store.listProjects().filter((p) => canAccess(req.user!, p.access)));
 
-  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend } }>('/api/projects', {
+  // An admin cannot make a project they could not open themselves (they would lose it): 'owner' is the owner's.
+  const mayGrant = (user: AuthUser, access: ProjectAccess | undefined) => !access || canAccess(user, access);
+  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend; access?: ProjectAccess } }>('/api/projects', {
     onRequest: requireAdmin,
     schema: { body: {
       type: 'object', required: ['name', 'path'], additionalProperties: false,
       properties: {
         name: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
-        sandbox: { enum: [...SANDBOXES] }, backend: { enum: [...BACKENDS] },
+        sandbox: { enum: [...SANDBOXES] }, backend: { enum: [...BACKENDS] }, access: { enum: [...PROJECT_ACCESS] },
       },
     } },
   }, (req, reply) => {
+    if (!mayGrant(req.user!, req.body.access)) return reply.code(403).send({ error: `only the owner can limit a project to ${req.body.access}` });
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
-    return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox, req.body.backend));
+    return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox, req.body.backend, req.body.access));
+  });
+
+  app.patch<{ Params: { id: string }; Body: { access: ProjectAccess } }>('/api/projects/:id', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['access'], additionalProperties: false, properties: { access: { enum: [...PROJECT_ACCESS] } } } },
+  }, (req, reply) => {
+    if (!mayGrant(req.user!, req.body.access)) return reply.code(403).send({ error: `only the owner can limit a project to ${req.body.access}` });
+    return store.setProjectAccess(req.params.id, req.body.access) ? store.getProject(req.params.id) : notFound(reply);
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', { onRequest: requireAdmin }, (req, reply) => {

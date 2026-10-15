@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { CronError, nextRun, parseCron } from './cron.js';
 import type { Dispatcher } from './dispatcher.js';
 import type { Schedule, Store } from './store.js';
+import { canAccess } from './util.js';
 
 /** The server's time zone: cron expressions are read in it. */
 export const serverTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -80,7 +81,10 @@ export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispa
   const notFound = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send({ error: 'not found' });
   const withNames = (id: number) => store.listSchedules().find((s) => s.id === id);
 
-  app.get('/api/schedules', () => store.listSchedules());
+  app.get('/api/schedules', (req) => {
+    const ok = new Set(store.listProjects().filter((p) => canAccess(req.user!, p.access)).map((p) => p.id));
+    return store.listSchedules().filter((s) => ok.has(s.project_id));
+  });
 
   // For the form: when an expression would run, in which time zone, or why it is not valid.
   app.get<{ Querystring: { cron: string } }>('/api/schedules/preview', {
