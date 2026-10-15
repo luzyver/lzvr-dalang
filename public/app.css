@@ -266,7 +266,8 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-sm); }
 .crumb-project { color: var(--text-dim); white-space: nowrap; }
 .crumb-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.backend { font: 600 11px var(--mono); padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text-dim); white-space: nowrap; flex: none; }
+.backend { display: inline-grid; place-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 5px; color: var(--text-dim); flex: none; }
+.backend .i { width: 13px; height: 13px; }
 .status { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 99px; font-size: 12px; font-weight: 550; white-space: nowrap; flex: none; font-variant-numeric: tabular-nums; }
 .status.running { color: var(--ok); background: var(--ok-soft); }
 .status.failed { color: var(--err); background: var(--err-soft); }

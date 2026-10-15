@@ -43,7 +43,8 @@ function ChatHead({ project, conv }) {
   const c = chat.conv.value || conv;
   const git = chat.git.value;
   const status = c?.status || 'idle';
-  const backend = (c?.backend || project?.backend) === 'claude' ? 'Claude Code' : 'Codex';
+  const claude = (c?.backend || project?.backend) === 'claude';
+  const backend = claude ? 'Claude Code' : 'Codex';
   return html`<header class="chat-head">
     <button class="icon-btn sidebar-toggle" aria-label="Show sidebar" title="Sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
     <div class="crumbs">
@@ -51,7 +52,7 @@ function ChatHead({ project, conv }) {
       <${Icon} name="chevron-right" class="tiny dim crumb-sep" />
       <span class="crumb-title" title=${c?.title || 'New chat'}>${c?.title || 'New chat'}</span>
     </div>
-    <span class="backend" title="Agent">${backend}</span>
+    <span class="backend" title=${`Agent: ${backend}`} aria-label=${backend} role="img"><${Icon} name=${claude ? 'asterisk' : 'code-xml'} /></span>
     ${status === 'running' && html`<span class="status running" title=${chat.model.account ? `on account ${chat.model.account}` : ''}>
       <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
     ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
