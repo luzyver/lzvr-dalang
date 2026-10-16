@@ -20,8 +20,13 @@ const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == nu
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
 const mobile = () => innerWidth <= 760;
 
-const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite' };
-const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306 };
+const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis' };
+/** MongoDB (mongosh-style commands) and Redis (its commands, one per line): no SQL, so no SQL-only features. */
+const noSql = (conn) => conn?.driver === 'mongodb' || conn?.driver === 'redis';
+/** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (app.css). */
+const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis' };
+const EngineIcon = ({ driver, class: cls }) => html`<${Icon} name=${ENGINE_ICONS[driver] || 'database'} class=${cx('engine', `engine-${driver}`, cls)} />`;
+const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379 };
 const DIALECTS = { postgres: cm.PostgreSQL, mysql: cm.MySQL, mariadb: cm.MariaSQL, sqlite: cm.SQLite };
 const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
 const AGENT = { off: 'Off', 'read-only': 'Read-only', approve: 'Write with approval', 'read-write': 'Read and write' };
@@ -129,6 +134,7 @@ function persist() {
 
 /** Where each statement starts and ends, split on `;` outside strings and comments (as the server splits them). */
 export function splitStatements(script, driver = 'postgres') {
+  if (driver === 'mongodb' || driver === 'redis') return splitNoSql(script, driver);
   const my = driver === 'mysql' || driver === 'mariadb';
   const out = [];
   let start = 0;
@@ -162,6 +168,67 @@ export function splitStatements(script, driver = 'postgres') {
   }
   end(n);
   return out;
+}
+
+/**
+ * Where each command starts and ends (as the server splits them, nosql.ts). MongoDB: at ; or at a line that starts a
+ * new db. command, outside strings, comments and brackets. Redis: one per line; # and // lines are comments.
+ */
+function splitNoSql(script, driver) {
+  const out = [];
+  if (driver === 'redis') {
+    let at = 0;
+    for (const line of script.split('\n')) {
+      const t = line.trim();
+      if (t && !t.startsWith('#') && !t.startsWith('//')) out.push({ from: at + line.indexOf(t[0]), to: at + line.trimEnd().length });
+      at += line.length + 1;
+    }
+    return out;
+  }
+  let start = 0;
+  let depth = 0;
+  let code = false;
+  let i = 0;
+  const n = script.length;
+  const end = (at, next) => { if (code) out.push({ from: start, to: at }); start = next; code = false; };
+  while (i < n) {
+    const ch = script[i];
+    if (ch === '/' && script[i + 1] === '/') { const nl = script.indexOf('\n', i); i = nl < 0 ? n : nl; continue; }
+    if (ch === '/' && script[i + 1] === '*') { const close = script.indexOf('*/', i + 2); i = close < 0 ? n : close + 2; continue; }
+    if (ch === '"' || ch === '\'' || ch === '`') {
+      i++;
+      while (i < n && script[i] !== ch) i += script[i] === '\\' ? 2 : 1;
+      i++;
+      code = true;
+      continue;
+    }
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1);
+    else if (ch === ';' && depth === 0) { end(i, i + 1); i++; continue; }
+    else if (ch === '\n' && depth === 0 && code && NEXT_COMMAND.test(script.slice(i + 1))) { end(i, i + 1); i++; continue; }
+    if (!/\s/.test(ch)) code = true;
+    i++;
+  }
+  end(n, n);
+  return out.map((r) => tighten(script, r));
+}
+
+/** A line that starts a MongoDB command, after blank and comment lines. */
+const NEXT_COMMAND = /^(?:[ \t]*(?:\/\/[^\n]*)?\r?\n)*\s*(db\s*[.[]|show\s|use\s)/;
+/** A command's range without the blank and comment-only lines at its start and end. */
+function tighten(script, r) {
+  let { from, to } = r;
+  for (;;) {
+    const head = /^(?:\s*\/\/[^\n]*\n|\s+)/.exec(script.slice(from, to));
+    if (!head || !head[0].length) break;
+    from += head[0].length;
+  }
+  for (;;) {
+    const tail = /(?:\n[ \t]*\/\/[^\n]*|\s+)$/.exec(script.slice(from, to));
+    if (!tail || !tail[0].length) break;
+    to -= tail[0].length;
+  }
+  return { from, to };
 }
 
 /** The text to run: the selection, else the statement the cursor is in (or the last one before it). */
@@ -355,9 +422,17 @@ function applyLanguage() {
     schema[s.name] = Object.fromEntries(s.tables.map((t) => [t.name, t.columns.map((col) => ({ label: col.name, detail: col.type, type: 'property' }))]));
   }
   const defaultSchema = conn ? defaultSchemaOf(conn, c.database || '', c.schema) : undefined;
-  const support = cm.sql({ dialect: DIALECTS[conn?.driver] || cm.StandardSQL, schema, defaultSchema, upperCaseKeywords: true });
-  view.dispatch({ effects: langs.get(c.id).reconfigure(support) });
-  states.set(c.id, view.state);
+  const set = (support) => {
+    if (!view || activeConsole()?.id !== c.id) return;
+    view.dispatch({ effects: langs.get(c.id).reconfigure(support) });
+    states.set(c.id, view.state);
+  };
+  if (conn?.driver === 'redis') { set([]); return; }
+  if (conn?.driver === 'mongodb') {
+    cm.LanguageDescription.matchLanguageName(cm.languages, 'JavaScript')?.load().then(set, () => set([]));
+    return;
+  }
+  set(cm.sql({ dialect: DIALECTS[conn?.driver] || cm.StandardSQL, schema, defaultSchema, upperCaseKeywords: true }));
 }
 
 // ---------- consoles ----------
@@ -462,7 +537,7 @@ function setConsoleDb(database) {
 
 // ---------- running ----------
 
-const DDL = /^\s*(create|alter|drop|rename|truncate|comment)\b/im;
+const DDL = /^\s*(create|alter|drop|rename|truncate|comment)\b|\.\s*(drop|createCollection|createView|renameCollection|dropDatabase)\s*\(/im;
 
 /** Always quoted: for SQL the editor writes itself (filters, sorting). */
 const qi = (conn, name) => (conn.driver === 'mysql' || conn.driver === 'mariadb' ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`);
@@ -557,7 +632,7 @@ async function run(all, script, confirmed = false) {
     if (e.status === 409 && e.detail?.unsafe) {
       // Nothing ran: the results stay as they were until the user decides.
       setRun(c.id, { ...before, running: false });
-      sq.unsafe.value = { list: e.detail.unsafe, conn: conn.label, go: () => { activate(c.id); run(false, sql, true); } };
+      sq.unsafe.value = { list: e.detail.unsafe, conn: conn.label, unit: conn.driver === 'mongodb' ? 'document' : conn.driver === 'redis' ? 'key' : 'row', go: () => { activate(c.id); run(false, sql, true); } };
       return;
     }
     // A failed statement still shows what ran before it, in tabs of their own.
@@ -582,7 +657,7 @@ function withResults(cur, conn, db, results, schema) {
   let active = cur?.active && cur.active !== 'err' ? cur.active : null;
   const at = Date.now();
   for (const result of results) {
-    if (!result.columns.length) { out.push({ sql: result.sql, text: summary(result), ms: result.ms }); continue; }
+    if (!result.columns.length) { out.push({ sql: result.sql, text: result.note ? `${summary(result)} · ${result.note}` : summary(result), ms: result.ms }); continue; }
     const meta = tableMeta(conn, db, result, schema);
     const key = meta ? `t:${db}:${meta.schema}.${meta.table}` : `q:${squash(result.sql)}`;
     const tab = { key, result, meta, at };
@@ -693,7 +768,7 @@ function ExportMenus({ result, tab, conn }) {
     <//>
     <${Menu} icon="arrow-down-to-line" label="Download as…" buttonClass="xs">
       <div class="menu-label">Download ${rows} as</div>
-      ${FORMATS.map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
+      ${FORMATS.filter((f) => !(f.id === 'sql' && noSql(conn))).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
     <//>`;
 }
 
@@ -726,6 +801,11 @@ const firstWord = (sql) => (/^\s*(\w+)/.exec(sql)?.[1] || 'SQL').toUpperCase();
 function tabLabel(t) {
   if (t.key === 'out') return 'Output';
   if (t.meta) return t.meta.table;
+  // MongoDB: the collection and the method (users.find), or the database's method (getCollectionNames).
+  const mongo = /^\s*db\s*(?:\.\s*getCollection\(\s*["']([^"']+)["']\s*\)|\[\s*["']([^"']+)["']\s*\]|\.\s*([\w$.]+?))\s*\.\s*(\w+)\s*\(/.exec(t.result.sql);
+  if (mongo) return `${mongo[1] ?? mongo[2] ?? mongo[3]}.${mongo[4]}`;
+  const dbCall = /^\s*db\s*\.\s*(\w+)\s*\(/.exec(t.result.sql) || /^\s*show\s+(\w+)/i.exec(t.result.sql);
+  if (dbCall) return dbCall[1];
   const from = /\bfrom\s+((?:"[^"]+"|`[^`]+`|[\w$]+)(?:\.(?:"[^"]+"|`[^`]+`|[\w$]+))?)/i.exec(t.result.sql)?.[1];
   return from ? `${firstWord(t.result.sql)} ${from.replace(/["`]/g, '')}` : firstWord(t.result.sql);
 }
@@ -789,6 +869,7 @@ function Results() {
       onPreview=${(edits) => previewEdits(c, meta, edits)} />`}
     ${shown && html`<div class="sql-foot small dim">
       <span>${summary(shown)} · ${shown.ms} ms</span>
+      ${shown.note && html`<span>${shown.note}</span>`}
       ${shown.truncated && html`<span class="warn">Only the first ${shown.rows.length} rows (the row limit).</span>`}
       ${r.readOnly && html`<span><${Icon} name="eye" class="tiny" /> read-only connection</span>`}
       ${meta && !conn?.readOnly && html`<span><${Icon} name="pencil" class="tiny" /> ${meta.table}: click a cell to see or edit it</span>`}
@@ -809,7 +890,27 @@ function toggleOpen(key, on) {
 }
 
 const quote = (conn, name) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : conn.driver === 'mysql' || conn.driver === 'mariadb' ? `\`${name}\`` : `"${name.replace(/"/g, '""')}"`);
+/** A Redis key as a word of a command (quoted when it holds spaces or quotes). */
+const redisWord = (k) => (/^[\w:.\-/@#$*{}|]+$/.test(k) ? k : `"${k.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+/** A Redis key's type, from the tree's list (its detail: "hash · ttl 30s"). */
+function redisType(conn, schema, key) {
+  for (const [k, v] of sq.schemas.value) {
+    if (!k.startsWith(`${conn.id}/`)) continue;
+    const t = v.data?.schemas.find((x) => x.name === schema)?.tables.find((x) => x.name === key);
+    if (t) return (t.detail || '').split(' ')[0];
+  }
+  return '';
+}
+/** What opens a collection or key: its first documents, or the command that reads that type of key. */
+function browseCommand(conn, schema, table) {
+  if (conn.driver === 'mongodb') return `db.${/^[A-Za-z_$][\w$]*$/.test(table) ? table : `getCollection(${JSON.stringify(table)})`}.find({}).limit(100)`;
+  const k = redisWord(table);
+  return ({ string: `GET ${k}`, hash: `HGETALL ${k}`, list: `LRANGE ${k} 0 99`, set: `SSCAN ${k} 0 COUNT 100`, zset: `ZRANGE ${k} 0 99 WITHSCORES`,
+    stream: `XRANGE ${k} - + COUNT 100` })[redisType(conn, schema, table)] || `TYPE ${k}`;
+}
+
 function selectFrom(conn, schema, table) {
+  if (noSql(conn)) return browseCommand(conn, schema, table);
   const own = conn.driver === 'sqlite' || (conn.driver === 'postgres' && schema === 'public') || (conn.driver !== 'postgres' && schema === conn.database);
   return `SELECT * FROM ${own ? '' : `${quote(conn, schema)}.`}${quote(conn, table)} LIMIT 100;`;
 }
@@ -819,8 +920,10 @@ const dbKey = (conn, db) => (!db || db === ownDb(conn) ? '' : db);
 
 function openTable(conn, db, schema, table) {
   const sql = selectFrom(conn, schema, table);
+  // MongoDB and Redis run in the console's database: the schema the collection or key is in.
+  const target = noSql(conn) ? dbKey(conn, schema) : db;
   const a = activeConsole();
-  const c = a?.connId === conn.id && (a.database || '') === db ? a : newConsole(conn.id, '', db);
+  const c = a?.connId === conn.id && (a.database || '') === target ? a : newConsole(conn.id, '', target);
   if (c && view && sq.active.value === c.id) {
     const doc = view.state.doc;
     const at = doc.length;
@@ -895,12 +998,12 @@ const schemaItems = (conn, db, name) => html`
   <${MenuItem} icon="copy" onClick=${() => copyText(name, 'name copied')}>Copy name<//>`;
 
 const tableItems = (conn, db, schema, t) => html`
-  <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>Select first rows<//>
-  <${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>Show DDL<//>
+  <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>${conn.driver === 'redis' ? 'Read it' : conn.driver === 'mongodb' ? 'Find its first documents' : 'Select first rows'}<//>
+  ${conn.driver !== 'redis' && html`<${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>${conn.driver === 'mongodb' ? 'Show indexes and options' : 'Show DDL'}<//>`}
   <${MenuItem} icon="bot" onClick=${() => askAboutTable(conn, db, schema, t.name)}>Ask the agent about it<//>
   <div class="menu-sep"></div>
   <${MenuItem} icon="copy" onClick=${() => copyText(t.name, 'name copied')}>Copy name<//>
-  <${MenuItem} icon="copy" onClick=${() => copyText(selectFrom(conn, schema, t.name).replace(/ LIMIT 100;$/, ';'), 'query copied')}>Copy SELECT<//>`;
+  <${MenuItem} icon="copy" onClick=${() => copyText(selectFrom(conn, schema, t.name).replace(/ LIMIT 100;$/, ';'), noSql(conn) ? 'command copied' : 'query copied')}>${noSql(conn) ? 'Copy command' : 'Copy SELECT'}<//>`;
 
 /** The ⋯ of a row: the same menu as its right click (for touch screens and the keyboard). */
 const More = ({ label, items }) => html`<span onClick=${(e) => e.stopPropagation()} onDblClick=${(e) => e.stopPropagation()}>
@@ -960,7 +1063,7 @@ function ConnNode({ conn }) {
     <div class="tree-row" data-node=${key} style=${{ '--depth': 0 }} aria-expanded=${open} onClick=${() => toggleOpen(key)}
       onDblClick=${() => newConsole(conn.id)} onContextMenu=${(e) => openCtx(e, connItems(conn))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
-      <${Icon} name="database" class="tree-icon" />
+      <${EngineIcon} driver=${conn.driver} class="tree-icon" />
       <span class="tree-name" title=${`${DRIVERS[conn.driver]} · ${where}`}>${conn.label}</span>
       ${conn.readOnly && html`<span class="sql-tag" title="Read-only"><${Icon} name="eye" /></span>`}
       ${agentTag(conn)}
@@ -981,21 +1084,25 @@ function SchemaNode({ conn, db, sch, depth }) {
     <div class="tree-row" data-node=${key} style=${{ '--depth': depth }} aria-expanded=${open} onClick=${() => toggleOpen(key)}
       onContextMenu=${(e) => openCtx(e, schemaItems(conn, db, sch.name))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
-      <${Icon} name="folder" class="tree-icon" /><span class="tree-name">${sch.name}</span><span class="sr-count">${sch.tables.length}</span>
+      <${Icon} name=${noSql(conn) ? 'database' : 'folder'} class="tree-icon" /><span class="tree-name">${sch.name}</span><span class="sr-count">${(sch.size ?? sch.tables.length).toLocaleString()}</span>
       <${More} label="Schema options" items=${schemaItems(conn, db, sch.name)} />
     </div>
     ${open && sch.tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${sch.name} loaded=${sch.loaded} t=${t} depth=${depth + 1} />`)}
+    ${open && sch.more && note(depth, 'dim', `The first ${sch.tables.length.toLocaleString()} keys. Find others with SCAN 0 MATCH pattern* in a console.`)}
   </div>`;
 }
 
 function TableNode({ conn, db, schema, loaded, t, depth }) {
   const key = `t:${conn.id}:${db}:${schema}:${t.name}`;
-  const open = sq.open.value.has(key);
+  // A Redis key has a type and a time to live, not columns: it does not open.
+  const redis = conn.driver === 'redis';
+  const open = !redis && sq.open.value.has(key);
   return html`<div>
-    <div class="tree-row" data-node=${key} style=${{ '--depth': depth }} aria-expanded=${open} title="Double-click: SELECT its first rows"
-      onClick=${() => toggleOpen(key)} onDblClick=${() => openTable(conn, db, schema, t.name)} onContextMenu=${(e) => openCtx(e, tableItems(conn, db, schema, t))}>
-      <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
-      <${Icon} name=${t.kind === 'view' ? 'eye' : 'table'} class="tree-icon" /><span class="tree-name">${t.name}</span>
+    <div class="tree-row" data-node=${key} style=${{ '--depth': depth }} aria-expanded=${redis ? undefined : open} title="Double-click: open it in a console"
+      onClick=${() => { if (!redis) toggleOpen(key); }} onDblClick=${() => openTable(conn, db, schema, t.name)} onContextMenu=${(e) => openCtx(e, tableItems(conn, db, schema, t))}>
+      <span class="tree-twisty">${!redis && html`<${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" />`}</span>
+      <${Icon} name=${redis ? 'key-round' : t.kind === 'view' ? 'eye' : 'table'} class="tree-icon" /><span class="tree-name">${t.name}</span>
+      ${t.detail && html`<span class="sql-type">${t.detail}</span>`}
       <${More} label="Table options" items=${tableItems(conn, db, schema, t)} />
     </div>
     ${open && !loaded && note(depth, 'dim', 'Loading columns…')}
@@ -1046,7 +1153,7 @@ function Found({ q }) {
   const add = (row) => { if (out.length < MAX_FOUND) out.push(row); else out.more = (out.more || 0) + 1; };
   for (const conn of conns) {
     const ck = `c:${conn.id}`;
-    if (conn.label.toLowerCase().includes(needle)) add({ key: ck, icon: 'database', name: conn.label, where: DRIVERS[conn.driver], open: [], node: ck, items: connItems(conn) });
+    if (conn.label.toLowerCase().includes(needle)) add({ key: ck, driver: conn.driver, name: conn.label, where: DRIVERS[conn.driver], open: [], node: ck, items: connItems(conn) });
     const dbs = multi(conn) ? sq.dbs.value.get(conn.id)?.list || [] : [ownDb(conn)];
     for (const name of dbs) {
       const db = multi(conn) ? dbKey(conn, name) : '';
@@ -1077,7 +1184,7 @@ function Found({ q }) {
   return html`<div class="sql-found">
     ${out.map((r) => html`<div key=${r.key} class="tree-row sql-found-row" title=${r.dbl ? 'Click: show it in the tree · double-click: SELECT its first rows' : 'Click: show it in the tree'}
       onClick=${() => reveal(r.open, r.node)} onDblClick=${r.dbl} onContextMenu=${(e) => openCtx(e, r.items)}>
-      <${Icon} name=${r.icon} class="tree-icon" />
+      ${r.driver ? html`<${EngineIcon} driver=${r.driver} class="tree-icon" />` : html`<${Icon} name=${r.icon} class="tree-icon" />`}
       <span class="tree-name">${marked(r.name, needle)}</span>
       <span class="sql-type">${r.where}</span>
     </div>`)}
@@ -1151,7 +1258,7 @@ function WorkspaceDialog({ mode }) {
       <p class="small dim">A connection can be in several workspaces. Who may open it is still set on the connection.</p>
       <div class="sql-ws-pick">${(sq.conns.value || []).map((c) => html`<label key=${c.id} class="check small">
         <input type="checkbox" checked=${picked.has(c.id)} onChange=${() => toggle(c.id)} />
-        <span>${c.label} <span class="dim">· ${DRIVERS[c.driver]}${c.database ? ` · ${c.database}` : ''}</span></span></label>`)}</div>`
+        <${EngineIcon} driver=${c.driver} /><span>${c.label} <span class="dim">· ${DRIVERS[c.driver]}${c.database ? ` · ${c.database}` : ''}</span></span></label>`)}</div>`
       : html`<${Field} label="Name"><input value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="e.g. Production, Reports" autofocus
           onKeyDown=${(e) => { if (e.key === 'Enter') save(); }} /><//>`}
     ${error && html`<div class="form-error" role="alert">${error}</div>`}
@@ -1236,7 +1343,7 @@ function ConnectionForm({ conn }) {
   return html`<div class="dialog-body sql-form">
     <div class="dialog-head"><h2>${conn ? `Edit ${conn.label}` : 'Add a connection'}</h2>
       <button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
-    <${Seg} label="Database engine" value=${f.driver} options=${Object.entries(DRIVERS)} onChange=${(v) => setF({ ...f, driver: v, port: '' })} />
+    <${Seg} label="Database engine" value=${f.driver} options=${Object.entries(DRIVERS).map(([k, label]) => [k, label, ENGINE_ICONS[k]])} onChange=${(v) => setF({ ...f, driver: v, port: '' })} />
     <div class="row wrap">
       ${!conn && html`<${Field} label="Name" hint="Lowercase letters, digits, - and _. Agents name it so.">
         <input class="mono" value=${f.id} onInput=${set('id')} placeholder="app-prod" autofocus /><//>`}
@@ -1246,11 +1353,14 @@ function ConnectionForm({ conn }) {
         <input class="mono" value=${f.file} onInput=${set('file')} placeholder="/srv/data/app.db" /><//>`
     : html`
       <div class="row wrap">
-        <${Field} label="Host"><input class="mono" value=${f.host} onInput=${set('host')} placeholder="localhost" /><//>
+        <${Field} label=${noSql(f) ? 'Host or URI' : 'Host'}><input class="mono" value=${f.host} onInput=${set('host')}
+          placeholder=${f.driver === 'mongodb' ? 'localhost or mongodb+srv://cluster…' : f.driver === 'redis' ? 'localhost or rediss://…' : 'localhost'} /><//>
         <${Field} label="Port"><input class="mono sql-port" inputmode="numeric" value=${f.port} onInput=${set('port')} placeholder=${String(PORTS[f.driver])} /><//>
       </div>
       <div class="row wrap">
-        <${Field} label=${f.driver === 'postgres' && f.allDatabases ? 'Default database' : 'Database'}><input class="mono" value=${f.database} onInput=${set('database')} placeholder=${f.driver === 'postgres' ? 'postgres' : 'all databases'} /><//>
+        <${Field} label=${f.driver === 'postgres' && f.allDatabases ? 'Default database' : f.driver === 'redis' ? 'Database number' : f.driver === 'mongodb' ? 'Default database' : 'Database'}>
+          <input class="mono" value=${f.database} onInput=${set('database')}
+            placeholder=${f.driver === 'postgres' ? 'postgres' : f.driver === 'redis' ? '0' : f.driver === 'mongodb' ? 'none: pick one per console' : 'all databases'} /><//>
         <${Field} label="SSL"><select value=${f.ssl} onChange=${set('ssl')}>
           <option value="disable">Off</option><option value="require">On, any certificate</option><option value="verify-full">On, verified certificate</option></select><//>
       </div>
@@ -1308,18 +1418,19 @@ function AgentLog({ id }) {
   </div>`;
 }
 
-const rowsText = (n) => (n == null ? 'every row' : `all ${n.toLocaleString()} row${n === 1 ? '' : 's'}`);
+/** "all 9 rows" (documents on MongoDB, keys on Redis). */
+const rowsText = (n, unit = 'row') => (n == null ? `every ${unit}` : `all ${n.toLocaleString()} ${unit}${n === 1 ? '' : 's'}`);
 
 /** A script that would change every row of a table: which statements, how many rows now, and Run anyway. */
-function UnsafeConfirm({ list, conn, go }) {
+function UnsafeConfirm({ list, conn, unit, go }) {
   const close = () => { sq.unsafe.value = null; };
   return html`<div class="dialog-body">
     <div class="dialog-head"><h2>Change every row?</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
-    <p class="small">${list.length === 1 ? 'This statement has' : 'These statements have'} no WHERE, so ${list.length === 1 ? 'it changes' : 'they change'} every row on <strong>${conn}</strong>:</p>
+    <p class="small">${list.length === 1 ? 'This changes' : 'These change'} everything in what ${list.length === 1 ? 'it names' : 'they name'} on <strong>${conn}</strong> (no WHERE, an empty filter, a drop or a flush):</p>
     ${list.map((u) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><div>
-      <strong>${u.kind === 'truncate' ? 'TRUNCATE' : u.kind.toUpperCase()} ${u.table}</strong>: ${u.kind === 'update' ? 'changes' : 'removes'} ${rowsText(u.rows)}.
+      <strong>${unit !== 'row' ? u.sql.split(/[\s(]/)[0] : u.kind === 'truncate' ? 'TRUNCATE' : u.kind.toUpperCase()} ${u.table}</strong>: ${u.kind === 'update' ? 'changes' : 'removes'} ${rowsText(u.rows, unit)}.
       <pre class="mono sql-preview">${u.sql}</pre></div></div>`)}
-    <p class="small dim">Nothing has run. Add a WHERE to touch only some rows; run it anyway only if every row is meant.</p>
+    <p class="small dim">Nothing has run. Narrow it (a WHERE, a filter) to touch only some; run it anyway only if everything is meant.</p>
     <div class="row end">
       <button class="btn" autofocus onClick=${close}>Cancel</button>
       <button class="btn primary danger" onClick=${() => { close(); go(); }}><${Icon} name="play" />Run anyway</button>
@@ -1386,10 +1497,12 @@ function Toolbar() {
   const conns = [...wsConns(), ...(conn0 && !wsConns().includes(conn0) ? [conn0] : [])];
   const conn = c && connOf(c.connId);
   const running = c && sq.runs.value.get(c.id)?.running;
-  const my = conn && (conn.driver === 'mysql' || conn.driver === 'mariadb');
+  // A picker of the database the console runs in: MySQL/MariaDB (USE), MongoDB (db.), Redis (SELECT).
+  const my = conn && (conn.driver === 'mysql' || conn.driver === 'mariadb' || noSql(conn));
   // MySQL: its databases are the schemas of its table list; PostgreSQL: the schemas of the console's database.
   useEffect(() => { if (conn) loadSchema(conn.id, my ? '' : c.database || ''); }, [conn?.id, c?.database]);
-  const myDatabases = my ? (sq.schemas.value.get(skey(conn.id, ''))?.data?.schemas || []).map((x) => x.name) : [];
+  const myDatabases = conn?.driver === 'redis' ? Array.from({ length: 16 }, (_, i) => `db${i}`)
+    : my ? (sq.schemas.value.get(skey(conn.id, ''))?.data?.schemas || []).map((x) => x.name) : [];
   const pgSchemas = conn?.driver === 'postgres' ? (sq.schemas.value.get(skey(conn.id, c.database || ''))?.data?.schemas || []).map((x) => x.name) : [];
   return html`<div class="sql-bar">
     <select class="sql-conn" aria-label="Connection" value=${c?.connId || ''} onChange=${(e) => setConsoleConn(e.currentTarget.value)}>
@@ -1400,9 +1513,10 @@ function Toolbar() {
       ${[...new Set([ownDb(conn), ...(c.database ? [c.database] : []), ...(sq.dbs.value.get(conn.id)?.list || [])])]
         .map((name) => html`<option value=${name}>${name}</option>`)}
     </select>`}
-    ${my && html`<select class="sql-conn sql-db" aria-label="Database" title="The database unqualified table names are in (USE)" value=${c.database || conn.database || ''}
-      onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
-      ${!conn.database && html`<option value="">No database (write db.table)</option>`}
+    ${my && html`<select class="sql-conn sql-db" aria-label="Database"
+      title=${conn.driver === 'redis' ? 'The database the commands run in (SELECT)' : conn.driver === 'mongodb' ? 'The database db. commands run in' : 'The database unqualified table names are in (USE)'}
+      value=${c.database || conn.database || (conn.driver === 'redis' ? 'db0' : '')} onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
+      ${!conn.database && conn.driver !== 'redis' && html`<option value="">${conn.driver === 'mongodb' ? 'No database (show dbs only)' : 'No database (write db.table)'}</option>`}
       ${[...new Set([...(conn.database ? [conn.database] : []), ...(c.database ? [c.database] : []), ...myDatabases])].map((name) => html`<option value=${name}>${name}</option>`)}
     </select>`}
     ${conn?.driver === 'postgres' && pgSchemas.length > 1 && html`<select class="sql-conn sql-db" aria-label="Schema" title="The schema unqualified table names are looked up in first (search_path)"
@@ -1413,7 +1527,7 @@ function Toolbar() {
       : html`<button class="btn primary sm" disabled=${!conn} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>
         <${Icon} name="play" />Run</button>`}
     <button class="btn sm" disabled=${!conn || running} title="Run every statement in this console (Ctrl+Shift+Enter)" onClick=${() => run(true)}>Run all</button>
-    <button class="icon-btn sm" title="Format the selection or the console (Shift+Alt+F)" aria-label="Format SQL" onClick=${formatSql}><${Icon} name="wrap-text" /></button>
+    ${!noSql(conn) && html`<button class="icon-btn sm" title="Format the selection or the console (Shift+Alt+F)" aria-label="Format SQL" onClick=${formatSql}><${Icon} name="wrap-text" /></button>`}
     <button class="icon-btn sm" title="Query history" aria-label="Query history" onClick=${() => { sq.history.value = true; }}><${Icon} name="history" /></button>
     <div class="spacer"></div>
     ${conn?.readOnly && html`<span class="ide-chip" title="The database refuses writes on this connection"><${Icon} name="eye" />read-only</span>`}
@@ -1478,7 +1592,7 @@ export function SqlEditor() {
       <div class="crumbs"><span class="crumb-title">SQL Editor</span><${Icon} name="chevron-right" class="tiny dim crumb-sep" /></div>
       <${WorkspacePicker} />
       <div class="spacer"></div>
-      ${conn && html`<span class="ide-chip hide-mobile" title=${conn.driver === 'sqlite' ? conn.file : `${conn.host}:${conn.port}`}><${Icon} name="database" />${DRIVERS[conn.driver]} · ${c.database || conn.database || (multi(conn) ? ownDb(conn) : conn.label)}</span>`}
+      ${conn && html`<span class="ide-chip hide-mobile" title=${conn.driver === 'sqlite' ? conn.file : `${conn.host}:${conn.port}`}><${EngineIcon} driver=${conn.driver} />${DRIVERS[conn.driver]} · ${c.database || conn.database || (multi(conn) ? ownDb(conn) : conn.label)}</span>`}
     </header>
     <div class="ide-body">
       <div class="ide-files"><${Tree} /></div>
@@ -1505,7 +1619,7 @@ export function SqlEditor() {
       </div>
     </div>
     <footer class="ide-status">
-      ${conn ? html`<span class="ide-stat"><${Icon} name="database" />${conn.label}</span>
+      ${conn ? html`<span class="ide-stat"><${EngineIcon} driver=${conn.driver} />${conn.label}</span>
         <span class="ide-stat">${DRIVERS[conn.driver]}</span>
         ${conn.readOnly && html`<span class="ide-stat"><${Icon} name="eye" />Read-only</span>`}
         <span class=${cx('ide-stat', conn.agent === 'read-write' && 'warn')} title="What agents may do on this connection"><${Icon} name="bot" />Agents: ${(AGENT[conn.agent] || conn.agent).toLowerCase()}</span>`

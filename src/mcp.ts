@@ -276,7 +276,10 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
   });
 
   server.registerTool('db_query', {
-    description: 'Run SQL on a connection: one statement or several separated by ;. Returns the columns and rows of each statement '
+    description: 'Run SQL on a connection: one statement or several separated by ;. MongoDB connections take mongosh-style '
+      + 'commands instead (db.users.find({ age: { $gt: 30 } }).sort({ name: 1 }), aggregate, countDocuments, distinct, insertOne, '
+      + 'updateMany, ...; pass database), Redis ones Redis commands, one per line (HGETALL user:1, SCAN 0 MATCH user:*; pass database '
+      + 'as db0..db15). Returns the columns and rows of each statement '
       + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database. On a '
       + '"write after approval" one, a script that writes is held for an admin instead (status pending_approval): the outcome '
       + 'comes to this chat as a message, or ask db_approval.',

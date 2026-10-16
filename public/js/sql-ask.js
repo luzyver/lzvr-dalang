@@ -28,7 +28,7 @@ function tablesIn(sql, schemas, only) {
 export function contextFor({ conn, database, sql, error, result, schemas, table, engine }) {
   const where = `connection "${conn.id}" (${engine})${database ? `, database "${database}"` : ''}`;
   const parts = [`Context from Dalang's SQL editor: ${where}.`];
-  if (sql?.trim()) parts.push(`Query:\n${FENCE}sql\n${sql.trim()}\n${FENCE}`);
+  if (sql?.trim()) parts.push(`Query:\n${FENCE}${engine === 'MongoDB' ? 'js' : engine === 'Redis' ? 'text' : 'sql'}\n${sql.trim()}\n${FENCE}`);
   if (error) parts.push(`It failed with: ${error}`);
   if (result?.columns?.length) {
     const rows = result.rows.slice(0, SAMPLE_ROWS).map((r) => r.map((v) => (v === null ? 'NULL' : String(v).replace(/[\t\n]/g, ' ').slice(0, 200))).join('\t'));

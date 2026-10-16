@@ -1,6 +1,7 @@
 /**
  * The SQL editor's database connections and the drivers that run queries on them: PostgreSQL (and what speaks its
- * protocol), MySQL and MariaDB, and SQLite files. Every run opens its own connection and closes it afterwards.
+ * protocol), MySQL and MariaDB, SQLite files, and (nosql.ts) MongoDB and Redis. Every run opens its own connection and
+ * closes it afterwards.
  *
  * Read-only is enforced by the database, never by looking at the SQL: PostgreSQL runs each statement in a `READ ONLY`
  * transaction that is rolled back, MySQL/MariaDB in a session set to `TRANSACTION READ ONLY` (DDL is refused there too),
@@ -11,11 +12,16 @@ import { DatabaseSync } from 'node:sqlite';
 import mysql from 'mysql2';
 import pg from 'pg';
 import Cursor from 'pg-cursor';
+import {
+  mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlUnsafe, redisSchema, redisScript, redisTest, splitNoSql,
+} from './nosql.js';
 import type { Store } from './store.js';
 import type { ProjectAccess } from './util.js';
 
-export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite'] as const;
+export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite', 'mongodb', 'redis'] as const;
 export type Driver = (typeof DRIVERS)[number];
+/** MongoDB and Redis: not SQL (nosql.ts); no row editing, DDL or SQL-only checks. */
+export const isNoSql = (d: Driver): d is 'mongodb' | 'redis' => d === 'mongodb' || d === 'redis';
 /**
  * What an agent may do on a connection (through the gateway's MCP tools). 'approve': read freely; a script the
  * database refuses as a write waits for an admin, who runs it or not.
@@ -63,11 +69,17 @@ export interface QueryResult {
   /** More rows than `limit` came back; only `limit` are here. */
   truncated: boolean;
   ms: number;
+  /** A line about it beside the rows (a Redis SCAN's next cursor, the _id a MongoDB insert gave). */
+  note?: string;
 }
 export interface SchemaColumn { name: string; type: string; nullable: boolean; pk: boolean }
-export interface SchemaTable { name: string; kind: 'table' | 'view'; columns: SchemaColumn[] }
-/** `loaded`: its tables come with their columns (else ask readSchema for that schema). */
-export interface SchemaInfo { schemas: { name: string; loaded: boolean; tables: SchemaTable[] }[] }
+/** `detail`: shown beside it (a Redis key's type and time to live). */
+export interface SchemaTable { name: string; kind: 'table' | 'view'; columns: SchemaColumn[]; detail?: string }
+/**
+ * `loaded`: its tables come with their columns (else ask readSchema for that schema). `size`: how many tables (keys) it
+ * has when they are not listed yet; `more`: more than are listed.
+ */
+export interface SchemaInfo { schemas: { name: string; loaded: boolean; tables: SchemaTable[]; size?: number; more?: boolean }[] }
 
 export interface RunOpts {
   readOnly: boolean;
@@ -92,7 +104,7 @@ const CANCELLED = 'cancelled';
 const checkAborted = (o: RunOpts) => { if (o.signal?.aborted) throw new Error(CANCELLED); };
 
 const KEY = 'db_connections';
-export const DEFAULT_PORT: Record<Driver, number> = { postgres: 5432, mysql: 3306, mariadb: 3306, sqlite: 0 };
+export const DEFAULT_PORT: Record<Driver, number> = { postgres: 5432, mysql: 3306, mariadb: 3306, sqlite: 0, mongodb: 27017, redis: 6379 };
 const CONNECT_TIMEOUT_MS = 10_000;
 const MAX_STATEMENTS = 100;
 
@@ -112,6 +124,7 @@ export const saveConnections = (store: Store, list: DbConnection[]) => store.set
  * and E'...' escapes.
  */
 export function splitStatements(script: string, driver: Driver = 'postgres'): { from: number; to: number }[] {
+  if (isNoSql(driver)) return splitNoSql(script, driver);
   const my = driver === 'mysql' || driver === 'mariadb';
   const out: { from: number; to: number }[] = [];
   let start = 0;
@@ -409,15 +422,17 @@ export class QueryError extends Error {
 }
 
 /** PostgreSQL 25006, MySQL/MariaDB 1792 (and 1290, --read-only), SQLite SQLITE_READONLY (8). */
-function refusedAsReadOnly(e: { code?: unknown; errno?: unknown; errcode?: unknown; message?: string }): boolean {
-  return e.code === '25006' || e.errno === 1792 || e.errno === 1290 || e.errcode === 8 || /attempt to write a readonly database/i.test(e.message ?? '');
+function refusedAsReadOnly(e: { code?: unknown; errno?: unknown; errcode?: unknown; message?: string; readOnlyRefusal?: unknown }): boolean {
+  return e.readOnlyRefusal === true || e.code === '25006' || e.errno === 1792 || e.errno === 1290 || e.errcode === 8 || /attempt to write a readonly database/i.test(e.message ?? '');
 }
 
 function withResults(e: unknown, results: QueryResult[], o?: RunOpts): QueryError {
   if (e instanceof QueryError) return e;
   const err = e as { message?: string; code?: string };
   const message = o?.signal?.aborted ? 'cancelled' : err.message || err.code || String(e);
-  return new QueryError(message, [...results], results.length, refusedAsReadOnly(err as never));
+  // MongoDB and Redis hand their results so far along with the error.
+  const done = (e as { partial?: QueryResult[] }).partial ?? results;
+  return new QueryError(message, [...done], done.length, refusedAsReadOnly(err as never));
 }
 
 /** Runs every statement of `script` in turn and stops at the first error (a QueryError with the results so far). */
@@ -427,6 +442,9 @@ export async function runScript(c: DbConnection, script: string, o: RunOpts): Pr
   if (statements.length > MAX_STATEMENTS) throw new QueryError(`at most ${MAX_STATEMENTS} statements at a time`, [], 0);
   if (c.driver === 'postgres') return pgScript(c, statements, o);
   if (c.driver === 'sqlite') return sqliteScript(c, statements, o);
+  if (isNoSql(c.driver)) {
+    try { return await (c.driver === 'mongodb' ? mongoScript : redisScript)(c, statements, o); } catch (e) { throw withResults(e, [], o); }
+  }
   return myScript(c, statements, o);
 }
 
@@ -440,7 +458,7 @@ export const multiDatabase = (c: DbConnection) => c.driver === 'postgres' && c.a
  */
 export function onDatabase(c: DbConnection, db?: string): DbConnection {
   if (!db || db === c.database || (multiDatabase(c) && !c.database && db === 'postgres')) return c;
-  if (!multiDatabase(c) && !isMy(c.driver)) throw new Error(`${c.id} opens only its own database`);
+  if (!multiDatabase(c) && !isMy(c.driver) && !isNoSql(c.driver)) throw new Error(`${c.id} opens only its own database`);
   return { ...c, database: db };
 }
 
@@ -459,6 +477,8 @@ export async function listDatabases(c: DbConnection): Promise<string[]> {
  * reach past the tables (superuser, server files, other sessions). Read-only does not take those away.
  */
 export async function testConnection(c: DbConnection): Promise<{ version: string; warnings: string[] }> {
+  if (c.driver === 'mongodb') return mongoTest(c);
+  if (c.driver === 'redis') return redisTest(c);
   const o: RunOpts = { readOnly: true, limit: 200, timeoutMs: 15_000 };
   const sql = c.driver === 'postgres' ? 'SELECT version()' : c.driver === 'sqlite' ? 'SELECT \'SQLite \' || sqlite_version()' : 'SELECT VERSION()';
   const [r] = await runScript(c, sql, o);
@@ -499,6 +519,8 @@ const SYSTEM_SCHEMAS: Record<Driver, string[]> = {
   mysql: ['mysql', 'information_schema', 'performance_schema', 'sys'],
   mariadb: ['mysql', 'information_schema', 'performance_schema', 'sys'],
   sqlite: [],
+  mongodb: [],
+  redis: [],
 };
 
 /** A string literal for a catalog query (MySQL and MariaDB read backslashes as escapes). */
@@ -510,6 +532,8 @@ const catalogLiteral = (driver: Driver, s: string) => `'${(isMy(driver) ? s.repl
  * schema `loaded: false`; ask again with `schema` for its columns).
  */
 export async function readSchema(c: DbConnection, timeoutMs = 30_000, only?: string): Promise<SchemaInfo> {
+  if (c.driver === 'mongodb') return mongoSchema(c, timeoutMs, only);
+  if (c.driver === 'redis') return redisSchema(c, timeoutMs, only);
   const o: RunOpts = { readOnly: true, limit: MAX_TABLES * 50, timeoutMs, maxCell: 500 };
   if (c.driver === 'sqlite') {
     const db = sqliteOpen(c, true, timeoutMs);
@@ -606,6 +630,7 @@ const tableRef = (c: DbConnection, schema: string, table: string) => `${quoteIde
  * parameters), for the panel to show before saving.
  */
 export function previewEdits(c: DbConnection, schema: string, table: string, edits: RowEdit[]): string[] {
+  if (isNoSql(c.driver)) throw new Error('rows are edited in SQL databases only');
   return edits.map((e) => `${editSql(c.driver, tableRef(c, schema, table), e, true).sql};`);
 }
 
@@ -614,6 +639,7 @@ export function previewEdits(c: DbConnection, schema: string, table: string, edi
  * exactly one row undoes everything. Returns how many rows changed.
  */
 export async function editRows(c: DbConnection, schema: string, table: string, edits: RowEdit[]): Promise<number> {
+  if (isNoSql(c.driver)) throw new Error('rows are edited in SQL databases only');
   const ref = tableRef(c, schema, table);
   const stmts = edits.map((e) => editSql(c.driver, ref, e));
   const check = (i: number, n: number) => {
@@ -667,6 +693,8 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
 
 /** The CREATE statement(s) of a table or view: as the server gives them (MySQL, SQLite) or rebuilt from the catalog. */
 export async function readDdl(c: DbConnection, schema: string, name: string): Promise<string> {
+  if (c.driver === 'mongodb') return mongoDdl(c, schema, name);
+  if (c.driver === 'redis') throw new Error('Redis keys have no DDL');
   const q = (n: string) => quoteIdent(c.driver, n);
   if (c.driver === 'sqlite') {
     const db = sqliteOpen(c, true, 10_000);
@@ -737,6 +765,7 @@ const AGENT_REFUSED_READ_ONLY: [RegExp, string][] = [[/^\s*do\b/i, 'DO blocks']]
 
 /** Why an agent may not run this script, or null. */
 export function agentRefusal(script: string, driver: Driver, readOnly: boolean): string | null {
+  if (isNoSql(driver)) return noSqlAgentRefusal(statementsOf(script, driver), driver);
   const rules = readOnly ? [...AGENT_REFUSED, ...AGENT_REFUSED_READ_ONLY] : AGENT_REFUSED;
   for (const sql of statementsOf(script, driver)) {
     const hit = rules.find(([re]) => re.test(sql));
@@ -803,6 +832,7 @@ const TRUNCATE_TABLE = new RegExp(String.raw`^\s*(?:table\s+)?(?:only\s+)?(${NAM
 
 /** The statements of a script that hit every row of a table: UPDATE or DELETE without a WHERE, and TRUNCATE. */
 export function findUnsafe(script: string, driver: Driver): UnsafeStatement[] {
+  if (isNoSql(driver)) return noSqlUnsafe(statementsOf(script, driver), driver);
   const out: UnsafeStatement[] = [];
   statementsOf(script, driver).forEach((sql, index) => {
     const m = VERB.exec(topLevel(sql, driver));
@@ -818,6 +848,13 @@ export function findUnsafe(script: string, driver: Driver): UnsafeStatement[] {
 
 /** How many rows `table` (a name as findUnsafe read it) has now, or null when that cannot be read quickly. */
 export async function countRows(c: DbConnection, table: string): Promise<number | null> {
+  if (isNoSql(c.driver)) {
+    // A collection's documents; a Redis database's keys (FLUSHALL: every database's, not counted).
+    if (c.driver === 'redis' && table !== 'this database') return null;
+    const sql = c.driver === 'redis' ? 'DBSIZE' : table === 'the database' ? '' : `db.getCollection(${JSON.stringify(table)}).countDocuments({})`;
+    if (!sql) return null;
+    try { return Number((await runScript(c, sql, { readOnly: true, limit: 1, timeoutMs: 5000 }))[0]?.rows[0]?.[0] ?? NaN); } catch { return null; }
+  }
   if (!new RegExp(`^${NAME}$`).test(table)) return null;
   try {
     const [r] = await runScript(c, `SELECT count(*) FROM ${table}`, { readOnly: true, limit: 1, timeoutMs: 5000 });

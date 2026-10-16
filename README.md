@@ -132,7 +132,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **More MCP servers** (optional): Context7, Playwright, Sentry or any other, given to the agents' turns; the
   owner's only, unless one is marked for all users (see "Other MCP servers" below).
 - **SQL editor**: **SQL Editor** in the sidebar opens `/sql` in its own tab, for the whole panel rather than one chat:
-  PostgreSQL, MySQL, MariaDB and SQLite connections, their tables, query consoles and a result grid. Each connection
+  PostgreSQL, MySQL, MariaDB, SQLite, MongoDB and Redis connections, their tables, query consoles and a result grid. Each connection
   says whether agents may use it, read-only or read-write (see "SQL editor" below).
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
@@ -546,7 +546,7 @@ connections belong to the panel.
   named Default. Workspaces only group: who may open a connection is still set on the connection.
 
 - **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
-  protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, or a SQLite file on this machine (not one in
+  protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, MongoDB, Redis, or a SQLite file on this machine (not one in
   `STATE_DIR`). **Test connection** tries the form before saving and warns about a user whose rights reach past the
   tables (a PostgreSQL superuser or a member of `pg_read_server_files` and the like, MySQL `ALL PRIVILEGES`, `FILE` or
   `SUPER` on `*.*`): read-only does not take those away. Passwords never go back to the panel; like the
@@ -621,6 +621,35 @@ connections belong to the panel.
   `CREATE EXTENSION`, functions such as `pg_read_file`, `lo_export`, `dblink`, `query_to_xml`, `LOAD_FILE` (and, on
   read-only connections, `DO` blocks). The list cannot be complete, which is why a user without such rights is the
   real limit (see the warning of **Test connection**).
+
+### MongoDB and Redis in the SQL editor
+
+Neither speaks SQL, so their consoles take their own commands, and some SQL features do not apply (editing rows in the
+grid, Format, SQL `INSERT` export, DDL; MongoDB shows a collection's indexes and options instead).
+
+- **Connecting**: host and port, or a whole URI in the host field (`mongodb+srv://...`, `rediss://...`). MongoDB's
+  **Default database** and Redis's **Database number** are where a console starts; each console picks its own
+  (MongoDB: any database of the server; Redis: db0 to db15).
+- **MongoDB** takes mongosh-style commands: `db.users.find({ age: { $gt: 30 } }, { name: 1 }).sort({ name: 1 })`,
+  `aggregate([...])`, `countDocuments`, `distinct`, `insertOne`/`insertMany`, `updateOne`/`updateMany`, `deleteOne`/
+  `deleteMany`, `findOneAnd...`, index commands, `show dbs`, `show collections`, `db.getCollectionNames()`. Several in a
+  console are split at `;` or at each line starting `db.`. They are **read, not run**: values are mongosh's literals
+  (`ObjectId("...")`, `ISODate("...")`, `NumberLong(...)`, `/regex/i`, unquoted keys), and anything else (a variable,
+  a function) is refused. Documents become rows with a column per top-level field; nested ones show as JSON (whole in
+  the value panel). The tree lists databases, collections and views, with fields read from a sample of 20 documents.
+- **Redis** takes its commands, one per line (`HGETALL user:1`, `SCAN 0 MATCH user:* COUNT 100`), quoted like
+  redis-cli. Replies become tables (a hash's fields and values, a sorted set's members and scores, a SCAN's keys with its
+  next cursor beside them, INFO's sections). The tree lists the databases that hold keys and their keys (found with
+  SCAN, at most 5 000 per database), each with its type and time to live; double-click reads a key the way its type
+  is read (GET, HGETALL, LRANGE, ...). SELECT is the console's database picker.
+- **Read-only, the agent rules and asking first** hold for both, but Dalang decides them command by command, as neither
+  has a read-only transaction: MongoDB runs only find, findOne, aggregate (without `$out`/`$merge`), the counts and
+  distinct; Redis only the commands that read. Agents are also refused `$where`, `$function` and `$accumulator` (server
+  JavaScript) and `dropDatabase`, and on Redis CONFIG, EVAL/FUNCTION, KEYS (use SCAN), FLUSH*, DEBUG, MODULE, ACL,
+  CLIENT and the like. `deleteMany({})`, `updateMany({}, ...)`, `drop()`, FLUSHDB and FLUSHALL ask before they run.
+  **Test connection** warns about a MongoDB user with roles beyond reading (or a server without users) and a Redis
+  user that may run every command. A MongoDB user with the `read` role, or a Redis ACL user without write commands, is
+  the real limit.
 
 ## Develop
 

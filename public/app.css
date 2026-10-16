@@ -1006,6 +1006,15 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .term-tab.err { color: var(--err); }
 .sql-results .term-tab { padding-right: 3px; }
 .menu-ext { margin-left: 8px; font-size: 11px; }
+/* Database engines' logos, each in its colour (picked to read on light and dark). */
+.i[style*="db-postgresql"] { --engine: #4f86c6; color: var(--engine); }
+.i[style*="db-mysql"] { --engine: #e48e00; color: var(--engine); }
+.i[style*="db-mariadb"] { --engine: #c0765a; color: var(--engine); }
+.i[style*="db-sqlite"] { --engine: #4fa3d9; color: var(--engine); }
+.i[style*="db-mongodb"] { --engine: #47a248; color: var(--engine); }
+.i[style*="db-redis"] { --engine: #dc382d; color: var(--engine); }
+/* An open row tints its icon with the accent; a logo keeps its own colour. */
+.tree-row .tree-icon.engine, .tree-row[aria-expanded] .tree-icon.engine { color: var(--engine); opacity: 1; }
 .sql-read { flex: none; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
 /* The tree scrolls inside the side bar (a long list would otherwise push it past the window). */
 .ide.sql .ide-files { min-height: 0; overflow: hidden; }
