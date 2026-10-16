@@ -188,7 +188,7 @@ export function buildApp(
   mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store) });
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });
-  databaseRoutes(app, { store, stateDir: cfg.stateDir });
+  databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher });
   dispatcher.mcpServersFor = (author) => mcpLaunch(mcpServersFor(store, author));
   const ghCommand = cfg.ghCommand ?? ['gh'];
   const glabCommand = cfg.glabCommand ?? ['glab'];

@@ -4,8 +4,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUp, startOfDay } from './clickup.js';
 import type { Config } from './config.js';
-import { logDbQuery } from './database-routes.js';
-import { type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript } from './databases.js';
+import { createDbApproval, logDbQuery, readDbApprovals } from './database-routes.js';
+import {
+  agentRefusal, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
+} from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
@@ -175,7 +177,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   if (cu) clickupTools(server, cu);
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
-  if (dbs.length) databaseTools(server, store, dbs, { who: onBehalf, conv: source });
+  if (dbs.length) databaseTools(server, store, push, dbs, { who: onBehalf, conv: source });
   return server;
 }
 
@@ -220,12 +222,15 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
 const AGENT_DB_TIMEOUT_MS = 30_000;
 
 /**
- * The SQL editor's connections that are open to agents (Settings in /sql: "Agent access"). A read-only one runs every
- * statement in a read-only transaction or session, enforced by the database. Each query goes into the connection's log.
+ * The SQL editor's connections that are open to agents (in /sql: "Agent access"). A read-only one runs every statement
+ * in a read-only transaction or session, enforced by the database; on an 'approve' one a script the database refuses
+ * that way waits for an admin instead. Statements that reach past the tables are refused for agents in every mode.
+ * Each query goes into the connection's log.
  */
-function databaseTools(server: McpServer, store: Store, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
+function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
   const get = (id: string) => dbs.find((c) => c.id === id);
   const readOnly = (c: DbConnection) => c.readOnly || c.agent !== 'read-write';
+  const mode = (c: DbConnection) => (c.readOnly || c.agent === 'read-only' ? 'read-only' : c.agent === 'approve' ? 'read, write after approval' : 'read-write');
   const none = (id: string) => fail(`no such connection: ${id} (see db_list_connections)`);
   const DATABASE = z.string().optional()
     .describe('another database on the same server, for a connection that lists several (default: its own)');
@@ -236,7 +241,7 @@ function databaseTools(server: McpServer, store: Store, dbs: DbConnection[], by:
   }, async () => text(await Promise.all(dbs.map(async (c) => ({
     id: c.id, label: c.label, engine: c.driver, database: c.driver === 'sqlite' ? c.file : c.database || (multiDatabase(c) ? 'postgres' : ''),
     ...(multiDatabase(c) && { databases: await listDatabases(c).catch((e: Error) => `could not list them: ${e.message}`) }),
-    access: readOnly(c) ? 'read-only' : 'read-write',
+    access: mode(c),
   })))));
 
   server.registerTool('db_schema', {
@@ -264,7 +269,9 @@ function databaseTools(server: McpServer, store: Store, dbs: DbConnection[], by:
 
   server.registerTool('db_query', {
     description: 'Run SQL on a connection: one statement or several separated by ;. Returns the columns and rows of each statement '
-      + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database.',
+      + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database. On a '
+      + '"write after approval" one, a script that writes is held for an admin instead (status pending_approval): the outcome '
+      + 'comes to this chat as a message, or ask db_approval.',
     inputSchema: {
       connection: z.string(), database: DATABASE, sql: z.string().min(1).max(100_000),
       limit: z.number().int().min(1).max(1000).optional().describe('max rows per statement, default 100'),
@@ -277,15 +284,38 @@ function databaseTools(server: McpServer, store: Store, dbs: DbConnection[], by:
       logDbQuery(store, c.id, {
         at: t0, who: by.who, conv: by.conv, ...(database && { database }), sql: sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }),
       });
+    const refused = agentRefusal(sql, c.driver, readOnly(c));
+    if (refused) { log(false, 0, refused); return fail(refused); }
     try {
       const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
       log(true, results.reduce((n, r) => n + r.rows.length, 0));
       return text({ results: results.map((r) => ({ columns: r.columns.map((col) => col.name), rows: r.rows, affected: r.affected, truncated: r.truncated })) });
     } catch (e) {
+      // A write on a "write after approval" connection: the whole script waits for an admin (it ran read-only, so
+      // nothing of it was kept).
+      if (e instanceof QueryError && e.readOnlyRefusal && c.agent === 'approve' && !c.readOnly) {
+        const a = createDbApproval(store, { conn: c.id, ...(database && { database }), sql, who: by.who, conv: by.conv });
+        log(false, 0, `held for approval #${a.id}`);
+        void push.notify({ title: 'Database write needs approval', body: `${c.label}: ${sql.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
+        return text({
+          status: 'pending_approval', approval_id: a.id,
+          note: 'This script writes, so it waits for an admin. Nothing of it ran. The outcome will arrive in this chat as a message; do not send it again.',
+        });
+      }
       const done = e instanceof QueryError ? e.results.length : 0;
       log(false, 0, (e as Error).message);
       return fail(`${done ? `statement ${done + 1} failed (the ${done} before it ran): ` : ''}${(e as Error).message}`);
     }
+  });
+
+  if (!dbs.some((c) => c.agent === 'approve')) return;
+  server.registerTool('db_approval', {
+    description: 'Whether a database write held for approval (db_query answered pending_approval) was approved, rejected or failed, and its outcome.',
+    inputSchema: { approval_id: z.number().int() },
+  }, async ({ approval_id }) => {
+    const a = readDbApprovals(store).find((x) => x.id === approval_id && get(x.conn));
+    if (!a) return fail(`no such approval: ${approval_id}`);
+    return text({ id: a.id, connection: a.conn, database: a.database, status: a.status, outcome: a.outcome ?? null, decided_by: a.decidedBy ?? null });
   });
 }
 

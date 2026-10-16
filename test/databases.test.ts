@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type DbConnection, onDatabase, statementsOf } from '../src/databases.js';
-import { AUTH } from './helpers.js';
+import { agentRefusal, type DbConnection, onDatabase, previewEdits, statementsOf } from '../src/databases.js';
+import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
 const opened: { close: () => Promise<unknown> }[] = [];
@@ -42,10 +42,9 @@ async function boot() {
     return { tools: async () => (await client.listTools()).tools.map((x) => x.name), call };
   };
   /** An agent's MCP connection, in a chat whose turn `author` sent. */
-  const agent = (author = 'owner') => {
-    const p = t.store.createProject('proj', t.root);
-    const conv = t.store.createConversation(p.id);
-    return mcp(t.dispatcher.issueMcpToken(conv.id, author));
+  const agent = (author = 'owner', convId?: string) => {
+    const id = convId ?? t.store.createConversation(t.store.createProject('proj', t.root).id).id;
+    return mcp(t.dispatcher.issueMcpToken(id, author));
   };
   return { ...t, file, put, query, agent };
 }
@@ -72,6 +71,19 @@ describe('other databases', () => {
     expect(onDatabase(all, 'other').database).toBe('other');
     // No database set: it starts in `postgres`.
     expect(onDatabase({ ...all, database: '' }, 'postgres').database).toBe('');
+  });
+});
+
+describe('agent refusals', () => {
+  it('refuses what reaches past the tables, in every mode, and DO blocks while read-only', () => {
+    for (const sql of ["COPY users TO PROGRAM 'id'", "SELECT pg_read_file('/etc/passwd')", 'SELECT * FROM t INTO OUTFILE \'/tmp/x\'',
+      "ATTACH DATABASE '/tmp/x.db' AS x", "VACUUM INTO '/tmp/x.db'", 'SET GLOBAL max_connections = 1', 'SELECT 1; KILL 42',
+      "SELECT query_to_xml('select 1', true, true, '')", 'CREATE EXTENSION dblink']) {
+      expect(agentRefusal(sql, 'postgres', false), sql).toMatch(/refused for agents/);
+    }
+    expect(agentRefusal('DO $$ BEGIN END $$', 'postgres', true)).toMatch(/DO blocks/);
+    expect(agentRefusal('DO $$ BEGIN END $$', 'postgres', false)).toBeNull();
+    expect(agentRefusal("SELECT * FROM users WHERE note = 'copy'; VACUUM", 'postgres', true)).toBeNull();
   });
 });
 
@@ -135,6 +147,59 @@ describe('SQL editor connections', () => {
     expect(pg.json()).toMatchObject({ allDatabases: true });
   });
 
+  it('edits rows through their primary key, all or nothing, and never on a read-only connection', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const edit = (edits: object[]) => t.app.inject({ method: 'POST', url: '/api/db/connections/app/edit', headers: AUTH,
+      payload: { schema: 'main', table: 'users', edits } });
+    const ok = await edit([
+      { kind: 'update', key: { id: '1' }, set: { name: "an'n", note: null } },
+      { kind: 'insert', values: { name: 'cy' } },
+      { kind: 'delete', key: { id: '2' } },
+    ]);
+    expect(ok.json()).toEqual({ changed: 3 });
+    const rows = () => t.query('app', 'SELECT id, name, note FROM users ORDER BY id').then((r) => r.json().results[0].rows);
+    expect(await rows()).toEqual([[1, "an'n", null], [3, 'cy', null]]);
+    // A key that matches no row undoes the whole batch.
+    const bad = await edit([{ kind: 'update', key: { id: '1' }, set: { name: 'x' } }, { kind: 'delete', key: { id: '99' } }]);
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toMatch(/matched 0 rows/);
+    expect((await rows())[0][1]).toBe("an'n");
+    await t.put('app', { readOnly: true });
+    expect((await edit([{ kind: 'delete', key: { id: '1' } }])).statusCode).toBe(403);
+  });
+
+  it('previews the statements of grid edits without running them', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const r = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/edit', headers: AUTH, payload: {
+      schema: 'main', table: 'users', preview: true, edits: [
+        { kind: 'update', key: { id: '1' }, set: { name: "o'neil", note: null } },
+        { kind: 'insert', values: {} },
+        { kind: 'delete', key: { id: '2' } },
+      ] } });
+    expect(r.json().statements).toEqual([
+      'UPDATE "main"."users" SET "name" = \'o\'\'neil\', "note" = NULL WHERE "id" = \'1\';',
+      'INSERT INTO "main"."users" DEFAULT VALUES;',
+      'DELETE FROM "main"."users" WHERE "id" = \'2\';',
+    ]);
+    const rows = (await t.query('app', 'SELECT name FROM users ORDER BY id')).json().results[0].rows;
+    expect(rows).toEqual([['ann'], ['bob']]);
+  });
+
+  it('writes MySQL literals with backslashes escaped', () => {
+    const my = { id: 'my', driver: 'mysql' } as DbConnection;
+    expect(previewEdits(my, 'app', 'users', [{ kind: 'insert', values: { path: 'C:\\x', note: "it's" } }]))
+      .toEqual(["INSERT INTO `app`.`users` (`path`, `note`) VALUES ('C:\\\\x', 'it''s');"]);
+  });
+
+  it('shows a table\'s DDL', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const r = await t.app.inject({ url: '/api/db/connections/app/ddl?schema=main&table=users', headers: AUTH });
+    expect(r.json().ddl).toMatch(/^CREATE TABLE users \(id INTEGER PRIMARY KEY/);
+  });
+
   it('reads tables and columns', async () => {
     const t = await boot();
     await t.put('app', {});
@@ -163,6 +228,36 @@ describe('SQL editor connections for agents', () => {
     const log = (await t.app.inject({ url: '/api/db/connections/app/log', headers: AUTH })).json();
     expect(log.map((e: { ok: boolean }) => e.ok)).toEqual([false, true]);
     expect(log[0]).toMatchObject({ who: 'owner', sql: 'DROP TABLE users' });
+  });
+
+  it('holds an agent\'s write for an admin on an approval connection, then runs it and tells the chat', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const p = t.store.createProject('proj', t.root);
+    const conv = t.store.createConversation(p.id);
+    const a = await t.agent('owner', conv.id);
+    expect(await a.tools()).toContain('db_approval');
+    expect(JSON.parse((await a.call('db_query', { connection: 'app', sql: 'SELECT count(*) FROM users' })).text).results[0].rows).toEqual([[2]]);
+    const held = JSON.parse((await a.call('db_query', { connection: 'app', sql: "UPDATE users SET note = 'z'" })).text);
+    expect(held).toMatchObject({ status: 'pending_approval', approval_id: 1 });
+    const count = () => t.query('app', "SELECT count(*) FROM users WHERE note = 'z'").then((r) => r.json().results[0].rows[0][0]);
+    expect(await count()).toBe(0);
+    const pending = (await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json();
+    expect(pending).toMatchObject([{ id: 1, conn: 'app', sql: "UPDATE users SET note = 'z'", who: 'owner', conv: conv.id }]);
+    const ok = await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH });
+    expect(ok.json()).toMatchObject({ status: 'approved', outcome: '2 row(s) affected', decidedBy: 'owner' });
+    expect(await count()).toBe(2);
+    expect(JSON.parse((await a.call('db_approval', { approval_id: 1 })).text)).toMatchObject({ status: 'approved' });
+    await until(() => [...t.store.listQueue(conv.id), ...t.store.listTurns(conv.id)].some((x) => x.prompt.includes('approved your write')));
+    expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/reject', headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it('refuses statements that reach past the tables even on a read-write connection', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'read-write' });
+    const r = await (await t.agent()).call('db_query', { connection: 'app', sql: "ATTACH DATABASE '/tmp/other.db' AS o" });
+    expect(r).toMatchObject({ isError: true });
+    expect(r.text).toMatch(/refused for agents/);
   });
 
   it('lets an agent write on a read-write connection', async () => {

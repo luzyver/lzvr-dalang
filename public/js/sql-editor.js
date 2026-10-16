@@ -1,6 +1,7 @@
 // The SQL editor: the panel's database connections in their own browser tab (/sql), not tied to a chat. Connections and
 // their tables on the left, query consoles as tabs in the middle, results below (DataGrip's layout, kept as quiet as
-// the code editor). Admins add and change connections, including whether agents may use them.
+// the code editor). Admins add and change connections, including whether agents may use them. The result grid lives in
+// sql-grid.js, "Ask the agent" in sql-ask.js.
 import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
@@ -10,6 +11,8 @@ import { AsyncButton, confirmDialog, Empty, Field, Icon, Logo, Menu, MenuItem, M
 import { guarded, isAdmin, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
+import { ResultGrid } from './sql-grid.js';
+import { AskAgent, contextFor } from './sql-ask.js';
 
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
@@ -19,14 +22,22 @@ const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sq
 const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306 };
 const DIALECTS = { postgres: cm.PostgreSQL, mysql: cm.MySQL, mariadb: cm.MariaSQL, sqlite: cm.SQLite };
 const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
-const AGENT = { off: 'Off', 'read-only': 'Read-only', 'read-write': 'Read and write' };
+const AGENT = { off: 'Off', 'read-only': 'Read-only', approve: 'Write with approval', 'read-write': 'Read and write' };
+const AGENT_HINT = {
+  off: 'Agents do not see this connection.',
+  'read-only': 'Agents read through the gateway\'s MCP tools (db_list_connections, db_schema, db_query); the database refuses their writes.',
+  approve: 'Agents read freely; a script that writes waits in Approvals until an admin runs or rejects it, and the outcome goes back to the agent\'s chat.',
+  'read-write': 'Agents may change data and tables through the gateway\'s MCP tools.',
+};
+/** sql-formatter's names for the dialects. */
+const FORMAT_LANG = { postgres: 'postgresql', mysql: 'mysql', mariadb: 'mariadb', sqlite: 'sqlite' };
+const HISTORY = 'dalang-sql-history';
 const LIMITS = [100, 500, 1000, 5000, 10000];
-/** Rows drawn at first (and per "show more"); a result may hold up to the row limit. */
-const PAGE = 500;
 
 /**
  * A console: { id, connId, database ('' = the connection's own), title, text }. Its editor state lives in `states` (by id), its last run in `runs`:
- * { running, results, error, index, readOnly, at, shown (which result's tab; past the last one: the error's) }.
+ * { running, script, results, metas (per result: the table it shows, see tableMeta), error, index, readOnly, at,
+ * shown (which result's tab; past the last one: the error's) }.
  */
 const sq = {
   conns: signal(null),
@@ -46,7 +57,13 @@ const sq = {
   editing: signal(null),
   /** the agent log dialog: a connection id */
   log: signal(null),
+  /** the history dialog is open */
+  history: signal(false),
+  /** "Ask the agent": { context, suggestion } */
+  ask: signal(null),
 };
+/** console id -> the AbortController of its running query */
+const ctrls = new Map();
 const states = new Map();
 /** console id -> the compartment its SQL language sits in */
 const langs = new Map();
@@ -133,15 +150,24 @@ async function loadConns() {
   try { sq.conns.value = await api('/api/db/connections'); } catch (e) { sq.conns.value = sq.conns.value || []; toast(e.message, 'err'); }
 }
 
-async function loadSchema(connId, db = '', force = false) {
+/** skey -> the schema read in flight, so a second caller waits for the same one. */
+const loadingSchemas = new Map();
+
+function loadSchema(connId, db = '', force = false) {
   const key = skey(connId, db);
   const cur = sq.schemas.value.get(key);
-  if (cur && (cur.loading || (cur.data && !force))) return;
+  if (loadingSchemas.has(key)) return loadingSchemas.get(key);
+  if (cur?.data && !force) return Promise.resolve();
   const set = (v) => { const m = new Map(sq.schemas.value); m.set(key, v); sq.schemas.value = m; };
   set({ ...cur, loading: true });
-  try { set({ data: await api(`/api/db/connections/${connId}/schema${dbParam(db)}`) }); } catch (e) { set({ error: e.message }); }
-  const c = activeConsole();
-  if (c?.connId === connId && (c.database || '') === db) applyLanguage();
+  const p = (async () => {
+    try { set({ data: await api(`/api/db/connections/${connId}/schema${dbParam(db)}`) }); } catch (e) { set({ error: e.message }); }
+    loadingSchemas.delete(key);
+    const c = activeConsole();
+    if (c?.connId === connId && (c.database || '') === db) applyLanguage();
+  })();
+  loadingSchemas.set(key, p);
+  return p;
 }
 
 async function loadDatabases(connId, force = false) {
@@ -173,12 +199,12 @@ function applyLanguage() {
 let consoleSeq = 0;
 const titleOf = (conn, db) => (conn ? (db ? `${conn.label} · ${db}` : conn.label) : 'Console');
 
-/** `database`: another database of the connection ('' = its own). */
-function newConsole(connId, text = '', database = '') {
+/** `database`: another database of the connection ('' = its own). `name`: the tab's title instead of the connection's. */
+function newConsole(connId, text = '', database = '', name = '') {
   const conn = connOf(connId);
   const db = conn && database !== ownDb(conn) ? database : '';
   const n = sq.consoles.value.filter((c) => c.connId === connId && (c.database || '') === db).length + 1;
-  const title = `${titleOf(conn, db)}${conn && n > 1 ? ` (${n})` : ''}`;
+  const title = name || `${titleOf(conn, db)}${conn && n > 1 ? ` (${n})` : ''}`;
   const c = { id: `q${Date.now().toString(36)}${consoleSeq++}`, connId, database: db, title, text };
   batch(() => {
     sq.consoles.value = [...sq.consoles.value, c];
@@ -211,6 +237,8 @@ function stateFor(c) {
       keys: [
         { key: 'Mod-Enter', preventDefault: true, run: () => { run(false); return true; } },
         { key: 'Shift-Mod-Enter', preventDefault: true, run: () => { run(true); return true; } },
+        { key: 'Shift-Alt-f', preventDefault: true, run: () => { formatSql(); return true; } },
+        { key: 'Mod-Alt-l', preventDefault: true, run: () => { formatSql(); return true; } },
       ],
     });
     st = made.state;
@@ -262,30 +290,152 @@ function setConsoleDb(database) {
 
 const DDL = /^\s*(create|alter|drop|rename|truncate|comment)\b/im;
 
-async function run(all) {
+/** Always quoted: for SQL the editor writes itself (filters, sorting). */
+const qi = (conn, name) => (conn.driver === 'mysql' || conn.driver === 'mariadb' ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`);
+const defaultSchema = (conn, db) => (conn.driver === 'postgres' ? 'public' : conn.driver === 'sqlite' ? 'main' : db || conn.database);
+
+const IDENT = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[A-Za-z_][\w$]*)`;
+const TABLE_SELECT = new RegExp(String.raw`^\s*select\s+\*\s+from\s+(${IDENT})(?:\s*\.\s*(${IDENT}))?((?:\s+(?:where|order|limit)\b[\s\S]*)?)\s*;?\s*$`, 'i');
+const WHERE_PART = /^\s*where\s+([\s\S]*?)(?:\s+order\s+by\s+[\s\S]*?)?(?:\s+limit\s+\d+(?:\s+offset\s+\d+)?)?\s*$/i;
+const unquote = (x) => (/^"/.test(x) ? x.slice(1, -1).replace(/""/g, '"') : /^\x60/.test(x) ? x.slice(1, -1) : x);
+const sameName = (x, name) => (/^["\x60]/.test(x) ? unquote(x) === name : x.toLowerCase() === name.toLowerCase());
+
+/**
+ * The table a result shows, when its statement is `SELECT * FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT ...]` and the
+ * table has a primary key that the result holds: { schema, table, pk, where, order }. Such a result can be filtered,
+ * sorted on the server and edited.
+ */
+function tableMeta(conn, db, result) {
+  const m = TABLE_SELECT.exec(result.sql);
+  const data = sq.schemas.value.get(skey(conn.id, db))?.data;
+  if (!m || !data || !result.columns.length) return null;
+  const [, a, b, tail] = m;
+  let hits = [];
+  for (const sch of data.schemas) {
+    for (const t of sch.tables) {
+      if (t.kind === 'table' && (b ? sameName(a, sch.name) && sameName(b, t.name) : sameName(a, t.name))) hits.push({ schema: sch.name, t });
+    }
+  }
+  if (!b && hits.length > 1) hits = hits.filter((h) => h.schema === defaultSchema(conn, db));
+  if (hits.length !== 1) return null;
+  const { schema, t } = hits[0];
+  const pk = t.columns.filter((col) => col.pk).map((col) => col.name);
+  if (!pk.length || !pk.every((n) => result.columns.some((col) => col.name === n))) return null;
+  return { schema, table: t.name, pk, where: WHERE_PART.exec(tail)?.[1]?.trim() ?? '', order: null };
+}
+
+/** Remembers a run for the History dialog (the last 300, the same statement once). */
+function remember(entry) {
+  const list = pref(HISTORY, []);
+  keep(HISTORY, [entry, ...list.filter((x) => !(x.sql === entry.sql && x.connId === entry.connId && x.database === entry.database))].slice(0, 300));
+}
+
+async function run(all, script) {
   const c = activeConsole();
   if (!c || !view) return;
   const conn = connOf(c.connId);
   if (!conn) { toast('pick a connection for this console first', 'err'); return; }
   if (sq.runs.value.get(c.id)?.running) return;
-  const sql = all ? view.state.doc.toString() : currentStatement(view.state, conn.driver);
+  const sql = script ?? (all ? view.state.doc.toString() : currentStatement(view.state, conn.driver));
   if (!sql.trim()) { toast('nothing to run here', 'err'); return; }
-  setRun(c.id, { running: true, at: Date.now() });
+  const db = c.database || '';
+  const ac = new AbortController();
+  ctrls.set(c.id, ac);
+  const t0 = Date.now();
+  setRun(c.id, { running: true, at: t0, script: sql });
   if (mobile()) sq.pane.value = 'terminal';
+  const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, at: t0, ms: Date.now() - t0, ok, rows });
   try {
-    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', body: { sql, limit: sq.limit.value, ...(c.database && { database: c.database }) } });
-    setRun(c.id, { running: false, results: r.results, error: null, readOnly: r.readOnly, shown: r.results.length - 1, pages: 1 });
-    if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, c.database || '', true);
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }) } });
+    // A table's rows need its primary key: the table list must be there to tell.
+    await loadSchema(conn.id, db);
+    const metas = r.results.map((x) => tableMeta(conn, db, x));
+    setRun(c.id, { running: false, results: r.results, metas, error: null, readOnly: r.readOnly, shown: r.results.length - 1 });
+    note(true, r.results.reduce((n, x) => n + x.rows.length, 0));
+    if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, db, true);
   } catch (e) {
     // A failed statement still shows what ran before it.
     const results = e.detail?.results || [];
-    setRun(c.id, { running: false, results, error: e.message, index: e.detail?.index ?? 0, shown: results.length, pages: 1 });
-  }
+    const error = e.name === 'AbortError' ? 'Cancelled. The database was asked to stop the statement.' : e.message;
+    setRun(c.id, { running: false, results, metas: [], error, index: e.detail?.index ?? results.length, shown: results.length });
+    note(false, 0);
+  } finally { if (ctrls.get(c.id) === ac) ctrls.delete(c.id); }
+}
+
+/** Stops the active console's query: the request closes and the server cancels the statement. */
+function cancelRun() {
+  const c = activeConsole();
+  ctrls.get(c?.id)?.abort();
+}
+
+/** Reads a table result again with another filter or sort order (from the grid). */
+async function requery(c, idx, meta, { where, order }) {
+  const conn = connOf(c.connId);
+  if (!conn) return;
+  const ref = conn.driver === 'sqlite' ? qi(conn, meta.table) : `${qi(conn, meta.schema)}.${qi(conn, meta.table)}`;
+  const sql = `SELECT * FROM ${ref}${where.trim() ? ` WHERE ${where.trim()}` : ''}${order ? ` ORDER BY ${qi(conn, order.col)} ${order.desc ? 'DESC' : 'ASC'}` : ''}`;
+  try {
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', body: { sql, limit: sq.limit.value, ...(c.database && { database: c.database }) } });
+    const cur = sq.runs.value.get(c.id);
+    const results = cur.results.map((x, i) => (i === idx ? r.results[0] : x));
+    const metas = cur.metas.map((x, i) => (i === idx ? { ...meta, where, order } : x));
+    setRun(c.id, { results, metas, at: Date.now() });
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/** Saves the grid's edits to its table, then reads the table again. True when saved. */
+/** The statements the grid's edits make, as the server would run them (values written in), without running them. */
+async function previewEdits(c, meta, edits) {
+  const conn = connOf(c.connId);
+  const r = await api(`/api/db/connections/${conn.id}/edit`, { method: 'POST', body: { ...(c.database && { database: c.database }), schema: meta.schema, table: meta.table, edits, preview: true } });
+  return r.statements;
+}
+
+async function submitEdits(c, idx, meta, edits) {
+  const conn = connOf(c.connId);
+  try {
+    const r = await api(`/api/db/connections/${conn.id}/edit`, { method: 'POST', body: { ...(c.database && { database: c.database }), schema: meta.schema, table: meta.table, edits } });
+    toast(`${r.changed} row${r.changed === 1 ? '' : 's'} saved`);
+    await requery(c, idx, meta, meta);
+    return true;
+  } catch (e) { toast(e.message, 'err'); return false; }
+}
+
+/** Lays out the selection, or the whole console, with sql-formatter (loaded on first use). */
+async function formatSql() {
+  const c = activeConsole();
+  if (!view || !c) return;
+  const conn = connOf(c.connId);
+  try {
+    const { format } = await import('../vendor/code/sqlfmt.js');
+    const sel = view.state.selection.main;
+    const [from, to] = sel.empty ? [0, view.state.doc.length] : [sel.from, sel.to];
+    const out = format(view.state.sliceDoc(from, to), { language: FORMAT_LANG[conn?.driver] || 'sql', keywordCase: 'upper', tabWidth: 2 });
+    view.dispatch({ changes: { from, to, insert: out } });
+  } catch (e) { toast(`cannot format this: ${e.message}`, 'err'); }
+}
+
+/** "Ask the agent" about the active console's last run (its error, or the result shown). */
+function askAboutRun() {
+  const c = activeConsole();
+  const conn = c && connOf(c.connId);
+  if (!conn) return;
+  const r = sq.runs.value.get(c.id);
+  const results = r?.results || [];
+  const onError = !!r?.error && !(r.shown < results.length);
+  const shown = onError ? null : results[Math.min(r?.shown ?? 0, results.length - 1)];
+  const sql = onError || !shown ? r?.script ?? currentStatement(view.state, conn.driver) : shown.sql;
+  sq.ask.value = {
+    suggestion: onError ? 'Why does this fail, and how do I fix it?' : '',
+    context: contextFor({
+      conn, engine: DRIVERS[conn.driver], database: c.database || (multi(conn) ? ownDb(conn) : ''), sql,
+      error: onError ? r.error : null, result: shown, schemas: sq.schemas.value.get(skey(conn.id, c.database || ''))?.data?.schemas,
+    }),
+  };
 }
 
 // ---------- results ----------
 
-const display = (v) => (v === null ? null : String(v));
 const csvCell = (v) => (v === null ? '' : /[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
 const toCsv = (r) => [r.columns.map((col) => csvCell(col.name)).join(','), ...r.rows.map((row) => row.map(csvCell).join(','))].join('\r\n');
 const toTsv = (r) => [r.columns.map((col) => col.name).join('\t'), ...r.rows.map((row) => row.map((v) => (v === null ? '' : String(v).replace(/[\t\n]/g, ' '))).join('\t'))].join('\n');
@@ -304,22 +454,6 @@ const summary = (r) => (r.columns.length
   : r.affected != null ? `${r.affected} row${r.affected === 1 ? '' : 's'} affected` : 'done');
 const firstWord = (sql) => (/^\s*(\w+)/.exec(sql)?.[1] || 'SQL').toUpperCase();
 
-function Grid({ r, pages, onMore }) {
-  const shown = r.rows.slice(0, pages * PAGE);
-  return html`<div class="sql-grid-wrap">
-    <table class="sql-grid">
-      <thead><tr><th class="rownum">#</th>${r.columns.map((col) => html`<th title=${col.type}><span>${col.name}</span>${col.type && html`<small>${col.type}</small>`}</th>`)}</tr></thead>
-      <tbody>${shown.map((row, i) => html`<tr key=${i}><td class="rownum">${i + 1}</td>
-        ${row.map((v) => {
-          const s = display(v);
-          return s === null ? html`<td class="null">NULL</td>`
-            : html`<td class=${cx(typeof v === 'number' && 'num')} title=${s.length > 60 ? s.slice(0, 2000) : undefined} onDblClick=${() => copyText(s, 'value copied')}>${s.length > 300 ? `${s.slice(0, 300)}…` : s}</td>`;
-        })}</tr>`)}</tbody>
-    </table>
-    ${r.rows.length > shown.length && html`<div class="sql-more"><button class="btn sm" onClick=${onMore}>Show ${Math.min(PAGE, r.rows.length - shown.length)} more of ${r.rows.length - shown.length}</button></div>`}
-  </div>`;
-}
-
 function Results() {
   const c = activeConsole();
   const r = c && sq.runs.value.get(c.id);
@@ -330,8 +464,11 @@ function Results() {
   }
   const results = r.results || [];
   const onError = !!r.error && !(r.shown < results.length);
-  const shown = onError ? null : results[Math.min(r.shown ?? 0, results.length - 1)];
-  const pick = (i) => setRun(c.id, { shown: i, pages: 1 });
+  const idx = Math.min(r.shown ?? 0, results.length - 1);
+  const shown = onError ? null : results[idx];
+  const meta = shown && r.metas?.[idx];
+  const conn = connOf(c.connId);
+  const pick = (i) => setRun(c.id, { shown: i });
   return html`<div class="sql-results">
     <div class="pane-head term-head">
       <div class="term-tabs">
@@ -340,7 +477,9 @@ function Results() {
         ${r.error && html`<div class=${cx('term-tab err', onError && 'active')} onClick=${() => pick(results.length)}><${Icon} name="circle-alert" /><span>${results.length ? `${r.index + 1} · ` : ''}Error</span></div>`}
       </div>
       <div class="spacer"></div>
-      ${r.running && html`<span class="dim small row"><${Spinner} /> Running…</span>`}
+      ${r.running && html`<span class="dim small row"><${Spinner} /> Running…</span>
+        <button class="btn sm" onClick=${cancelRun}><${Icon} name="square" />Cancel</button>`}
+      ${!r.running && (shown || onError) && html`<button class="btn ghost sm" title="Send this query and its error or result to an agent" onClick=${askAboutRun}><${Icon} name="bot" />Ask the agent</button>`}
       ${shown?.columns.length > 0 && !r.running && html`
         <button class="icon-btn xs" title="Copy as TSV (pastes into a spreadsheet)" aria-label="Copy rows" onClick=${() => copyText(toTsv(shown), 'rows copied')}><${Icon} name="copy" /></button>
         <button class="icon-btn xs" title="Download CSV" aria-label="Download CSV" onClick=${() => download(toCsv(shown), `${c.title.replace(/[^\w-]+/g, '_')}.csv`)}><${Icon} name="arrow-down-to-line" /></button>`}
@@ -349,12 +488,18 @@ function Results() {
       ${results.length > 0 && html`<div class="small dim">Statement ${r.index + 1} failed; the ${results.length} before it ran.</div>`}
       <pre>${r.error}</pre></div></div>`}
     ${shown && (shown.columns.length
-      ? html`<${Grid} key=${`${r.at}:${r.shown}`} r=${shown} pages=${r.pages || 1} onMore=${() => setRun(c.id, { pages: (r.pages || 1) + 1 })} />`
+      ? html`<${ResultGrid} key=${`${r.at}:${idx}`} r=${shown} table=${meta} readOnly=${!!conn?.readOnly}
+          onQuery=${(q) => requery(c, idx, meta, q)} onSubmit=${(edits) => submitEdits(c, idx, meta, edits)}
+          onPreview=${(edits) => previewEdits(c, meta, edits)} />`
       : html`<div class="term-empty small"><${Icon} name="circle-check" /> ${summary(shown)}</div>`)}
     ${shown && html`<div class="sql-foot small dim">
       <span>${summary(shown)} · ${shown.ms} ms</span>
       ${shown.truncated && html`<span class="warn">Only the first ${shown.rows.length} rows (the row limit).</span>`}
       ${r.readOnly && html`<span><${Icon} name="eye" class="tiny" /> read-only connection</span>`}
+      ${meta && !conn?.readOnly && html`<span><${Icon} name="pencil" class="tiny" /> ${meta.table}: click a cell to see or edit it</span>`}
+      ${meta && html`<span class="mono sql-ran" title=${shown.sql}>${shown.sql}</span>
+        <button class="icon-btn xs" title="Copy the query that read these rows" aria-label="Copy the query" onClick=${() => copyText(shown.sql, 'query copied')}><${Icon} name="copy" /></button>`}
+      ${!meta && shown?.columns.length > 0 && html`<span>Click a cell to see its whole value</span>`}
     </div>`}
   </div>`;
 }
@@ -391,7 +536,23 @@ function openTable(conn, db, schema, table) {
 }
 
 const agentTag = (conn) => conn.agent !== 'off'
-  && html`<span class=${cx('sql-tag', conn.agent === 'read-write' && 'warn')} title=${`Agents: ${AGENT[conn.agent].toLowerCase()}`}><${Icon} name="bot" /></span>`;
+  && html`<span class=${cx('sql-tag', conn.agent === 'read-write' && 'warn')} title=${`Agents: ${(AGENT[conn.agent] || conn.agent).toLowerCase()}`}><${Icon} name="bot" /></span>`;
+
+/** The DDL of a table or view, in a new console (not run). */
+async function openDdl(conn, db, schema, table) {
+  try {
+    const r = await api(`/api/db/connections/${conn.id}/ddl?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}${db ? `&database=${encodeURIComponent(db)}` : ''}`);
+    newConsole(conn.id, r.ddl, db, `DDL · ${table}`);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function askAboutTable(conn, db, schema, table) {
+  const own = db || (multi(conn) ? ownDb(conn) : '');
+  sq.ask.value = {
+    suggestion: `What does ${table} hold, and how is it used?`,
+    context: contextFor({ conn, engine: DRIVERS[conn.driver], database: own, sql: '', schemas: sq.schemas.value.get(skey(conn.id, db))?.data?.schemas, table: { schema, table } }),
+  };
+}
 const note = (depth, cls, text) => html`<div class=${cx('tree-empty small', cls)} style=${{ paddingLeft: `${30 + depth * 14}px` }}>${text}</div>`;
 
 /** The schemas (or, with only one, the tables) of one database, `depth` levels in. */
@@ -491,6 +652,13 @@ function TableNode({ conn, db, schema, t, depth }) {
     <div class="tree-row" style=${{ '--depth': depth }} aria-expanded=${open} title="Double-click: SELECT its first rows" onClick=${() => toggleOpen(key)} onDblClick=${() => openTable(conn, db, schema, t.name)}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name=${t.kind === 'view' ? 'eye' : 'table'} class="tree-icon" /><span class="tree-name">${t.name}</span>
+      <span onClick=${(e) => e.stopPropagation()} onDblClick=${(e) => e.stopPropagation()}>
+        <${Menu} label="Table options" buttonClass="xs tree-more">
+          <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>Select first rows<//>
+          <${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>Show DDL<//>
+          <${MenuItem} icon="bot" onClick=${() => askAboutTable(conn, db, schema, t.name)}>Ask the agent about it<//>
+        <//>
+      </span>
     </div>
     ${open && t.columns.map((col) => html`<div key=${col.name} class="tree-row sql-col" style=${{ '--depth': depth + 1 }}>
       <span class="tree-twisty"></span><${Icon} name=${col.pk ? 'key-round' : 'file'} class=${cx('tree-icon', col.pk && 'pk')} />
@@ -592,16 +760,17 @@ function ConnectionForm({ conn }) {
       <${Field} label="Who may open it"><select value=${f.access} onChange=${set('access')}>
         ${access.map((k) => html`<option value=${k}>${ACCESS[k]}</option>`)}</select><//>
     </div>
-    <label class="check small"><input type="checkbox" checked=${f.readOnly} onChange=${(e) => setF({ ...f, readOnly: e.currentTarget.checked, agent: e.currentTarget.checked && f.agent === 'read-write' ? 'read-only' : f.agent })} />
+    <label class="check small"><input type="checkbox" checked=${f.readOnly} onChange=${(e) => setF({ ...f, readOnly: e.currentTarget.checked, agent: e.currentTarget.checked && (f.agent === 'read-write' || f.agent === 'approve') ? 'read-only' : f.agent })} />
       Read-only for everyone: the database refuses anything that writes</label>
     <div class="field"><span class="field-label">Agent access</span>
       <${Seg} small label="Agent access" value=${f.agent} onChange=${(v) => setF({ ...f, agent: v })}
-        options=${Object.entries(AGENT).filter(([k]) => !(f.readOnly && k === 'read-write'))} />
-      <span class="field-hint">${f.agent === 'off' ? 'Agents do not see this connection.'
-        : `Agents get it through the gateway's MCP tools (db_list_connections, db_schema, db_query), ${f.agent === 'read-only' ? 'and the database refuses their writes' : 'and may change data and tables'}. Only agents working for someone who may open it; every query they run is logged. Chats reach these tools with MCP_INJECT=1.`}</span>
+        options=${Object.entries(AGENT).filter(([k]) => !(f.readOnly && (k === 'read-write' || k === 'approve')))} />
+      <span class="field-hint">${AGENT_HINT[f.agent]}${f.agent !== 'off' ? ' Only agents working for someone who may open it; every query they run is logged, and statements that reach server files, programs or settings are refused. Chats reach these tools with MCP_INJECT=1.' : ''}</span>
     </div>
     ${f.agent !== 'off' && html`<p class="small dim">An agent with a shell can still reach a database it has the address and credentials of (a <span class="mono">.env</span> in its project, say). For a strict limit, give this connection a database user that may only read.</p>`}
-    ${tested && (tested.ok ? html`<p class="small"><${Icon} name="circle-check" /> Connected: ${tested.version}</p>` : html`<div class="form-error" role="alert">${tested.error}</div>`)}
+    ${tested && (tested.ok ? html`<p class="small"><${Icon} name="circle-check" /> Connected: ${tested.version}</p>
+      ${tested.warnings?.map((w) => html`<div class="sql-warning small" role="alert"><${Icon} name="triangle-alert" /><span>${w}${f.agent !== 'off' ? ' Agents have these rights too, whatever the agent access says.' : ''}</span></div>`)}`
+      : html`<div class="form-error" role="alert">${tested.error}</div>`)}
     ${error && html`<div class="form-error" role="alert">${error}</div>`}
     <div class="row wrap">
       <${AsyncButton} class="btn" icon="refresh-cw" onClick=${test}>Test connection<//>
@@ -633,6 +802,44 @@ function AgentLog({ id }) {
   </div>`;
 }
 
+/** The runs of this browser, newest first: the active console's connection, or every one. Click to put one in the console. */
+function History() {
+  const c = activeConsole();
+  const [all, setAll] = useState(!c?.connId);
+  const [q, setQ] = useState('');
+  const close = () => { sq.history.value = false; };
+  const list = pref(HISTORY, []).filter((h) => (all || (h.connId === c?.connId && (h.database || '') === (c?.database || '')))
+    && (!q || h.sql.toLowerCase().includes(q.toLowerCase()))).slice(0, 200);
+  const put = (h, andRun) => {
+    if (!view || !c) return;
+    const doc = view.state.doc;
+    const insert = `${doc.length && !doc.toString().endsWith('\n') ? '\n\n' : ''}${h.sql}`;
+    view.dispatch({ changes: { from: doc.length, insert }, selection: { anchor: doc.length + insert.length - h.sql.length, head: doc.length + insert.length } });
+    close();
+    view.focus();
+    if (andRun) run(false);
+  };
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Query history</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    <div class="row wrap">
+      <input class="sql-history-search" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} placeholder="Search" autofocus />
+      <label class="check small"><input type="checkbox" checked=${all} onChange=${(e) => setAll(e.currentTarget.checked)} />Every connection</label>
+    </div>
+    ${!list.length ? html`<${Empty} icon="history" title="Nothing here yet">Every query you run is kept in this browser (the last 300).<//>`
+      : html`<div class="sql-log">${list.map((h, i) => html`<div key=${i} class=${cx('sql-log-item sql-history-item', !h.ok && 'failed')}>
+        <div class="small dim row wrap"><${Icon} name=${h.ok ? 'circle-check' : 'circle-alert'} class="tiny" />
+          <span>${new Date(h.at).toLocaleString()}</span>
+          ${all && html`<span>· ${connOf(h.connId)?.label ?? h.connId}${h.database ? ` · ${h.database}` : ''}</span>`}
+          <span>· ${h.ok ? `${h.rows} rows` : 'failed'} · ${h.ms} ms</span>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" disabled=${!c} onClick=${() => put(h, false)}>Insert</button>
+          <button class="btn sm" disabled=${!c || !connOf(c.connId)} onClick=${() => put(h, true)}><${Icon} name="play" />Run</button>
+        </div>
+        <pre class="mono">${h.sql}</pre>
+      </div>`)}</div>`}
+  </div>`;
+}
+
 // ---------- the page ----------
 
 function EditorHost() {
@@ -660,9 +867,12 @@ function Toolbar() {
       ${[...new Set([ownDb(conn), ...(c.database ? [c.database] : []), ...(sq.dbs.value.get(conn.id)?.list || [])])]
         .map((name) => html`<option value=${name}>${name}</option>`)}
     </select>`}
-    <button class="btn primary sm" disabled=${!conn || running} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>
-      ${running ? html`<${Spinner} />` : html`<${Icon} name="play" />`}Run</button>
+    ${running ? html`<button class="btn sm" title="Stop the running statement" onClick=${cancelRun}><${Spinner} />Cancel</button>`
+      : html`<button class="btn primary sm" disabled=${!conn} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>
+        <${Icon} name="play" />Run</button>`}
     <button class="btn sm" disabled=${!conn || running} title="Run every statement in this console (Ctrl+Shift+Enter)" onClick=${() => run(true)}>Run all</button>
+    <button class="icon-btn sm" title="Format the selection or the console (Shift+Alt+F)" aria-label="Format SQL" onClick=${formatSql}><${Icon} name="wrap-text" /></button>
+    <button class="icon-btn sm" title="Query history" aria-label="Query history" onClick=${() => { sq.history.value = true; }}><${Icon} name="history" /></button>
     <div class="spacer"></div>
     ${conn?.readOnly && html`<span class="ide-chip" title="The database refuses writes on this connection"><${Icon} name="eye" />read-only</span>`}
     <label class="small dim sql-limit">Rows
@@ -747,15 +957,19 @@ export function SqlEditor() {
       ${conn ? html`<span class="ide-stat"><${Icon} name="database" />${conn.label}</span>
         <span class="ide-stat">${DRIVERS[conn.driver]}</span>
         ${conn.readOnly && html`<span class="ide-stat"><${Icon} name="eye" />Read-only</span>`}
-        <span class=${cx('ide-stat', conn.agent === 'read-write' && 'warn')} title="What agents may do on this connection"><${Icon} name="bot" />Agents: ${AGENT[conn.agent].toLowerCase()}</span>`
+        <span class=${cx('ide-stat', conn.agent === 'read-write' && 'warn')} title="What agents may do on this connection"><${Icon} name="bot" />Agents: ${(AGENT[conn.agent] || conn.agent).toLowerCase()}</span>`
         : html`<span class="ide-stat">No connection</span>`}
       <div class="spacer"></div>
-      <span class="ide-stat hide-mobile">Ctrl+Enter run · Ctrl+Shift+Enter run all · double-click a cell to copy</span>
+      <span class="ide-stat hide-mobile">Ctrl+Enter run · Ctrl+Shift+Enter run all · Shift+Alt+F format</span>
     </footer>
     <nav class="ide-nav"><${Seg} value=${pane} label="Pane" options=${panes} onChange=${(v) => { sq.pane.value = v; }} /></nav>
     <${Modal} open=${!!sq.editing.value} label="Connection" class="dialog sql-dialog" onClose=${() => { sq.editing.value = null; }}>
       ${sq.editing.value && html`<${ConnectionForm} conn=${sq.editing.value.conn} />`}<//>
     <${Modal} open=${!!sq.log.value} label="Agent queries" class="dialog sql-dialog" onClose=${() => { sq.log.value = null; }}>
       ${sq.log.value && html`<${AgentLog} id=${sq.log.value} />`}<//>
+    <${Modal} open=${sq.history.value} label="Query history" class="dialog sql-dialog" onClose=${() => { sq.history.value = false; }}>
+      ${sq.history.value && html`<${History} />`}<//>
+    <${Modal} open=${!!sq.ask.value} label="Ask the agent" class="dialog sql-dialog" onClose=${() => { sq.ask.value = null; }}>
+      ${sq.ask.value && html`<${AskAgent} ...${sq.ask.value} onClose=${() => { sq.ask.value = null; }} />`}<//>
   </div>`;
 }

@@ -16,8 +16,11 @@ import type { ProjectAccess } from './util.js';
 
 export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite'] as const;
 export type Driver = (typeof DRIVERS)[number];
-/** What an agent may do on a connection (through the gateway's MCP tools). */
-export const AGENT_MODES = ['off', 'read-only', 'read-write'] as const;
+/**
+ * What an agent may do on a connection (through the gateway's MCP tools). 'approve': read freely; a script the
+ * database refuses as a write waits for an admin, who runs it or not.
+ */
+export const AGENT_MODES = ['off', 'read-only', 'approve', 'read-write'] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 export const SSL_MODES = ['disable', 'require', 'verify-full'] as const;
 export type SslMode = (typeof SSL_MODES)[number];
@@ -72,7 +75,18 @@ export interface RunOpts {
   timeoutMs: number;
   /** Longer text values are cut. */
   maxCell?: number;
+  /** Aborting it cancels the statement running on the server (PostgreSQL, MySQL/MariaDB; SQLite runs to the end). */
+  signal?: AbortSignal;
 }
+
+/** Calls `cancel` when `signal` aborts, until the returned function is called. */
+function onAbort(signal: AbortSignal | undefined, cancel: () => void): () => void {
+  if (!signal) return () => {};
+  signal.addEventListener('abort', cancel, { once: true });
+  return () => signal.removeEventListener('abort', cancel);
+}
+const CANCELLED = 'cancelled';
+const checkAborted = (o: RunOpts) => { if (o.signal?.aborted) throw new Error(CANCELLED); };
 
 const KEY = 'db_connections';
 export const DEFAULT_PORT: Record<Driver, number> = { postgres: 5432, mysql: 3306, mariadb: 3306, sqlite: 0 };
@@ -216,25 +230,44 @@ async function pgStatement(client: pg.Client, sql: string, o: RunOpts): Promise<
   };
 }
 
+/** Cancels what the backend `pid` is running, from a second connection (as the same user, which PostgreSQL allows). */
+async function pgCancel(c: DbConnection, pid: number): Promise<void> {
+  const k = pgClient(c, 10_000);
+  try { await k.connect(); await k.query('SELECT pg_cancel_backend($1)', [pid]); } catch { /* it ended meanwhile */ } finally { await k.end().catch(() => {}); }
+}
+
+/** A connected client that is cancelled when `o.signal` aborts; `done()` closes it. */
+async function pgOpen(c: DbConnection, o: RunOpts): Promise<{ client: pg.Client; done: () => Promise<void> }> {
+  checkAborted(o);
+  const client = pgClient(c, o.timeoutMs);
+  let stop = () => {};
+  const done = async () => { stop(); await client.end().catch(() => {}); };
+  try {
+    await client.connect();
+    stop = onAbort(o.signal, () => { void pgCancel(c, (client as unknown as { processID: number }).processID); });
+  } catch (e) { await done(); throw e; }
+  return { client, done };
+}
+
 async function pgScript(c: DbConnection, statements: string[], o: RunOpts): Promise<QueryResult[]> {
   const results: QueryResult[] = [];
   if (o.readOnly) {
     for (const sql of statements) {
-      const client = pgClient(c, o.timeoutMs);
+      let open: Awaited<ReturnType<typeof pgOpen>> | null = null;
       try {
-        await client.connect();
-        await client.query('BEGIN TRANSACTION READ ONLY');
-        results.push(await pgStatement(client, sql, o));
-      } catch (e) { throw withResults(e, results); } finally { await client.end().catch(() => {}); }
+        open = await pgOpen(c, o);
+        await open.client.query('BEGIN TRANSACTION READ ONLY');
+        results.push(await pgStatement(open.client, sql, o));
+      } catch (e) { throw withResults(e, results, o); } finally { await open?.done(); }
     }
     return results;
   }
-  const client = pgClient(c, o.timeoutMs);
+  let open: Awaited<ReturnType<typeof pgOpen>> | null = null;
   try {
-    await client.connect();
-    for (const sql of statements) results.push(await pgStatement(client, sql, o));
+    open = await pgOpen(c, o);
+    for (const sql of statements) { checkAborted(o); results.push(await pgStatement(open.client, sql, o)); }
     return results;
-  } catch (e) { throw withResults(e, results); } finally { await client.end().catch(() => {}); }
+  } catch (e) { throw withResults(e, results, o); } finally { await open?.done(); }
 }
 
 // ---------- MySQL / MariaDB ----------
@@ -289,16 +322,27 @@ function myStatement(conn: mysql.Connection, sql: string, o: RunOpts): Promise<Q
   });
 }
 
+/** Stops what connection `threadId` is running, from a second connection. */
+async function myKill(c: DbConnection, threadId: number | null): Promise<void> {
+  if (!threadId) return;
+  const k = myConnection(c);
+  try { await myConnect(k); await myQuery(k, `KILL QUERY ${Number(threadId)}`); } catch { /* it ended meanwhile */ } finally { k.destroy(); }
+}
+
 async function myScript(c: DbConnection, statements: string[], o: RunOpts): Promise<QueryResult[]> {
   const results: QueryResult[] = [];
   let conn: mysql.Connection | null = null;
-  const close = () => { if (conn) { const x = conn; conn = null; x.end(() => {}); x.destroy(); } };
+  let stop = () => {};
+  const close = () => { stop(); if (conn) { const x = conn; conn = null; x.end(() => {}); x.destroy(); } };
   try {
     for (const sql of statements) {
+      checkAborted(o);
       if (!conn) {
-        conn = myConnection(c);
-        await myConnect(conn);
-        if (o.readOnly) await myQuery(conn, 'SET SESSION TRANSACTION READ ONLY');
+        const x = myConnection(c);
+        conn = x;
+        await myConnect(x);
+        stop = onAbort(o.signal, () => { void myKill(c, x.threadId); });
+        if (o.readOnly) await myQuery(x, 'SET SESSION TRANSACTION READ ONLY');
       }
       const { dropped, ...r } = await myStatement(conn, sql, o);
       results.push(r);
@@ -306,7 +350,7 @@ async function myScript(c: DbConnection, statements: string[], o: RunOpts): Prom
       if (dropped || o.readOnly) close();
     }
     return results;
-  } catch (e) { throw withResults(e, results); } finally { close(); }
+  } catch (e) { throw withResults(e, results, o); } finally { close(); }
 }
 
 // ---------- SQLite ----------
@@ -321,6 +365,7 @@ function sqliteScript(c: DbConnection, statements: string[], o: RunOpts): QueryR
   const db = sqliteOpen(c, o.readOnly, o.timeoutMs);
   try {
     for (const sql of statements) {
+      checkAborted(o);
       const t0 = Date.now();
       const st = db.prepare(sql);
       const cols = st.columns();
@@ -342,19 +387,29 @@ function sqliteScript(c: DbConnection, statements: string[], o: RunOpts): QueryR
       });
     }
     return results;
-  } catch (e) { throw withResults(e, results); } finally { db.close(); }
+  } catch (e) { throw withResults(e, results, o); } finally { db.close(); }
 }
 
 // ---------- running ----------
 
-/** A failed run: the error, the statement that failed (its index) and the results of those before it. */
+/**
+ * A failed run: the error, the statement that failed (its index) and the results of those before it. `readOnlyRefusal`:
+ * the database refused it because the run was read-only (it tried to write).
+ */
 export class QueryError extends Error {
-  constructor(message: string, readonly results: QueryResult[], readonly index: number) { super(message); }
+  constructor(message: string, readonly results: QueryResult[], readonly index: number, readonly readOnlyRefusal = false) { super(message); }
 }
-function withResults(e: unknown, results: QueryResult[]): QueryError {
+
+/** PostgreSQL 25006, MySQL/MariaDB 1792 (and 1290, --read-only), SQLite SQLITE_READONLY (8). */
+function refusedAsReadOnly(e: { code?: unknown; errno?: unknown; errcode?: unknown; message?: string }): boolean {
+  return e.code === '25006' || e.errno === 1792 || e.errno === 1290 || e.errcode === 8 || /attempt to write a readonly database/i.test(e.message ?? '');
+}
+
+function withResults(e: unknown, results: QueryResult[], o?: RunOpts): QueryError {
   if (e instanceof QueryError) return e;
   const err = e as { message?: string; code?: string };
-  return new QueryError(err.message || err.code || String(e), [...results], results.length);
+  const message = o?.signal?.aborted ? 'cancelled' : err.message || err.code || String(e);
+  return new QueryError(message, [...results], results.length, refusedAsReadOnly(err as never));
 }
 
 /** Runs every statement of `script` in turn and stops at the first error (a QueryError with the results so far). */
@@ -390,12 +445,38 @@ export async function listDatabases(c: DbConnection): Promise<string[]> {
   return names.includes(own) ? names : [own, ...names];
 }
 
-/** The server's version, to show that the connection works. */
-export async function testConnection(c: DbConnection): Promise<string> {
+/**
+ * The server's version, to show that the connection works, and what about its user deserves a warning: rights that
+ * reach past the tables (superuser, server files, other sessions). Read-only does not take those away.
+ */
+export async function testConnection(c: DbConnection): Promise<{ version: string; warnings: string[] }> {
+  const o: RunOpts = { readOnly: true, limit: 200, timeoutMs: 15_000 };
   const sql = c.driver === 'postgres' ? 'SELECT version()' : c.driver === 'sqlite' ? 'SELECT \'SQLite \' || sqlite_version()' : 'SELECT VERSION()';
-  const [r] = await runScript(c, sql, { readOnly: true, limit: 1, timeoutMs: 15_000 });
+  const [r] = await runScript(c, sql, o);
   const v = String(r?.rows[0]?.[0] ?? '');
-  return c.driver === 'mysql' || c.driver === 'mariadb' ? (/mariadb/i.test(v) ? `MariaDB ${v}` : `MySQL ${v}`) : v;
+  const version = c.driver === 'mysql' || c.driver === 'mariadb' ? (/mariadb/i.test(v) ? `MariaDB ${v}` : `MySQL ${v}`) : v;
+  const warnings: string[] = [];
+  try {
+    if (c.driver === 'postgres') {
+      const [p] = await runScript(c, `SELECT r.rolsuper, r.rolcreaterole,
+        pg_has_role(current_user, 'pg_read_server_files', 'MEMBER') OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')
+          OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')
+        FROM pg_roles r WHERE r.rolname = current_user`, o);
+      const [sup, roles, files] = p?.rows[0] ?? [];
+      if (sup === true) warnings.push('This user is a superuser: it can read and write server files and run programs on the database server (COPY ... PROGRAM), read-only or not.');
+      else if (files === true) warnings.push('This user may read or write server files or run programs on the database server (pg_read_server_files, pg_write_server_files or pg_execute_server_program).');
+      if (roles === true && sup !== true) warnings.push('This user may create roles.');
+    } else if (c.driver !== 'sqlite') {
+      const [g] = await runScript(c, 'SHOW GRANTS', o);
+      const grants = (g?.rows ?? []).map((row) => String(row[0])).filter((s) => /\bON \*\.\*/i.test(s));
+      if (grants.some((s) => /GRANT ALL PRIVILEGES ON \*\.\*/i.test(s))) warnings.push('This user has ALL PRIVILEGES on every database, server files and other sessions included.');
+      else {
+        if (grants.some((s) => /\bFILE\b/.test(s))) warnings.push('This user has FILE: it can read and write files on the database server (LOAD_FILE, INTO OUTFILE).');
+        if (grants.some((s) => /\bSUPER\b/.test(s))) warnings.push('This user has SUPER: it can change server settings and stop other sessions.');
+      }
+    }
+  } catch { /* no warning without the catalog */ }
+  return { version, warnings };
 }
 
 // ---------- schema ----------
@@ -447,4 +528,195 @@ export async function readSchema(c: DbConnection, timeoutMs = 30_000): Promise<S
     });
   }
   return { schemas: [...bySchema].map(([name, t]) => ({ name, tables: [...t.values()] })) };
+}
+
+// ---------- editing rows (the result grid) ----------
+
+/** A change to one row of a table, found by its primary key (column -> value as text, null for NULL). */
+export type RowEdit =
+  | { kind: 'update'; key: Record<string, string | null>; set: Record<string, string | null> }
+  | { kind: 'insert'; values: Record<string, string | null> }
+  | { kind: 'delete'; key: Record<string, string | null> };
+
+const isMy = (d: Driver) => d === 'mysql' || d === 'mariadb';
+export const quoteIdent = (driver: Driver, name: string) => (isMy(driver) ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`);
+
+/** The statement for one edit, with its values as parameters (never in the SQL text). `one`: it must touch one row. */
+function editSql(driver: Driver, ref: string, e: RowEdit, inline = false): { sql: string; params: (string | null)[]; one: boolean } {
+  const q = (n: string) => quoteIdent(driver, n);
+  const params: (string | null)[] = [];
+  // `inline` (the preview): the value as a literal where the parameter would be.
+  const p = (v: string | null) => {
+    if (inline) return literal(driver, v);
+    params.push(v);
+    return driver === 'postgres' ? `$${params.length}` : '?';
+  };
+  const where = (key: Record<string, string | null>) => {
+    const parts = Object.entries(key);
+    if (!parts.length) throw new Error('a row is changed through its primary key, and none was given');
+    return parts.map(([k, v]) => (v === null ? `${q(k)} IS NULL` : `${q(k)} = ${p(v)}`)).join(' AND ');
+  };
+  if (e.kind === 'update') {
+    const set = Object.entries(e.set);
+    if (!set.length) throw new Error('an update changes at least one column');
+    const assign = set.map(([k, v]) => `${q(k)} = ${p(v)}`).join(', ');
+    return { sql: `UPDATE ${ref} SET ${assign} WHERE ${where(e.key)}`, params, one: true };
+  }
+  if (e.kind === 'delete') return { sql: `DELETE FROM ${ref} WHERE ${where(e.key)}`, params, one: true };
+  const cols = Object.entries(e.values);
+  if (!cols.length) return { sql: isMy(driver) ? `INSERT INTO ${ref} () VALUES ()` : `INSERT INTO ${ref} DEFAULT VALUES`, params, one: false };
+  return { sql: `INSERT INTO ${ref} (${cols.map(([k]) => q(k)).join(', ')}) VALUES (${cols.map(([, v]) => p(v)).join(', ')})`, params, one: false };
+}
+
+/** A value as an SQL literal, for showing (MySQL and MariaDB read a backslash in a string as an escape). */
+function literal(driver: Driver, v: string | null): string {
+  if (v === null) return 'NULL';
+  const s = v.replace(/'/g, '\'\'');
+  return `'${isMy(driver) ? s.replace(/\\/g, '\\\\') : s}'`;
+}
+
+const tableRef = (c: DbConnection, schema: string, table: string) => `${quoteIdent(c.driver, schema)}.${quoteIdent(c.driver, table)}`;
+
+/**
+ * The statements `editRows` would run for these edits, with the values written in as literals (it sends them as
+ * parameters), for the panel to show before saving.
+ */
+export function previewEdits(c: DbConnection, schema: string, table: string, edits: RowEdit[]): string[] {
+  return edits.map((e) => `${editSql(c.driver, tableRef(c, schema, table), e, true).sql};`);
+}
+
+/**
+ * Applies the edits to `schema.table` in one transaction: all of them or none. An update or delete that does not hit
+ * exactly one row undoes everything. Returns how many rows changed.
+ */
+export async function editRows(c: DbConnection, schema: string, table: string, edits: RowEdit[]): Promise<number> {
+  const ref = tableRef(c, schema, table);
+  const stmts = edits.map((e) => editSql(c.driver, ref, e));
+  const check = (i: number, n: number) => {
+    if (stmts[i]!.one && n !== 1) throw new Error(`change ${i + 1} matched ${n} rows instead of 1, so nothing was saved (was the row changed or deleted meanwhile?)`);
+  };
+  let total = 0;
+  if (c.driver === 'postgres') {
+    const client = pgClient(c, 30_000);
+    try {
+      await client.connect();
+      await client.query('BEGIN');
+      for (const [i, s] of stmts.entries()) {
+        const r = await client.query(s.sql, s.params);
+        check(i, r.rowCount ?? 0);
+        total += r.rowCount ?? 0;
+      }
+      await client.query('COMMIT');
+      return total;
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { await client.end().catch(() => {}); }
+  }
+  if (c.driver === 'sqlite') {
+    const db = sqliteOpen(c, false, 30_000);
+    try {
+      db.exec('BEGIN');
+      for (const [i, s] of stmts.entries()) {
+        const n = Number(db.prepare(s.sql).run(...s.params).changes);
+        check(i, n);
+        total += n;
+      }
+      db.exec('COMMIT');
+      return total;
+    } catch (e) { try { db.exec('ROLLBACK'); } catch { /* not in a transaction */ } throw e; } finally { db.close(); }
+  }
+  const conn = myConnection(c);
+  const run = (sql: string, params: unknown[] = []) => new Promise<number>((res, rej) =>
+    conn.query(sql, params, (err, r: any) => (err ? rej(err) : res(Number(r?.affectedRows ?? 0)))));
+  try {
+    await myConnect(conn);
+    await run('START TRANSACTION');
+    for (const [i, s] of stmts.entries()) {
+      const n = await run(s.sql, s.params);
+      check(i, n);
+      total += n;
+    }
+    await run('COMMIT');
+    return total;
+  } catch (e) { await run('ROLLBACK').catch(() => {}); throw e; } finally { conn.destroy(); }
+}
+
+// ---------- DDL ----------
+
+/** The CREATE statement(s) of a table or view: as the server gives them (MySQL, SQLite) or rebuilt from the catalog. */
+export async function readDdl(c: DbConnection, schema: string, name: string): Promise<string> {
+  const q = (n: string) => quoteIdent(c.driver, n);
+  if (c.driver === 'sqlite') {
+    const db = sqliteOpen(c, true, 10_000);
+    try {
+      const rows = db.prepare('SELECT type, sql FROM sqlite_master WHERE tbl_name = ? AND sql IS NOT NULL ORDER BY type = \'table\' DESC, type = \'view\' DESC, name').all(name) as { sql: string }[];
+      if (!rows.length) throw new Error(`no such table: ${name}`);
+      return `${rows.map((r) => r.sql.trim()).join(';\n\n')};\n`;
+    } finally { db.close(); }
+  }
+  if (isMy(c.driver)) {
+    const [r] = await runScript(c, `SHOW CREATE TABLE ${q(schema)}.${q(name)}`, { readOnly: true, limit: 1, timeoutMs: 15_000, maxCell: 1_000_000 });
+    return `${String(r?.rows[0]?.[1] ?? '')};\n`;
+  }
+  const client = pgClient(c, 15_000);
+  try {
+    await client.connect();
+    await client.query('BEGIN TRANSACTION READ ONLY');
+    const ask = async (sql: string, values: unknown[]) => (await client.query({ text: sql, values, rowMode: 'array' })).rows as unknown[][];
+    const [rel] = await ask('SELECT c.oid::int, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2', [schema, name]);
+    if (!rel) throw new Error(`no such table: ${schema}.${name}`);
+    const [oid, kind] = rel as [number, string];
+    const ref = `${q(schema)}.${q(name)}`;
+    if (kind === 'v' || kind === 'm') {
+      const [[def]] = await ask('SELECT pg_get_viewdef($1::oid, true)', [oid]) as [[string]];
+      return `CREATE ${kind === 'm' ? 'MATERIALIZED ' : ''}VIEW ${ref} AS\n${String(def).trim()}\n`;
+    }
+    const cols = await ask(`SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull, pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated
+      FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`, [oid]);
+    const lines = cols.map(([col, type, notNull, def, identity, generated]) => {
+      let line = `  ${q(String(col))} ${type}`;
+      if (identity === 'a' || identity === 'd') line += ` GENERATED ${identity === 'a' ? 'ALWAYS' : 'BY DEFAULT'} AS IDENTITY`;
+      else if (generated === 's' && def) line += ` GENERATED ALWAYS AS (${def}) STORED`;
+      else if (def) line += ` DEFAULT ${def}`;
+      return notNull ? `${line} NOT NULL` : line;
+    });
+    // PostgreSQL 18 also lists NOT NULL as constraints ('n'); the columns already say it.
+    const cons = await ask('SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint WHERE conrelid = $1 AND contype <> \'n\' ORDER BY contype <> \'p\', conname', [oid]);
+    lines.push(...cons.map(([n, def]) => `  CONSTRAINT ${q(String(n))} ${def}`));
+    const idx = await ask(`SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i
+      WHERE i.indrelid = $1 AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid) ORDER BY 1`, [oid]);
+    const [[comment]] = await ask('SELECT obj_description($1::oid, \'pg_class\')', [oid]) as [[string | null]];
+    return [`CREATE TABLE ${ref} (\n${lines.join(',\n')}\n);`, ...idx.map(([d]) => `${d};`),
+      ...(comment ? [`COMMENT ON TABLE ${ref} IS '${String(comment).replace(/'/g, '\'\'')}';`] : [])].join('\n\n') + '\n';
+  } finally { await client.end().catch(() => {}); }
+}
+
+// ---------- what agents may not run ----------
+
+/**
+ * Statements an agent is refused whatever the connection allows: they reach past the database's tables (server files,
+ * programs, server settings, other sessions, other databases). Read-only does not stop all of them, so they are refused
+ * before reaching the database. A list cannot be complete; a user without such rights is the real limit.
+ */
+const AGENT_REFUSED: [RegExp, string][] = [
+  [/^\s*copy\b/i, 'COPY (server files and programs)'],
+  [/\binto\s+(out|dump)file\b/i, 'INTO OUTFILE / DUMPFILE (server files)'],
+  [/^\s*vacuum\b[\s\S]*\binto\b/i, 'VACUUM INTO (writes a file)'],
+  [/^\s*(attach|detach)\b/i, 'ATTACH / DETACH (other database files)'],
+  [/^\s*load\b/i, 'LOAD (files and extensions)'],
+  [/^\s*(kill|shutdown|install\s+plugin|alter\s+system)\b/i, 'server administration'],
+  [/^\s*create\s+(or\s+replace\s+)?(extension|language)\b/i, 'CREATE EXTENSION / LANGUAGE'],
+  [/\bset\s+(global|persist|persist_only)\b|@@global\./i, 'SET GLOBAL (server settings)'],
+  [/\b(pg_read_file|pg_read_binary_file|pg_ls_dir|pg_ls_\w+dir|pg_stat_file|pg_file_write|lo_import|lo_export|dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_promote|query_to_xml\w*|cursor_to_xml\w*|load_file|load_extension|sys_exec|sys_eval)\s*\(/i, 'functions that reach files, programs or other sessions'],
+];
+/** Only while read-only: DO blocks run SQL built from strings, past the checks above. */
+const AGENT_REFUSED_READ_ONLY: [RegExp, string][] = [[/^\s*do\b/i, 'DO blocks']];
+
+/** Why an agent may not run this script, or null. */
+export function agentRefusal(script: string, driver: Driver, readOnly: boolean): string | null {
+  const rules = readOnly ? [...AGENT_REFUSED, ...AGENT_REFUSED_READ_ONLY] : AGENT_REFUSED;
+  for (const sql of statementsOf(script, driver)) {
+    const hit = rules.find(([re]) => re.test(sql));
+    if (hit) return `refused for agents: ${hit[1]}. Ask a human to run it in the SQL editor if it is needed.`;
+  }
+  return null;
 }

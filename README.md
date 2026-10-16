@@ -541,7 +541,9 @@ connections belong to the panel.
 
 - **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
   protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, or a SQLite file on this machine (not one in
-  `STATE_DIR`). **Test connection** tries the form before saving. Passwords never go back to the panel; like the
+  `STATE_DIR`). **Test connection** tries the form before saving and warns about a user whose rights reach past the
+  tables (a PostgreSQL superuser or a member of `pg_read_server_files` and the like, MySQL `ALL PRIVILEGES`, `FILE` or
+  `SUPER` on `*.*`): read-only does not take those away. Passwords never go back to the panel; like the
   other secrets they sit in Dalang's database. **Who may open it** works like a project's access: everyone, owner and
   admins, or the owner only. **Read-only for everyone** makes the database refuse every write, from the panel too.
 - **Other databases on a PostgreSQL server**: a PostgreSQL connection is bound to one database, so by default the
@@ -550,14 +552,32 @@ connections belong to the panel.
   database next to its connection, and agents pass `database` to `db_schema` and `db_query`; access and agent access
   cover every database listed.
   MySQL and MariaDB need none of this: leave **Database** empty and every database shows as a schema.
-- **Querying**: the tree lists schemas, tables and views with their columns (double-click a table for its first rows).
-  Each console tab has its connection; `Ctrl Enter` runs the selection or the statement at the cursor, `Ctrl Shift
-  Enter` the whole console, statement by statement, stopping at the first error (the results before it stay). A
-  statement returns at most the row limit (100 to 10 000; the rest is never fetched) and stops after two minutes.
-  Results copy as TSV or download as CSV; consoles are kept in the browser. Every run opens its own connection, so a
-  transaction lasts one run: `BEGIN; ...; COMMIT;` in one go.
-- **Agent access** per connection: **Off** (the default), **Read-only** or **Read and write**. A connection that is
-  not off is given to agents through this gateway's MCP (`db_list_connections`, `db_schema`, `db_query`), so chats
+- **Querying**: the tree lists schemas, tables and views with their columns (double-click a table for its first rows;
+  its `⋯` menu also shows its **DDL** in a new console). Each console tab has its connection; `Ctrl Enter` runs the
+  selection or the statement at the cursor, `Ctrl Shift Enter` the whole console, statement by statement, stopping at
+  the first error (the results before it stay). A statement returns at most the row limit (100 to 10 000; the rest is
+  never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
+  `KILL QUERY`; SQLite runs to the end). `Shift Alt F` formats the selection or the console (sql-formatter). **History**
+  lists the last 300 runs of this browser, to insert or run again. Results copy as TSV or download as CSV; consoles
+  are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
+  in one go.
+- **The result grid**: a click on a cell shows its whole value beside the grid (JSON laid out); a click on a column
+  header sorts. A result that is a table's own rows (`SELECT * FROM <table>`, with its WHERE, ORDER BY and LIMIT, of a
+  table with a primary key) gets a **WHERE** filter and sorts on the server, and unless the connection is read-only it
+  can be edited: change cells (or **Set NULL**), **Add row**, **Delete row**, then **Submit**. **SQL** shows the
+  statements the changes make as you edit, and **Submit** shows them once more before **Run**; the server writes them
+  (the same code that runs them, values written in as literals for reading). The changes go to the database in one
+  transaction, each row found by its primary key with the values as parameters; a row that changed or went meanwhile
+  undoes them all. The footer shows the query that read the rows (with the filter and sort order).
+- **Ask the agent**: from a result (its query and error, or its first 20 rows) or a table's `⋯` menu (its columns),
+  the question goes to a chat of your choice, or a new one in a project, with the connection, the query and the
+  tables involved attached, and opens it in the panel. The agent is told whether it may query the connection itself.
+- **Agent access** per connection: **Off** (the default), **Read-only**, **Write with approval** or **Read and
+  write**. With approval, agents read freely; a script the database refuses as a write (it runs read-only first, so
+  nothing of it is kept) waits in **Approvals** (sidebar count, push notification, a card in the agent's chat). An
+  admin who may open the connection runs it as written (**Approve and run**) or rejects it, and either way the outcome
+  is queued into the agent's chat as a message; the agent can also ask `db_approval`. A connection that is not off is
+  given to agents through this gateway's MCP (`db_list_connections`, `db_schema`, `db_query`), so chats
   need `MCP_INJECT=1`. An agent only sees connections the user whose prompt it runs may open (with nobody behind it:
   the "everyone" ones). Every MCP caller counts as an agent here, an outside client with a token too. The last 200
   agent queries per connection are logged (**Agent queries** in its `⋯` menu, admins).
@@ -567,6 +587,11 @@ connections belong to the panel.
   the next. This keeps an agent from writing *through these tools*. An agent with a shell can still reach a database
   whose address and credentials it finds (a `.env` in its project, say), so for a strict limit give the connection a
   database user that may only read.
+- **What agents are refused in every mode**: statements that reach past the tables, which read-only alone does not
+  stop: `COPY`, `INTO OUTFILE`/`DUMPFILE`, `VACUUM INTO`, `ATTACH`, `LOAD`, `KILL`, `ALTER SYSTEM`, `SET GLOBAL`,
+  `CREATE EXTENSION`, functions such as `pg_read_file`, `lo_export`, `dblink`, `query_to_xml`, `LOAD_FILE` (and, on
+  read-only connections, `DO` blocks). The list cannot be complete, which is why a user without such rights is the
+  real limit (see the warning of **Test connection**).
 
 ## Develop
 
