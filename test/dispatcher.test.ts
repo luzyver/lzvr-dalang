@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { saveConnections } from '../src/databases.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import { FAKE, turnsDone, until } from './helpers.js';
 import { setupDispatcher } from './setup.js';
@@ -180,6 +181,55 @@ describe('Dispatcher', () => {
     } finally {
       if (saved === undefined) delete process.env.LZVR_TOKEN; else process.env.LZVR_TOKEN = saved;
     }
+  });
+
+  it('tells a turn how to start sub-agents only when agents decide themselves and the chat still may', async () => {
+    const { dir, store, conv } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
+    const argsOf = async (id: string, n: number) => {
+      store.enqueue(id, 'x', []);
+      d.kick(id);
+      await until(() => turnsDone(store, id, n));
+      const ev = store.eventsAfter(id, 0).filter((e) => e.type === 'item.completed').at(-1)!;
+      return (JSON.parse(ev.payload) as { item: { args: string[] } }).item.args;
+    };
+    const guideArg = (args: string[]) => args.find((a) => a.startsWith('developer_instructions='));
+    expect(guideArg(await argsOf(conv.id, 1))).toBeUndefined(); // 'asked' is the default
+
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), mode: 'auto', maxDepth: 1 });
+    store.setAgentModels(['small', 'big']);
+    const arg = guideArg(await argsOf(conv.id, 2))!;
+    const text = JSON.parse(arg.slice('developer_instructions='.length)) as string;
+    expect(text).toContain('create_conversation');
+    expect(text).toContain(`project_id ${conv.project_id}; 5 more sub-agent(s) allowed`);
+    expect(text).toContain('weakest first: small, big');
+
+    // A sub-agent at the depth limit is not told, and an admin's own guide replaces the built-in one.
+    const sub = store.createConversation(conv.project_id, undefined, conv.id);
+    expect(guideArg(await argsOf(sub.id, 1))).toBeUndefined();
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), guide: 'Split big work.' });
+    expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toMatch(/^Split big work\.\n\nFor this chat: project_id .*4 more sub-agent\(s\) allowed/);
+  });
+
+  it('tells a turn to use the db tools while a database connection is open to agents', async () => {
+    const { dir, store, conv } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
+    const guideOf = async (n: number) => {
+      store.enqueue(conv.id, 'x', []);
+      d.kick(conv.id);
+      await until(() => turnsDone(store, conv.id, n));
+      const ev = store.eventsAfter(conv.id, 0).filter((e) => e.type === 'item.completed').at(-1)!;
+      const arg = (JSON.parse(ev.payload) as { item: { args: string[] } }).item.args.find((a) => a.startsWith('developer_instructions='));
+      return arg ? JSON.parse(arg.slice('developer_instructions='.length)) as string : null;
+    };
+    const conn = { id: 'pg', label: 'PG', driver: 'postgres', host: 'db', port: 5432, user: 'u', password: 'p', database: 'app', access: 'all', readOnly: false };
+    saveConnections(store, [{ ...conn, agent: 'off' } as never]);
+    expect(await guideOf(1)).toBeNull();
+    saveConnections(store, [{ ...conn, agent: 'read-only' } as never]);
+    const text = (await guideOf(2))!;
+    expect(text).toContain('db_list_connections');
+    expect(text).toContain('psql');
+    expect(text).not.toContain('create_conversation'); // orchestrator mode is still 'asked'
   });
 
   it('adds no MCP config unless an MCP url is configured', async () => {

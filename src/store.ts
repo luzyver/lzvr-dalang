@@ -92,9 +92,29 @@ export interface QueueItem {
   /** The chat whose agent sent this prompt over MCP, or ''. A sub-agent's answer to its parent goes back to it. */
   from_conv: string;
 }
-/** How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked. */
-export interface SubagentPolicy { maxChildren: number; maxDepth: number; autoSend: boolean }
-export const SUBAGENT_DEFAULTS: SubagentPolicy = { maxChildren: 5, maxDepth: 2, autoSend: true };
+/**
+ * How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked.
+ * `mode`: 'asked' = they start sub-agents only when told to; 'auto' = every turn that still may start one is told how and
+ * when to, so the agent decides itself (`guide`, or the built-in SUBAGENT_GUIDE when empty).
+ */
+export interface SubagentPolicy { maxChildren: number; maxDepth: number; autoSend: boolean; mode: 'asked' | 'auto'; guide: string }
+export const SUBAGENT_DEFAULTS: SubagentPolicy = { maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '' };
+export const SUBAGENT_GUIDE = `You are running inside Dalang, and you may act as an orchestrator: hand parts of your task to sub-agents.
+Use the dalang MCP tools for this (in Claude Code they may need loading first: search your tools for "mcp__dalang").
+Prefer them over any built-in sub-agent tool for real work: Dalang sub-agents show up in the panel, keep their own session and follow the model limits.
+
+When to: the task has parts that are independent of each other and big enough to be worth a fresh session (a separate
+module, a review, a test run, research across many files). Do small or tightly coupled work yourself; do not split for its own sake.
+
+How:
+- list_models first: pick the weakest model that fits each part, with the lowest effort that fits.
+- create_conversation with project_id, model, effort and the task as prompt. Give each sub-agent everything it needs
+  (it does not see this chat), what it may change, and what its last answer must contain.
+- worktree: true for a sub-agent that changes files, so parallel sub-agents never write over each other or you.
+- Do not poll. When a sub-agent finishes, its last answer comes to this chat as a new message starting with [Sub-agent].
+  End your turn after starting them; continue when the reports arrive.
+- Check each report before relying on it. If one fell short, send_prompt it a correction, or set_model it one step up.
+- At the end, sum up for the person what each sub-agent did and what you checked.`;
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;

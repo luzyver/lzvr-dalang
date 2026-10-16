@@ -5,15 +5,22 @@ import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
+import { loadConnections } from './databases.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
-import type { Conversation, QueueItem, Store } from './store.js';
+import { type Conversation, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
+db_schema and db_query (in Claude Code they may need loading first: search your tools for "mcp__dalang"). Start with
+db_list_connections to find the connection, db_schema for its tables and columns, then db_query. Do not connect any other
+way (psql, mysql, mongosh, redis-cli, a script, or credentials from .env or config files) unless the person asks for that
+explicitly. If the database is not in db_list_connections, or you may only read and need to write, say so instead of
+working around it. A write that answers pending_approval waits for an admin: do not send it again.`;
 /** How much of a sub-agent's last answer goes into its report to the parent. */
 const REPORT_MAX = 6000;
 
@@ -338,6 +345,9 @@ export class Dispatcher {
       if (model) extraArgs.push('-m', model);
       if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
     }
+    const guide = mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide()].filter(Boolean).join('\n\n') : '';
+    // A JSON string is also a valid TOML basic string, which is what `-c` reads.
+    if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {
@@ -370,7 +380,7 @@ export class Dispatcher {
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
-            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, signal: ac.signal,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: guide ? extraArgs : undefined, signal: ac.signal,
           })
           : runTurn({
             command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,
@@ -425,6 +435,28 @@ export class Dispatcher {
     if (interrupted) return; // shutting down: no notification
     try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
+  }
+
+  /**
+   * With sub-agents on 'auto', what a turn is told about starting them itself: the guide, then what this chat may still
+   * do. Empty when it is not to be told (mode 'asked', sub-agents off, or this chat at the depth limit).
+   */
+  /**
+   * While any SQL editor connection is open to agents, a turn is told to reach databases through the gateway's db_*
+   * tools (which keep to each connection's access, approvals and log) instead of a client or credentials of its own.
+   */
+  databaseGuide(): string {
+    return loadConnections(this.store).some((c) => c.agent !== 'off') ? DB_GUIDE : '';
+  }
+
+  orchestratorGuide(conv: Conversation, projectId: string): string {
+    const p = this.store.getSubagentPolicy();
+    if (p.mode !== 'auto' || !p.maxChildren || this.store.depthOf(conv.id) + 1 > p.maxDepth) return '';
+    const models = this.store.getAgentModels(conv.backend);
+    const left = Math.max(0, p.maxChildren - this.store.countChildren(conv.id));
+    return `${p.guide.trim() || SUBAGENT_GUIDE}\n\nFor this chat: project_id ${projectId}; ${left} more sub-agent(s) allowed (of ${p.maxChildren}); `
+      + `models you may pick, weakest first: ${models.length ? models.join(', ') : 'none, they run on the default'}`
+      + `${p.autoSend ? '' : '; every prompt to a sub-agent waits for a person to approve it'}.`;
   }
 
   /**

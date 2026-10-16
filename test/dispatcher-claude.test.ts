@@ -30,6 +30,18 @@ describe('Dispatcher with the claude backend', () => {
     expect(events.some((e) => e.payload.includes('echo:hello|a'))).toBe(true);
   });
 
+  it('appends the orchestrator guide to the system prompt when agents decide on sub-agents themselves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lzvr-claude-'));
+    const store = new Store();
+    const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: [join(dir, 'a')], claudeCommand: FAKE_CLAUDE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
+    const conv = store.createConversation(store.createProject('p', dir).id, 'claude');
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), mode: 'auto' });
+    store.enqueue(conv.id, 'hello', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.eventsAfter(conv.id, 0).some((e) => e.payload.includes('|system:You are running inside Dalang'))).toBe(true);
+  });
+
   it('moves the same turn to the next Claude account at a usage limit', async () => {
     const { store, dispatcher, conv } = setup({ FAKE_LIMIT_HOMES: 'a' }, ['a', 'b']);
     store.enqueue(conv.id, 'hi', []);

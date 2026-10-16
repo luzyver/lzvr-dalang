@@ -100,9 +100,11 @@ function AgentChoiceFor({ backend, title }) {
   const left = models.filter((m) => !list.includes(m.slug));
   return html`<section class="form-card">
     <strong>${title}</strong>
+    ${list.length > 0 && html`<span class="dim small">Top to bottom: cheapest (tried first) to strongest (when the work falls short).</span>`}
     ${list.length ? html`<ol class="agent-models">${list.map((slug, i) => html`<li key=${slug} class="row">
       <span class="grow">${nameOf(slug)} <span class="dim small mono">${slug}</span></span>
-      <button class="icon-btn sm" aria-label=${`Move ${slug} up`} title="Weaker than the one above" disabled=${i === 0} onClick=${() => up(i)}><${Icon} name="arrow-up" /></button>
+      ${list.length > 1 && (i === 0 || i === list.length - 1) && html`<span class="pill">${i === 0 ? 'first' : 'strongest'}</span>`}
+      <button class="icon-btn sm" aria-label=${`Move ${slug} up`} title="Move up: cheaper, tried sooner" disabled=${i === 0} onClick=${() => up(i)}><${Icon} name="arrow-up" /></button>
       <button class="icon-btn sm danger" aria-label=${`Remove ${slug}`} onClick=${() => setList(list.filter((x) => x !== slug))}><${Icon} name="x" /></button>
     </li>`)}</ol>` : html`<span class="dim small">None: agents keep the default model.</span>`}
     <div class="row">
@@ -121,17 +123,30 @@ function AgentChoiceFor({ backend, title }) {
 /** How far agents may go with sub-agents: how many per chat, how deep, and whether they may send them work unasked. */
 function SubagentLimits() {
   const [p, setP] = useState(null);
-  useEffect(() => { api('/api/settings/subagents').then(setP).catch((e) => toast(e.message, 'err')); }, []);
+  useEffect(() => {
+    api('/api/settings/subagents').then((r) => setP({ ...r, guide: r.guide || r.defaultGuide })).catch((e) => toast(e.message, 'err'));
+  }, []);
+  // Saving the built-in guide unchanged stores nothing, so later updates of the default still apply.
   const save = guarded(async () => {
-    await api('/api/settings/subagents', { method: 'PUT', body: p });
-    toast('Sub-agent limits saved');
+    const { defaultGuide, ...body } = p;
+    await api('/api/settings/subagents', { method: 'PUT', body: { ...body, guide: p.guide.trim() === defaultGuide.trim() ? '' : p.guide.trim() } });
+    toast('Orchestrator settings saved');
   });
   if (p == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
   const num = (k, max) => (e) => setP({ ...p, [k]: Math.max(0, Math.min(max, Number(e.currentTarget.value) || 0)) });
   return html`<section class="form-card">
-    <strong>Sub-agents</strong>
-    <span class="dim small">A chat's agent decides itself when to start sub-agents, how many and with which model, within these limits.
-      Each one's answer comes back to it as a message.</span>
+    <strong>Orchestrator</strong>
+    <span class="dim small">A chat's agent can hand parts of its task to sub-agents: it picks how many, for what and with which
+      model, within these limits, and each one's answer comes back to it as a message.</span>
+    <div class="field"><span class="field-label">When</span><${Seg} label="When agents start sub-agents" value=${p.mode}
+      onChange=${(mode) => setP({ ...p, mode })} options=${[['asked', 'Only when asked'], ['auto', 'Agents decide themselves']]} /></div>
+    ${p.mode === 'auto' && html`<span class="dim small">Every turn that may still start a sub-agent gets the guide below, plus
+      its project, how many it may still start and the models it may pick. This can use more of the accounts' limits.</span>
+      <textarea class="prompt-edit" rows="10" aria-label="Orchestrator guide" value=${p.guide} onInput=${(e) => setP({ ...p, guide: e.currentTarget.value })}></textarea>
+      <div class="row">
+        <button class="btn ghost sm" onClick=${() => setP({ ...p, guide: p.defaultGuide })} disabled=${p.guide === p.defaultGuide}>Reset guide to default</button>
+        ${p.guide.trim() !== p.defaultGuide.trim() && html`<span class="dim small">Customised</span>`}
+      </div>`}
     <div class="row wrap">
       <${Field} label="Sub-agents per chat" hint="0 turns sub-agents off"><input type="number" min="0" max="50" value=${p.maxChildren} onInput=${num('maxChildren', 50)} /><//>
       <${Field} label="Levels deep" hint="1: only a person's chat starts them"><input type="number" min="0" max="5" value=${p.maxDepth} onInput=${num('maxDepth', 5)} /><//>

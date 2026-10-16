@@ -151,8 +151,9 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     if (why) return fail(why);
     if (source) {
       const policy = store.getSubagentPolicy();
+      if (!policy.maxChildren || !policy.maxDepth) return fail('an admin has turned sub-agents off');
       if (store.depthOf(source) + 1 > policy.maxDepth) {
-        return fail(policy.maxDepth ? `sub-agents may go ${policy.maxDepth} level(s) deep and this chat is at the limit: do this part yourself` : 'an admin has turned sub-agents off');
+        return fail(`sub-agents may go ${policy.maxDepth} level(s) deep and this chat is at the limit: do this part yourself`);
       }
       if (store.countChildren(source) >= policy.maxChildren) {
         return fail(`this chat already has ${policy.maxChildren} sub-agents, the most allowed: give one of them the work (send_prompt), or ask a person to delete one`);

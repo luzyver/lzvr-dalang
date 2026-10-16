@@ -370,7 +370,7 @@ describe('sub-agents', () => {
     const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
     expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/already has 1 sub-agents/);
     expect((await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).text).toMatch(/1 level\(s\) deep/);
-    await policy(t, { maxChildren: 0, maxDepth: 0, autoSend: true });
+    await policy(t, { maxChildren: 0, maxDepth: 2, autoSend: true });
     expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/turned sub-agents off/);
   });
 
@@ -390,7 +390,11 @@ describe('sub-agents', () => {
 
   it('keep their limits in admin settings', async () => {
     const t = await boot();
-    expect((await t.app.inject({ url: '/api/settings/subagents', headers: AUTH })).json()).toEqual({ maxChildren: 5, maxDepth: 2, autoSend: true });
+    expect((await t.app.inject({ url: '/api/settings/subagents', headers: AUTH })).json())
+      .toMatchObject({ maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '', defaultGuide: expect.stringContaining('create_conversation') });
+    expect((await policy(t, { mode: 'auto' } as never)).statusCode).toBe(204); // a part leaves the rest as it was
+    expect(t.store.getSubagentPolicy()).toMatchObject({ maxChildren: 5, mode: 'auto' });
+    expect((await policy(t, { mode: 'always' } as never)).statusCode).toBe(400);
     expect((await policy(t, { maxChildren: 99, maxDepth: 1, autoSend: true })).statusCode).toBe(400);
     const dev = await mkUser(t, 'budi', 'dev');
     expect((await t.app.inject({ url: '/api/settings/subagents', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);

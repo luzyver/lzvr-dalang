@@ -26,7 +26,7 @@ import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
-import type { Store, SubagentPolicy } from './store.js';
+import { type Store, SUBAGENT_GUIDE, type SubagentPolicy } from './store.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -313,13 +313,16 @@ export function buildApp(
     return reply.code(204).send();
   });
   // How far agents may go with sub-agents (see SubagentPolicy).
-  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => store.getSubagentPolicy());
-  app.put<{ Body: SubagentPolicy }>('/api/settings/subagents', {
+  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => ({ ...store.getSubagentPolicy(), defaultGuide: SUBAGENT_GUIDE }));
+  app.put<{ Body: Partial<SubagentPolicy> }>('/api/settings/subagents', {
     onRequest: requireAdmin,
-    schema: { body: { type: 'object', required: ['maxChildren', 'maxDepth', 'autoSend'], additionalProperties: false,
-      properties: { maxChildren: { type: 'integer', minimum: 0, maximum: 50 }, maxDepth: { type: 'integer', minimum: 0, maximum: 5 }, autoSend: { type: 'boolean' } } } },
+    schema: { body: { type: 'object', additionalProperties: false,
+      properties: {
+        maxChildren: { type: 'integer', minimum: 0, maximum: 50 }, maxDepth: { type: 'integer', minimum: 0, maximum: 5 }, autoSend: { type: 'boolean' },
+        mode: { enum: ['asked', 'auto'] }, guide: { type: 'string', maxLength: 8000 },
+      } } },
   }, (req, reply) => {
-    store.setSubagentPolicy(req.body);
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), ...req.body });
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.

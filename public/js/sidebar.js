@@ -81,7 +81,11 @@ function AddProject() {
 
 export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} label="Add project" class="dialog" onClose=${() => { ui.addProject.value = false; }}><${AddProject} /><//>`;
 
-function ChatRow({ c, active, depth = 0, kids = 0, folded = false }) {
+/**
+ * One chat in the sidebar. In a project with sub-agents (`tree`) every row gets a fold slot, so the dots line up, and is
+ * indented by its depth with a guide line under each parent.
+ */
+function ChatRow({ c, active, tree = false, depth = 0, kids = 0, folded = false }) {
   const title = c.title || 'New chat';
   const remove = guarded(async () => {
     if (!await confirmDialog({
@@ -96,12 +100,16 @@ function ChatRow({ c, active, depth = 0, kids = 0, folded = false }) {
     if (active) goHome();
     await loadProjects();
   });
-  return html`<div class=${cx('chat-row', active && 'active', depth && 'sub')} style=${depth ? { '--depth': depth } : undefined}>
-    ${kids > 0 && html`<button class="chat-fold" aria-expanded=${!folded} aria-label=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent(s) of ${title}`}
-      title=${`${kids} sub-agent${kids > 1 ? 's' : ''}`} onClick=${() => toggleCollapsed(c.id)}><${Icon} name=${folded ? 'chevron-right' : 'chevron-down'} class="tiny" /></button>`}
+  return html`<div class=${cx('chat-row', active && 'active', tree && 'in-tree', depth > 0 && 'sub')} style=${tree ? { '--depth': depth } : undefined}>
+    ${tree && (kids > 0
+      ? html`<button class="chat-fold" aria-expanded=${!folded} aria-label=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent(s) of ${title}`}
+          title=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent${kids > 1 ? 's' : ''}`} onClick=${() => toggleCollapsed(c.id)}>
+          <${Icon} name=${folded ? 'chevron-right' : 'chevron-down'} class="tiny" /></button>`
+      : html`<span class="chat-fold" aria-hidden="true"></span>`)}
     <a class="chat" href=${`#c=${c.id}`} aria-current=${active ? 'page' : undefined} onClick=${(e) => { e.preventDefault(); openChat(c.id); }}>
       <span class=${cx('dot', c.status)} title=${c.status}></span>
       <span class="chat-title" title=${title}>${title}</span>
+      ${folded && html`<span class="chat-kids" title=${`${kids} sub-agent${kids > 1 ? 's' : ''} folded away`}>${kids}</span>`}
       ${c.parent && c.model && html`<span class="chat-model" title=${`Sub-agent on ${c.model}${c.effort ? `, ${c.effort} effort` : ''}`}>${c.model}</span>`}
       ${c.worktree && html`<span class="chat-branch" title=${`Own worktree on ${c.branch}`}><${Icon} name="git-branch" class="tiny" /></span>`}
     </a>
@@ -129,10 +137,11 @@ function chatTree(list, current) {
     const up = c.parent && ids.has(c.parent) ? c.parent : '';
     kids.set(up, [...(kids.get(up) || []), c]);
   }
+  const tree = kids.size > 1; // more than the top level: some chat has sub-agents
   const rows = (parent, depth) => (kids.get(parent) || []).flatMap((c) => {
     const n = kids.get(c.id)?.length || 0;
     const folded = n > 0 && ui.collapsed.value.has(c.id);
-    return [html`<${ChatRow} key=${c.id} c=${c} active=${c.id === current} depth=${depth} kids=${n} folded=${folded} />`,
+    return [html`<${ChatRow} key=${c.id} c=${c} active=${c.id === current} tree=${tree} depth=${depth} kids=${n} folded=${folded} />`,
       ...(folded ? [] : rows(c.id, depth + 1))];
   });
   return rows('', 0);
