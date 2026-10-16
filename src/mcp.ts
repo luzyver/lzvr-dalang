@@ -6,7 +6,7 @@ import { type ClickUp, startOfDay } from './clickup.js';
 import type { Config } from './config.js';
 import { createDbApproval, logDbQuery, readDbApprovals } from './database-routes.js';
 import {
-  agentRefusal, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
+  agentRefusal, describeUnsafe, findUnsafe, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
 } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
@@ -286,6 +286,14 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
       });
     const refused = agentRefusal(sql, c.driver, readOnly(c));
     if (refused) { log(false, 0, refused); return fail(refused); }
+    // Writing freely, an agent may not hit every row of a table by leaving out the WHERE (with approval, the card says it).
+    const unsafe = c.agent === 'read-write' && !c.readOnly ? findUnsafe(sql, c.driver) : [];
+    if (unsafe.length) {
+      const msg = `refused: ${unsafe.map(describeUnsafe).join('; ')} would change every row. Add a WHERE (WHERE true if every row is really meant), `
+        + 'or ask a human to run it in the SQL editor.';
+      log(false, 0, msg);
+      return fail(msg);
+    }
     try {
       const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
       log(true, results.reduce((n, r) => n + r.rows.length, 0));
@@ -294,7 +302,8 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
       // A write on a "write after approval" connection: the whole script waits for an admin (it ran read-only, so
       // nothing of it was kept).
       if (e instanceof QueryError && e.readOnlyRefusal && c.agent === 'approve' && !c.readOnly) {
-        const a = createDbApproval(store, { conn: c.id, ...(database && { database }), sql, who: by.who, conv: by.conv });
+        const flagged = findUnsafe(sql, c.driver).map(describeUnsafe);
+        const a = createDbApproval(store, { conn: c.id, ...(database && { database }), sql, who: by.who, conv: by.conv, ...(flagged.length && { unsafe: flagged }) });
         log(false, 0, `held for approval #${a.id}`);
         void push.notify({ title: 'Database write needs approval', body: `${c.label}: ${sql.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
         return text({

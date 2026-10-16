@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentRefusal, type DbConnection, onDatabase, previewEdits, statementsOf } from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, onDatabase, previewEdits, statementsOf } from '../src/databases.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -71,6 +71,26 @@ describe('other databases', () => {
     expect(onDatabase(all, 'other').database).toBe('other');
     // No database set: it starts in `postgres`.
     expect(onDatabase({ ...all, database: '' }, 'postgres').database).toBe('');
+  });
+});
+
+describe('statements that change every row', () => {
+  const kinds = (sql: string, driver: DbConnection['driver'] = 'postgres') => findUnsafe(sql, driver).map((u) => `${u.kind} ${u.table}`);
+  it('finds UPDATE and DELETE without a WHERE of their own, and TRUNCATE', () => {
+    expect(kinds('DELETE FROM mail_logs')).toEqual(['delete mail_logs']);
+    expect(kinds("UPDATE users SET note = 'where'")).toEqual(['update users']);
+    expect(kinds('UPDATE users SET n = (SELECT 1 FROM x WHERE y)')).toEqual(['update users']);
+    expect(kinds('-- where\nDELETE FROM "public"."t"')).toEqual(['delete "public"."t"']);
+    expect(kinds('WITH d AS (SELECT 1) DELETE FROM t USING d')).toEqual(['delete t']);
+    expect(kinds('TRUNCATE TABLE ONLY public.t')).toEqual(['truncate public.t']);
+    expect(kinds('DELETE LOW_PRIORITY FROM `app`.`t` LIMIT 10', 'mysql')).toEqual(['delete `app`.`t`']);
+    expect(kinds('SELECT 1; delete from t2')).toEqual(['delete t2']);
+  });
+  it('lets a WHERE at the top level through', () => {
+    expect(kinds('DELETE FROM t WHERE id = 1')).toEqual([]);
+    expect(kinds('UPDATE t SET a = 1 WHERE true')).toEqual([]);
+    expect(kinds('WITH d AS (SELECT 1) DELETE FROM t WHERE id IN (SELECT 1)')).toEqual([]);
+    expect(kinds('SELECT * FROM t; INSERT INTO t VALUES (1)')).toEqual([]);
   });
 });
 
@@ -169,6 +189,23 @@ describe('SQL editor connections', () => {
     expect((await edit([{ kind: 'delete', key: { id: '1' } }])).statusCode).toBe(403);
   });
 
+  it('holds a script that changes every row until it is confirmed, with the rows it would touch', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const ask = (confirmed?: boolean) => t.app.inject({ method: 'POST', url: '/api/db/connections/app/query', headers: AUTH,
+      payload: { sql: "SELECT 1; UPDATE users SET note = 'x'", ...(confirmed && { confirmed }) } });
+    const held = await ask();
+    expect(held.statusCode).toBe(409);
+    expect(held.json().unsafe).toMatchObject([{ index: 1, kind: 'update', table: 'users', rows: 2 }]);
+    const notes = () => t.query('app', 'SELECT note FROM users ORDER BY id').then((r) => r.json().results[0].rows);
+    expect(await notes()).toEqual([[null], ['x']]);
+    expect((await ask(true)).statusCode).toBe(200);
+    expect(await notes()).toEqual([['x'], ['x']]);
+    // A read-only connection refuses it anyway: nothing to confirm.
+    await t.put('app', { readOnly: true });
+    expect((await ask()).statusCode).toBe(400);
+  });
+
   it('previews the statements of grid edits without running them', async () => {
     const t = await boot();
     await t.put('app', {});
@@ -250,6 +287,19 @@ describe('SQL editor connections for agents', () => {
     expect(JSON.parse((await a.call('db_approval', { approval_id: 1 })).text)).toMatchObject({ status: 'approved' });
     await until(() => [...t.store.listQueue(conv.id), ...t.store.listTurns(conv.id)].some((x) => x.prompt.includes('approved your write')));
     expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/reject', headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it('refuses an agent\'s write without WHERE on a read-write connection, and flags it on an approval card', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'read-write' });
+    const r = await (await t.agent()).call('db_query', { connection: 'app', sql: 'DELETE FROM users' });
+    expect(r).toMatchObject({ isError: true });
+    expect(r.text).toMatch(/DELETE on users without WHERE/);
+    expect((await (await t.agent()).call('db_query', { connection: 'app', sql: 'DELETE FROM users WHERE true' })).isError).toBe(false);
+    await t.put('app', { agent: 'approve' });
+    await (await t.agent()).call('db_query', { connection: 'app', sql: "UPDATE users SET note = 'z'" });
+    const [a] = (await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json();
+    expect(a.unsafe).toEqual(['UPDATE on users without WHERE']);
   });
 
   it('refuses statements that reach past the tables even on a read-write connection', async () => {

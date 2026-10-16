@@ -119,6 +119,21 @@ describe('SSE', () => {
     expect(text.split('\n\n').filter(Boolean)).toHaveLength(1); // exactly one frame
   });
 
+  it('replays a chat whose history is over a megabyte in full', async () => {
+    const t = setupApp();
+    close = () => t.app.close();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const base = `http://127.0.0.1:${(t.app.server.address() as { port: number }).port}`;
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const turn = t.store.startTurn(conv.id, 'x');
+    const big = JSON.stringify({ type: 'x', text: 'y'.repeat(40_000) });
+    for (let i = 0; i < 60; i++) t.store.addEvent(turn, 'item.completed', big); // about 2.4 MB
+    t.store.addEvent(turn, 'turn.completed', '{"type":"turn.completed"}');
+    const res = await fetch(`${base}/api/conversations/${conv.id}/events`, { headers: AUTH });
+    const text = await readUntil(res, (s) => s.includes('event: turn.completed'));
+    expect(text.match(/^event: item\.completed$/gm)).toHaveLength(60);
+  });
+
   it('404s for an unknown conversation', async () => {
     const t = setupApp();
     const r = await t.app.inject({ url: '/api/conversations/nope/events', headers: AUTH });

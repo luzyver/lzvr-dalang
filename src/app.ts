@@ -631,15 +631,32 @@ export function buildApp(
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.flushHeaders(); // otherwise headers wait for the first event and an idle stream looks hung
-    const send = (e: { id: number; type: string; payload: string; created_at: string }) => {
-      if (res.writableLength > 1_000_000) { res.destroy(); return; } // reader stopped reading; it reconnects with Last-Event-ID
-      res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${e.payload}\ntimestamp: ${e.created_at}\n\n`);
+    type Ev = { id: number; type: string; payload: string; created_at: string };
+    const write = (e: Ev) => res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${e.payload}\ntimestamp: ${e.created_at}\n\n`);
+    // The history is replayed at the pace the reader takes it (a long chat is megabytes); live events that come
+    // meanwhile wait behind it. Only after that does a full buffer mean a reader that stopped reading: it is dropped,
+    // and reconnects with Last-Event-ID.
+    let replaying = true;
+    const held: Ev[] = [];
+    const send = (e: Ev) => {
+      if (replaying) { held.push(e); return; }
+      if (res.writableLength > 1_000_000) { res.destroy(); return; }
+      write(e);
     };
-    // Replay and subscribe in the same tick so no event can slip between them.
-    for (const e of store.eventsAfter(id, after)) send(e);
+    // Subscribe and read the history in the same tick so no event can slip between them.
     const off = dispatcher.subscribe(id, send);
+    const history = store.eventsAfter(id, after);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     res.on('close', () => { off(); clearInterval(ping); });
+    void (async () => {
+      for (const e of history) {
+        if (res.destroyed) return;
+        if (!write(e)) await new Promise((done) => { res.once('drain', done); res.once('close', done); });
+      }
+      const last = history.length ? history[history.length - 1]!.id : after;
+      replaying = false;
+      for (const e of held) if (e.id > last) send(e);
+    })();
   });
 
   return app;

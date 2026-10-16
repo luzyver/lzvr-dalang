@@ -720,3 +720,86 @@ export function agentRefusal(script: string, driver: Driver, readOnly: boolean):
   }
   return null;
 }
+
+// ---------- statements that hit every row ----------
+
+/** An UPDATE or DELETE without a WHERE, or a TRUNCATE: it hits every row of `table` (as written in the statement). */
+export interface UnsafeStatement { index: number; sql: string; kind: 'update' | 'delete' | 'truncate'; table: string }
+
+/**
+ * The statement with string literals, comments and everything inside parentheses blanked out, so only its top level
+ * is left to read (a WHERE in a subquery or a string does not count). Quoted identifiers stay.
+ */
+function topLevel(sql: string, driver: Driver): string {
+  const my = isMy(driver);
+  let out = '';
+  let depth = 0;
+  let i = 0;
+  const n = sql.length;
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ');
+  const put = (s: string) => { out += depth > 0 ? blank(s) : s; };
+  while (i < n) {
+    const ch = sql[i]!;
+    const next = sql[i + 1];
+    let end = -1;
+    if ((ch === '-' && next === '-') || (my && ch === '#')) { const nl = sql.indexOf('\n', i); end = nl < 0 ? n : nl; }
+    else if (ch === '/' && next === '*') { const close = sql.indexOf('*/', i + 2); end = close < 0 ? n : close + 2; }
+    else if (ch === '\'') {
+      const escapes = my || (driver === 'postgres' && /[Ee]/.test(sql[i - 1] ?? '') && !/\w/.test(sql[i - 2] ?? ''));
+      let j = i + 1;
+      while (j < n) {
+        if (escapes && sql[j] === '\\') { j += 2; continue; }
+        if (sql[j] === '\'') { if (sql[j + 1] === '\'') { j += 2; continue; } break; }
+        j++;
+      }
+      end = Math.min(j + 1, n);
+    } else if (ch === '$' && driver === 'postgres' && !/\w/.test(sql[i - 1] ?? '')) {
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 64));
+      if (m) { const close = sql.indexOf(m[0], i + m[0].length); end = close < 0 ? n : close + m[0].length; }
+    } else if (ch === '"' || (my && ch === '`')) {
+      // A quoted identifier: kept (the table's name may be one).
+      let j = i + 1;
+      while (j < n) { if (sql[j] === ch) { if (sql[j + 1] === ch) { j += 2; continue; } break; } j++; }
+      put(sql.slice(i, Math.min(j + 1, n)));
+      i = Math.min(j + 1, n);
+      continue;
+    }
+    if (end >= 0) { out += blank(sql.slice(i, end)); i = end; continue; }
+    if (ch === '(') { depth++; out += ' '; } else if (ch === ')') { depth = Math.max(0, depth - 1); out += ' '; } else put(ch);
+    i++;
+  }
+  return out;
+}
+
+const NAME = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+)(?:\s*\.\s*(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+))*`;
+const VERB = /^\s*(?:with\s+(?:recursive\s+)?[\s\S]*?\b(?=update\b|delete\b|insert\b|select\b|merge\b|values\b))?(update|delete|truncate)\b([\s\S]*)$/i;
+const UPDATE_TABLE = new RegExp(String.raw`^\s*(?:only\s+)?(?:(?:low_priority|ignore)\s+)*(${NAME})`, 'i');
+const DELETE_TABLE = new RegExp(String.raw`^\s*(?:(?:low_priority|quick|ignore)\s+)*(?:from\s+)?(?:only\s+)?(${NAME})`, 'i');
+const TRUNCATE_TABLE = new RegExp(String.raw`^\s*(?:table\s+)?(?:only\s+)?(${NAME})`, 'i');
+
+/** The statements of a script that hit every row of a table: UPDATE or DELETE without a WHERE, and TRUNCATE. */
+export function findUnsafe(script: string, driver: Driver): UnsafeStatement[] {
+  const out: UnsafeStatement[] = [];
+  statementsOf(script, driver).forEach((sql, index) => {
+    const m = VERB.exec(topLevel(sql, driver));
+    if (!m) return;
+    const kind = m[1]!.toLowerCase() as UnsafeStatement['kind'];
+    const rest = m[2]!;
+    if (kind !== 'truncate' && /\bwhere\b/i.test(rest)) return;
+    const re = kind === 'update' ? UPDATE_TABLE : kind === 'delete' ? DELETE_TABLE : TRUNCATE_TABLE;
+    out.push({ index, sql, kind, table: re.exec(rest)?.[1]?.trim() ?? '?' });
+  });
+  return out;
+}
+
+/** How many rows `table` (a name as findUnsafe read it) has now, or null when that cannot be read quickly. */
+export async function countRows(c: DbConnection, table: string): Promise<number | null> {
+  if (!new RegExp(`^${NAME}$`).test(table)) return null;
+  try {
+    const [r] = await runScript(c, `SELECT count(*) FROM ${table}`, { readOnly: true, limit: 1, timeoutMs: 5000 });
+    return Number(r?.rows[0]?.[0] ?? NaN);
+  } catch { return null; }
+}
+
+/** "DELETE FROM users without WHERE", for messages. */
+export const describeUnsafe = (u: UnsafeStatement) => (u.kind === 'truncate' ? `TRUNCATE ${u.table}` : `${u.kind.toUpperCase()} on ${u.table} without WHERE`);

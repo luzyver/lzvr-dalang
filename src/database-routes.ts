@@ -8,7 +8,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import {
-  AGENT_MODES, agentRefusal, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, listDatabases, loadConnections, onDatabase,
+  AGENT_MODES, agentRefusal, countRows, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, findUnsafe, listDatabases, loadConnections, onDatabase,
   previewEdits, QueryError, type QueryResult, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES, testConnection,
 } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
@@ -41,6 +41,8 @@ export interface DbApproval {
   status: 'pending' | 'approved' | 'rejected' | 'failed'; decidedBy?: string; decidedAt?: number;
   /** What running it gave (or why it failed). */
   outcome?: string;
+  /** Its statements that hit every row (UPDATE/DELETE without WHERE, TRUNCATE), described: the card warns about them. */
+  unsafe?: string[];
 }
 const APPROVALS = 'db_approvals';
 export function readDbApprovals(store: Store): DbApproval[] {
@@ -170,15 +172,26 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     try { return await readSchema(onDatabase(c, req.query.database)); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
   });
 
-  // Runs a script (one or more statements); a failure answers 400 with the results of the statements before it.
-  app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; database?: string } }>('/api/db/connections/:id/query', {
+  // Runs a script (one or more statements); a failure answers 400 with the results of the statements before it. A script
+  // with a statement that hits every row (UPDATE or DELETE without WHERE, TRUNCATE) runs only once `confirmed`: until
+  // then it answers 409 with those statements and how many rows their tables have, and runs nothing.
+  app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; database?: string; confirmed?: boolean } }>('/api/db/connections/:id/query', {
     schema: { body: { type: 'object', required: ['sql'], additionalProperties: false, properties: {
       sql: { type: 'string', minLength: 1, maxLength: 1_000_000 }, limit: { type: 'integer', minimum: 1, maximum: 10_000 },
-      database: DATABASE,
+      database: DATABASE, confirmed: { type: 'boolean' },
     } } },
   }, async (req, reply) => {
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
+    if (!c.readOnly && !req.body.confirmed) {
+      const unsafe = findUnsafe(req.body.sql, c.driver);
+      if (unsafe.length) {
+        let target: DbConnection;
+        try { target = onDatabase(c, req.body.database); } catch (e) { return reply.code(400).send({ error: (e as Error).message, index: 0, results: [] }); }
+        const counted = await Promise.all(unsafe.map(async (u) => ({ ...u, rows: await countRows(target, u.table) })));
+        return reply.code(409).send({ error: 'this would change every row of a table', unsafe: counted });
+      }
+    }
     // The panel stopping the request (Cancel, a closed tab) cancels the statement on the server.
     const ac = new AbortController();
     const gone = () => { if (!reply.raw.writableEnded) ac.abort(); };

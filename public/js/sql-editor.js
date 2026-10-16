@@ -61,6 +61,8 @@ const sq = {
   history: signal(false),
   /** "Ask the agent": { context, suggestion } */
   ask: signal(null),
+  /** a script held because it would change every row: { list (from the server), conn, go() } */
+  unsafe: signal(null),
 };
 /** console id -> the AbortController of its running query */
 const ctrls = new Map();
@@ -330,7 +332,11 @@ function remember(entry) {
   keep(HISTORY, [entry, ...list.filter((x) => !(x.sql === entry.sql && x.connId === entry.connId && x.database === entry.database))].slice(0, 300));
 }
 
-async function run(all, script) {
+/**
+ * Runs the statement at the cursor (or the selection), the whole console (`all`) or `script`. A script that would
+ * change every row of a table first asks (the server holds it until `confirmed`).
+ */
+async function run(all, script, confirmed = false) {
   const c = activeConsole();
   if (!c || !view) return;
   const conn = connOf(c.connId);
@@ -342,11 +348,12 @@ async function run(all, script) {
   const ac = new AbortController();
   ctrls.set(c.id, ac);
   const t0 = Date.now();
+  const before = sq.runs.value.get(c.id);
   setRun(c.id, { running: true, at: t0, script: sql });
   if (mobile()) sq.pane.value = 'terminal';
   const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, at: t0, ms: Date.now() - t0, ok, rows });
   try {
-    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }) } });
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(confirmed && { confirmed }) } });
     // A table's rows need its primary key: the table list must be there to tell.
     await loadSchema(conn.id, db);
     const metas = r.results.map((x) => tableMeta(conn, db, x));
@@ -354,6 +361,12 @@ async function run(all, script) {
     note(true, r.results.reduce((n, x) => n + x.rows.length, 0));
     if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, db, true);
   } catch (e) {
+    if (e.status === 409 && e.detail?.unsafe) {
+      // Nothing ran: the results stay as they were until the user decides.
+      setRun(c.id, { ...before, running: false });
+      sq.unsafe.value = { list: e.detail.unsafe, conn: conn.label, go: () => { activate(c.id); run(false, sql, true); } };
+      return;
+    }
     // A failed statement still shows what ran before it.
     const results = e.detail?.results || [];
     const error = e.name === 'AbortError' ? 'Cancelled. The database was asked to stop the statement.' : e.message;
@@ -802,6 +815,25 @@ function AgentLog({ id }) {
   </div>`;
 }
 
+const rowsText = (n) => (n == null ? 'every row' : `all ${n.toLocaleString()} row${n === 1 ? '' : 's'}`);
+
+/** A script that would change every row of a table: which statements, how many rows now, and Run anyway. */
+function UnsafeConfirm({ list, conn, go }) {
+  const close = () => { sq.unsafe.value = null; };
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Change every row?</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    <p class="small">${list.length === 1 ? 'This statement has' : 'These statements have'} no WHERE, so ${list.length === 1 ? 'it changes' : 'they change'} every row on <strong>${conn}</strong>:</p>
+    ${list.map((u) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><div>
+      <strong>${u.kind === 'truncate' ? 'TRUNCATE' : u.kind.toUpperCase()} ${u.table}</strong>: ${u.kind === 'update' ? 'changes' : 'removes'} ${rowsText(u.rows)}.
+      <pre class="mono sql-preview">${u.sql}</pre></div></div>`)}
+    <p class="small dim">Nothing has run. Add a WHERE to touch only some rows; run it anyway only if every row is meant.</p>
+    <div class="row end">
+      <button class="btn" autofocus onClick=${close}>Cancel</button>
+      <button class="btn primary danger" onClick=${() => { close(); go(); }}><${Icon} name="play" />Run anyway</button>
+    </div>
+  </div>`;
+}
+
 /** The runs of this browser, newest first: the active console's connection, or every one. Click to put one in the console. */
 function History() {
   const c = activeConsole();
@@ -967,6 +999,8 @@ export function SqlEditor() {
       ${sq.editing.value && html`<${ConnectionForm} conn=${sq.editing.value.conn} />`}<//>
     <${Modal} open=${!!sq.log.value} label="Agent queries" class="dialog sql-dialog" onClose=${() => { sq.log.value = null; }}>
       ${sq.log.value && html`<${AgentLog} id=${sq.log.value} />`}<//>
+    <${Modal} open=${!!sq.unsafe.value} label="Change every row?" class="dialog sql-dialog" onClose=${() => { sq.unsafe.value = null; }}>
+      ${sq.unsafe.value && html`<${UnsafeConfirm} ...${sq.unsafe.value} />`}<//>
     <${Modal} open=${sq.history.value} label="Query history" class="dialog sql-dialog" onClose=${() => { sq.history.value = false; }}>
       ${sq.history.value && html`<${History} />`}<//>
     <${Modal} open=${!!sq.ask.value} label="Ask the agent" class="dialog sql-dialog" onClose=${() => { sq.ask.value = null; }}>

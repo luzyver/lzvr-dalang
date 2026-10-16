@@ -561,6 +561,12 @@ connections belong to the panel.
   lists the last 300 runs of this browser, to insert or run again. Results copy as TSV or download as CSV; consoles
   are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
   in one go.
+- **Every row at once**: an `UPDATE` or `DELETE` without a `WHERE` of its own (one in a string, a comment or a
+  subquery does not count), and `TRUNCATE`, does not run straight away. The server holds the whole script and the
+  panel asks first, naming each such statement and how many rows its table has now; **Run anyway** runs it. Agents
+  are refused such a statement on a **Read and write** connection (`WHERE true` says every row is meant), and on
+  **Write with approval** its card says so in red. It reads the SQL as written: a function or a `DO` block that does
+  the same is not caught.
 - **The result grid**: a click on a cell shows its whole value beside the grid (JSON laid out); a click on a column
   header sorts. A result that is a table's own rows (`SELECT * FROM <table>`, with its WHERE, ORDER BY and LIMIT, of a
   table with a primary key) gets a **WHERE** filter and sorts on the server, and unless the connection is read-only it

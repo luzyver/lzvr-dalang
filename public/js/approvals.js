@@ -38,6 +38,7 @@ export function DbApprovalCard({ a, showChat }) {
     <div class="card-body">
       <strong>${a.who || 'An agent'} wants to write on <span class="mono">${a.conn}</span>${a.database && html` · <span class="mono">${a.database}</span>`}
         ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
+      ${a.unsafe?.map((u) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><span><strong>${u}</strong>: it changes every row of the table.</span></div>`)}
       <pre class="card-text mono">${a.sql}</pre>
       <span class="dim small">Approve runs it now, as written, with writes allowed; the outcome goes back to the chat.</span>
       <div class="card-actions">
