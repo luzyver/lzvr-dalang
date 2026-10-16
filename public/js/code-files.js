@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-h
 import { batch, signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api, currentToken, downloadFile, handleUnauthorized } from './api.js';
-import { confirmDialog, Icon } from './ui.js';
+import { confirmDialog, ContextMenu, Icon } from './ui.js';
 import { guarded, toast } from './store.js';
 import { copyText } from './code.js';
 
@@ -125,27 +125,6 @@ function pickFiles(cb) {
   input.multiple = true;
   input.onchange = () => { if (input.files?.length) cb([...input.files]); };
   input.click();
-}
-
-/** A menu at the pointer (right click or the row's ⋯), with the actions for one path. */
-function ContextMenu({ at, onClose, children }) {
-  const ref = useRef(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.bottom > innerHeight - 8) el.style.top = `${Math.max(8, innerHeight - r.height - 8)}px`;
-    if (r.right > innerWidth - 8) el.style.left = `${Math.max(8, innerWidth - r.width - 8)}px`;
-  }, [at]);
-  useEffect(() => {
-    const away = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
-    const esc = (e) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('pointerdown', away, true);
-    document.addEventListener('keydown', esc);
-    addEventListener('blur', onClose);
-    return () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esc); removeEventListener('blur', onClose); };
-  }, []);
-  return html`<div class="menu-pop ctx-menu" role="menu" ref=${ref} style=${{ left: `${at.x}px`, top: `${at.y}px` }} onClick=${onClose}>${children}</div>`;
 }
 
 const Item = ({ icon, danger, disabled, onClick, children, kbd }) => html`

@@ -1007,6 +1007,16 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .sql-results .term-tab { padding-right: 3px; }
 .menu-ext { margin-left: 8px; font-size: 11px; }
 .sql-read { flex: none; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+/* The tree scrolls inside the side bar (a long list would otherwise push it past the window). */
+.ide.sql .ide-files { min-height: 0; overflow: hidden; }
+.ide.sql .files-pane { min-height: 0; }
+.sql-find { display: flex; align-items: center; gap: 6px; margin: 0 8px 6px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); flex: none; }
+.sql-find:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.sql-find input { flex: 1; min-width: 0; min-height: 28px !important; height: 28px; border: 0 !important; box-shadow: none !important; background: none; padding: 0 !important; font-size: var(--fs-sm); }
+.sql-found-row { --depth: 0; }
+.sql-found-row .sql-type { max-width: 50%; }
+.sql-found mark { background: var(--warn-soft); color: inherit; border-radius: 2px; }
+.tree-row.flash { background: var(--accent-soft-2); transition: background .6s; }
 .tree-row:not(:hover) .sql-read { opacity: .7; }
 .sql-file-name { display: flex; align-items: center; gap: 6px; }
 .sql-file-name input { flex: 1; min-width: 0; }

@@ -7,7 +7,7 @@ import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, confirmDialog, Empty, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, ContextMenu, Empty, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
@@ -37,7 +37,8 @@ const HISTORY = 'dalang-sql-history';
 const LIMITS = [100, 500, 1000, 5000, 10000];
 
 /**
- * A console: { id, connId, database ('' = the connection's own), title, text }. Its editor state lives in `states` (by id), its last run in `runs`:
+ * A console: { id, connId, database ('' = the connection's own; MySQL: the database it starts in), schema (PostgreSQL: the
+ * one unqualified names are looked up in first), title, text }. Its editor state lives in `states` (by id), its last run in `runs`:
  * { running, script, readOnly, tabs, active, error }. `tabs` keep the results of earlier runs: one per table (or per
  * query that reads no table of its own), { key, result, meta (the table it shows, see tableMeta), at }; running a query
  * on the same table refreshes its tab, one on another table adds a tab. Statements that return no rows share the
@@ -72,6 +73,10 @@ const sq = {
   /** the workspaces ({ id, name, conns }) and the one shown; each has its own consoles */
   workspaces: signal(null),
   ws: signal(null),
+  /** the tree's right-click menu: { at: { x, y }, items } */
+  ctx: signal(null),
+  /** what the tree is searched for */
+  find: signal(''),
   /** the download dialog: { format, result, ctx, name (suggested) } */
   download: signal(null),
   /** the workspace dialog: { mode: 'new' | 'rename' | 'conns' } */
@@ -349,7 +354,7 @@ function applyLanguage() {
   for (const s of data?.schemas || []) {
     schema[s.name] = Object.fromEntries(s.tables.map((t) => [t.name, t.columns.map((col) => ({ label: col.name, detail: col.type, type: 'property' }))]));
   }
-  const defaultSchema = conn?.driver === 'postgres' ? 'public' : conn?.driver === 'sqlite' ? 'main' : conn?.database || undefined;
+  const defaultSchema = conn ? defaultSchemaOf(conn, c.database || '', c.schema) : undefined;
   const support = cm.sql({ dialect: DIALECTS[conn?.driver] || cm.StandardSQL, schema, defaultSchema, upperCaseKeywords: true });
   view.dispatch({ effects: langs.get(c.id).reconfigure(support) });
   states.set(c.id, view.state);
@@ -436,6 +441,14 @@ function setConsoleConn(connId) {
   persist();
 }
 
+function setConsoleSchema(schema) {
+  const c = activeConsole();
+  if (!c) return;
+  sq.consoles.value = sq.consoles.value.map((x) => (x.id === c.id ? { ...x, schema: schema === 'public' ? '' : schema } : x));
+  applyLanguage();
+  persist();
+}
+
 function setConsoleDb(database) {
   const c = activeConsole();
   const conn = c && connOf(c.connId);
@@ -453,7 +466,8 @@ const DDL = /^\s*(create|alter|drop|rename|truncate|comment)\b/im;
 
 /** Always quoted: for SQL the editor writes itself (filters, sorting). */
 const qi = (conn, name) => (conn.driver === 'mysql' || conn.driver === 'mariadb' ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`);
-const defaultSchema = (conn, db) => (conn.driver === 'postgres' ? 'public' : conn.driver === 'sqlite' ? 'main' : db || conn.database);
+/** The schema an unqualified table name means: the console's (PostgreSQL), its database (MySQL), SQLite's main. */
+const defaultSchemaOf = (conn, db, schema) => (conn.driver === 'postgres' ? schema || 'public' : conn.driver === 'sqlite' ? 'main' : db || conn.database || undefined);
 
 const IDENT = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[A-Za-z_][\w$]*)`;
 const TABLE_SELECT = new RegExp(String.raw`^\s*select\s+\*\s+from\s+(${IDENT})(?:\s*\.\s*(${IDENT}))?((?:\s+(?:where|order|limit)\b[\s\S]*)?)\s*;?\s*$`, 'i');
@@ -466,7 +480,7 @@ const sameName = (x, name) => (/^["\x60]/.test(x) ? unquote(x) === name : x.toLo
  * table has a primary key that the result holds: { schema, table, pk, where, order }. Such a result can be filtered,
  * sorted on the server and edited.
  */
-function tableMeta(conn, db, result) {
+function tableMeta(conn, db, result, consoleSchema) {
   const m = TABLE_SELECT.exec(result.sql);
   const data = sq.schemas.value.get(skey(conn.id, db))?.data;
   if (!m || !data || !result.columns.length) return null;
@@ -477,7 +491,7 @@ function tableMeta(conn, db, result) {
       if (t.kind === 'table' && (b ? sameName(a, sch.name) && sameName(b, t.name) : sameName(a, t.name))) hits.push({ schema: sch.name, t });
     }
   }
-  if (!b && hits.length > 1) hits = hits.filter((h) => h.schema === defaultSchema(conn, db));
+  if (!b && hits.length > 1) hits = hits.filter((h) => h.schema === defaultSchemaOf(conn, db, consoleSchema));
   if (hits.length !== 1) return null;
   const { schema, t } = hits[0];
   const pk = t.columns.filter((col) => col.pk).map((col) => col.name);
@@ -489,7 +503,7 @@ function tableMeta(conn, db, result) {
  * Reads the columns of the schemas the results' `SELECT * FROM <table>` may come from (a big database comes without
  * them), so tableMeta can tell the table's primary key.
  */
-async function columnsFor(conn, db, results) {
+async function columnsFor(conn, db, results, consoleSchema) {
   const data = sq.schemas.value.get(skey(conn.id, db))?.data;
   if (!data) return;
   const want = new Set();
@@ -497,9 +511,10 @@ async function columnsFor(conn, db, results) {
     const m = r.columns.length && TABLE_SELECT.exec(r.sql);
     if (!m) continue;
     const [, a, b] = m;
-    for (const sch of data.schemas) {
-      if (!sch.loaded && (b ? sameName(a, sch.name) : sch.tables.some((t) => sameName(a, t.name)))) want.add(sch.name);
-    }
+    const holding = data.schemas.filter((sch) => (b ? sameName(a, sch.name) : sch.tables.some((t) => sameName(a, t.name))));
+    // An unqualified name in several schemas means the default one's table: only that schema is read.
+    const own = !b && holding.find((sch) => sch.name === defaultSchemaOf(conn, db, consoleSchema));
+    for (const sch of own ? [own] : holding) if (!sch.loaded) want.add(sch.name);
   }
   await Promise.all([...want].slice(0, 3).map((name) => loadColumns(conn.id, db, name)));
 }
@@ -531,11 +546,11 @@ async function run(all, script, confirmed = false) {
   if (mobile()) sq.pane.value = 'terminal';
   const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, ws: sq.ws.value, at: t0, ms: Date.now() - t0, ok, rows });
   try {
-    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(confirmed && { confirmed }) } });
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(conn.driver === 'postgres' && c.schema && { schema: c.schema }), ...(confirmed && { confirmed }) } });
     // A table's rows need its primary key: the table list (and on a big database its schema's columns) must be there.
     await loadSchema(conn.id, db);
-    await columnsFor(conn, db, r.results);
-    setRun(c.id, { running: false, readOnly: r.readOnly, error: null, ...withResults(sq.runs.value.get(c.id), conn, db, r.results) });
+    await columnsFor(conn, db, r.results, c.schema);
+    setRun(c.id, { running: false, readOnly: r.readOnly, error: null, ...withResults(sq.runs.value.get(c.id), conn, db, r.results, c.schema) });
     note(true, r.results.reduce((n, x) => n + x.rows.length, 0));
     if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, db, true);
   } catch (e) {
@@ -548,7 +563,7 @@ async function run(all, script, confirmed = false) {
     // A failed statement still shows what ran before it, in tabs of their own.
     const results = e.detail?.results || [];
     const message = e.name === 'AbortError' ? 'Cancelled. The database was asked to stop the statement.' : e.message;
-    const { tabs } = withResults(sq.runs.value.get(c.id), conn, db, results);
+    const { tabs } = withResults(sq.runs.value.get(c.id), conn, db, results, c.schema);
     setRun(c.id, { running: false, tabs, active: 'err', error: { message, index: e.detail?.index ?? results.length, done: results.length } });
     note(false, 0);
   } finally { if (ctrls.get(c.id) === ac) ctrls.delete(c.id); }
@@ -561,14 +576,14 @@ const squash = (sql) => sql.replace(/\s+/g, ' ').trim().toLowerCase();
  * The run's tabs with `results` put in: a table's rows (or a query's) replace the tab that showed the same table (or
  * query), others go on the end; statements that return no rows fill the 'out' tab. The newest becomes the active one.
  */
-function withResults(cur, conn, db, results) {
+function withResults(cur, conn, db, results, schema) {
   const tabs = [...(cur?.tabs || [])].filter((t) => t.key !== 'out' || !results.some((x) => !x.columns.length));
   const out = [];
   let active = cur?.active && cur.active !== 'err' ? cur.active : null;
   const at = Date.now();
   for (const result of results) {
     if (!result.columns.length) { out.push({ sql: result.sql, text: summary(result), ms: result.ms }); continue; }
-    const meta = tableMeta(conn, db, result);
+    const meta = tableMeta(conn, db, result, schema);
     const key = meta ? `t:${db}:${meta.schema}.${meta.table}` : `q:${squash(result.sql)}`;
     const tab = { key, result, meta, at };
     const i = tabs.findIndex((t) => t.key === key);
@@ -836,6 +851,63 @@ async function askAboutTable(conn, db, schema, table) {
 }
 const note = (depth, cls, text) => html`<div class=${cx('tree-empty small', cls)} style=${{ paddingLeft: `${30 + depth * 14}px` }}>${text}</div>`;
 
+// ---------- what can be done to a connection, database, schema or table (its ⋯ and its right click) ----------
+
+/** Opens the tree's right-click menu at the pointer, instead of the browser's. */
+function openCtx(e, items) {
+  e.preventDefault();
+  e.stopPropagation();
+  sq.ctx.value = { at: { x: e.clientX, y: e.clientY }, items };
+}
+
+/** Every database (and table list) of a connection that was read before is read again. */
+function refreshConn(conn) {
+  toggleOpen(`c:${conn.id}`, true);
+  if (multi(conn)) loadDatabases(conn.id, true);
+  for (const k of sq.schemas.value.keys()) if (k.startsWith(`${conn.id}/`)) loadSchema(conn.id, k.slice(conn.id.length + 1), true);
+  if (!multi(conn)) loadSchema(conn.id, '', true);
+}
+
+const removeConn = (conn) => guarded(async () => {
+  if (!await confirmDialog({ title: `Remove ${conn.label}?`, message: 'The connection and its agent log go. The database itself is untouched.', confirmText: 'Remove', danger: true })) return;
+  await api(`/api/db/connections/${conn.id}`, { method: 'DELETE' });
+  await forgetRead(conn.id);
+  await loadConns();
+})();
+
+const connItems = (conn) => html`
+  <${MenuItem} icon="square-code" onClick=${() => newConsole(conn.id)}>New console<//>
+  <${MenuItem} icon="refresh-cw" title="Read its databases, tables and columns again from the server" onClick=${() => refreshConn(conn)}>Refresh<//>
+  <${MenuItem} icon="copy" onClick=${() => copyText(conn.id, 'name copied')}>Copy its name (for agents)<//>
+  ${isAdmin.value && html`<div class="menu-sep"></div>
+    <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
+    ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
+    <${MenuItem} icon="history" onClick=${() => { sq.log.value = conn.id; }}>Agent queries<//>
+    <${MenuItem} icon="trash-2" danger onClick=${() => removeConn(conn)}>Remove<//>`}`;
+
+const dbItems = (conn, name) => html`
+  <${MenuItem} icon="square-code" onClick=${() => newConsole(conn.id, '', name)}>New console on ${name}<//>
+  <${MenuItem} icon="refresh-cw" onClick=${() => { toggleOpen(`d:${conn.id}:${name}`, true); loadSchema(conn.id, dbKey(conn, name), true); }}>Refresh its tables<//>
+  <${MenuItem} icon="copy" onClick=${() => copyText(name, 'name copied')}>Copy name<//>`;
+
+const schemaItems = (conn, db, name) => html`
+  <${MenuItem} icon="refresh-cw" onClick=${() => loadSchema(conn.id, db, true)}>Refresh tables<//>
+  <${MenuItem} icon="copy" onClick=${() => copyText(name, 'name copied')}>Copy name<//>`;
+
+const tableItems = (conn, db, schema, t) => html`
+  <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>Select first rows<//>
+  <${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>Show DDL<//>
+  <${MenuItem} icon="bot" onClick=${() => askAboutTable(conn, db, schema, t.name)}>Ask the agent about it<//>
+  <div class="menu-sep"></div>
+  <${MenuItem} icon="copy" onClick=${() => copyText(t.name, 'name copied')}>Copy name<//>
+  <${MenuItem} icon="copy" onClick=${() => copyText(selectFrom(conn, schema, t.name).replace(/ LIMIT 100;$/, ';'), 'query copied')}>Copy SELECT<//>`;
+
+/** The ⋯ of a row: the same menu as its right click (for touch screens and the keyboard). */
+const More = ({ label, items }) => html`<span onClick=${(e) => e.stopPropagation()} onDblClick=${(e) => e.stopPropagation()}>
+  <${Menu} label=${label} buttonClass="xs tree-more">${items}<//></span>`;
+
+// ---------- the tree ----------
+
 /** The schemas (or, with only one, the tables) of one database, `depth` levels in. */
 function Tables({ conn, db, depth }) {
   const s = sq.schemas.value.get(skey(conn.id, db));
@@ -863,14 +935,16 @@ function DbNode({ conn, name }) {
   const db = dbKey(conn, name);
   const key = `d:${conn.id}:${name}`;
   const open = sq.open.value.has(key);
+  const s = sq.schemas.value.get(skey(conn.id, db));
   return html`<div>
-    <div class="tree-row" style=${{ '--depth': 1 }} aria-expanded=${open} title="Double-click: a console on this database"
-      onClick=${() => toggleOpen(key)} onDblClick=${() => newConsole(conn.id, '', name)}>
+    <div class="tree-row" data-node=${key} style=${{ '--depth': 1 }} aria-expanded=${open} title="Double-click: a console on this database"
+      onClick=${() => toggleOpen(key)} onDblClick=${() => newConsole(conn.id, '', name)} onContextMenu=${(e) => openCtx(e, dbItems(conn, name))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name="database" class="tree-icon" /><span class="tree-name">${name}</span>
       ${!db && html`<span class="sql-type">default</span>`}
-      ${open && sq.schemas.value.get(skey(conn.id, db))?.at && html`<span class="sql-read" title="When its tables were read; Refresh in the connection's menu reads them again">${readAgo(sq.schemas.value.get(skey(conn.id, db)).at)}</span>`}
-      ${sq.schemas.value.get(skey(conn.id, db))?.loading && html`<${Spinner} class="tiny" />`}
+      ${open && s?.at && !s.loading && html`<span class="sql-read" title="When its tables were read; Refresh reads them again">${readAgo(s.at)}</span>`}
+      ${s?.loading && html`<${Spinner} class="tiny" />`}
+      <${More} label="Database options" items=${dbItems(conn, name)} />
     </div>
     ${open && html`<${Tables} conn=${conn} db=${db} depth=${2} />`}
   </div>`;
@@ -881,22 +955,10 @@ function ConnNode({ conn }) {
   const open = sq.open.value.has(key);
   const loading = multi(conn) ? sq.dbs.value.get(conn.id)?.loading : sq.schemas.value.get(skey(conn.id))?.loading;
   const readAt = multi(conn) ? sq.dbs.value.get(conn.id)?.at : sq.schemas.value.get(skey(conn.id))?.at;
-  const remove = guarded(async () => {
-    if (!await confirmDialog({ title: `Remove ${conn.label}?`, message: 'The connection and its agent log go. The database itself is untouched.', confirmText: 'Remove', danger: true })) return;
-    await api(`/api/db/connections/${conn.id}`, { method: 'DELETE' });
-    await forgetRead(conn.id);
-    await loadConns();
-  });
-  // Every database (and table list) of it that was read before is read again.
-  const refresh = () => {
-    toggleOpen(key, true);
-    if (multi(conn)) loadDatabases(conn.id, true);
-    for (const k of sq.schemas.value.keys()) if (k.startsWith(`${conn.id}/`)) loadSchema(conn.id, k.slice(conn.id.length + 1), true);
-    if (!multi(conn)) loadSchema(conn.id, '', true);
-  };
   const where = conn.driver === 'sqlite' ? conn.file : `${conn.host}:${conn.port}/${multi(conn) ? '*' : conn.database}`;
   return html`<div>
-    <div class="tree-row" style=${{ '--depth': 0 }} aria-expanded=${open} onClick=${() => toggleOpen(key)} onDblClick=${() => newConsole(conn.id)}>
+    <div class="tree-row" data-node=${key} style=${{ '--depth': 0 }} aria-expanded=${open} onClick=${() => toggleOpen(key)}
+      onDblClick=${() => newConsole(conn.id)} onContextMenu=${(e) => openCtx(e, connItems(conn))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name="database" class="tree-icon" />
       <span class="tree-name" title=${`${DRIVERS[conn.driver]} · ${where}`}>${conn.label}</span>
@@ -904,17 +966,7 @@ function ConnNode({ conn }) {
       ${agentTag(conn)}
       ${loading && html`<${Spinner} class="tiny" />`}
       ${open && !loading && readAt && html`<span class="sql-read" title="When it was read; Refresh (in its menu) reads it again">${readAgo(readAt)}</span>`}
-      <span onClick=${(e) => e.stopPropagation()}>
-        <${Menu} label="Connection options" buttonClass="xs tree-more">
-          <${MenuItem} icon="square-code" onClick=${() => newConsole(conn.id)}>New console<//>
-          <${MenuItem} icon="refresh-cw" title="Read its databases, tables and columns again from the server" onClick=${refresh}>Refresh<//>
-          ${isAdmin.value && html`<div class="menu-sep"></div>
-            <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
-            ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
-            <${MenuItem} icon="history" onClick=${() => { sq.log.value = conn.id; }}>Agent queries<//>
-            <${MenuItem} icon="trash-2" danger onClick=${remove}>Remove<//>`}
-        <//>
-      </span>
+      <${More} label="Connection options" items=${connItems(conn)} />
     </div>
     ${open && (multi(conn) ? html`<${Databases} conn=${conn} />` : html`<${Tables} conn=${conn} db="" depth=${1} />`)}
   </div>`;
@@ -926,9 +978,11 @@ function SchemaNode({ conn, db, sch, depth }) {
   // A big database's columns come schema by schema, when one is opened.
   useEffect(() => { if (open && !sch.loaded) loadColumns(conn.id, db, sch.name); }, [open, sch.loaded]);
   return html`<div>
-    <div class="tree-row" style=${{ '--depth': depth }} aria-expanded=${open} onClick=${() => toggleOpen(key)}>
+    <div class="tree-row" data-node=${key} style=${{ '--depth': depth }} aria-expanded=${open} onClick=${() => toggleOpen(key)}
+      onContextMenu=${(e) => openCtx(e, schemaItems(conn, db, sch.name))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name="folder" class="tree-icon" /><span class="tree-name">${sch.name}</span><span class="sr-count">${sch.tables.length}</span>
+      <${More} label="Schema options" items=${schemaItems(conn, db, sch.name)} />
     </div>
     ${open && sch.tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${sch.name} loaded=${sch.loaded} t=${t} depth=${depth + 1} />`)}
   </div>`;
@@ -938,16 +992,11 @@ function TableNode({ conn, db, schema, loaded, t, depth }) {
   const key = `t:${conn.id}:${db}:${schema}:${t.name}`;
   const open = sq.open.value.has(key);
   return html`<div>
-    <div class="tree-row" style=${{ '--depth': depth }} aria-expanded=${open} title="Double-click: SELECT its first rows" onClick=${() => toggleOpen(key)} onDblClick=${() => openTable(conn, db, schema, t.name)}>
+    <div class="tree-row" data-node=${key} style=${{ '--depth': depth }} aria-expanded=${open} title="Double-click: SELECT its first rows"
+      onClick=${() => toggleOpen(key)} onDblClick=${() => openTable(conn, db, schema, t.name)} onContextMenu=${(e) => openCtx(e, tableItems(conn, db, schema, t))}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name=${t.kind === 'view' ? 'eye' : 'table'} class="tree-icon" /><span class="tree-name">${t.name}</span>
-      <span onClick=${(e) => e.stopPropagation()} onDblClick=${(e) => e.stopPropagation()}>
-        <${Menu} label="Table options" buttonClass="xs tree-more">
-          <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>Select first rows<//>
-          <${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>Show DDL<//>
-          <${MenuItem} icon="bot" onClick=${() => askAboutTable(conn, db, schema, t.name)}>Ask the agent about it<//>
-        <//>
-      </span>
+      <${More} label="Table options" items=${tableItems(conn, db, schema, t)} />
     </div>
     ${open && !loaded && note(depth, 'dim', 'Loading columns…')}
     ${open && t.columns.map((col) => html`<div key=${col.name} class="tree-row sql-col" style=${{ '--depth': depth + 1 }}>
@@ -957,18 +1006,107 @@ function TableNode({ conn, db, schema, loaded, t, depth }) {
   </div>`;
 }
 
+// ---------- finding a database or table ----------
+
+const MAX_FOUND = 300;
+
+/** `text` with the first occurrence of `q` marked. */
+function marked(text, q) {
+  const i = text.toLowerCase().indexOf(q);
+  return i < 0 ? text : html`${text.slice(0, i)}<mark>${text.slice(i, i + q.length)}</mark>${text.slice(i + q.length)}`;
+}
+
+/**
+ * Opens the tree down to a node found by the search (its connection, database, schema), clears the search and
+ * scrolls to it.
+ */
+function reveal(keys, node) {
+  for (const k of keys) toggleOpen(k, true);
+  sq.find.value = '';
+  setTimeout(() => {
+    const el = document.querySelector(`.ide.sql .tree [data-node="${CSS.escape(node)}"]`);
+    el?.scrollIntoView({ block: 'center' });
+    el?.classList.add('flash');
+    setTimeout(() => el?.classList.remove('flash'), 1200);
+  }, 60);
+}
+
+/**
+ * Every connection, database, schema and table of the workspace whose name has the search text, from the table lists
+ * read so far (searching starts reading those of the connections not opened yet; databases of a server can be read
+ * all at once from here).
+ */
+function Found({ q }) {
+  const conns = wsConns();
+  const needle = q.toLowerCase();
+  // The table lists the search needs: every connection's (and the database list of those that open several).
+  useEffect(() => { for (const c of conns) { if (multi(c)) loadDatabases(c.id); else loadSchema(c.id, ''); } }, [conns.map((c) => c.id).join()]);
+  const out = [];
+  let unread = 0;
+  const add = (row) => { if (out.length < MAX_FOUND) out.push(row); else out.more = (out.more || 0) + 1; };
+  for (const conn of conns) {
+    const ck = `c:${conn.id}`;
+    if (conn.label.toLowerCase().includes(needle)) add({ key: ck, icon: 'database', name: conn.label, where: DRIVERS[conn.driver], open: [], node: ck, items: connItems(conn) });
+    const dbs = multi(conn) ? sq.dbs.value.get(conn.id)?.list || [] : [ownDb(conn)];
+    for (const name of dbs) {
+      const db = multi(conn) ? dbKey(conn, name) : '';
+      const dk = `d:${conn.id}:${name}`;
+      const path = multi(conn) ? [ck, dk] : [ck];
+      if (multi(conn) && name.toLowerCase().includes(needle)) add({ key: dk, icon: 'database', name, where: conn.label, open: [ck], node: dk, items: dbItems(conn, name) });
+      const data = sq.schemas.value.get(skey(conn.id, db))?.data;
+      if (!data) { if (multi(conn)) unread++; continue; }
+      const flat = data.schemas.length === 1;
+      for (const sch of data.schemas) {
+        const sk = `s:${conn.id}:${db}:${sch.name}`;
+        const where = [conn.label, multi(conn) && name].filter(Boolean).join(' · ');
+        if (!flat && sch.name.toLowerCase().includes(needle)) add({ key: sk, icon: 'folder', name: sch.name, where, open: path, node: sk, items: schemaItems(conn, db, sch.name) });
+        for (const t of sch.tables) {
+          if (!t.name.toLowerCase().includes(needle)) continue;
+          add({
+            key: `t:${conn.id}:${db}:${sch.name}:${t.name}`, icon: t.kind === 'view' ? 'eye' : 'table', name: t.name,
+            where: flat ? where : `${where} · ${sch.name}`, open: flat ? path : [...path, sk], node: `t:${conn.id}:${db}:${sch.name}:${t.name}`,
+            items: tableItems(conn, db, sch.name, t), dbl: () => openTable(conn, db, sch.name, t.name),
+          });
+        }
+      }
+    }
+  }
+  const readAll = () => {
+    for (const conn of conns.filter(multi)) for (const name of sq.dbs.value.get(conn.id)?.list || []) loadSchema(conn.id, dbKey(conn, name));
+  };
+  return html`<div class="sql-found">
+    ${out.map((r) => html`<div key=${r.key} class="tree-row sql-found-row" title=${r.dbl ? 'Click: show it in the tree · double-click: SELECT its first rows' : 'Click: show it in the tree'}
+      onClick=${() => reveal(r.open, r.node)} onDblClick=${r.dbl} onContextMenu=${(e) => openCtx(e, r.items)}>
+      <${Icon} name=${r.icon} class="tree-icon" />
+      <span class="tree-name">${marked(r.name, needle)}</span>
+      <span class="sql-type">${r.where}</span>
+    </div>`)}
+    ${out.more > 0 && note(0, 'dim', `${out.more} more: type more of the name.`)}
+    ${!out.length && note(0, 'dim', 'Nothing with that name in the tables read so far.')}
+    ${unread > 0 && html`<div class="tree-empty small dim">${unread} database${unread === 1 ? '' : 's'} not read yet.
+      <button class="btn ghost sm" onClick=${readAll}>Search ${unread === 1 ? 'it' : 'them'} too</button></div>`}
+  </div>`;
+}
+
 function Tree() {
   const ready = sq.conns.value != null && sq.workspaces.value != null;
   const conns = wsConns();
   const others = (sq.conns.value || []).length > conns.length;
+  const q = sq.find.value.trim();
   return html`<div class="files-pane">
     <div class="pane-head"><span class="pane-title">Database</span><div class="spacer"></div>
       ${isAdmin.value && others && html`<button class="icon-btn xs" title="Choose this workspace's connections" aria-label="Choose connections" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}><${Icon} name="sliders-horizontal" /></button>`}
       ${isAdmin.value && html`<button class="icon-btn xs" title="Add a connection" aria-label="Add a connection" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" /></button>`}
       <button class="icon-btn xs" title="Reload connections" aria-label="Reload connections" onClick=${() => { loadConns(); loadWorkspaces(); }}><${Icon} name="refresh-cw" /></button>
     </div>
+    ${ready && conns.length > 0 && html`<div class="sql-find">
+      <${Icon} name="search" class="tiny dim" />
+      <input type="search" value=${sq.find.value} placeholder="Find a database or table" aria-label="Find a database or table"
+        onInput=${(e) => { sq.find.value = e.currentTarget.value; }} onKeyDown=${(e) => { if (e.key === 'Escape') sq.find.value = ''; }} />
+    </div>`}
     <div class="tree">
       ${!ready ? html`<div class="tree-empty"><${Spinner} /></div>`
+        : q && conns.length ? html`<${Found} q=${q} />`
         : conns.length ? conns.map((c) => html`<${ConnNode} key=${c.id} conn=${c} />`)
           : html`<div class="tree-empty small dim">${!isAdmin.value ? 'No connections in this workspace yet. An admin adds them.' : html`
               No connections in this workspace yet.
@@ -977,6 +1115,7 @@ function Tree() {
                 ${others && html`<button class="btn sm" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}>Choose existing</button>`}
               </div>`}</div>`}
     </div>
+    ${sq.ctx.value && html`<${ContextMenu} at=${sq.ctx.value.at} onClose=${() => { sq.ctx.value = null; }}>${sq.ctx.value.items}<//>`}
   </div>`;
 }
 
@@ -1247,6 +1386,11 @@ function Toolbar() {
   const conns = [...wsConns(), ...(conn0 && !wsConns().includes(conn0) ? [conn0] : [])];
   const conn = c && connOf(c.connId);
   const running = c && sq.runs.value.get(c.id)?.running;
+  const my = conn && (conn.driver === 'mysql' || conn.driver === 'mariadb');
+  // MySQL: its databases are the schemas of its table list; PostgreSQL: the schemas of the console's database.
+  useEffect(() => { if (conn) loadSchema(conn.id, my ? '' : c.database || ''); }, [conn?.id, c?.database]);
+  const myDatabases = my ? (sq.schemas.value.get(skey(conn.id, ''))?.data?.schemas || []).map((x) => x.name) : [];
+  const pgSchemas = conn?.driver === 'postgres' ? (sq.schemas.value.get(skey(conn.id, c.database || ''))?.data?.schemas || []).map((x) => x.name) : [];
   return html`<div class="sql-bar">
     <select class="sql-conn" aria-label="Connection" value=${c?.connId || ''} onChange=${(e) => setConsoleConn(e.currentTarget.value)}>
       ${!conn && html`<option value="">Pick a connection…</option>`}
@@ -1255,6 +1399,15 @@ function Toolbar() {
     ${multi(conn) && html`<select class="sql-conn sql-db" aria-label="Database" value=${c.database || ownDb(conn)} onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
       ${[...new Set([ownDb(conn), ...(c.database ? [c.database] : []), ...(sq.dbs.value.get(conn.id)?.list || [])])]
         .map((name) => html`<option value=${name}>${name}</option>`)}
+    </select>`}
+    ${my && html`<select class="sql-conn sql-db" aria-label="Database" title="The database unqualified table names are in (USE)" value=${c.database || conn.database || ''}
+      onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
+      ${!conn.database && html`<option value="">No database (write db.table)</option>`}
+      ${[...new Set([...(conn.database ? [conn.database] : []), ...(c.database ? [c.database] : []), ...myDatabases])].map((name) => html`<option value=${name}>${name}</option>`)}
+    </select>`}
+    ${conn?.driver === 'postgres' && pgSchemas.length > 1 && html`<select class="sql-conn sql-db" aria-label="Schema" title="The schema unqualified table names are looked up in first (search_path)"
+      value=${c.schema || 'public'} onChange=${(e) => setConsoleSchema(e.currentTarget.value)}>
+      ${[...new Set(['public', ...(c.schema ? [c.schema] : []), ...pgSchemas])].map((name) => html`<option value=${name}>${name}</option>`)}
     </select>`}
     ${running ? html`<button class="btn sm" title="Stop the running statement" onClick=${cancelRun}><${Spinner} />Cancel</button>`
       : html`<button class="btn primary sm" disabled=${!conn} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>

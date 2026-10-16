@@ -258,10 +258,12 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   // Runs a script (one or more statements); a failure answers 400 with the results of the statements before it. A script
   // with a statement that hits every row (UPDATE or DELETE without WHERE, TRUNCATE) runs only once `confirmed`: until
   // then it answers 409 with those statements and how many rows their tables have, and runs nothing.
-  app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; database?: string; confirmed?: boolean } }>('/api/db/connections/:id/query', {
+  app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; database?: string; schema?: string; confirmed?: boolean } }>('/api/db/connections/:id/query', {
     schema: { body: { type: 'object', required: ['sql'], additionalProperties: false, properties: {
       sql: { type: 'string', minLength: 1, maxLength: 1_000_000 }, limit: { type: 'integer', minimum: 1, maximum: 10_000 },
       database: DATABASE, confirmed: { type: 'boolean' },
+      // PostgreSQL: the schema unqualified names are looked up in first (the console's schema picker).
+      schema: { type: 'string', minLength: 1, maxLength: 128 },
     } } },
   }, async (req, reply) => {
     const c = find(req.user!, req.params.id);
@@ -282,6 +284,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     try {
       return { readOnly: c.readOnly, results: await runScript(onDatabase(c, req.body.database), req.body.sql, {
         readOnly: c.readOnly, limit: req.body.limit ?? PANEL_LIMIT, timeoutMs: PANEL_TIMEOUT_MS, signal: ac.signal,
+        ...(c.driver === 'postgres' && req.body.schema && { schema: req.body.schema }),
       }) };
     } catch (e) {
       const q = e instanceof QueryError ? e : null;

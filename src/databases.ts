@@ -78,6 +78,8 @@ export interface RunOpts {
   maxCell?: number;
   /** Aborting it cancels the statement running on the server (PostgreSQL, MySQL/MariaDB; SQLite runs to the end). */
   signal?: AbortSignal;
+  /** PostgreSQL: the schema an unqualified name is looked up in first (search_path), before public. */
+  schema?: string;
 }
 
 /** Calls `cancel` when `signal` aborts, until the returned function is called. */
@@ -246,6 +248,7 @@ async function pgOpen(c: DbConnection, o: RunOpts): Promise<{ client: pg.Client;
   try {
     await client.connect();
     stop = onAbort(o.signal, () => { void pgCancel(c, (client as unknown as { processID: number }).processID); });
+    if (o.schema) await client.query(`SET search_path TO ${quoteIdent('postgres', o.schema)}, public`);
   } catch (e) { await done(); throw e; }
   return { client, done };
 }
@@ -286,8 +289,12 @@ function myConnection(c: DbConnection): mysql.Connection {
 const myConnect = (conn: mysql.Connection) => new Promise<void>((res, rej) => conn.connect((e) => (e ? rej(e) : res())));
 const myQuery = (conn: mysql.Connection, sql: string) => new Promise<void>((res, rej) => conn.query(sql, (e) => (e ? rej(e) : res())));
 
-/** mysql2's column type numbers, by name (for the result header). */
-const MY_TYPES = Object.fromEntries(Object.entries((mysql as any).Types ?? {}).map(([k, v]) => [v as number, k.toLowerCase()]));
+/** mysql2's column type numbers, by their SQL name where the protocol's differs (for the result header). */
+const MY_SQL_NAMES: Record<string, string> = {
+  TINY: 'tinyint', SHORT: 'smallint', INT24: 'mediumint', LONG: 'int', LONGLONG: 'bigint', NEWDECIMAL: 'decimal',
+  VAR_STRING: 'varchar', VARCHAR: 'varchar', STRING: 'char', TINY_BLOB: 'tinyblob', MEDIUM_BLOB: 'mediumblob', LONG_BLOB: 'longblob',
+};
+const MY_TYPES = Object.fromEntries(Object.entries((mysql as any).Types ?? {}).map(([k, v]) => [v as number, MY_SQL_NAMES[k] ?? k.toLowerCase()]));
 
 /**
  * One statement; stops reading after `limit + 1` rows. Rows past the limit are not waited for: the connection is
@@ -427,12 +434,13 @@ export async function runScript(c: DbConnection, script: string, o: RunOpts): Pr
 export const multiDatabase = (c: DbConnection) => c.driver === 'postgres' && c.allDatabases === true;
 
 /**
- * The connection pointed at database `db` (none, or its own: the connection as it is). Refused unless the connection
- * opens every database.
+ * The connection pointed at database `db` (none, or its own: the connection as it is). PostgreSQL: only where the
+ * connection opens every database. MySQL/MariaDB: any (it is the default database a session starts in; the user's
+ * grants say which it may use, as they do for `db.table` anyway).
  */
 export function onDatabase(c: DbConnection, db?: string): DbConnection {
   if (!db || db === c.database || (multiDatabase(c) && !c.database && db === 'postgres')) return c;
-  if (!multiDatabase(c)) throw new Error(`${c.id} opens only its own database`);
+  if (!multiDatabase(c) && !isMy(c.driver)) throw new Error(`${c.id} opens only its own database`);
   return { ...c, database: db };
 }
 

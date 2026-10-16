@@ -152,6 +152,27 @@ export function Toasts() {
   </div>`;
 }
 
+/** A menu at the pointer (a right click, or a row's ⋯), kept on screen; a click outside, Esc or a click on an item closes it. */
+export function ContextMenu({ at, onClose, children }) {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > innerHeight - 8) el.style.top = `${Math.max(8, innerHeight - r.height - 8)}px`;
+    if (r.right > innerWidth - 8) el.style.left = `${Math.max(8, innerWidth - r.width - 8)}px`;
+  }, [at]);
+  useEffect(() => {
+    const away = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
+    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('pointerdown', away, true);
+    document.addEventListener('keydown', esc);
+    addEventListener('blur', onClose);
+    return () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esc); removeEventListener('blur', onClose); };
+  }, []);
+  return html`<div class="menu-pop ctx-menu" role="menu" ref=${ref} style=${{ left: `${at.x}px`, top: `${at.y}px` }} onClick=${onClose}>${children}</div>`;
+}
+
 /** A drag handle between two panes; `onMove(dx, dy)` gets the distance from where the drag started. */
 export function Resizer({ dir, onMove, onEnd }) {
   const down = (e) => {
