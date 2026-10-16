@@ -11,10 +11,12 @@ export const projects = signal([]);
 export const convs = signal(new Map());
 /**
  * What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' },
- * or, in a tab of its own, { view: 'code', id }: the code editor on a chat's folder.
+ * or, in a tab of its own, { view: 'code', id }: the code editor on a chat's folder, or { view: 'sql' }: the SQL editor.
  */
 export const route = signal({ view: 'home' });
 export const approvals = signal([]);
+/** Database writes agents asked for on "write with approval" connections of the SQL editor (admins). */
+export const dbApprovals = signal([]);
 
 const wide = () => innerWidth > 1280;
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
@@ -129,6 +131,11 @@ export function openCodeEditor(id) {
   window.open(`/code#c=${encodeURIComponent(id)}`, `dalang-code-${id}`);
 }
 
+/** The SQL editor in its own browser tab: the panel's database connections, not tied to a chat. */
+export function openSqlEditor() {
+  window.open('/sql', 'dalang-sql');
+}
+
 /** `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project. */
 export const newChat = (project, worktree = false) => guarded(async () => {
   const c = await api(`/api/projects/${project.id}/conversations`, { method: 'POST', body: worktree ? { worktree } : {} });
@@ -138,7 +145,10 @@ export const newChat = (project, worktree = false) => guarded(async () => {
 
 export async function refreshApprovals() {
   if (!isAdmin.value) return;
-  try { approvals.value = await api('/api/approvals'); } catch { /* retried on the next tick */ }
+  try {
+    const [chats, dbs] = await Promise.all([api('/api/approvals'), api('/api/db/approvals')]);
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; });
+  } catch { /* retried on the next tick */ }
 }
 
 export function openSettings(section = 'appearance') {

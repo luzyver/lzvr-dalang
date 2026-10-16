@@ -44,11 +44,18 @@ function CodeTab({ id }) {
   return mod ? html`<${mod.CodeEditor} id=${id} />` : html`<div class="boot"></div>`;
 }
 
+/** The SQL editor fills its own tab too, with the same CodeMirror bundle. */
+function SqlTab() {
+  const [mod, setMod] = useState(null);
+  useEffect(() => { import('./js/sql-editor.js').then(setMod, (e) => toast(`the SQL editor did not load: ${e.message}`, 'err')); }, []);
+  return mod ? html`<${mod.SqlEditor} />` : html`<div class="boot"></div>`;
+}
+
 function App() {
   const s = session.value;
   const r = route.value;
   const main = s !== 'in' ? (s === 'out' ? html`<${Login} />` : html`<div class="boot"></div>`)
-    : r.view === 'code' ? html`<${CodeTab} id=${r.id} />` : html`<${Shell} />`;
+    : r.view === 'code' ? html`<${CodeTab} id=${r.id} />` : r.view === 'sql' ? html`<${SqlTab} />` : html`<${Shell} />`;
   return html`${main}<${Toasts} /><${ConfirmDialog} />`;
 }
 
@@ -57,7 +64,7 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   // A tapped notification opens its chat in the panel that is already open.
   navigator.serviceWorker.addEventListener('message', (m) => {
-    if (m.data && m.data.convId && session.value === 'in' && route.value.view !== 'code') openChat(m.data.convId);
+    if (m.data && m.data.convId && session.value === 'in' && route.value.view !== 'code' && route.value.view !== 'sql') openChat(m.data.convId);
   });
 }
 render(html`<${App} />`, document.getElementById('root'));

@@ -1,4 +1,4 @@
-// What the code editor (public/js/editor/*) imports from CodeMirror and xterm.js. scripts/vendor.mjs bundles it into
+// What the code and SQL editors (public/js/code-*.js, sql-*.js) import from CodeMirror and xterm.js. scripts/vendor.mjs bundles it into
 // public/vendor/code/editor.js; each language of @codemirror/language-data becomes its own chunk, loaded when a file
 // of that language is opened.
 export { Compartment, EditorSelection, EditorState } from '@codemirror/state';
@@ -22,5 +22,7 @@ export {
 } from '@codemirror/language';
 export { tags } from '@lezer/highlight';
 export { languages } from '@codemirror/language-data';
+// The SQL editor's dialects, with completion from the connection's tables and columns.
+export { MariaSQL, MySQL, PostgreSQL, sql, SQLite, StandardSQL } from '@codemirror/lang-sql';
 export { Terminal } from '@xterm/xterm';
 export { FitAddon } from '@xterm/addon-fit';

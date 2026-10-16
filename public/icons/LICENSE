@@ -41,3 +41,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+db-postgresql.svg, db-mysql.svg, db-mariadb.svg, db-sqlite.svg, db-mongodb.svg, db-redis.svg: from Simple Icons (https://simpleicons.org),
+CC0-1.0. The logos are trademarks of their owners and are used here only to show which database a connection is.

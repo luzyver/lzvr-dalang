@@ -7,7 +7,7 @@ import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api, downloadFile } from './api.js';
-import { confirmDialog, Empty, Icon, Logo, Modal, Seg, Spinner } from './ui.js';
+import { confirmDialog, Empty, Icon, Logo, Modal, Resizer, Seg, Spinner } from './ui.js';
 import { guarded, toast } from './store.js';
 import { theme } from './theme.js';
 import { copyText } from './code.js';
@@ -463,28 +463,6 @@ function StatusBar() {
       <span class="ide-stat">${doc.langName}</span>
       <span class=${cx('ide-stat', doc.dirty && 'accent')}>${doc.saving ? 'Saving…' : doc.dirty ? 'Unsaved' : 'Saved'}</span>`}
   </footer>`;
-}
-
-/** A drag handle between two panes; `onMove(dx, dy)` gets the distance from where the drag started. */
-function Resizer({ dir, onMove, onEnd }) {
-  const down = (e) => {
-    e.preventDefault();
-    const x0 = e.clientX;
-    const y0 = e.clientY;
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
-    document.body.classList.add(dir === 'v' ? 'resizing-v' : 'resizing-h');
-    const move = (m) => onMove(m.clientX - x0, m.clientY - y0);
-    const up = () => {
-      el.removeEventListener('pointermove', move);
-      el.removeEventListener('pointerup', up);
-      document.body.classList.remove('resizing-v', 'resizing-h');
-      onEnd?.();
-    };
-    el.addEventListener('pointermove', move);
-    el.addEventListener('pointerup', up);
-  };
-  return html`<div class=${cx('ide-resize', dir)} role="separator" aria-orientation=${dir === 'v' ? 'vertical' : 'horizontal'} onPointerDown=${down}></div>`;
 }
 
 export function CodeEditor({ id }) {

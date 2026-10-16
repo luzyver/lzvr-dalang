@@ -4,6 +4,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUp, startOfDay } from './clickup.js';
 import type { Config } from './config.js';
+import { createDbApproval, logDbQuery, readDbApprovals } from './database-routes.js';
+import {
+  agentRefusal, describeUnsafe, findUnsafe, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
+} from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
@@ -171,6 +175,9 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
   const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
   if (cu) clickupTools(server, cu);
+  // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
+  const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
+  if (dbs.length) databaseTools(server, store, push, dbs, { who: onBehalf, conv: source });
   return server;
 }
 
@@ -210,6 +217,126 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
     from: a.from, to: a.to, workspaceIds: a.workspace_ids, channelIds: a.channel_ids, mineOnly: a.mine_only,
     includeReplies: a.include_replies, limit: a.limit,
   })));
+}
+
+const AGENT_DB_TIMEOUT_MS = 30_000;
+
+/**
+ * The SQL editor's connections that are open to agents (in /sql: "Agent access"). A read-only one runs every statement
+ * in a read-only transaction or session, enforced by the database; on an 'approve' one a script the database refuses
+ * that way waits for an admin instead. Statements that reach past the tables are refused for agents in every mode.
+ * Each query goes into the connection's log.
+ */
+function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
+  const get = (id: string) => dbs.find((c) => c.id === id);
+  const readOnly = (c: DbConnection) => c.readOnly || c.agent !== 'read-write';
+  const mode = (c: DbConnection) => (c.readOnly || c.agent === 'read-only' ? 'read-only' : c.agent === 'approve' ? 'read, write after approval' : 'read-write');
+  const none = (id: string) => fail(`no such connection: ${id} (see db_list_connections)`);
+  const DATABASE = z.string().optional()
+    .describe('another database on the same server, for a connection that lists several (default: its own)');
+
+  server.registerTool('db_list_connections', {
+    description: 'List the database connections you may query: id, engine, its database (or, for a PostgreSQL connection '
+      + 'that opens several, every database you may pass as database) and whether you may only read.',
+  }, async () => text(await Promise.all(dbs.map(async (c) => ({
+    id: c.id, label: c.label, engine: c.driver, database: c.driver === 'sqlite' ? c.file : c.database || (multiDatabase(c) ? 'postgres' : ''),
+    ...(multiDatabase(c) && { databases: await listDatabases(c).catch((e: Error) => `could not list them: ${e.message}`) }),
+    access: mode(c),
+  })))));
+
+  server.registerTool('db_schema', {
+    description: 'Tables and views of a connection with their columns (name, type, nullable, primary key). Narrow it with schema or table on a big database.',
+    inputSchema: {
+      connection: z.string(), database: DATABASE, schema: z.string().optional().describe('only this schema'),
+      table: z.string().optional().describe('only tables whose name contains this'),
+    },
+  }, async ({ connection, database, schema, table }) => {
+    const c = get(connection);
+    if (!c) return none(connection);
+    try {
+      const target = onDatabase(c, database);
+      const info = await readSchema(target, AGENT_DB_TIMEOUT_MS, schema);
+      let schemas = info.schemas.filter((s) => !schema || s.name === schema)
+        .map((s) => ({ ...s, tables: s.tables.filter((t) => !table || t.name.toLowerCase().includes(table.toLowerCase())) }))
+        .filter((s) => s.tables.length);
+      // A big database comes without columns: read them for the few schemas a table filter narrowed it to.
+      if (table && schemas.length <= 5 && schemas.some((s) => !s.loaded)) {
+        schemas = await Promise.all(schemas.map(async (s) => (s.loaded ? s : {
+          ...s, tables: (await readSchema(target, AGENT_DB_TIMEOUT_MS, s.name)).schemas[0]?.tables
+            .filter((t) => t.name.toLowerCase().includes(table.toLowerCase())) ?? [],
+        })));
+      }
+      const count = schemas.reduce((n, s) => n + s.tables.length, 0);
+      // A large answer lists only names; asking again with a schema or table gives the columns.
+      if (count > 150) return text({ note: `${count} tables: names only. Pass schema or table for their columns.`, schemas: schemas.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })) });
+      return text({ schemas: schemas.map((s) => ({ name: s.name, tables: s.tables.map((t) => ({
+        name: t.name, kind: t.kind, columns: t.columns.map((col) => `${col.name} ${col.type}${col.pk ? ' PK' : ''}${col.nullable ? '' : ' NOT NULL'}`),
+      })) })) });
+    } catch (e) { return fail((e as Error).message); }
+  });
+
+  server.registerTool('db_query', {
+    description: 'Run SQL on a connection: one statement or several separated by ;. MongoDB connections take mongosh-style '
+      + 'commands instead (db.users.find({ age: { $gt: 30 } }).sort({ name: 1 }), aggregate, countDocuments, distinct, insertOne, '
+      + 'updateMany, ...; pass database), Redis ones Redis commands, one per line (HGETALL user:1, SCAN 0 MATCH user:*; pass database '
+      + 'as db0..db15). Returns the columns and rows of each statement '
+      + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database. On a '
+      + '"write after approval" one, a script that writes is held for an admin instead (status pending_approval): the outcome '
+      + 'comes to this chat as a message, or ask db_approval.',
+    inputSchema: {
+      connection: z.string(), database: DATABASE, sql: z.string().min(1).max(100_000),
+      limit: z.number().int().min(1).max(1000).optional().describe('max rows per statement, default 100'),
+    },
+  }, async ({ connection, database, sql, limit }) => {
+    const c = get(connection);
+    if (!c) return none(connection);
+    const t0 = Date.now();
+    const log = (ok: boolean, rows: number, error?: string) =>
+      logDbQuery(store, c.id, {
+        at: t0, who: by.who, conv: by.conv, ...(database && { database }), sql: sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }),
+      });
+    const refused = agentRefusal(sql, c.driver, readOnly(c));
+    if (refused) { log(false, 0, refused); return fail(refused); }
+    // Writing freely, an agent may not hit every row of a table by leaving out the WHERE (with approval, the card says it).
+    const unsafe = c.agent === 'read-write' && !c.readOnly ? findUnsafe(sql, c.driver) : [];
+    if (unsafe.length) {
+      const msg = `refused: ${unsafe.map(describeUnsafe).join('; ')} would change every row. Add a WHERE (WHERE true if every row is really meant), `
+        + 'or ask a human to run it in the SQL editor.';
+      log(false, 0, msg);
+      return fail(msg);
+    }
+    try {
+      const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
+      log(true, results.reduce((n, r) => n + r.rows.length, 0));
+      return text({ results: results.map((r) => ({ columns: r.columns.map((col) => col.name), rows: r.rows, affected: r.affected, truncated: r.truncated })) });
+    } catch (e) {
+      // A write on a "write after approval" connection: the whole script waits for an admin (it ran read-only, so
+      // nothing of it was kept).
+      if (e instanceof QueryError && e.readOnlyRefusal && c.agent === 'approve' && !c.readOnly) {
+        const flagged = findUnsafe(sql, c.driver).map(describeUnsafe);
+        const a = createDbApproval(store, { conn: c.id, ...(database && { database }), sql, who: by.who, conv: by.conv, ...(flagged.length && { unsafe: flagged }) });
+        log(false, 0, `held for approval #${a.id}`);
+        void push.notify({ title: 'Database write needs approval', body: `${c.label}: ${sql.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
+        return text({
+          status: 'pending_approval', approval_id: a.id,
+          note: 'This script writes, so it waits for an admin. Nothing of it ran. The outcome will arrive in this chat as a message; do not send it again.',
+        });
+      }
+      const done = e instanceof QueryError ? e.results.length : 0;
+      log(false, 0, (e as Error).message);
+      return fail(`${done ? `statement ${done + 1} failed (the ${done} before it ran): ` : ''}${(e as Error).message}`);
+    }
+  });
+
+  if (!dbs.some((c) => c.agent === 'approve')) return;
+  server.registerTool('db_approval', {
+    description: 'Whether a database write held for approval (db_query answered pending_approval) was approved, rejected or failed, and its outcome.',
+    inputSchema: { approval_id: z.number().int() },
+  }, async ({ approval_id }) => {
+    const a = readDbApprovals(store).find((x) => x.id === approval_id && get(x.conn));
+    if (!a) return fail(`no such approval: ${approval_id}`);
+    return text({ id: a.id, connection: a.conn, database: a.database, status: a.status, outcome: a.outcome ?? null, decided_by: a.decidedBy ?? null });
+  });
 }
 
 /** Stateless Streamable HTTP MCP endpoint: every POST gets its own server+transport and answers with plain JSON. */

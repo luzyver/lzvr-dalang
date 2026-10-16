@@ -1,4 +1,4 @@
-// Shared UI primitives: icons, dialogs, menus, segmented controls, switches, toasts and empty states.
+// Shared UI primitives: icons, dialogs, menus, segmented controls, switches, toasts, empty states and pane resizers.
 import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
@@ -150,4 +150,47 @@ export function Toasts() {
       <button class="icon-btn sm" aria-label="Dismiss" onClick=${() => dismissToast(t.id)}><${Icon} name="x" /></button>
     </div>`)}
   </div>`;
+}
+
+/** A menu at the pointer (a right click, or a row's ⋯), kept on screen; a click outside, Esc or a click on an item closes it. */
+export function ContextMenu({ at, onClose, children }) {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > innerHeight - 8) el.style.top = `${Math.max(8, innerHeight - r.height - 8)}px`;
+    if (r.right > innerWidth - 8) el.style.left = `${Math.max(8, innerWidth - r.width - 8)}px`;
+  }, [at]);
+  useEffect(() => {
+    const away = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
+    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('pointerdown', away, true);
+    document.addEventListener('keydown', esc);
+    addEventListener('blur', onClose);
+    return () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esc); removeEventListener('blur', onClose); };
+  }, []);
+  return html`<div class="menu-pop ctx-menu" role="menu" ref=${ref} style=${{ left: `${at.x}px`, top: `${at.y}px` }} onClick=${onClose}>${children}</div>`;
+}
+
+/** A drag handle between two panes; `onMove(dx, dy)` gets the distance from where the drag started. */
+export function Resizer({ dir, onMove, onEnd }) {
+  const down = (e) => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    document.body.classList.add(dir === 'v' ? 'resizing-v' : 'resizing-h');
+    const move = (m) => onMove(m.clientX - x0, m.clientY - y0);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing-v', 'resizing-h');
+      onEnd?.();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  };
+  return html`<div class=${cx('ide-resize', dir)} role="separator" aria-orientation=${dir === 'v' ? 'vertical' : 'horizontal'} onPointerDown=${down}></div>`;
 }

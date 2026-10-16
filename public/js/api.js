@@ -12,17 +12,19 @@ export const currentToken = () => tokenStore.get() || memoryToken;
 
 export class Unauthorized extends Error {}
 
-export async function api(path, { method = 'GET', body, form } = {}) {
+/** `signal`: aborting it stops waiting (fetch rejects with an AbortError) and closes the request. */
+export async function api(path, { method = 'GET', body, form, signal } = {}) {
   const headers = { authorization: `Bearer ${currentToken()}` };
   let payload;
   if (form) payload = form;
   else if (body !== undefined) { headers['content-type'] = 'application/json'; payload = JSON.stringify(body); }
-  const res = await fetch(path, { method, headers, body: payload });
+  const res = await fetch(path, { method, headers, body: payload, signal });
   if (res.status === 401) { handleUnauthorized(); throw new Unauthorized(); }
   if (!res.ok) {
     let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-    throw Object.assign(new Error(msg), { status: res.status });
+    let detail;
+    try { detail = await res.json(); msg = detail.error || msg; } catch { /* not json */ }
+    throw Object.assign(new Error(msg), { status: res.status, detail });
   }
   return res.status === 204 ? null : res.json();
 }

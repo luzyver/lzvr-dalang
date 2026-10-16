@@ -32,9 +32,11 @@ export async function startSession() {
   // Both pages name the chat with #c=<id>; under /code it opens the code editor, from its first frame (never the chat view in between).
   const fromHash = /#c=([\w-]+)/.exec(location.hash);
   const code = fromHash && location.pathname.startsWith('/code');
+  const sql = location.pathname.startsWith('/sql');
   batch(() => {
     me.value = user;
     if (code) route.value = { view: 'code', id: fromHash[1] };
+    else if (sql) route.value = { view: 'sql' };
     session.value = 'in';
   });
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, 'err'); return; }
@@ -47,7 +49,7 @@ export async function startSession() {
   }
   clearInterval(timer);
   timer = setInterval(refreshApprovals, 15000);
-  if (fromHash && !code) openChat(fromHash[1]);
+  if (fromHash && !code && !sql) openChat(fromHash[1]);
 }
 
 /**

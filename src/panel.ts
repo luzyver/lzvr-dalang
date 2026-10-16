@@ -13,14 +13,16 @@ function folder(sub: string, ext: string, type: string): Record<string, [file: s
 
 const CSP = "default-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'";
 /**
- * The code editor's page is the same shell under its own path, since its CodeMirror and xterm.js write their styles
- * into <style> elements: there inline styles are allowed (inline scripts never), and the rest of the panel stays strict.
+ * The code editor's and the SQL editor's pages are the same shell under their own paths, since their CodeMirror and
+ * xterm.js write their styles into <style> elements: there inline styles are allowed (inline scripts never), and the
+ * rest of the panel stays strict.
  */
 const CODE_CSP = CSP.replace("default-src 'self';", "default-src 'self'; style-src 'self' 'unsafe-inline';");
 
 const FILES: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/code': ['index.html', 'text/html; charset=utf-8'],
+  '/sql': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   ...folder('js', '.js', 'text/javascript; charset=utf-8'),
   ...folder('vendor', '.js', 'text/javascript; charset=utf-8'),
@@ -47,7 +49,7 @@ export function panelRoutes(app: FastifyInstance): void {
         .header('content-type', type)
         .header('cache-control', 'no-cache')
         .header('etag', etag)
-        .header('content-security-policy', path === '/code' ? CODE_CSP : CSP)
+        .header('content-security-policy', path === '/code' || path === '/sql' ? CODE_CSP : CSP)
         .header('x-frame-options', 'DENY')
         .header('x-content-type-options', 'nosniff')
         .header('referrer-policy', 'no-referrer');
