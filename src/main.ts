@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { CLAUDE_SHARED_DIRS, linkSessions, migrateCodexAccounts } from './accounts.js';
+import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { Dispatcher } from './dispatcher.js';
@@ -19,8 +19,6 @@ const dispatcher = new Dispatcher(store, {
   autoTitle: cfg.autoTitle,
   onTurnEnd: (e) => push.notifyTurn(e),
 });
-
-migrateCodexAccounts(cfg.stateDir, { get: (k) => store.getKv(k), set: (k, v) => store.setKv(k, v) });
 
 // Accounts added from the panel in earlier runs come after the configured ones.
 const logins = new Logins({

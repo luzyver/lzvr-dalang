@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Accounts, isLimit, linkSessions, migrateCodexAccounts, retryAfterMs } from '../src/accounts.js';
+import { Accounts, isLimit, linkSessions, retryAfterMs } from '../src/accounts.js';
 
 describe('Accounts', () => {
   it('picks the first unblocked account, in configured order', () => {
@@ -120,21 +120,5 @@ describe('Accounts on/off', () => {
     expect(a.pick()).toBeNull();
     a.setEnabled('/x/a', true);
     expect(a.pick()).toBe('/x/a');
-  });
-});
-
-describe('migrateCodexAccounts', () => {
-  it('moves the old accounts folder and rewrites the saved paths once', () => {
-    const state = mkdtempSync(join(tmpdir(), 'lzvr-mig-'));
-    mkdirSync(join(state, 'accounts', 'a'), { recursive: true });
-    writeFileSync(join(state, 'accounts', 'a', 'auth.json'), '{}');
-    const kv = new Map([['extra_homes', JSON.stringify([join(state, 'accounts', 'a')])]]);
-    const store = { get: (k: string) => kv.get(k) ?? null, set: (k: string, v: string) => void kv.set(k, v) };
-    migrateCodexAccounts(state, store);
-    expect(existsSync(join(state, 'codex-accounts', 'a', 'auth.json'))).toBe(true);
-    expect(existsSync(join(state, 'accounts'))).toBe(false);
-    expect(JSON.parse(kv.get('extra_homes')!)).toEqual([join(state, 'codex-accounts', 'a')]);
-    migrateCodexAccounts(state, store); // second start: nothing to do
-    expect(JSON.parse(kv.get('extra_homes')!)).toEqual([join(state, 'codex-accounts', 'a')]);
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, renameSync, symlinkSync, unlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, symlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 // The exact error text Codex prints at a usage limit is undocumented; this is a best guess.
@@ -109,22 +109,4 @@ export function linkSessions(homes: string[], dirs: string[] = SHARED_DIRS): str
     }
   }
   return [...skipped];
-}
-
-/**
- * Older versions kept Codex accounts in `<stateDir>/accounts`; they now live in `<stateDir>/codex-accounts`, next to
- * `claude-accounts`. Moves the folder once and fixes the saved paths and the shared-folder links that point into it.
- */
-export function migrateCodexAccounts(stateDir: string, kv: { get(key: string): string | null; set(key: string, value: string): void }): void {
-  const from = join(stateDir, 'accounts');
-  const to = join(stateDir, 'codex-accounts');
-  if (!existsSync(from) || existsSync(to)) return;
-  renameSync(from, to);
-  const homes = (JSON.parse(kv.get('extra_homes') ?? '[]') as string[]).map((h) => (h.startsWith(from) ? to + h.slice(from.length) : h));
-  kv.set('extra_homes', JSON.stringify(homes));
-  for (const h of homes) { // junctions still point at the old location; linkSessions recreates them
-    for (const d of SHARED_DIRS) {
-      try { if (lstatSync(join(h, d)).isSymbolicLink()) unlinkSync(join(h, d)); } catch { /* not there */ }
-    }
-  }
 }
