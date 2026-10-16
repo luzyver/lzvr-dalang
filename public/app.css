@@ -1004,6 +1004,16 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .sql-limit select { min-height: 26px !important; height: 26px; padding: 0 6px !important; font-size: 12px; }
 .sql-results { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .term-tab.err { color: var(--err); }
+.sql-results .term-tab { padding-right: 3px; }
+/* Results full screen: only the results are left. */
+.ide.sql.term-max { grid-template-rows: minmax(0, 1fr); }
+.ide.sql.term-max .ide-head, .ide.sql.term-max .ide-files, .ide.sql.term-max .ide-resize, .ide.sql.term-max .ide-status, .ide.sql.term-max .ide-nav { display: none !important; }
+.term-tab-close { opacity: 0; margin-left: 1px; }
+.term-tab:hover .term-tab-close, .term-tab.active .term-tab-close { opacity: 1; }
+@media (hover: none) { .term-tab-close { opacity: 1; } }
+.sql-output { display: grid; gap: 2px; padding: 8px 12px; overflow: auto; font-size: var(--fs-sm); }
+.sql-output-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sql-output-item code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .sql-grid-wrap { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .sql-grid { border-collapse: separate; border-spacing: 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
 .sql-grid th, .sql-grid td { max-width: 420px; padding: 3px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
@@ -1043,7 +1053,11 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .btn.on { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent-line); }
 .sql-preview-pane { display: grid; gap: 4px; padding: 6px 10px 8px; border-bottom: 1px solid var(--line); flex: none; max-height: 34%; overflow: auto; background: var(--bg-side); }
 .sql-preview { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: var(--surface-3); border-radius: var(--r-md); max-height: 50vh; overflow: auto; }
-.sql-foot > .sql-ran { display: block; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
+/* The query that read the rows, whole, with its copy button right after it: beside the rest of the footer while it
+   fits there, wrapped in the space left (on a line of its own when that is too narrow); a very long one scrolls. */
+.sql-foot > .sql-ran { display: block; flex: 1 1 260px; min-width: 0; max-height: 8em; overflow: auto; color: var(--text-faint); }
+.sql-ran > .mono { white-space: pre-wrap; word-break: break-word; }
+.sql-ran > .icon-btn { display: inline-grid; vertical-align: middle; margin: -2px 0 0 4px; }
 .sql-ask-context { margin: 6px 0 0; padding: 10px; max-height: 240px; overflow: auto; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; background: var(--surface-3); border-radius: var(--r-md); }
 .sql-history-search { flex: 1 1 200px; }
 .sql-history-item .btn { height: 24px; }

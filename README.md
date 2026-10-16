@@ -558,7 +558,11 @@ connections belong to the panel.
   the first error (the results before it stay). A statement returns at most the row limit (100 to 10 000; the rest is
   never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
   `KILL QUERY`; SQLite runs to the end). `Shift Alt F` formats the selection or the console (sql-formatter). **History**
-  lists the last 300 runs of this browser, to insert or run again. Results copy as TSV or download as CSV; consoles
+  lists the last 300 runs of this browser, to insert or run again. Results stay in tabs below the console: a query
+  on another table adds a tab, one on the same table (or the same query again) refreshes its tab, and statements
+  that return no rows share an **Output** tab (at most 12 tabs; the oldest go). The maximize button (or
+  `Ctrl Shift '`) shows only the results, full screen (the browser's own full screen where it allows it); `Esc`
+  brings the rest back. Results copy as TSV or download as CSV; consoles
   are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
   in one go.
 - **Every row at once**: an `UPDATE` or `DELETE` without a `WHERE` of its own (one in a string, a comment or a

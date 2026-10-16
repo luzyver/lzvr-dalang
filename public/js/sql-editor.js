@@ -36,8 +36,10 @@ const LIMITS = [100, 500, 1000, 5000, 10000];
 
 /**
  * A console: { id, connId, database ('' = the connection's own), title, text }. Its editor state lives in `states` (by id), its last run in `runs`:
- * { running, script, results, metas (per result: the table it shows, see tableMeta), error, index, readOnly, at,
- * shown (which result's tab; past the last one: the error's) }.
+ * { running, script, readOnly, tabs, active, error }. `tabs` keep the results of earlier runs: one per table (or per
+ * query that reads no table of its own), { key, result, meta (the table it shows, see tableMeta), at }; running a query
+ * on the same table refreshes its tab, one on another table adds a tab. Statements that return no rows share the
+ * 'out' tab ({ key: 'out', output: [{ sql, text, ms }] }); `error` ({ message, index, done }) has the 'err' tab.
  */
 const sq = {
   conns: signal(null),
@@ -63,6 +65,8 @@ const sq = {
   ask: signal(null),
   /** a script held because it would change every row: { list (from the server), conn, go() } */
   unsafe: signal(null),
+  /** the results fill the page (the console hides) */
+  resMax: signal(false),
 };
 /** console id -> the AbortController of its running query */
 const ctrls = new Map();
@@ -356,8 +360,7 @@ async function run(all, script, confirmed = false) {
     const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(confirmed && { confirmed }) } });
     // A table's rows need its primary key: the table list must be there to tell.
     await loadSchema(conn.id, db);
-    const metas = r.results.map((x) => tableMeta(conn, db, x));
-    setRun(c.id, { running: false, results: r.results, metas, error: null, readOnly: r.readOnly, shown: r.results.length - 1 });
+    setRun(c.id, { running: false, readOnly: r.readOnly, error: null, ...withResults(sq.runs.value.get(c.id), conn, db, r.results) });
     note(true, r.results.reduce((n, x) => n + x.rows.length, 0));
     if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, db, true);
   } catch (e) {
@@ -367,12 +370,50 @@ async function run(all, script, confirmed = false) {
       sq.unsafe.value = { list: e.detail.unsafe, conn: conn.label, go: () => { activate(c.id); run(false, sql, true); } };
       return;
     }
-    // A failed statement still shows what ran before it.
+    // A failed statement still shows what ran before it, in tabs of their own.
     const results = e.detail?.results || [];
-    const error = e.name === 'AbortError' ? 'Cancelled. The database was asked to stop the statement.' : e.message;
-    setRun(c.id, { running: false, results, metas: [], error, index: e.detail?.index ?? results.length, shown: results.length });
+    const message = e.name === 'AbortError' ? 'Cancelled. The database was asked to stop the statement.' : e.message;
+    const { tabs } = withResults(sq.runs.value.get(c.id), conn, db, results);
+    setRun(c.id, { running: false, tabs, active: 'err', error: { message, index: e.detail?.index ?? results.length, done: results.length } });
     note(false, 0);
   } finally { if (ctrls.get(c.id) === ac) ctrls.delete(c.id); }
+}
+
+const MAX_TABS = 12;
+const squash = (sql) => sql.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * The run's tabs with `results` put in: a table's rows (or a query's) replace the tab that showed the same table (or
+ * query), others go on the end; statements that return no rows fill the 'out' tab. The newest becomes the active one.
+ */
+function withResults(cur, conn, db, results) {
+  const tabs = [...(cur?.tabs || [])].filter((t) => t.key !== 'out' || !results.some((x) => !x.columns.length));
+  const out = [];
+  let active = cur?.active && cur.active !== 'err' ? cur.active : null;
+  const at = Date.now();
+  for (const result of results) {
+    if (!result.columns.length) { out.push({ sql: result.sql, text: summary(result), ms: result.ms }); continue; }
+    const meta = tableMeta(conn, db, result);
+    const key = meta ? `t:${db}:${meta.schema}.${meta.table}` : `q:${squash(result.sql)}`;
+    const tab = { key, result, meta, at };
+    const i = tabs.findIndex((t) => t.key === key);
+    if (i >= 0) tabs[i] = tab; else tabs.push(tab);
+    active = key;
+  }
+  if (out.length) { tabs.push({ key: 'out', output: out, at }); if (!active || results.every((x) => !x.columns.length)) active = 'out'; }
+  // The oldest go first when there are too many (never the one just shown).
+  while (tabs.length > MAX_TABS) tabs.splice(tabs.findIndex((t) => t.key !== active), 1);
+  return { tabs, active };
+}
+
+function closeTab(c, key) {
+  const cur = sq.runs.value.get(c.id);
+  if (!cur) return;
+  if (key === 'err') { setRun(c.id, { error: null, active: cur.tabs.at(-1)?.key ?? null }); return; }
+  const i = cur.tabs.findIndex((t) => t.key === key);
+  const tabs = cur.tabs.filter((t) => t.key !== key);
+  const active = cur.active !== key ? cur.active : (tabs[Math.min(i, tabs.length - 1)]?.key ?? (cur.error ? 'err' : null));
+  setRun(c.id, { tabs, active });
 }
 
 /** Stops the active console's query: the request closes and the server cancels the statement. */
@@ -382,7 +423,7 @@ function cancelRun() {
 }
 
 /** Reads a table result again with another filter or sort order (from the grid). */
-async function requery(c, idx, meta, { where, order }) {
+async function requery(c, key, meta, { where, order }) {
   const conn = connOf(c.connId);
   if (!conn) return;
   const ref = conn.driver === 'sqlite' ? qi(conn, meta.table) : `${qi(conn, meta.schema)}.${qi(conn, meta.table)}`;
@@ -390,13 +431,10 @@ async function requery(c, idx, meta, { where, order }) {
   try {
     const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', body: { sql, limit: sq.limit.value, ...(c.database && { database: c.database }) } });
     const cur = sq.runs.value.get(c.id);
-    const results = cur.results.map((x, i) => (i === idx ? r.results[0] : x));
-    const metas = cur.metas.map((x, i) => (i === idx ? { ...meta, where, order } : x));
-    setRun(c.id, { results, metas, at: Date.now() });
+    setRun(c.id, { tabs: cur.tabs.map((t) => (t.key === key ? { ...t, result: r.results[0], meta: { ...meta, where, order }, at: Date.now() } : t)) });
   } catch (e) { toast(e.message, 'err'); }
 }
 
-/** Saves the grid's edits to its table, then reads the table again. True when saved. */
 /** The statements the grid's edits make, as the server would run them (values written in), without running them. */
 async function previewEdits(c, meta, edits) {
   const conn = connOf(c.connId);
@@ -404,12 +442,13 @@ async function previewEdits(c, meta, edits) {
   return r.statements;
 }
 
-async function submitEdits(c, idx, meta, edits) {
+/** Saves the grid's edits to its table, then reads the table again. True when saved. */
+async function submitEdits(c, key, meta, edits) {
   const conn = connOf(c.connId);
   try {
     const r = await api(`/api/db/connections/${conn.id}/edit`, { method: 'POST', body: { ...(c.database && { database: c.database }), schema: meta.schema, table: meta.table, edits } });
     toast(`${r.changed} row${r.changed === 1 ? '' : 's'} saved`);
-    await requery(c, idx, meta, meta);
+    await requery(c, key, meta, meta);
     return true;
   } catch (e) { toast(e.message, 'err'); return false; }
 }
@@ -434,15 +473,15 @@ function askAboutRun() {
   const conn = c && connOf(c.connId);
   if (!conn) return;
   const r = sq.runs.value.get(c.id);
-  const results = r?.results || [];
-  const onError = !!r?.error && !(r.shown < results.length);
-  const shown = onError ? null : results[Math.min(r?.shown ?? 0, results.length - 1)];
-  const sql = onError || !shown ? r?.script ?? currentStatement(view.state, conn.driver) : shown.sql;
+  const onError = r?.active === 'err' && !!r.error;
+  const tab = !onError && r?.tabs?.find((t) => t.key === r.active);
+  const shown = tab?.result ?? null;
+  const sql = shown ? shown.sql : tab?.output ? tab.output.map((o) => o.sql).join(';\n') : r?.script ?? currentStatement(view.state, conn.driver);
   sq.ask.value = {
     suggestion: onError ? 'Why does this fail, and how do I fix it?' : '',
     context: contextFor({
       conn, engine: DRIVERS[conn.driver], database: c.database || (multi(conn) ? ownDb(conn) : ''), sql,
-      error: onError ? r.error : null, result: shown, schemas: sq.schemas.value.get(skey(conn.id, c.database || ''))?.data?.schemas,
+      error: onError ? r.error.message : null, result: shown, schemas: sq.schemas.value.get(skey(conn.id, c.database || ''))?.data?.schemas,
     }),
   };
 }
@@ -467,52 +506,81 @@ const summary = (r) => (r.columns.length
   : r.affected != null ? `${r.affected} row${r.affected === 1 ? '' : 's'} affected` : 'done');
 const firstWord = (sql) => (/^\s*(\w+)/.exec(sql)?.[1] || 'SQL').toUpperCase();
 
+/** A tab's name: its table, or what its query reads from, or its first word. */
+function tabLabel(t) {
+  if (t.key === 'out') return 'Output';
+  if (t.meta) return t.meta.table;
+  const from = /\bfrom\s+((?:"[^"]+"|`[^`]+`|[\w$]+)(?:\.(?:"[^"]+"|`[^`]+`|[\w$]+))?)/i.exec(t.result.sql)?.[1];
+  return from ? `${firstWord(t.result.sql)} ${from.replace(/["`]/g, '')}` : firstWord(t.result.sql);
+}
+
+/**
+ * The results over the whole screen and back: everything else hides and the browser goes full screen (where it lets
+ * the page). Ctrl+Shift+' (JetBrains' key for it); Esc, or leaving full screen, comes back.
+ */
+function toggleResMax(on = !sq.resMax.value) {
+  sq.resMax.value = on;
+  if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+  if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+}
+const MaxButton = () => html`<button class="icon-btn xs hide-mobile" aria-pressed=${sq.resMax.value}
+  title=${sq.resMax.value ? 'Back (Esc)' : "Results full screen (Ctrl+Shift+')"}
+  aria-label=${sq.resMax.value ? 'Restore the results' : 'Maximize the results'} onClick=${() => toggleResMax()}>
+  <${Icon} name=${sq.resMax.value ? 'minimize-2' : 'maximize-2'} /></button>`;
+
 function Results() {
   const c = activeConsole();
   const r = c && sq.runs.value.get(c.id);
   if (!c) return html`<div class="sql-results"><div class="term-empty dim small">No console open.</div></div>`;
-  if (!r || (!r.running && !r.results && !r.error)) {
+  const tabs = r?.tabs || [];
+  if (!r || (!r.running && !tabs.length && !r.error)) {
     return html`<div class="sql-results"><div class="term-empty dim small">
       <span>Run a statement with <kbd>Ctrl</kbd> <kbd>Enter</kbd>, or the whole console with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd>.</span></div></div>`;
   }
-  const results = r.results || [];
-  const onError = !!r.error && !(r.shown < results.length);
-  const idx = Math.min(r.shown ?? 0, results.length - 1);
-  const shown = onError ? null : results[idx];
-  const meta = shown && r.metas?.[idx];
+  const onError = r.active === 'err' && !!r.error;
+  const tab = onError ? null : tabs.find((t) => t.key === r.active) || tabs.at(-1);
+  const shown = tab?.result ?? null;
+  const meta = tab?.meta ?? null;
   const conn = connOf(c.connId);
-  const pick = (i) => setRun(c.id, { shown: i });
+  const pick = (key) => setRun(c.id, { active: key });
+  const close = (e, key) => { e.stopPropagation(); closeTab(c, key); };
   return html`<div class="sql-results">
     <div class="pane-head term-head">
       <div class="term-tabs">
-        ${results.map((x, i) => html`<div key=${i} class=${cx('term-tab', x === shown && 'active')} title=${x.sql} onClick=${() => pick(i)}>
-          <${Icon} name=${x.columns.length ? 'table' : 'check'} /><span>${results.length > 1 ? `${i + 1} · ` : ''}${firstWord(x.sql)}</span></div>`)}
-        ${r.error && html`<div class=${cx('term-tab err', onError && 'active')} onClick=${() => pick(results.length)}><${Icon} name="circle-alert" /><span>${results.length ? `${r.index + 1} · ` : ''}Error</span></div>`}
+        ${tabs.map((t) => html`<div key=${t.key} class=${cx('term-tab', t === tab && 'active')} title=${t.result?.sql ?? t.output.map((o) => o.sql).join(';\n')}
+          onClick=${() => pick(t.key)} onAuxClick=${(e) => { if (e.button === 1) close(e, t.key); }}>
+          <${Icon} name=${t.output ? 'check' : 'table'} /><span>${tabLabel(t)}</span>
+          <button class="icon-btn xs term-tab-close" aria-label=${`Close ${tabLabel(t)}`} onClick=${(e) => close(e, t.key)}><${Icon} name="x" /></button></div>`)}
+        ${r.error && html`<div class=${cx('term-tab err', onError && 'active')} onClick=${() => pick('err')}><${Icon} name="circle-alert" />
+          <span>${r.error.done ? `${r.error.index + 1} · ` : ''}Error</span>
+          <button class="icon-btn xs term-tab-close" aria-label="Close the error" onClick=${(e) => close(e, 'err')}><${Icon} name="x" /></button></div>`}
       </div>
       <div class="spacer"></div>
+      <${MaxButton} />
       ${r.running && html`<span class="dim small row"><${Spinner} /> Running…</span>
         <button class="btn sm" onClick=${cancelRun}><${Icon} name="square" />Cancel</button>`}
-      ${!r.running && (shown || onError) && html`<button class="btn ghost sm" title="Send this query and its error or result to an agent" onClick=${askAboutRun}><${Icon} name="bot" />Ask the agent</button>`}
-      ${shown?.columns.length > 0 && !r.running && html`
+      ${!r.running && (tab || onError) && html`<button class="btn ghost sm" title="Send this query and its error or result to an agent" onClick=${askAboutRun}><${Icon} name="bot" />Ask the agent</button>`}
+      ${shown && !r.running && html`
         <button class="icon-btn xs" title="Copy as TSV (pastes into a spreadsheet)" aria-label="Copy rows" onClick=${() => copyText(toTsv(shown), 'rows copied')}><${Icon} name="copy" /></button>
-        <button class="icon-btn xs" title="Download CSV" aria-label="Download CSV" onClick=${() => download(toCsv(shown), `${c.title.replace(/[^\w-]+/g, '_')}.csv`)}><${Icon} name="arrow-down-to-line" /></button>`}
+        <button class="icon-btn xs" title="Download CSV" aria-label="Download CSV" onClick=${() => download(toCsv(shown), `${tabLabel(tab).replace(/[^\w-]+/g, '_')}.csv`)}><${Icon} name="arrow-down-to-line" /></button>`}
     </div>
     ${onError && html`<div class="sql-error" role="alert"><${Icon} name="circle-alert" /><div>
-      ${results.length > 0 && html`<div class="small dim">Statement ${r.index + 1} failed; the ${results.length} before it ran.</div>`}
-      <pre>${r.error}</pre></div></div>`}
-    ${shown && (shown.columns.length
-      ? html`<${ResultGrid} key=${`${r.at}:${idx}`} r=${shown} table=${meta} readOnly=${!!conn?.readOnly}
-          onQuery=${(q) => requery(c, idx, meta, q)} onSubmit=${(edits) => submitEdits(c, idx, meta, edits)}
-          onPreview=${(edits) => previewEdits(c, meta, edits)} />`
-      : html`<div class="term-empty small"><${Icon} name="circle-check" /> ${summary(shown)}</div>`)}
+      ${r.error.done > 0 && html`<div class="small dim">Statement ${r.error.index + 1} failed; the ${r.error.done} before it ran.</div>`}
+      <pre>${r.error.message}</pre></div></div>`}
+    ${tab?.output && html`<div class="sql-output">${tab.output.map((o, i) => html`<div key=${i} class="sql-output-item">
+      <${Icon} name="circle-check" class="tiny ok" /><span>${o.text}</span><span class="dim">· ${o.ms} ms</span>
+      <code class="mono dim" title=${o.sql}>${o.sql}</code></div>`)}</div>`}
+    ${shown && html`<${ResultGrid} key=${`${tab.key}:${tab.at}`} r=${shown} table=${meta} readOnly=${!!conn?.readOnly}
+      onQuery=${(q) => requery(c, tab.key, meta, q)} onSubmit=${(edits) => submitEdits(c, tab.key, meta, edits)}
+      onPreview=${(edits) => previewEdits(c, meta, edits)} />`}
     ${shown && html`<div class="sql-foot small dim">
       <span>${summary(shown)} · ${shown.ms} ms</span>
       ${shown.truncated && html`<span class="warn">Only the first ${shown.rows.length} rows (the row limit).</span>`}
       ${r.readOnly && html`<span><${Icon} name="eye" class="tiny" /> read-only connection</span>`}
       ${meta && !conn?.readOnly && html`<span><${Icon} name="pencil" class="tiny" /> ${meta.table}: click a cell to see or edit it</span>`}
-      ${meta && html`<span class="mono sql-ran" title=${shown.sql}>${shown.sql}</span>
-        <button class="icon-btn xs" title="Copy the query that read these rows" aria-label="Copy the query" onClick=${() => copyText(shown.sql, 'query copied')}><${Icon} name="copy" /></button>`}
-      ${!meta && shown?.columns.length > 0 && html`<span>Click a cell to see its whole value</span>`}
+      ${meta && html`<div class="sql-ran"><span class="mono">${shown.sql}</span>
+        <button class="icon-btn xs" title="Copy the query that read these rows" aria-label="Copy the query" onClick=${() => copyText(shown.sql, 'query copied')}><${Icon} name="copy" /></button></div>`}
+      ${!meta && html`<span>Click a cell to see its whole value</span>`}
     </div>`}
   </div>`;
 }
@@ -942,19 +1010,28 @@ export function SqlEditor() {
     });
     // The browser's own Ctrl+Enter / Ctrl+S do nothing useful here; outside the editor they run too.
     const key = (e) => {
+      // Esc brings the console back, unless it closes something else first (a dialog, the value panel).
+      if (e.key === 'Escape' && sq.resMax.value && !e.defaultPrevented && !e.target.closest?.('dialog') && !document.querySelector('.sql-value')) {
+        toggleResMax(false);
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey) || e.defaultPrevented) return;
+      if (e.shiftKey && e.code === 'Quote') { e.preventDefault(); toggleResMax(); return; }
       if (e.key === 'Enter' && !e.target.closest?.('.cm-editor, input, select, textarea, dialog')) { e.preventDefault(); run(e.shiftKey); }
       if (e.key.toLowerCase() === 's') e.preventDefault();
     };
+    // The browser's own Esc (or F11) leaves full screen without a key event for the page.
+    const screen = () => { if (!document.fullscreenElement && sq.resMax.value) sq.resMax.value = false; };
     addEventListener('keydown', key);
-    return () => removeEventListener('keydown', key);
+    document.addEventListener('fullscreenchange', screen);
+    return () => { removeEventListener('keydown', key); document.removeEventListener('fullscreenchange', screen); };
   }, []);
 
   const c = activeConsole();
   const conn = c && connOf(c.connId);
   const pane = sq.pane.value;
   const panes = [['files', 'Database', 'database'], ['editor', 'Query', 'square-code'], ['terminal', 'Results', 'table']];
-  return html`<div class="ide sql" data-pane=${pane} style=${{ '--tree-w': `${treeW}px`, '--term-h': `${resH}px` }}>
+  return html`<div class=${cx('ide sql', sq.resMax.value && 'term-max')} data-pane=${pane} style=${{ '--tree-w': `${treeW}px`, '--term-h': `${resH}px` }}>
     <header class="ide-head">
       <a class="ide-brand" href="/" title="Back to Dalang" aria-label="Back to Dalang"><${Logo} size=${22} /></a>
       <div class="crumbs"><span class="crumb-title">SQL Editor</span></div>
