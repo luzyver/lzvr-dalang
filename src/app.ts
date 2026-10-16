@@ -26,7 +26,7 @@ import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
-import type { Store } from './store.js';
+import { type Store, SUBAGENT_GUIDE, type SubagentPolicy } from './store.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -231,7 +231,7 @@ export function buildApp(
     if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
     if (status === 'approved') {
       if (!store.getConversation(a.to_conv)) return reply.code(410).send({ error: 'target conversation no longer exists' });
-      store.enqueue(a.to_conv, a.prompt, [], '', a.on_behalf);
+      store.enqueue(a.to_conv, a.prompt, [], '', a.on_behalf, a.from_conv);
       dispatcher.kick(a.to_conv);
     }
     store.setApprovalStatus(a.id, status);
@@ -295,6 +295,34 @@ export function buildApp(
       properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
     store.setDefaultEffort(req.body.effort, backendOf(req.body.backend));
+    return reply.code(204).send();
+  });
+  // What agents may pick for chats over MCP (create_conversation, set_model): models weakest first, and the highest effort.
+  app.get<{ Querystring: { backend?: string } }>('/api/settings/agent-models', { onRequest: requireAdmin }, (req) =>
+    ({ models: store.getAgentModels(backendOf(req.query.backend)), maxEffort: store.getAgentMaxEffort(backendOf(req.query.backend)) }));
+  app.put<{ Body: { models: string[]; maxEffort: string; backend?: Backend } }>('/api/settings/agent-models', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['models', 'maxEffort'], additionalProperties: false,
+      properties: {
+        models: { type: 'array', maxItems: 20, uniqueItems: true, items: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63}$' } },
+        maxEffort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] }, backend: { enum: [...BACKENDS] },
+      } } },
+  }, (req, reply) => {
+    store.setAgentModels(req.body.models, backendOf(req.body.backend));
+    store.setAgentMaxEffort(req.body.maxEffort, backendOf(req.body.backend));
+    return reply.code(204).send();
+  });
+  // How far agents may go with sub-agents (see SubagentPolicy).
+  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => ({ ...store.getSubagentPolicy(), defaultGuide: SUBAGENT_GUIDE }));
+  app.put<{ Body: Partial<SubagentPolicy> }>('/api/settings/subagents', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', additionalProperties: false,
+      properties: {
+        maxChildren: { type: 'integer', minimum: 0, maximum: 50 }, maxDepth: { type: 'integer', minimum: 0, maximum: 5 }, autoSend: { type: 'boolean' },
+        mode: { enum: ['asked', 'auto'] }, guide: { type: 'string', maxLength: 8000 },
+      } } },
+  }, (req, reply) => {
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), ...req.body });
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.

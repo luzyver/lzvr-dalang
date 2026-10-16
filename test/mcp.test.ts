@@ -46,10 +46,11 @@ const ALL_TOOLS = [
   'list_projects', 'create_project', 'delete_project', 'list_conversations', 'create_conversation',
   'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
   'cancel_turn', 'set_draft', 'get_events', 'list_accounts', 'unblock_accounts', 'get_approval',
+  'list_models', 'set_model',
 ];
 const AGENT_TOOLS = [
   'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
-  'list_conversations', 'list_projects', 'list_queue', 'send_prompt',
+  'list_conversations', 'list_projects', 'list_queue', 'send_prompt', 'list_models', 'set_model',
 ];
 
 describe('MCP gateway', () => {
@@ -123,7 +124,7 @@ describe('MCP gateway', () => {
 
 const DEV_TOOLS = [
   'cancel_turn', 'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
-  'list_conversations', 'list_projects', 'list_queue', 'remove_queue_item', 'send_prompt', 'set_draft',
+  'list_conversations', 'list_projects', 'list_queue', 'remove_queue_item', 'send_prompt', 'set_draft', 'list_models', 'set_model',
 ];
 
 describe('MCP for users with a role', () => {
@@ -237,6 +238,185 @@ describe('cross-conversation sends', () => {
     const t = await boot();
     expect((await t.app.inject({ method: 'POST', url: '/api/approvals/999/approve', headers: AUTH })).statusCode).toBe(404);
     expect((await t.app.inject({ url: '/api/approvals' })).statusCode).toBe(401);
+  });
+});
+
+describe('models of sub-agents', () => {
+  const allow = (t: Booted, models: string[], maxEffort: string) =>
+    t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models, maxEffort } });
+
+  it('keeps agents on the default until an admin allows models', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const fromA = await t.connectAs(a.id);
+    const r = await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-big' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/not allowed any/);
+    const listed = (await call(fromA, 'list_models')).json;
+    expect(listed).toMatchObject({ backend: 'codex', models: [], efforts: [] });
+    // Without a model it still works, on the default, and remembers who made it.
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
+    expect(sub).toMatchObject({ parent: a.id, model: '', effective_model: null });
+  });
+
+  it('lets an agent pick and step up within the admin\'s list, for its own sub-agents only', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { p, a, b } = await twoConvs(c);
+    expect((await allow(t, ['gpt-small', 'gpt-mid'], 'medium')).statusCode).toBe(204);
+    t.store.setDefaultModel('gpt-small');
+    const fromA = await t.connectAs(a.id);
+
+    const listed = (await call(fromA, 'list_models')).json;
+    expect(listed.models.map((m: { slug: string; rank: number }) => [m.rank, m.slug])).toEqual([[0, 'gpt-small'], [1, 'gpt-mid']]);
+    expect(listed.efforts).toEqual(['low', 'medium']);
+    expect(listed.default_model).toBe('gpt-small');
+
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id, effort: 'low' })).json;
+    expect(sub).toMatchObject({ parent: a.id, effective_model: 'gpt-small', effective_effort: 'low' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-huge' })).text).toMatch(/gpt-small, gpt-mid/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, effort: 'high' })).text).toMatch(/at most medium/);
+
+    const up = (await call(fromA, 'set_model', { conversation_id: sub.id, model: 'gpt-mid', effort: 'medium' })).json;
+    expect(up).toMatchObject({ model: 'gpt-mid', effort: 'medium', effective_model: 'gpt-mid' });
+    expect(t.store.getConversation(sub.id)).toMatchObject({ model: 'gpt-mid', effort: 'medium' });
+    expect((await call(fromA, 'get_conversation', { conversation_id: sub.id })).json.effective_model).toBe('gpt-mid');
+    expect((await call(fromA, 'set_model', { conversation_id: sub.id, model: '' })).json.effective_model).toBe('gpt-small');
+    expect((await call(fromA, 'set_model', { conversation_id: a.id, model: 'gpt-mid' })).isError).toBe(false);
+
+    // A chat it did not start is not its to change, and an empty call changes nothing.
+    expect((await call(fromA, 'set_model', { conversation_id: b.id, model: 'gpt-mid' })).text).toMatch(/only change its own/);
+    expect((await call(fromA, 'set_model', { conversation_id: sub.id })).text).toMatch(/give model/);
+    expect(t.store.getConversation(b.id)!.model).toBe('');
+  });
+
+  it('lets an outside client pick any model and backend', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { p, a } = await twoConvs(c);
+    const out = (await call(c, 'create_conversation', { project_id: p.id, model: 'anything-1', effort: 'max', backend: 'claude' })).json;
+    expect(out).toMatchObject({ parent: '', model: 'anything-1', effort: 'max', backend: 'claude' });
+    expect((await call(c, 'set_model', { conversation_id: a.id, model: 'other-2' })).json.model).toBe('other-2');
+    expect((await call(c, 'create_conversation', { project_id: p.id, model: '--flag' })).isError).toBe(true);
+  });
+
+  it('keeps the agent model list per backend and for admins only', async () => {
+    const t = await boot();
+    const put = await t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models: ['opus'], maxEffort: 'high', backend: 'claude' } });
+    expect(put.statusCode).toBe(204);
+    expect((await t.app.inject({ url: '/api/settings/agent-models?backend=claude', headers: AUTH })).json()).toEqual({ models: ['opus'], maxEffort: 'high' });
+    expect((await t.app.inject({ url: '/api/settings/agent-models', headers: AUTH })).json()).toEqual({ models: [], maxEffort: '' });
+    const bad = await t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models: ['-x'], maxEffort: '' } });
+    expect(bad.statusCode).toBe(400);
+    const dev = await mkUser(t, 'budi', 'dev');
+    expect((await t.app.inject({ url: '/api/settings/agent-models', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);
+  });
+});
+
+describe('sub-agents', () => {
+  const policy = (t: Booted, p: { maxChildren: number; maxDepth: number; autoSend: boolean }) =>
+    t.app.inject({ method: 'PUT', url: '/api/settings/subagents', headers: AUTH, payload: p });
+  const reports = (t: Booted, id: string) => t.store.listTurns(id).filter((x) => x.prompt.startsWith('[Sub-agent]'));
+
+  it('run their first task without approval and report the answer back to the parent', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const sub = (await call(await t.connectAs(a.id), 'create_conversation', { project_id: p.id, prompt: 'count the files' })).json;
+    expect(sub.parent).toBe(a.id);
+    expect(sub.prompt.status).toBe('queued');
+    await until(() => turnsDone(t.store, sub.id, 1));
+    await until(() => reports(t, a.id).length === 1 && turnsDone(t.store, a.id, 1));
+    const r = reports(t, a.id)[0]!.prompt;
+    expect(r).toContain(`conversation ${sub.id}`);
+    expect(r).toContain('finished');
+    expect(r).toContain('count the files'); // the fake agent answers with its prompt
+    expect(t.store.listApprovals('pending')).toEqual([]);
+  });
+
+  it('report once per batch, and not for prompts someone else sent them', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { p, a } = await twoConvs(c);
+    const fromA = await t.connectAs(a.id);
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
+    await call(fromA, 'send_prompt', { conversation_id: sub.id, prompt: 'one' });
+    await call(fromA, 'send_prompt', { conversation_id: sub.id, prompt: 'two' });
+    await until(() => turnsDone(t.store, sub.id, 2));
+    await until(() => reports(t, a.id).length >= 1 && turnsDone(t.store, a.id, reports(t, a.id).length));
+    expect(reports(t, a.id).length).toBeLessThanOrEqual(2);
+    const before = reports(t, a.id).length;
+    await call(c, 'send_prompt', { conversation_id: sub.id, prompt: 'from a person' });
+    await until(() => turnsDone(t.store, sub.id, 3));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reports(t, a.id).length).toBe(before);
+  });
+
+  it('pass a grandchild\'s report up through its parent', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const sub = (await call(await t.connectAs(a.id), 'create_conversation', { project_id: p.id })).json;
+    const subsub = (await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id, prompt: 'deep work' })).json;
+    expect(subsub.parent).toBe(sub.id);
+    await until(() => reports(t, sub.id).length === 1 && turnsDone(t.store, sub.id, 1));
+    await until(() => reports(t, a.id).length === 1 && turnsDone(t.store, a.id, 1));
+    expect(reports(t, a.id)[0]!.prompt).toContain(`conversation ${sub.id}`);
+  });
+
+  it('hold a middle sub-agent\'s report until the sub-agents it gave work to are done', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const sub = (await call(await t.connectAs(a.id), 'create_conversation', { project_id: p.id })).json;
+    const subsub = (await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).json;
+    t.store.enqueue(subsub.id, 'deep work', [], '', '', sub.id); // its parent's work, not started yet
+    await call(await t.connectAs(a.id), 'send_prompt', { conversation_id: sub.id, prompt: 'delegate it' });
+    await until(() => turnsDone(t.store, sub.id, 1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reports(t, a.id)).toEqual([]); // sub ended its turn, but subsub still owes it an answer
+
+    t.dispatcher.kick(subsub.id);
+    await until(() => reports(t, sub.id).length === 1 && turnsDone(t.store, sub.id, 2));
+    await until(() => reports(t, a.id).length === 1 && turnsDone(t.store, a.id, 1));
+    expect(reports(t, a.id)[0]!.prompt).toContain(`conversation ${sub.id}`);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reports(t, a.id)).toHaveLength(1);
+  });
+
+  it('stay within the admin\'s limits', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    expect((await policy(t, { maxChildren: 1, maxDepth: 1, autoSend: true })).statusCode).toBe(204);
+    const fromA = await t.connectAs(a.id);
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
+    expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/already has 1 sub-agents/);
+    expect((await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).text).toMatch(/1 level\(s\) deep/);
+    await policy(t, { maxChildren: 0, maxDepth: 2, autoSend: true });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/turned sub-agents off/);
+  });
+
+  it('wait for approval when sending unasked is off, or the sub-agent is in another project', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { p, a } = await twoConvs(c);
+    const other = t.store.createProject('other', t.store.getProject(p.id)!.path);
+    const fromA = await t.connectAs(a.id);
+    const away = (await call(fromA, 'create_conversation', { project_id: other.id, prompt: 'over there' })).json;
+    expect(away.prompt.status).toBe('pending_approval');
+    await policy(t, { maxChildren: 5, maxDepth: 2, autoSend: false });
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
+    expect((await call(fromA, 'send_prompt', { conversation_id: sub.id, prompt: 'x' })).json.status).toBe('pending_approval');
+    expect(t.store.listTurns(sub.id)).toEqual([]);
+  });
+
+  it('keep their limits in admin settings', async () => {
+    const t = await boot();
+    expect((await t.app.inject({ url: '/api/settings/subagents', headers: AUTH })).json())
+      .toMatchObject({ maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '', defaultGuide: expect.stringContaining('create_conversation') });
+    expect((await policy(t, { mode: 'auto' } as never)).statusCode).toBe(204); // a part leaves the rest as it was
+    expect(t.store.getSubagentPolicy()).toMatchObject({ maxChildren: 5, mode: 'auto' });
+    expect((await policy(t, { mode: 'always' } as never)).statusCode).toBe(400);
+    expect((await policy(t, { maxChildren: 99, maxDepth: 1, autoSend: true })).statusCode).toBe(400);
+    const dev = await mkUser(t, 'budi', 'dev');
+    expect((await t.app.inject({ url: '/api/settings/subagents', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);
   });
 });
 

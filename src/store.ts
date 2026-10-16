@@ -79,13 +79,42 @@ export interface Conversation {
   /** The Merge Request / pull request this chat opened last, or null, and the branch it is for (null in older rows). */
   pr_url: string | null;
   pr_branch: string | null;
+  /** The chat whose agent created this one over MCP (a sub-agent), or '' when a person or an outside client did. */
+  parent: string;
 }
 /**
  * `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it.
  * `on_behalf`: whose git setup the turn uses ('owner' = the server's): the author, or for a prompt one agent sent another
  * the user that agent was working for.
  */
-export interface QueueItem { id: number; conversation_id: string; prompt: string; attachments: string[]; author: string; on_behalf: string }
+export interface QueueItem {
+  id: number; conversation_id: string; prompt: string; attachments: string[]; author: string; on_behalf: string;
+  /** The chat whose agent sent this prompt over MCP, or ''. A sub-agent's answer to its parent goes back to it. */
+  from_conv: string;
+}
+/**
+ * How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked.
+ * `mode`: 'asked' = they start sub-agents only when told to; 'auto' = every turn that still may start one is told how and
+ * when to, so the agent decides itself (`guide`, or the built-in SUBAGENT_GUIDE when empty).
+ */
+export interface SubagentPolicy { maxChildren: number; maxDepth: number; autoSend: boolean; mode: 'asked' | 'auto'; guide: string }
+export const SUBAGENT_DEFAULTS: SubagentPolicy = { maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '' };
+export const SUBAGENT_GUIDE = `You are running inside Dalang, and you may act as an orchestrator: hand parts of your task to sub-agents.
+Use the dalang MCP tools for this (in Claude Code they may need loading first: search your tools for "mcp__dalang").
+Prefer them over any built-in sub-agent tool for real work: Dalang sub-agents show up in the panel, keep their own session and follow the model limits.
+
+When to: the task has parts that are independent of each other and big enough to be worth a fresh session (a separate
+module, a review, a test run, research across many files). Do small or tightly coupled work yourself; do not split for its own sake.
+
+How:
+- list_models first: pick the weakest model that fits each part, with the lowest effort that fits.
+- create_conversation with project_id, model, effort and the task as prompt. Give each sub-agent everything it needs
+  (it does not see this chat), what it may change, and what its last answer must contain.
+- worktree: true for a sub-agent that changes files, so parallel sub-agents never write over each other or you.
+- Do not poll. When a sub-agent finishes, its last answer comes to this chat as a new message starting with [Sub-agent].
+  End your turn after starting them; continue when the reports arrive.
+- Check each report before relying on it. If one fell short, send_prompt it a correction, or set_model it one step up.
+- At the end, sum up for the person what each sub-agent did and what you checked.`;
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
@@ -114,7 +143,7 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string }
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string }
 const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
 
 export class Store {
@@ -139,9 +168,11 @@ export class Store {
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
+    this.ensureColumn('conversations', 'parent', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('users', 'email', 'TEXT');
     this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('queue', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('queue', 'from_conv', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('approvals', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
@@ -220,6 +251,18 @@ export class Store {
   setDefaultModel(model: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_model', backend), model); }
   getDefaultEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_effort', backend)) ?? ''; }
   setDefaultEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_effort', backend), effort); }
+  /** The models agents may pick for chats over MCP, weakest first; empty = agents keep the default. */
+  getAgentModels(backend: Backend = 'codex'): string[] {
+    try { return JSON.parse(this.getKv(this.defaultKey('agent_models', backend)) ?? '[]') as string[]; } catch { return []; }
+  }
+  setAgentModels(models: string[], backend: Backend = 'codex'): void { this.setKv(this.defaultKey('agent_models', backend), JSON.stringify(models)); }
+  /** The highest reasoning effort agents may pick over MCP; empty = they keep the default. */
+  getAgentMaxEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('agent_max_effort', backend)) ?? ''; }
+  setAgentMaxEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('agent_max_effort', backend), effort); }
+  getSubagentPolicy(): SubagentPolicy {
+    try { return { ...SUBAGENT_DEFAULTS, ...(JSON.parse(this.getKv('subagents') ?? '{}') as Partial<SubagentPolicy>) }; } catch { return SUBAGENT_DEFAULTS; }
+  }
+  setSubagentPolicy(p: SubagentPolicy): void { this.setKv('subagents', JSON.stringify(p)); }
 
   createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
     const p = { id: randomUUID(), name, path, sandbox, backend, access };
@@ -235,14 +278,24 @@ export class Store {
   deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
 
   /** The chat runs on the project's backend unless told otherwise. */
-  createConversation(projectId: string, backend?: Backend): Conversation {
+  createConversation(projectId: string, backend?: Backend, parent = ''): Conversation {
     const id = randomUUID();
     backend ??= this.getProject(projectId)?.backend ?? 'codex';
-    this.run('INSERT INTO conversations (id,project_id,thread_id,backend) VALUES (?,?,NULL,?)', id, projectId, backend);
+    this.run('INSERT INTO conversations (id,project_id,thread_id,backend,parent) VALUES (?,?,NULL,?,?)', id, projectId, backend, parent);
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
     return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
+  }
+  /** The sub-agents a chat's agent started (that still exist). */
+  countChildren(id: string): number { return this.get<{ n: number }>('SELECT count(*) AS n FROM conversations WHERE parent=?', id)!.n; }
+  /** The sub-agents a chat's agent started, in any project. */
+  listChildren(id: string): Conversation[] { return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE parent=? ORDER BY c.rowid`, id); }
+  /** How many sub-agent levels a chat is below a chat a person started (0 for that one). */
+  depthOf(id: string): number {
+    let depth = 0;
+    for (let c = this.getConversation(id); c?.parent && depth < 100; c = this.getConversation(c.parent)) depth++;
+    return depth;
   }
   getConversation(id: string): Conversation | null { return this.get(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE id=?`, id); }
   setTitle(id: string, title: string): void { this.run('UPDATE conversations SET auto_title=? WHERE id=?', title, id); }
@@ -256,9 +309,9 @@ export class Store {
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
-  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author): number {
-    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf) VALUES (?,?,?,?,?)',
-      convId, prompt, JSON.stringify(attachments), author, onBehalf);
+  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = ''): number {
+    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv) VALUES (?,?,?,?,?,?)',
+      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv);
     return Number(r.lastInsertRowid);
   }
   listQueue(convId: string): QueueItem[] {

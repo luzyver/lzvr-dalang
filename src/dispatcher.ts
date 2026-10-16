@@ -5,15 +5,24 @@ import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
+import { loadConnections } from './databases.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
-import type { Conversation, QueueItem, Store } from './store.js';
+import { type Conversation, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
+db_schema and db_query (in Claude Code they may need loading first: search your tools for "mcp__dalang"). Start with
+db_list_connections to find the connection, db_schema for its tables and columns, then db_query. Do not connect any other
+way (psql, mysql, mongosh, redis-cli, a script, or credentials from .env or config files) unless the person asks for that
+explicitly. If the database is not in db_list_connections, or you may only read and need to write, say so instead of
+working around it. A write that answers pending_approval waits for an admin: do not send it again.`;
+/** How much of a sub-agent's last answer goes into its report to the parent. */
+const REPORT_MAX = 6000;
 
 export interface LiveEvent { id: number; type: string; payload: string; created_at: string }
 
@@ -74,6 +83,10 @@ export class Dispatcher {
   readonly claudeAccounts: Accounts;
   private modelCache = new Map<Backend, { at: number; list: ModelInfo[] }>();
   private active = new Map<string, AbortController>();
+  /** The queue item each running turn came from (who asked for it). */
+  private running = new Map<string, QueueItem>();
+  /** Chats holding back their report to their parent until the sub-agents they gave work to are done. */
+  private awaiting = new Set<string>();
   private bus = new EventEmitter();
   private stopping = false;
   private mcpTokens = new Map<string, { convId: string; author: string }>(); // token -> the turn it was minted for
@@ -131,10 +144,12 @@ export class Dispatcher {
     if (!item) return;
     const ac = new AbortController();
     this.active.set(convId, ac);
+    this.running.set(convId, item);
     void this.run(convId, item, ac)
       .catch((e) => console.error('dispatcher run failed', e))
       .finally(() => {
         this.active.delete(convId);
+        this.running.delete(convId);
         try { this.kick(convId); } catch (e) { console.error('dispatcher kick failed', e); } // must not become an unhandled rejection
       });
   }
@@ -336,6 +351,9 @@ export class Dispatcher {
       if (model) extraArgs.push('-m', model);
       if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
     }
+    const guide = mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide()].filter(Boolean).join('\n\n') : '';
+    // A JSON string is also a valid TOML basic string, which is what `-c` reads.
+    if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {
@@ -368,7 +386,7 @@ export class Dispatcher {
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
-            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, signal: ac.signal,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: guide ? extraArgs : undefined, signal: ac.signal,
           })
           : runTurn({
             command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,
@@ -421,6 +439,65 @@ export class Dispatcher {
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
     if (interrupted) return; // shutting down: no notification
+    try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
+  }
+
+  /**
+   * With sub-agents on 'auto', what a turn is told about starting them itself: the guide, then what this chat may still
+   * do. Empty when it is not to be told (mode 'asked', sub-agents off, or this chat at the depth limit).
+   */
+  /**
+   * While any SQL editor connection is open to agents, a turn is told to reach databases through the gateway's db_*
+   * tools (which keep to each connection's access, approvals and log) instead of a client or credentials of its own.
+   */
+  databaseGuide(): string {
+    return loadConnections(this.store).some((c) => c.agent !== 'off') ? DB_GUIDE : '';
+  }
+
+  orchestratorGuide(conv: Conversation, projectId: string): string {
+    const p = this.store.getSubagentPolicy();
+    if (p.mode !== 'auto' || !p.maxChildren || this.store.depthOf(conv.id) + 1 > p.maxDepth) return '';
+    const models = this.store.getAgentModels(conv.backend);
+    const left = Math.max(0, p.maxChildren - this.store.countChildren(conv.id));
+    return `${p.guide.trim() || SUBAGENT_GUIDE}\n\nFor this chat: project_id ${projectId}; ${left} more sub-agent(s) allowed (of ${p.maxChildren}); `
+      + `models you may pick, weakest first: ${models.length ? models.join(', ') : 'none, they run on the default'}`
+      + `${p.autoSend ? '' : '; every prompt to a sub-agent waits for a person to approve it'}.`;
+  }
+
+  /**
+   * Whether sub-agent `c` still owes `boss` (its parent) an answer: it runs or has queued a prompt `boss` sent, or holds
+   * back its report until its own sub-agents are done. Work someone else gave it does not count: it never reports back.
+   */
+  private workingFor(c: Conversation, boss: string): boolean {
+    return this.running.get(c.id)?.from_conv === boss || this.store.listQueue(c.id).some((q) => q.from_conv === boss)
+      || (c.parent === boss && this.awaiting.has(c.id));
+  }
+
+  /**
+   * A sub-agent's turn that its parent asked for comes back to the parent as a new prompt, so the parent goes on
+   * without polling. It waits until the sub-agent has nothing more of the parent's queued, and until the sub-agents it
+   * gave work to itself are done: their reports wake it again, and the turn that reads the last one reports up (those
+   * turns are queued as asked for by its parent). So the parent gets one report per batch, once everything below is done.
+   */
+  private reportToParent(convId: string, item: QueueItem, status: string, lastMessage: string): void {
+    const conv = this.store.getConversation(convId);
+    if (!conv?.parent || item.from_conv !== conv.parent) return;
+    const parent = this.store.getConversation(conv.parent);
+    if (!parent || this.store.listQueue(convId).some((q) => q.from_conv === parent.id)) return;
+    if (status === 'completed' && this.store.listChildren(convId).some((c) => this.workingFor(c, convId))) {
+      this.awaiting.add(convId);
+      return;
+    }
+    this.awaiting.delete(convId);
+    const model = conv.model || this.store.getDefaultModel(conv.backend) || 'the CLI default';
+    const answer = lastMessage.length > REPORT_MAX ? `${lastMessage.slice(0, REPORT_MAX)}\n[cut here; get_events has the rest]` : lastMessage;
+    const busy = this.store.listChildren(parent.id).filter((c) => c.id !== convId && this.workingFor(c, parent.id)).length;
+    const text = `[Sub-agent] "${conv.title ?? 'untitled'}" (conversation ${conv.id}, model ${model}) `
+      + `${status === 'completed' ? 'finished' : `stopped: ${status}`}.${busy ? ` ${busy} other sub-agent(s) of yours are still working.` : ''}\n\n`
+      + `Its last answer:\n\n${answer || '(none)'}\n\n`
+      + 'Check the work before relying on it. send_prompt gives it more to do; set_model moves it up a model if this fell short.';
+    this.store.enqueue(parent.id, text, [], '', item.on_behalf, parent.parent);
+    this.kick(parent.id);
   }
 }

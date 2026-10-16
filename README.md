@@ -126,7 +126,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   account and resumes the session.
 - **Email sign-in + push**: sign in with a 6-digit code mailed to you (through the mailer service), installable PWA, Web Push when a turn finishes,
   fails or needs input.
-- **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
+- **MCP gateway** at `/mcp` (17 tools) so other agents can drive chats, and a chat's agent can start sub-agents and hear back from them; messages between other chats can require approval.
 - **ClickUp Chat history** (optional): read-only MCP tools that let the owner's chats read their ClickUp Chat
   messages, e.g. "what did I work on last week?" (see "ClickUp" below).
 - **More MCP servers** (optional): Context7, Playwright, Sentry or any other, given to the agents' turns; the
@@ -459,17 +459,45 @@ Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HTTP, stateless). Tools: `list_projects`,
 `create_project`, `delete_project`, `list_conversations`, `create_conversation`, `get_conversation`,
 `send_prompt`, `list_queue`, `remove_queue_item`, `cancel_turn`, `set_draft`, `get_events`, `list_accounts`,
-`unblock_accounts`, `get_approval`.
+`unblock_accounts`, `get_approval`, `list_models`, `set_model`.
 
-**Two kinds of caller.** An outside client using the main token gets all 15 tools. An agent running inside a chat
+**Two kinds of caller.** An outside client using the main token gets all 17 tools. An agent running inside a chat
 (with `MCP_INJECT=1`, each turn gets its own short-lived token bound to that chat, set up through
 `-c mcp_servers.dalang.url=... -c mcp_servers.dalang.bearer_token_env_var=LZVR_MCP_TOKEN`, plus
 `default_tools_approval_mode="approve"` since `codex exec` cannot ask before an MCP call; Claude Code gets
 `--mcp-config` and `--allowedTools=mcp__dalang` for the same reason) gets only
 `list_projects`, `list_conversations`, `create_conversation`, `get_conversation`, `send_prompt`, `list_queue`,
-`get_events`, `list_accounts`, `get_approval`. Its token works only on `/mcp`, dies when the turn ends, and the chat
+`get_events`, `list_accounts`, `get_approval`, `list_models`, `set_model`. Its token works only on `/mcp`, dies when the turn ends, and the chat
 it claims to be comes from the token, not from anything it sends. A `send_prompt` from an agent into a *different*
 chat is held until you approve it in the panel (or `POST /api/approvals/:id/approve`).
+
+**Sub-agents and their models.** `create_conversation` takes `model`, `effort` and `backend`; `set_model` changes a
+chat's model or effort from its next turn on (its session carries on). `get_conversation` says what the chat runs with
+(`effective_model`, `effective_effort`: its own, else the panel's default; `null` leaves it to the CLI), and
+`list_models` lists the choices. An outside client may pick anything. An agent may pick only what an admin allows in
+**Settings → Model & effort** (*agents may pick*, per backend): a list of models, weakest first, and the highest
+effort. Until that is set, agents keep the default. An agent may change only its own chat and the chats it created
+(`parent` in the conversation), and the tools tell it to start with the weakest model that fits and go one step up
+only when a result falls short.
+
+**Sub-agents.** A chat's agent decides itself when to split work over sub-agents, how many and on which model:
+`create_conversation` from inside a chat makes a sub-agent of it (with `prompt`, its first task starts at once;
+with `worktree`, it gets its own branch and folder). In the sidebar each sub-agent sits under the chat that started it,
+with its model, and folds away like a project. A prompt an agent sends its own sub-agent in the same project runs
+without approval, and when the sub-agent is done (with everything its parent queued) its last answer comes back to the
+parent as a new prompt, so the parent goes on without polling. A sub-agent that handed work to sub-agents of its own
+holds its report until they have all answered, and the turn that reads their last answer reports up instead, so a
+parent gets no "finished" while work below it still runs. Prompts someone else sends a sub-agent are not reported. **Settings → Model & effort → Orchestrator** sets how many
+sub-agents one chat may have (default 5, 0 turns them off), how many levels deep (default 2), and whether agents may
+send their own sub-agents work without approval (default on).
+
+**Orchestrator mode.** By default (*Only when asked*) an agent starts sub-agents when someone tells it to: the tools
+are there, but nothing points it at them. With *Agents decide themselves*, every turn that may still start a sub-agent
+(gateway on, sub-agents allowed, chat above the depth limit) gets a guide on when and how to (split independent,
+sizeable parts; the weakest model that fits; a worktree for one that changes files; no polling; check the reports),
+followed by its project id, how many sub-agents it may still start and the models it may pick. Claude Code gets it with
+`--append-system-prompt`, Codex as `developer_instructions`. The guide can be edited there (empty = the built-in one).
+This mode can use noticeably more of the accounts' limits.
 
 **What this does and does not protect.** It stops an agent from messaging other chats or widening sandboxes through the gateway.
 It is not a wall against a hostile agent on the same machine: an agent that
@@ -609,7 +637,11 @@ connections belong to the panel.
   given to agents through this gateway's MCP (`db_list_connections`, `db_schema`, `db_query`), so chats
   need `MCP_INJECT=1`. An agent only sees connections the user whose prompt it runs may open (with nobody behind it:
   the "everyone" ones). Every MCP caller counts as an agent here, an outside client with a token too. The last 200
-  agent queries per connection are logged (**Agent queries** in its `⋯` menu, admins).
+  agent queries per connection are logged (**Agent queries** in its `⋯` menu, admins). While any connection is not
+  off, every chat turn is also told to reach databases only through these tools (start with `db_list_connections`),
+  not with `psql`, `mysql`, `mongosh`, `redis-cli`, a script or credentials from `.env`, unless the person asks for that
+  explicitly, and to say so when a database is not listed or is read-only instead of working around it (Claude Code:
+  `--append-system-prompt`, Codex: `developer_instructions`).
 - **How read-only holds**: the database enforces it, the SQL is never inspected. PostgreSQL runs each statement in a
   `READ ONLY` transaction that is rolled back, MySQL/MariaDB in a session set to `TRANSACTION READ ONLY` (DDL is
   refused there too), SQLite opens the file read-only; each statement gets a fresh connection, so one cannot loosen
