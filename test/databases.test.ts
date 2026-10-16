@@ -237,6 +237,21 @@ describe('SQL editor connections', () => {
     expect(r.json().ddl).toMatch(/^CREATE TABLE users \(id INTEGER PRIMARY KEY/);
   });
 
+  it('lists every table of a big database without columns, and gives a schema\'s columns when asked', async () => {
+    const t = await boot();
+    const db = new DatabaseSync(t.file);
+    for (let i = 0; i < 450; i++) db.exec(`CREATE TABLE t${i} (id INTEGER PRIMARY KEY, v TEXT)`);
+    db.close();
+    await t.put('app', {});
+    const all = (await t.app.inject({ url: '/api/db/connections/app/schema', headers: AUTH })).json();
+    expect(all.schemas[0]).toMatchObject({ name: 'main', loaded: false });
+    expect(all.schemas[0].tables).toHaveLength(451);
+    expect(all.schemas[0].tables[0].columns).toEqual([]);
+    const one = (await t.app.inject({ url: '/api/db/connections/app/schema?schema=main', headers: AUTH })).json();
+    expect(one.schemas[0].loaded).toBe(true);
+    expect(one.schemas[0].tables.find((x: { name: string }) => x.name === 't7').columns[0]).toMatchObject({ name: 'id', pk: true });
+  });
+
   it('reads tables and columns', async () => {
     const t = await boot();
     await t.put('app', {});

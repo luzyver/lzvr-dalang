@@ -246,12 +246,13 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     try { return { databases: await listDatabases(c) }; } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
   });
 
-  app.get<{ Params: { id: string }; Querystring: { database?: string } }>('/api/db/connections/:id/schema', {
-    schema: { querystring: { type: 'object', properties: { database: DATABASE } } },
+  // Every schema's tables (with columns on a small database), or `?schema=` one schema's tables with their columns.
+  app.get<{ Params: { id: string }; Querystring: { database?: string; schema?: string } }>('/api/db/connections/:id/schema', {
+    schema: { querystring: { type: 'object', properties: { database: DATABASE, schema: { type: 'string', minLength: 1, maxLength: 128 } } } },
   }, async (req, reply) => {
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
-    try { return await readSchema(onDatabase(c, req.query.database)); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    try { return await readSchema(onDatabase(c, req.query.database), 30_000, req.query.schema); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
   });
 
   // Runs a script (one or more statements); a failure answers 400 with the results of the statements before it. A script

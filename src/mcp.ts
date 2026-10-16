@@ -254,10 +254,18 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
     const c = get(connection);
     if (!c) return none(connection);
     try {
-      const info = await readSchema(onDatabase(c, database), AGENT_DB_TIMEOUT_MS);
-      const schemas = info.schemas.filter((s) => !schema || s.name === schema)
+      const target = onDatabase(c, database);
+      const info = await readSchema(target, AGENT_DB_TIMEOUT_MS, schema);
+      let schemas = info.schemas.filter((s) => !schema || s.name === schema)
         .map((s) => ({ ...s, tables: s.tables.filter((t) => !table || t.name.toLowerCase().includes(table.toLowerCase())) }))
         .filter((s) => s.tables.length);
+      // A big database comes without columns: read them for the few schemas a table filter narrowed it to.
+      if (table && schemas.length <= 5 && schemas.some((s) => !s.loaded)) {
+        schemas = await Promise.all(schemas.map(async (s) => (s.loaded ? s : {
+          ...s, tables: (await readSchema(target, AGENT_DB_TIMEOUT_MS, s.name)).schemas[0]?.tables
+            .filter((t) => t.name.toLowerCase().includes(table.toLowerCase())) ?? [],
+        })));
+      }
       const count = schemas.reduce((n, s) => n + s.tables.length, 0);
       // A large answer lists only names; asking again with a schema or table gives the columns.
       if (count > 150) return text({ note: `${count} tables: names only. Pass schema or table for their columns.`, schemas: schemas.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })) });

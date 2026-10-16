@@ -1006,6 +1006,10 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .term-tab.err { color: var(--err); }
 .sql-results .term-tab { padding-right: 3px; }
 .menu-ext { margin-left: 8px; font-size: 11px; }
+.sql-read { flex: none; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+.tree-row:not(:hover) .sql-read { opacity: .7; }
+.sql-file-name { display: flex; align-items: center; gap: 6px; }
+.sql-file-name input { flex: 1; min-width: 0; }
 .sql-ws { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .sql-ws select { min-height: 28px !important; height: 28px; padding: 0 26px 0 8px !important; font-size: 12.5px; font-weight: 600; max-width: 260px; }
 .sql-ws-pick { display: grid; gap: 8px; max-height: 50vh; overflow: auto; padding: 2px; }

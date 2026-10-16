@@ -66,7 +66,8 @@ export interface QueryResult {
 }
 export interface SchemaColumn { name: string; type: string; nullable: boolean; pk: boolean }
 export interface SchemaTable { name: string; kind: 'table' | 'view'; columns: SchemaColumn[] }
-export interface SchemaInfo { schemas: { name: string; tables: SchemaTable[] }[] }
+/** `loaded`: its tables come with their columns (else ask readSchema for that schema). */
+export interface SchemaInfo { schemas: { name: string; loaded: boolean; tables: SchemaTable[] }[] }
 
 export interface RunOpts {
   readOnly: boolean;
@@ -481,7 +482,10 @@ export async function testConnection(c: DbConnection): Promise<{ version: string
 
 // ---------- schema ----------
 
-const MAX_TABLES = 3000;
+/** A database with at most this many tables gets its columns with its table list; a bigger one, schema by schema. */
+export const INLINE_COLUMNS = 400;
+/** The table list stops here (a catalog that size is not browsed by hand). */
+const MAX_TABLES = 100_000;
 const SYSTEM_SCHEMAS: Record<Driver, string[]> = {
   postgres: ['pg_catalog', 'information_schema', 'pg_toast'],
   mysql: ['mysql', 'information_schema', 'performance_schema', 'sys'],
@@ -489,45 +493,57 @@ const SYSTEM_SCHEMAS: Record<Driver, string[]> = {
   sqlite: [],
 };
 
-/** Tables and views with their columns, from information_schema (or SQLite's own catalog). */
-export async function readSchema(c: DbConnection, timeoutMs = 30_000): Promise<SchemaInfo> {
-  const o: RunOpts = { readOnly: true, limit: 100_000, timeoutMs, maxCell: 500 };
+/** A string literal for a catalog query (MySQL and MariaDB read backslashes as escapes). */
+const catalogLiteral = (driver: Driver, s: string) => `'${(isMy(driver) ? s.replace(/\\/g, '\\\\') : s).replace(/'/g, '\'\'')}'`;
+
+/**
+ * Tables and views, from information_schema (or SQLite's own catalog). With `schema`, only that schema, with its
+ * columns. Without, every schema: with columns when there are at most INLINE_COLUMNS tables, else names only (each
+ * schema `loaded: false`; ask again with `schema` for its columns).
+ */
+export async function readSchema(c: DbConnection, timeoutMs = 30_000, only?: string): Promise<SchemaInfo> {
+  const o: RunOpts = { readOnly: true, limit: MAX_TABLES * 50, timeoutMs, maxCell: 500 };
   if (c.driver === 'sqlite') {
     const db = sqliteOpen(c, true, timeoutMs);
     try {
-      const tables = db.prepare('SELECT name, type FROM sqlite_master WHERE type IN (\'table\', \'view\') AND name NOT LIKE \'sqlite_%\' ORDER BY name').all() as { name: string; type: string }[];
-      return { schemas: [{ name: 'main', tables: tables.slice(0, MAX_TABLES).map((t) => ({
+      if (only && only !== 'main') return { schemas: [] };
+      const tables = (db.prepare('SELECT name, type FROM sqlite_master WHERE type IN (\'table\', \'view\') AND name NOT LIKE \'sqlite_%\' ORDER BY name').all() as { name: string; type: string }[]).slice(0, MAX_TABLES);
+      const withColumns = !!only || tables.length <= INLINE_COLUMNS;
+      return { schemas: [{ name: 'main', loaded: withColumns, tables: tables.map((t) => ({
         name: t.name, kind: t.type === 'view' ? 'view' as const : 'table' as const,
-        columns: (db.prepare(`PRAGMA table_info(${JSON.stringify(t.name)})`).all() as any[])
-          .map((col) => ({ name: col.name, type: col.type || '', nullable: !col.notnull, pk: col.pk > 0 })),
+        columns: withColumns ? (db.prepare(`PRAGMA table_info(${JSON.stringify(t.name)})`).all() as any[])
+          .map((col) => ({ name: col.name, type: col.type || '', nullable: !col.notnull, pk: col.pk > 0 })) : [],
       })) }] };
     } finally { db.close(); }
   }
   const skip = SYSTEM_SCHEMAS[c.driver].map((s) => `'${s}'`).join(',');
-  const my = c.driver !== 'postgres';
-  // MySQL: only the database named in the connection, if one is.
-  const where = my && c.database ? 'table_schema = DATABASE()' : `table_schema NOT IN (${skip})`;
-  const [tables, columns, keys] = await runScript(c, [
-    `SELECT table_schema, table_name, table_type FROM information_schema.tables WHERE ${where} ORDER BY table_schema, table_name`,
-    `SELECT table_schema, table_name, column_name, ${my ? 'column_type' : 'data_type'}, is_nullable FROM information_schema.columns WHERE ${where} ORDER BY table_schema, table_name, ordinal_position`,
-    my
-      ? `SELECT table_schema, table_name, column_name FROM information_schema.key_column_usage WHERE constraint_name = 'PRIMARY' AND ${where}`
-      : `SELECT k.table_schema, k.table_name, k.column_name FROM information_schema.table_constraints t JOIN information_schema.key_column_usage k
-           ON k.constraint_name = t.constraint_name AND k.table_schema = t.table_schema AND k.table_name = t.table_name
-         WHERE t.constraint_type = 'PRIMARY KEY' AND t.${where}`,
-  ].join(';\n'), o);
-  const pk = new Set(keys!.rows.map((r) => r.slice(0, 3).join('\u0000')));
+  const my = isMy(c.driver);
+  // One schema; else MySQL: only the database named in the connection, if one is.
+  const where = only ? `table_schema = ${catalogLiteral(c.driver, only)}` : my && c.database ? 'table_schema = DATABASE()' : `table_schema NOT IN (${skip})`;
+  const [tables] = await runScript(c, `SELECT table_schema, table_name, table_type FROM information_schema.tables WHERE ${where} ORDER BY table_schema, table_name`, { ...o, limit: MAX_TABLES });
   const bySchema = new Map<string, Map<string, SchemaTable>>();
-  for (const [schema, name, type] of tables!.rows.slice(0, MAX_TABLES) as string[][]) {
+  for (const [schema, name, type] of tables!.rows as string[][]) {
     if (!bySchema.has(schema!)) bySchema.set(schema!, new Map());
     bySchema.get(schema!)!.set(name!, { name: name!, kind: /view/i.test(type!) ? 'view' : 'table', columns: [] });
   }
-  for (const [schema, table, name, type, nullable] of columns!.rows as string[][]) {
-    bySchema.get(schema!)?.get(table!)?.columns.push({
-      name: name!, type: type!, nullable: nullable === 'YES', pk: pk.has([schema, table, name].join('\u0000')),
-    });
+  const withColumns = !!only || tables!.rows.length <= INLINE_COLUMNS;
+  if (withColumns) {
+    const [columns, keys] = await runScript(c, [
+      `SELECT table_schema, table_name, column_name, ${my ? 'column_type' : 'data_type'}, is_nullable FROM information_schema.columns WHERE ${where} ORDER BY table_schema, table_name, ordinal_position`,
+      my
+        ? `SELECT table_schema, table_name, column_name FROM information_schema.key_column_usage WHERE constraint_name = 'PRIMARY' AND ${where}`
+        : `SELECT k.table_schema, k.table_name, k.column_name FROM information_schema.table_constraints t JOIN information_schema.key_column_usage k
+             ON k.constraint_name = t.constraint_name AND k.table_schema = t.table_schema AND k.table_name = t.table_name
+           WHERE t.constraint_type = 'PRIMARY KEY' AND t.${where}`,
+    ].join(';\n'), o);
+    const pk = new Set(keys!.rows.map((r) => r.slice(0, 3).join('\u0000')));
+    for (const [schema, table, name, type, nullable] of columns!.rows as string[][]) {
+      bySchema.get(schema!)?.get(table!)?.columns.push({
+        name: name!, type: type!, nullable: nullable === 'YES', pk: pk.has([schema, table, name].join('\u0000')),
+      });
+    }
   }
-  return { schemas: [...bySchema].map(([name, t]) => ({ name, tables: [...t.values()] })) };
+  return { schemas: [...bySchema].map(([name, t]) => ({ name, loaded: withColumns, tables: [...t.values()] })) };
 }
 
 // ---------- editing rows (the result grid) ----------

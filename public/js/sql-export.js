@@ -119,12 +119,15 @@ export const FORMATS = [
   { id: 'html', label: 'HTML table', ext: 'html', type: 'text/html', copy: true, build: htmlTable },
 ];
 
+/** A file name without the characters Windows, macOS or Linux refuse (and without the extension, added on download). */
+export const safeFileName = (name) => name.replace(/[\\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 150);
+
 /** Downloads `result` as `format`, named `name.<ext>`. */
 export function download(format, result, ctx, name) {
   const out = format.build(result, ctx);
-  const blob = out instanceof Blob ? out : new Blob([format.bom ? '﻿' : '', out], { type: `${format.type};charset=utf-8` });
+  const blob = out instanceof Blob ? out : new Blob([format.bom ? '\uFEFF' : '', out], { type: `${format.type};charset=utf-8` });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement('a'), { href: url, download: `${name}.${format.ext}`, hidden: true });
+  const a = Object.assign(document.createElement('a'), { href: url, download: `${safeFileName(name) || 'result'}.${format.ext}`, hidden: true });
   document.body.append(a);
   a.click();
   a.remove();

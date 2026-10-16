@@ -17,7 +17,7 @@ function tablesIn(sql, schemas, only) {
   for (const s of schemas || []) {
     for (const t of s.tables) {
       const hit = only ? only.schema === s.name && only.table === t.name : new RegExp(`(^|[^\\w$])${t.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w$]|$)`, 'i').test(sql);
-      if (hit) out.push(`- ${s.name}.${t.name}${t.kind === 'view' ? ' (view)' : ''}: ${t.columns.map((c) => `${c.name} ${c.type}${c.pk ? ' PK' : ''}`).join(', ')}`);
+      if (hit) out.push(`- ${s.name}.${t.name}${t.kind === 'view' ? ' (view)' : ''}${t.columns.length ? `: ${t.columns.map((c) => `${c.name} ${c.type}${c.pk ? ' PK' : ''}`).join(', ')}` : ''}`);
       if (out.length >= MAX_TABLES) return out;
     }
   }

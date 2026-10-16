@@ -559,7 +559,13 @@ connections belong to the panel.
   cover every database listed.
   MySQL and MariaDB need none of this: leave **Database** empty and every database shows as a schema.
 - **Querying**: the tree lists schemas, tables and views with their columns (double-click a table for its first rows;
-  its `⋯` menu also shows its **DDL** in a new console). Each console tab has its connection; `Ctrl Enter` runs the
+  its `⋯` menu also shows its **DDL** in a new console). A big database (over 400 tables) lists every table at once but
+  reads the columns schema by schema, when one is opened or a query needs them (the table list stops at 100 000).
+  What was read (tables, the columns read so far, a server's databases) is kept in the browser (IndexedDB) and shown
+  at once on the next visit, with "read 3h ago" beside it; it is read again on **Refresh** (the connection's `⋯`),
+  after a statement that changes tables (`CREATE`, `ALTER`, `DROP`, ...), when the connection is edited, and by itself
+  in the background once it is a week old.
+  Each console tab has its connection; `Ctrl Enter` runs the
   selection or the statement at the cursor, `Ctrl Shift Enter` the whole console, statement by statement, stopping at
   the first error (the results before it stay). A statement returns at most the row limit (100 to 10 000; the rest is
   never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
@@ -570,8 +576,9 @@ connections belong to the panel.
   `Ctrl Shift '`) shows only the results, full screen (the browser's own full screen where it allows it); `Esc`
   brings the rest back. A result's rows (those it holds, up to the row limit) copy or download as CSV (with a BOM, so
   Excel reads UTF-8), TSV, Excel (`.xlsx`, header bold and frozen), JSON, JSON Lines, SQL `INSERT` statements (for the
-  result's table, in the connection's dialect), a Markdown or an HTML table. Consoles are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
-  in one go.
+  result's table, in the connection's dialect), a Markdown or an HTML table; the download asks for a file name
+  (the tab's and the time, to change). Consoles are kept in the browser. Every run opens its own connection, so a
+  transaction lasts one run: `BEGIN; ...; COMMIT;` in one go.
 - **Every row at once**: an `UPDATE` or `DELETE` without a `WHERE` of its own (one in a string, a comment or a
   subquery does not count), and `TRUNCATE`, does not run straight away. The server holds the whole script and the
   panel asks first, naming each such statement and how many rows its table has now; **Run anyway** runs it. Agents

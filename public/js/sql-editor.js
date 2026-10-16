@@ -13,7 +13,8 @@ import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
 import { ResultGrid } from './sql-grid.js';
 import { AskAgent, contextFor } from './sql-ask.js';
-import { download, FORMATS } from './sql-export.js';
+import { download, FORMATS, safeFileName } from './sql-export.js';
+import { cacheForget, cacheGet, cachePut } from './sql-cache.js';
 
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
@@ -71,6 +72,8 @@ const sq = {
   /** the workspaces ({ id, name, conns }) and the one shown; each has its own consoles */
   workspaces: signal(null),
   ws: signal(null),
+  /** the download dialog: { format, result, ctx, name (suggested) } */
+  download: signal(null),
   /** the workspace dialog: { mode: 'new' | 'rename' | 'conns' } */
   wsDialog: signal(null),
 };
@@ -211,29 +214,129 @@ async function loadConns() {
 /** skey -> the schema read in flight, so a second caller waits for the same one. */
 const loadingSchemas = new Map();
 
+/** What was read about a database is read again by itself once it is this old (else on Refresh or after DDL). */
+const STALE_MS = 7 * 24 * 3600 * 1000;
+/** The key of a connection's database list in the browser's memory (sql-cache.js). */
+const dbsKey = (connId) => `${connId}/\u0001databases`;
+
+/**
+ * The tables of a database: from memory, else from what this browser kept (shown at once; read again in the
+ * background once a week old), else read from the server and kept. `force` (Refresh, DDL) reads it again, showing the
+ * old list meanwhile.
+ */
 function loadSchema(connId, db = '', force = false) {
   const key = skey(connId, db);
-  const cur = sq.schemas.value.get(key);
   if (loadingSchemas.has(key)) return loadingSchemas.get(key);
+  const cur = sq.schemas.value.get(key);
   if (cur?.data && !force) return Promise.resolve();
   const set = (v) => { const m = new Map(sq.schemas.value); m.set(key, v); sq.schemas.value = m; };
-  set({ ...cur, loading: true });
-  const p = (async () => {
-    try { set({ data: await api(`/api/db/connections/${connId}/schema${dbParam(db)}`) }); } catch (e) { set({ error: e.message }); }
+  const done = () => {
     loadingSchemas.delete(key);
     const c = activeConsole();
     if (c?.connId === connId && (c.database || '') === db) applyLanguage();
+  };
+  const p = (async () => {
+    if (!force && !cur?.data) {
+      const kept = await cacheGet(key);
+      if (kept?.data) {
+        set({ data: kept.data, at: kept.at });
+        done();
+        if (Date.now() - kept.at > STALE_MS) void loadSchema(connId, db, true);
+        return;
+      }
+    }
+    set({ ...sq.schemas.value.get(key), loading: true, error: null });
+    try {
+      const data = await api(`/api/db/connections/${connId}/schema${dbParam(db)}`);
+      const at = Date.now();
+      set({ data, at });
+      void cachePut(key, data, at);
+    } catch (e) {
+      const old = sq.schemas.value.get(key);
+      // A failed refresh keeps the list it had.
+      if (old?.data) { set({ ...old, loading: false }); toast(e.message, 'err'); } else set({ error: e.message });
+    }
+    done();
   })();
   loadingSchemas.set(key, p);
   return p;
 }
 
+/** skey#schema -> the columns read in flight. */
+const loadingColumns = new Map();
+
+/**
+ * Reads one schema's columns into the table list of its database, where a big database came without them (each
+ * schema `loaded: false`). Resolves once they are there.
+ */
+function loadColumns(connId, db, name) {
+  const key = `${skey(connId, db)}#${name}`;
+  const sch = sq.schemas.value.get(skey(connId, db))?.data?.schemas.find((x) => x.name === name);
+  if (!sch || sch.loaded) return Promise.resolve();
+  if (loadingColumns.has(key)) return loadingColumns.get(key);
+  const p = (async () => {
+    try {
+      const r = await api(`/api/db/connections/${connId}/schema?schema=${encodeURIComponent(name)}${db ? `&database=${encodeURIComponent(db)}` : ''}`);
+      const cur = sq.schemas.value.get(skey(connId, db));
+      if (cur?.data) {
+        const fresh = r.schemas[0];
+        const m = new Map(sq.schemas.value);
+        const next = { ...cur, data: { schemas: cur.data.schemas.map((x) => (x.name !== name ? x : fresh ? { ...fresh, loaded: true } : { ...x, loaded: true })) } };
+        m.set(skey(connId, db), next);
+        sq.schemas.value = m;
+        if (next.at) void cachePut(skey(connId, db), next.data, next.at);
+      }
+    } catch (e) { toast(e.message, 'err'); }
+    loadingColumns.delete(key);
+    const c = activeConsole();
+    if (c?.connId === connId && (c.database || '') === db) applyLanguage();
+  })();
+  loadingColumns.set(key, p);
+  return p;
+}
+
+/** The databases of a connection that opens every one: kept in this browser like the tables (see loadSchema). */
 async function loadDatabases(connId, force = false) {
   const cur = sq.dbs.value.get(connId);
   if (cur && (cur.loading || (cur.list && !force))) return;
   const set = (v) => { const m = new Map(sq.dbs.value); m.set(connId, v); sq.dbs.value = m; };
-  set({ ...cur, loading: true });
-  try { set({ list: (await api(`/api/db/connections/${connId}/databases`)).databases }); } catch (e) { set({ error: e.message }); }
+  if (!force && !cur?.list) {
+    const kept = await cacheGet(dbsKey(connId));
+    if (kept?.data) {
+      set({ list: kept.data, at: kept.at });
+      if (Date.now() - kept.at > STALE_MS) void loadDatabases(connId, true);
+      return;
+    }
+  }
+  set({ ...sq.dbs.value.get(connId), loading: true, error: null });
+  try {
+    const list = (await api(`/api/db/connections/${connId}/databases`)).databases;
+    const at = Date.now();
+    set({ list, at });
+    void cachePut(dbsKey(connId), list, at);
+  } catch (e) {
+    const old = sq.dbs.value.get(connId);
+    if (old?.list) { set({ ...old, loading: false }); toast(e.message, 'err'); } else set({ error: e.message });
+  }
+}
+
+/** Forgets what was read about a connection, here and in this browser (its address or database changed, or it went). */
+async function forgetRead(connId) {
+  await cacheForget(connId);
+  const m = new Map(sq.schemas.value);
+  for (const k of m.keys()) if (k.startsWith(`${connId}/`)) m.delete(k);
+  sq.schemas.value = m;
+  const d = new Map(sq.dbs.value);
+  d.delete(connId);
+  sq.dbs.value = d;
+}
+
+/** "read 3h ago", for the tree. */
+function readAgo(at) {
+  if (!at) return '';
+  const s = Math.max(0, (Date.now() - at) / 1000);
+  const n = s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+  return `read ${n}`;
 }
 
 /** The SQL language of the active console's connection, completing its tables and columns. */
@@ -382,6 +485,25 @@ function tableMeta(conn, db, result) {
   return { schema, table: t.name, pk, where: WHERE_PART.exec(tail)?.[1]?.trim() ?? '', order: null };
 }
 
+/**
+ * Reads the columns of the schemas the results' `SELECT * FROM <table>` may come from (a big database comes without
+ * them), so tableMeta can tell the table's primary key.
+ */
+async function columnsFor(conn, db, results) {
+  const data = sq.schemas.value.get(skey(conn.id, db))?.data;
+  if (!data) return;
+  const want = new Set();
+  for (const r of results) {
+    const m = r.columns.length && TABLE_SELECT.exec(r.sql);
+    if (!m) continue;
+    const [, a, b] = m;
+    for (const sch of data.schemas) {
+      if (!sch.loaded && (b ? sameName(a, sch.name) : sch.tables.some((t) => sameName(a, t.name)))) want.add(sch.name);
+    }
+  }
+  await Promise.all([...want].slice(0, 3).map((name) => loadColumns(conn.id, db, name)));
+}
+
 /** Remembers a run for the History dialog (the last 300, the same statement once). */
 function remember(entry) {
   const list = pref(HISTORY, []);
@@ -410,8 +532,9 @@ async function run(all, script, confirmed = false) {
   const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, ws: sq.ws.value, at: t0, ms: Date.now() - t0, ok, rows });
   try {
     const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(confirmed && { confirmed }) } });
-    // A table's rows need its primary key: the table list must be there to tell.
+    // A table's rows need its primary key: the table list (and on a big database its schema's columns) must be there.
     await loadSchema(conn.id, db);
+    await columnsFor(conn, db, r.results);
     setRun(c.id, { running: false, readOnly: r.readOnly, error: null, ...withResults(sq.runs.value.get(c.id), conn, db, r.results) });
     note(true, r.results.reduce((n, x) => n + x.rows.length, 0));
     if (r.results.some((x) => DDL.test(x.sql))) loadSchema(conn.id, db, true);
@@ -543,7 +666,10 @@ function askAboutRun() {
 /** Copy and Download, each a menu of the formats in sql-export.js. */
 function ExportMenus({ result, tab, conn }) {
   const ctx = { driver: conn?.driver, table: tab.meta ? { schema: tab.meta.schema, table: tab.meta.table } : null, sheet: tabLabel(tab) };
-  const name = tabLabel(tab).replace(/[^\w-]+/g, '_') || 'result';
+  // The suggested name: the tab's, and when (the dialog lets one change it).
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const name = `${safeFileName(tabLabel(tab)).replace(/\s+/g, '_') || 'result'}_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`;
   const rows = `${result.rows.length}${result.truncated ? ' (the row limit)' : ''} row${result.rows.length === 1 ? '' : 's'}`;
   return html`
     <${Menu} icon="copy" label="Copy rows as…" buttonClass="xs">
@@ -552,8 +678,28 @@ function ExportMenus({ result, tab, conn }) {
     <//>
     <${Menu} icon="arrow-down-to-line" label="Download as…" buttonClass="xs">
       <div class="menu-label">Download ${rows} as</div>
-      ${FORMATS.map((f) => html`<${MenuItem} key=${f.id} onClick=${() => download(f, result, ctx, name)}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
+      ${FORMATS.map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
     <//>`;
+}
+
+/** The file name of a download, suggested and changeable, then Download. */
+function DownloadDialog({ format, result, ctx, name }) {
+  const [file, setFile] = useState(name);
+  const close = () => { sq.download.value = null; };
+  const go = () => { download(format, result, ctx, file); close(); };
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Download ${format.label.replace(/ \(.*/, '')}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    <${Field} label="File name" hint=${`${result.rows.length}${result.truncated ? ' (the row limit)' : ''} row${result.rows.length === 1 ? '' : 's'}. Characters a file name cannot hold become _.`}>
+      <div class="sql-file-name">
+        <input class="mono" value=${file} autofocus onFocus=${(e) => e.currentTarget.select()} onInput=${(e) => setFile(e.currentTarget.value)}
+          onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } }} />
+        <span class="mono dim">.${format.ext}</span>
+      </div><//>
+    <div class="row end">
+      <button class="btn" onClick=${close}>Cancel</button>
+      <button class="btn primary" disabled=${!safeFileName(file)} onClick=${go}><${Icon} name="arrow-down-to-line" />Download</button>
+    </div>
+  </div>`;
 }
 
 const summary = (r) => (r.columns.length
@@ -680,7 +826,8 @@ async function openDdl(conn, db, schema, table) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-function askAboutTable(conn, db, schema, table) {
+async function askAboutTable(conn, db, schema, table) {
+  await loadColumns(conn.id, db, schema);
   const own = db || (multi(conn) ? ownDb(conn) : '');
   sq.ask.value = {
     suggestion: `What does ${table} hold, and how is it used?`,
@@ -697,8 +844,9 @@ function Tables({ conn, db, depth }) {
   if (!s?.data) return s?.loading ? note(depth - 1, 'dim', 'Loading…') : null;
   const schemas = s.data.schemas;
   if (!schemas.length) return note(depth - 1, 'dim', 'No tables.');
+  if (schemas.length === 1 && !schemas[0].loaded) loadColumns(conn.id, db, schemas[0].name);
   // One schema (SQLite, a MySQL connection to one database): its tables right under the connection.
-  if (schemas.length === 1) return schemas[0].tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${schemas[0].name} t=${t} depth=${depth} />`);
+  if (schemas.length === 1) return schemas[0].tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${schemas[0].name} loaded=${schemas[0].loaded} t=${t} depth=${depth} />`);
   return schemas.map((sch) => html`<${SchemaNode} key=${sch.name} conn=${conn} db=${db} sch=${sch} depth=${depth} />`);
 }
 
@@ -721,6 +869,7 @@ function DbNode({ conn, name }) {
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name="database" class="tree-icon" /><span class="tree-name">${name}</span>
       ${!db && html`<span class="sql-type">default</span>`}
+      ${open && sq.schemas.value.get(skey(conn.id, db))?.at && html`<span class="sql-read" title="When its tables were read; Refresh in the connection's menu reads them again">${readAgo(sq.schemas.value.get(skey(conn.id, db)).at)}</span>`}
       ${sq.schemas.value.get(skey(conn.id, db))?.loading && html`<${Spinner} class="tiny" />`}
     </div>
     ${open && html`<${Tables} conn=${conn} db=${db} depth=${2} />`}
@@ -731,9 +880,11 @@ function ConnNode({ conn }) {
   const key = `c:${conn.id}`;
   const open = sq.open.value.has(key);
   const loading = multi(conn) ? sq.dbs.value.get(conn.id)?.loading : sq.schemas.value.get(skey(conn.id))?.loading;
+  const readAt = multi(conn) ? sq.dbs.value.get(conn.id)?.at : sq.schemas.value.get(skey(conn.id))?.at;
   const remove = guarded(async () => {
     if (!await confirmDialog({ title: `Remove ${conn.label}?`, message: 'The connection and its agent log go. The database itself is untouched.', confirmText: 'Remove', danger: true })) return;
     await api(`/api/db/connections/${conn.id}`, { method: 'DELETE' });
+    await forgetRead(conn.id);
     await loadConns();
   });
   // Every database (and table list) of it that was read before is read again.
@@ -752,10 +903,11 @@ function ConnNode({ conn }) {
       ${conn.readOnly && html`<span class="sql-tag" title="Read-only"><${Icon} name="eye" /></span>`}
       ${agentTag(conn)}
       ${loading && html`<${Spinner} class="tiny" />`}
+      ${open && !loading && readAt && html`<span class="sql-read" title="When it was read; Refresh (in its menu) reads it again">${readAgo(readAt)}</span>`}
       <span onClick=${(e) => e.stopPropagation()}>
         <${Menu} label="Connection options" buttonClass="xs tree-more">
           <${MenuItem} icon="square-code" onClick=${() => newConsole(conn.id)}>New console<//>
-          <${MenuItem} icon="refresh-cw" onClick=${refresh}>Refresh<//>
+          <${MenuItem} icon="refresh-cw" title="Read its databases, tables and columns again from the server" onClick=${refresh}>Refresh<//>
           ${isAdmin.value && html`<div class="menu-sep"></div>
             <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
             ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
@@ -771,16 +923,18 @@ function ConnNode({ conn }) {
 function SchemaNode({ conn, db, sch, depth }) {
   const key = `s:${conn.id}:${db}:${sch.name}`;
   const open = sq.open.value.has(key);
+  // A big database's columns come schema by schema, when one is opened.
+  useEffect(() => { if (open && !sch.loaded) loadColumns(conn.id, db, sch.name); }, [open, sch.loaded]);
   return html`<div>
     <div class="tree-row" style=${{ '--depth': depth }} aria-expanded=${open} onClick=${() => toggleOpen(key)}>
       <span class="tree-twisty"><${Icon} name=${open ? 'chevron-down' : 'chevron-right'} class="tiny" /></span>
       <${Icon} name="folder" class="tree-icon" /><span class="tree-name">${sch.name}</span><span class="sr-count">${sch.tables.length}</span>
     </div>
-    ${open && sch.tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${sch.name} t=${t} depth=${depth + 1} />`)}
+    ${open && sch.tables.map((t) => html`<${TableNode} key=${t.name} conn=${conn} db=${db} schema=${sch.name} loaded=${sch.loaded} t=${t} depth=${depth + 1} />`)}
   </div>`;
 }
 
-function TableNode({ conn, db, schema, t, depth }) {
+function TableNode({ conn, db, schema, loaded, t, depth }) {
   const key = `t:${conn.id}:${db}:${schema}:${t.name}`;
   const open = sq.open.value.has(key);
   return html`<div>
@@ -795,6 +949,7 @@ function TableNode({ conn, db, schema, t, depth }) {
         <//>
       </span>
     </div>
+    ${open && !loaded && note(depth, 'dim', 'Loading columns…')}
     ${open && t.columns.map((col) => html`<div key=${col.name} class="tree-row sql-col" style=${{ '--depth': depth + 1 }}>
       <span class="tree-twisty"></span><${Icon} name=${col.pk ? 'key-round' : 'file'} class=${cx('tree-icon', col.pk && 'pk')} />
       <span class="tree-name">${col.name}</span><span class="sql-type">${col.type}${col.nullable ? '' : ' · not null'}</span>
@@ -922,6 +1077,7 @@ function ConnectionForm({ conn }) {
       await api(`/api/db/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: { ...body(), ...(!conn && sq.ws.value && { workspaces: [sq.ws.value] }) } });
       await loadWorkspaces();
       await loadConns();
+      await forgetRead(id);
       loadSchema(id, '', true);
       if (f.driver === 'postgres' && f.allDatabases) loadDatabases(id, true);
       toast(`${f.label || id} saved`);
@@ -1211,6 +1367,8 @@ export function SqlEditor() {
       ${sq.log.value && html`<${AgentLog} id=${sq.log.value} />`}<//>
     <${Modal} open=${!!sq.wsDialog.value} label="Workspace" class="dialog sql-dialog" onClose=${() => { sq.wsDialog.value = null; }}>
       ${sq.wsDialog.value && html`<${WorkspaceDialog} key=${sq.wsDialog.value.mode} mode=${sq.wsDialog.value.mode} />`}<//>
+    <${Modal} open=${!!sq.download.value} label="Download" class="dialog sql-dialog" onClose=${() => { sq.download.value = null; }}>
+      ${sq.download.value && html`<${DownloadDialog} ...${sq.download.value} />`}<//>
     <${Modal} open=${!!sq.unsafe.value} label="Change every row?" class="dialog sql-dialog" onClose=${() => { sq.unsafe.value = null; }}>
       ${sq.unsafe.value && html`<${UnsafeConfirm} ...${sq.unsafe.value} />`}<//>
     <${Modal} open=${sq.history.value} label="Query history" class="dialog sql-dialog" onClose=${() => { sq.history.value = false; }}>
