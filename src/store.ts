@@ -289,6 +289,8 @@ export class Store {
   }
   /** The sub-agents a chat's agent started (that still exist). */
   countChildren(id: string): number { return this.get<{ n: number }>('SELECT count(*) AS n FROM conversations WHERE parent=?', id)!.n; }
+  /** The sub-agents a chat's agent started, in any project. */
+  listChildren(id: string): Conversation[] { return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE parent=? ORDER BY c.rowid`, id); }
   /** How many sub-agent levels a chat is below a chat a person started (0 for that one). */
   depthOf(id: string): number {
     let depth = 0;

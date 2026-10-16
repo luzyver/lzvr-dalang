@@ -362,6 +362,25 @@ describe('sub-agents', () => {
     expect(reports(t, a.id)[0]!.prompt).toContain(`conversation ${sub.id}`);
   });
 
+  it('hold a middle sub-agent\'s report until the sub-agents it gave work to are done', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const sub = (await call(await t.connectAs(a.id), 'create_conversation', { project_id: p.id })).json;
+    const subsub = (await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).json;
+    t.store.enqueue(subsub.id, 'deep work', [], '', '', sub.id); // its parent's work, not started yet
+    await call(await t.connectAs(a.id), 'send_prompt', { conversation_id: sub.id, prompt: 'delegate it' });
+    await until(() => turnsDone(t.store, sub.id, 1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reports(t, a.id)).toEqual([]); // sub ended its turn, but subsub still owes it an answer
+
+    t.dispatcher.kick(subsub.id);
+    await until(() => reports(t, sub.id).length === 1 && turnsDone(t.store, sub.id, 2));
+    await until(() => reports(t, a.id).length === 1 && turnsDone(t.store, a.id, 1));
+    expect(reports(t, a.id)[0]!.prompt).toContain(`conversation ${sub.id}`);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reports(t, a.id)).toHaveLength(1);
+  });
+
   it('stay within the admin\'s limits', async () => {
     const t = await boot();
     const { p, a } = await twoConvs(await t.connect());

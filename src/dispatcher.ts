@@ -83,6 +83,10 @@ export class Dispatcher {
   readonly claudeAccounts: Accounts;
   private modelCache = new Map<Backend, { at: number; list: ModelInfo[] }>();
   private active = new Map<string, AbortController>();
+  /** The queue item each running turn came from (who asked for it). */
+  private running = new Map<string, QueueItem>();
+  /** Chats holding back their report to their parent until the sub-agents they gave work to are done. */
+  private awaiting = new Set<string>();
   private bus = new EventEmitter();
   private stopping = false;
   private mcpTokens = new Map<string, { convId: string; author: string }>(); // token -> the turn it was minted for
@@ -140,10 +144,12 @@ export class Dispatcher {
     if (!item) return;
     const ac = new AbortController();
     this.active.set(convId, ac);
+    this.running.set(convId, item);
     void this.run(convId, item, ac)
       .catch((e) => console.error('dispatcher run failed', e))
       .finally(() => {
         this.active.delete(convId);
+        this.running.delete(convId);
         try { this.kick(convId); } catch (e) { console.error('dispatcher kick failed', e); } // must not become an unhandled rejection
       });
   }
@@ -460,19 +466,33 @@ export class Dispatcher {
   }
 
   /**
+   * Whether sub-agent `c` still owes `boss` (its parent) an answer: it runs or has queued a prompt `boss` sent, or holds
+   * back its report until its own sub-agents are done. Work someone else gave it does not count: it never reports back.
+   */
+  private workingFor(c: Conversation, boss: string): boolean {
+    return this.running.get(c.id)?.from_conv === boss || this.store.listQueue(c.id).some((q) => q.from_conv === boss)
+      || (c.parent === boss && this.awaiting.has(c.id));
+  }
+
+  /**
    * A sub-agent's turn that its parent asked for comes back to the parent as a new prompt, so the parent goes on
-   * without polling. It waits until the sub-agent has nothing more of the parent's queued: one report per batch.
-   * The parent's turn that reads it reports in turn to the parent's own parent, if any.
+   * without polling. It waits until the sub-agent has nothing more of the parent's queued, and until the sub-agents it
+   * gave work to itself are done: their reports wake it again, and the turn that reads the last one reports up (those
+   * turns are queued as asked for by its parent). So the parent gets one report per batch, once everything below is done.
    */
   private reportToParent(convId: string, item: QueueItem, status: string, lastMessage: string): void {
     const conv = this.store.getConversation(convId);
     if (!conv?.parent || item.from_conv !== conv.parent) return;
     const parent = this.store.getConversation(conv.parent);
     if (!parent || this.store.listQueue(convId).some((q) => q.from_conv === parent.id)) return;
+    if (status === 'completed' && this.store.listChildren(convId).some((c) => this.workingFor(c, convId))) {
+      this.awaiting.add(convId);
+      return;
+    }
+    this.awaiting.delete(convId);
     const model = conv.model || this.store.getDefaultModel(conv.backend) || 'the CLI default';
     const answer = lastMessage.length > REPORT_MAX ? `${lastMessage.slice(0, REPORT_MAX)}\n[cut here; get_events has the rest]` : lastMessage;
-    const busy = this.store.listConversations(parent.project_id)
-      .filter((c) => c.parent === parent.id && c.id !== convId && (this.isRunning(c.id) || this.store.listQueue(c.id).length)).length;
+    const busy = this.store.listChildren(parent.id).filter((c) => c.id !== convId && this.workingFor(c, parent.id)).length;
     const text = `[Sub-agent] "${conv.title ?? 'untitled'}" (conversation ${conv.id}, model ${model}) `
       + `${status === 'completed' ? 'finished' : `stopped: ${status}`}.${busy ? ` ${busy} other sub-agent(s) of yours are still working.` : ''}\n\n`
       + `Its last answer:\n\n${answer || '(none)'}\n\n`

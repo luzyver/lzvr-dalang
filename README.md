@@ -485,8 +485,9 @@ only when a result falls short.
 with `worktree`, it gets its own branch and folder). In the sidebar each sub-agent sits under the chat that started it,
 with its model, and folds away like a project. A prompt an agent sends its own sub-agent in the same project runs
 without approval, and when the sub-agent is done (with everything its parent queued) its last answer comes back to the
-parent as a new prompt, so the parent goes on without polling; a report read by a sub-agent goes on up to its own
-parent. Prompts someone else sends a sub-agent are not reported. **Settings → Model & effort → Orchestrator** sets how many
+parent as a new prompt, so the parent goes on without polling. A sub-agent that handed work to sub-agents of its own
+holds its report until they have all answered, and the turn that reads their last answer reports up instead, so a
+parent gets no "finished" while work below it still runs. Prompts someone else sends a sub-agent are not reported. **Settings → Model & effort → Orchestrator** sets how many
 sub-agents one chat may have (default 5, 0 turns them off), how many levels deep (default 2), and whether agents may
 send their own sub-agents work without approval (default on).
 
