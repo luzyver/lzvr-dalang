@@ -65,6 +65,14 @@ export function createDbApproval(store: Store, a: Omit<DbApproval, 'id' | 'at' |
   saveDbApprovals(store, [...list, next]);
   return next;
 }
+/** Changes one approval in the list as stored now: others may have come or been decided meanwhile. */
+function updateDbApproval(store: Store, id: number, patch: Partial<DbApproval>): void {
+  const list = readDbApprovals(store);
+  const a = list.find((x) => x.id === id);
+  if (!a) return;
+  Object.assign(a, patch);
+  saveDbApprovals(store, list);
+}
 
 /** A short account of what a script did, for a chat message and the approval card. */
 export const describeResults = (results: QueryResult[]) => results.map((r, i) => `${results.length > 1 ? `${i + 1}. ` : ''}${
@@ -374,14 +382,16 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   const where = (a: DbApproval) => `connection "${a.conn}"${a.database ? `, database "${a.database}"` : ''}`;
   const fence = '`'.repeat(3);
   const sqlBlock = (a: DbApproval) => `\n\n${fence}sql\n${a.sql}\n${fence}`;
+  // Approvals whose write is running now: another Approve (a second admin, a double click) or a Reject must wait for it.
+  const running = new Set<number>();
   const decide = (verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
-    const list = readDbApprovals(store);
-    const a = list.find((x) => x.id === Number(req.params.id));
+    const a = readDbApprovals(store).find((x) => x.id === Number(req.params.id));
     if (!a || !visibleApproval(req.user!, a)) return reply.code(404).send({ error: 'not found' });
+    if (running.has(a.id)) return reply.code(409).send({ error: 'already being run' });
     if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
     const done = (patch: Partial<DbApproval>) => {
       Object.assign(a, { decidedBy: req.user!.name, decidedAt: Date.now(), ...patch });
-      saveDbApprovals(store, list);
+      updateDbApproval(store, a.id, a);
     };
     if (verb === 'reject') {
       done({ status: 'rejected' });
@@ -392,6 +402,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     if (!c || c.readOnly || (c.agent !== 'approve' && c.agent !== 'read-write')) {
       return reply.code(409).send({ error: 'this connection no longer lets agents write; reject it instead' });
     }
+    running.add(a.id);
     const t0 = Date.now();
     const log = (ok: boolean, rows: number, error?: string) => logDbQuery(store, c.id, {
       at: t0, who: `${a.who || 'an agent'} (approved by ${req.user!.name})`, conv: a.conv, ...(a.database && { database: a.database }),
@@ -410,6 +421,8 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       log(false, 0, msg);
       done({ status: 'failed', outcome: msg });
       tellChat(a, `[SQL editor] An admin approved your write on ${where(a)}, but it failed. Statements before the failing one did run.${sqlBlock(a)}\n\nError: ${msg}`);
+    } finally {
+      running.delete(a.id);
     }
     return a;
   };

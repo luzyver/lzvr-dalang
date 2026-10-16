@@ -77,13 +77,17 @@ export async function openTunnel(ssh: SshConf, target: { host: string; port: num
     sockets.add(sock);
     sock.on('close', () => sockets.delete(sock));
     sock.on('error', () => sock.destroy());
-    client.forwardOut('127.0.0.1', sock.remotePort ?? 0, target.host, target.port, (err, stream) => {
-      if (err) { sock.destroy(); return; }
-      stream.on('error', () => sock.destroy());
-      stream.on('close', () => sock.destroy());
-      sock.on('close', () => stream.end());
-      sock.pipe(stream).pipe(sock);
-    });
+    try {
+      client.forwardOut('127.0.0.1', sock.remotePort ?? 0, target.host, target.port, (err, stream) => {
+        if (err) { sock.destroy(); return; }
+        stream.on('error', () => sock.destroy());
+        stream.on('close', () => sock.destroy());
+        sock.on('close', () => stream.end());
+        sock.pipe(stream).pipe(sock);
+      });
+    } catch {
+      sock.destroy(); // the SSH connection dropped ("Not connected" is thrown, not passed to the callback)
+    }
   });
   try {
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve()); });

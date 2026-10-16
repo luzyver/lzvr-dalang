@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ObjectId } from 'mongodb';
 import { agentRefusal, findUnsafe, statementsOf } from '../src/databases.js';
-import { parseMongo, redisDb, redisWords } from '../src/nosql.js';
+import { aggregateArgs, parseMongo, pipelineWrites, redisDb, redisWords } from '../src/nosql.js';
 
 describe('mongosh-style commands', () => {
   it('reads a collection, its calls and mongosh\'s literals, without running anything', () => {
@@ -53,6 +53,16 @@ show dbs`, 'mongodb')).toEqual(['db.a.find({\n  x: 1;\n})', 'db.b.find({ s: "db.
     expect(agentRefusal('db.u.find({ $where: "1" })', 'mongodb', true)).toMatch(/JavaScript/);
     expect(agentRefusal('db.u.aggregate([{ $group: { _id: 1, x: { $accumulator: {} } } }])', 'mongodb', false)).toMatch(/JavaScript/);
     expect(agentRefusal('db.u.find({})', 'mongodb', true)).toBeNull();
+  });
+
+  it('sees $out and $merge in an aggregate whether its stages come in an array or one by one', () => {
+    const writes = (s: string) => pipelineWrites(aggregateArgs(parseMongo(s).calls[0]!.args).pipeline);
+    expect(writes('db.u.aggregate([{ $match: {} }, { $out: "copy" }])')).toBe(true);
+    expect(writes('db.u.aggregate({ $out: "copy" })')).toBe(true);
+    expect(writes('db.u.aggregate({ $match: {} }, { $merge: { into: "copy" } })')).toBe(true);
+    expect(writes('db.u.aggregate({ $match: {} }, { $limit: 1 })')).toBe(false);
+    expect(aggregateArgs(parseMongo('db.u.aggregate({ $match: {} }, { $limit: 1 })').calls[0]!.args).options).toEqual({});
+    expect(aggregateArgs(parseMongo('db.u.aggregate([{ $match: {} }], { allowDiskUse: true })').calls[0]!.args).options).toEqual({ allowDiskUse: true });
   });
 });
 

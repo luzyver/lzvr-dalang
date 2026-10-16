@@ -276,7 +276,11 @@ const valueTable = (sql: string, column: string, values: unknown[], o: RunOpts, 
 const writeResult = (sql: string, affected: number, ms: number, note?: string): QueryResult => ({ sql, columns: [], rows: [], affected, truncated: false, ms, ...(note && { note }) });
 
 /** What an aggregate pipeline writes ($out, $merge), if anything. */
-const pipelineWrites = (pipeline: unknown) => Array.isArray(pipeline) && pipeline.some((s) => s && typeof s === 'object' && ('$out' in s || '$merge' in s));
+export const pipelineWrites = (pipeline: unknown) => Array.isArray(pipeline) && pipeline.some((s) => s && typeof s === 'object' && ('$out' in s || '$merge' in s));
+/** An aggregate's pipeline and options: `aggregate([stages], options)`, or mongosh's `aggregate(stage, stage, ...)`. */
+export const aggregateArgs = (a: unknown[]): { pipeline: object[]; options: object } => Array.isArray(a[0])
+  ? { pipeline: [...a[0]], options: a[1] && typeof a[1] === 'object' && !Array.isArray(a[1]) ? a[1] : {} }
+  : { pipeline: a.filter((x): x is object => !!x && typeof x === 'object'), options: {} };
 
 async function mongoStatement(client: MongoClient, c: DbConnection, sql: string, o: RunOpts): Promise<QueryResult> {
   const cmd = parseMongo(sql);
@@ -316,7 +320,7 @@ async function mongoStatement(client: MongoClient, c: DbConnection, sql: string,
   if (!MONGO_READS.has(first.name) && !MONGO_WRITES.has(first.name)) {
     throw refuse(`.${first.name}() is not supported here (reads: ${[...MONGO_READS].join(', ')}; writes: ${[...MONGO_WRITES].join(', ')})`);
   }
-  if (o.readOnly && (MONGO_WRITES.has(first.name) || (first.name === 'aggregate' && pipelineWrites(a[0])))) {
+  if (o.readOnly && (MONGO_WRITES.has(first.name) || (first.name === 'aggregate' && pipelineWrites(aggregateArgs(a).pipeline)))) {
     throw refuse(`${first.name === 'aggregate' ? 'an aggregate with $out or $merge' : `.${first.name}()`} writes, and this run is read-only`, true);
   }
   for (const s of steps) if (!CURSOR_STEPS.has(s.name)) throw refuse(`.${s.name}() after .${first.name}() is not supported here`);
@@ -346,10 +350,10 @@ async function mongoStatement(client: MongoClient, c: DbConnection, sql: string,
       return documentsTable(sql, doc ? [doc] : [], o, ms(), false);
     }
     case 'aggregate': {
-      const pipeline = Array.isArray(a[0]) ? [...a[0]] : a.filter((x) => x && typeof x === 'object');
+      const { pipeline, options } = aggregateArgs(a);
       const writes = pipelineWrites(pipeline);
       if (!writes) pipeline.push({ $limit: o.limit + 1 });
-      const docs = await coll.aggregate(pipeline, { ...(a[1] && !Array.isArray(a[1]) ? a[1] : {}), maxTimeMS: o.timeoutMs }).toArray();
+      const docs = await coll.aggregate(pipeline, { ...options, maxTimeMS: o.timeoutMs }).toArray();
       if (writes) return writeResult(sql, 0, ms(), 'the pipeline wrote its output');
       return documentsTable(sql, docs.slice(0, o.limit), o, ms(), docs.length > o.limit);
     }

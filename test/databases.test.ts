@@ -345,6 +345,20 @@ describe('SQL editor connections for agents', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/reject', headers: AUTH })).statusCode).toBe(409);
   });
 
+  it('runs an approved write once when approved twice at the same time, and keeps the approvals that wait', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const a = await t.agent();
+    await a.call('db_query', { connection: 'app', sql: "INSERT INTO users (name) VALUES ('cy')" });
+    await a.call('db_query', { connection: 'app', sql: "INSERT INTO users (name) VALUES ('dee')" });
+    const approve = () => t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH });
+    const codes = (await Promise.all([approve(), approve()])).map((r) => r.statusCode).sort();
+    expect(codes).toEqual([200, 409]);
+    expect((await t.query('app', "SELECT count(*) FROM users WHERE name = 'cy'")).json().results[0].rows).toEqual([[1]]);
+    const pending = (await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json();
+    expect(pending.map((x: { id: number }) => x.id)).toEqual([2]);
+  });
+
   it('refuses an agent\'s write without WHERE on a read-write connection, and flags it on an approval card', async () => {
     const t = await boot();
     await t.put('app', { agent: 'read-write' });
