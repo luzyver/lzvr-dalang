@@ -11,7 +11,7 @@ import type { Push } from './push.js';
 import type { Store } from './store.js';
 import { canAccess, SANDBOXES } from './util.js';
 
-type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined };
+type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined; clickupForAll?: () => boolean };
 
 const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
@@ -169,7 +169,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   // An agent inside a conversation is restricted most; otherwise the caller's role decides.
   const hidden = source ? (name: string) => !AGENT_TOOLS.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
-  const cu = owner ? d.clickup?.() : undefined;
+  const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
   if (cu) clickupTools(server, cu);
   return server;
 }
@@ -179,8 +179,9 @@ const WORKSPACES = z.array(z.string()).optional()
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
- * Read-only ClickUp Chat tools. They read with the owner's personal ClickUp token, so only the owner gets them: the
- * main token or the owner's own sign-in from outside, and inside a chat only during a turn the owner sent.
+ * Read-only ClickUp Chat tools. They read with the owner's personal ClickUp token, so unless the owner marked them for
+ * all users only the owner gets them: the main token or the owner's own sign-in from outside, and inside a chat only
+ * during a turn the owner sent.
  */
 function clickupTools(server: McpServer, cu: ClickUp): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };

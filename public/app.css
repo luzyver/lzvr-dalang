@@ -398,9 +398,11 @@ dialog.image-modal img { display: block; max-width: calc(100vw - 48px); max-heig
 .inspector { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--surface); }
 .insp-head { display: flex; align-items: center; justify-content: space-between; height: var(--head-h); padding: 0 var(--s2) 0 var(--s3); border-bottom: 1px solid var(--line); flex: none; }
 .tabs { display: flex; gap: 2px; }
+.tabs.wrap { flex-wrap: wrap; }
 .tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font-size: var(--fs-sm); color: var(--text-dim); font-weight: 520; }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active { color: var(--text); background: var(--surface-3); }
+.tab.off { opacity: .55; }
 .tab-count { font-size: 11px; color: var(--text-faint); }
 .insp-body { flex: 1; overflow: auto; padding: var(--s4); overscroll-behavior: contain; }
 .changes, .pane-stack { display: grid; gap: var(--s3); align-content: start; }

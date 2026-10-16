@@ -7,6 +7,7 @@ import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
+import type { McpLaunch } from './mcp-servers.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
 import type { Conversation, QueueItem, Store } from './store.js';
@@ -81,6 +82,8 @@ export class Dispatcher {
    * by name; 'owner' = the server's own setup). Set by the app; unset, turns use whatever the server has.
    */
   gitEnvFor?: (name: string, projectId: string) => Record<string, string>;
+  /** The other MCP servers (Settings → MCP) a turn sent by `author` gets. Set by the app; unset, none. */
+  mcpServersFor?: (author: string) => McpLaunch;
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
 
   constructor(private store: Store, private opts: DispatcherOpts) {
@@ -325,6 +328,8 @@ export class Dispatcher {
       ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"',
         '-c', 'mcp_servers.dalang.default_tools_approval_mode="approve"']
       : [];
+    const servers = this.mcpServersFor?.(item.author);
+    if (servers && !claude) extraArgs.push(...servers.codexArgs);
     const model = conv.model || this.store.getDefaultModel(conv.backend);
     const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
     if (!claude) {
@@ -359,11 +364,11 @@ export class Dispatcher {
           ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
-        const env = { ...this.opts.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
+        const env = { ...this.opts.env, ...servers?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
-            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, signal: ac.signal,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, signal: ac.signal,
           })
           : runTurn({
             command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,

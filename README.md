@@ -129,6 +129,8 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 - **ClickUp Chat history** (optional): read-only MCP tools that let the owner's chats read their ClickUp Chat
   messages, e.g. "what did I work on last week?" (see "ClickUp" below).
+- **More MCP servers** (optional): Context7, Playwright, Sentry or any other, given to the agents' turns; the
+  owner's only, unless one is marked for all users (see "Other MCP servers" below).
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
@@ -474,7 +476,7 @@ keep secrets out of what Codex can read if that matters to you. Agents can also 
 
 ### ClickUp
 
-Set up in the panel: **Settings → ClickUp** (shown to the owner only). Paste a personal API token (ClickUp → Settings
+Set up in the panel: **Settings → MCP**, tab **ClickUp** (shown to the owner only). Paste a personal API token (ClickUp → Settings
 → Apps → API Token) and Save; **Test connection** shows which ClickUp user it reads as and the workspaces it can see.
 One token reads every workspace that ClickUp user is in (a workspace under another ClickUp login needs that login's
 token, which is not supported). Optional: a default workspace ID (default: all of them; a chat can still ask for
@@ -497,11 +499,32 @@ chat about does not show.
 
 **Only the owner gets them**, since they read with the owner's ClickUp token: the main token or the owner's own email
 sign-in from outside, and inside a chat only during a turn the owner sent (prompts from other panel users, agents,
-approvals or their schedules do not get them), and Settings → ClickUp is refused to everyone else, admins included.
+approvals or their schedules do not get them), and Settings → MCP is refused to everyone else, admins included.
+Ticking **All users** gives them to every user's sign-in and every turn too, still reading as the owner's ClickUp user.
 The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp token sits where an
 agent that reads files as root could find it (the database), so the "What this does and does not protect" note above
 applies to it too. One call makes at most 250 ClickUp requests (ClickUp allows about 100 a minute on most plans); a busy workspace over a long
 range may stop early with a warning, so ask for a shorter range or particular channels.
+
+### Other MCP servers
+
+**Settings → MCP** (the owner only) has a tab for ClickUp, one for every other MCP server the agents get next to this
+gateway's own (for Codex and Claude Code alike), and **Add**: an HTTP server (URL and an optional bearer token) or a
+command started over stdio (command, arguments, environment). **Add** offers Context7, Playwright and Sentry
+filled in; every field can be changed. In a server's tab a switch turns it off without forgetting it.
+
+- **Who gets them**: a turn the owner sent gets every server that is on. Any other turn (an admin's or dev's prompt or
+  schedule, a prompt from another agent, an approval) gets only the servers marked **All users**, with the owner's
+  credentials for that server. Unmarked, they never see it.
+- **How**: Codex gets `-c mcp_servers.<name>.…` options, Claude Code `--mcp-config` and `--allowedTools=mcp__<name>`.
+  A headless run cannot ask before a tool call, so the servers' tools are approved up front, in `read-only` projects
+  too: only add servers whose tools you trust there (a browser, an API with a token scoped to reading).
+- **Secrets** never go on a command line or back to the panel: the CLI reads the bearer token from
+  `LZVR_MCPS_<NAME>_TOKEN` and a stdio server's environment from variables of the same name in the turn's environment.
+  An agent's own commands may see that environment too, and the values sit in the database like the ClickUp token,
+  so give servers tokens with the least rights they need.
+- A server is started by the CLI on every turn that gets it (`npx` downloads the package the first time), and a
+  stdio command runs on this machine as the user Dalang runs as. These servers need no `MCP_INJECT`.
 
 **Verify on your versions.** The injected config was run against Codex CLI 0.162.1 (`read-only`: MCP calls work,
 writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then

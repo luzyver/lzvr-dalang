@@ -5,7 +5,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { clickupClient, clickupRoutes } from './clickup-routes.js';
+import { clickupClient, clickupForAll, clickupRoutes } from './clickup-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { git as gitCmd, gitContext, GitError } from './git.js';
@@ -19,6 +19,7 @@ import { authRoutes, sessionHash } from './auth.js';
 import type { Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
+import { mcpLaunch, mcpServerRoutes, mcpServersFor } from './mcp-servers.js';
 import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
@@ -183,8 +184,10 @@ export function buildApp(
   authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   const clickup = clickupClient(store, deps.clickupFetch);
-  mcpRoutes(app, { cfg, store, dispatcher, push, clickup });
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store) });
   clickupRoutes(app, { store, client: clickup });
+  mcpServerRoutes(app, { store });
+  dispatcher.mcpServersFor = (author) => mcpLaunch(mcpServersFor(store, author));
   const ghCommand = cfg.ghCommand ?? ['gh'];
   const glabCommand = cfg.glabCommand ?? ['glab'];
   const gitUsers = deps.gitUsers ?? new GitUsers({

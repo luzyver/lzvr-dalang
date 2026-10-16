@@ -61,7 +61,8 @@ process.stdin.on('end', async () => {
   }
   out({
     type: 'item.completed',
-    item: { type: 'agent_message', text: process.env.FAKE_ANSWER ?? (process.env.FAKE_ECHO_ARGS ? JSON.stringify(args) : input), args, home, mcpToken: process.env.LZVR_MCP_TOKEN, leaked: process.env.LZVR_TOKEN },
+    item: { type: 'agent_message', text: process.env.FAKE_ANSWER ?? (process.env.FAKE_ECHO_ARGS ? JSON.stringify(args) : input), args, home, mcpToken: process.env.LZVR_MCP_TOKEN, leaked: process.env.LZVR_TOKEN,
+      mcpsEnv: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('LZVR_MCPS_') || k === 'SENTRY_ACCESS_TOKEN')) },
   });
   out({
     type: 'turn.completed',

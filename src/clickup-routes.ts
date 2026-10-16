@@ -3,29 +3,35 @@ import { ClickUp, validTimeZone } from './clickup.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
 
-/** What Settings → ClickUp saves (kv `clickup`). Empty strings mean "not set". */
-interface Saved { token: string; workspaceId: string; timeZone: string }
+/**
+ * What Settings → MCP → ClickUp saves (kv `clickup`). Empty strings mean "not set". `allUsers`: admins' and devs' turns
+ * get the tools too (still reading as the owner's ClickUp user); else only the owner's.
+ */
+interface Saved { token: string; workspaceId: string; timeZone: string; allUsers: boolean }
 
 const KEY = 'clickup';
-const EMPTY: Saved = { token: '', workspaceId: '', timeZone: '' };
+const EMPTY: Saved = { token: '', workspaceId: '', timeZone: '', allUsers: false };
 
 function load(store: Store): Saved {
   try {
     const s = { ...EMPTY, ...JSON.parse(store.getKv(KEY) ?? '{}') };
-    return { token: s.token, workspaceId: s.workspaceId, timeZone: s.timeZone }; // drops keys older versions saved
+    return { token: s.token, workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers === true }; // drops keys older versions saved
   } catch { return EMPTY; }
 }
 
 /** The token is never sent back to the panel, only its last four characters. */
 const view = (s: Saved) => ({
   configured: Boolean(s.token), tokenHint: s.token ? `…${s.token.slice(-4)}` : '',
-  workspaceId: s.workspaceId, timeZone: s.timeZone,
+  workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers,
 });
 
 /**
  * The ClickUp client for the current settings, or undefined while no token is saved. Built again only when the
  * settings change, so its cached user and workspace survive between MCP calls.
  */
+/** Whether the ClickUp tools are for every user's turns, not only the owner's. */
+export const clickupForAll = (store: Store): boolean => load(store).allUsers;
+
 export function clickupClient(store: Store, fetchImpl?: typeof fetch): () => ClickUp | undefined {
   let last: { raw: string; client: ClickUp | undefined } | null = null;
   return () => {
@@ -57,20 +63,20 @@ export function clickupRoutes(app: FastifyInstance, d: { store: Store; client: (
   app.get('/api/settings/clickup', { onRequest: requireOwner }, () => view(load(store)));
 
   // `token`: omitted keeps the saved one, '' removes it (which turns the ClickUp tools off).
-  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string } }>('/api/settings/clickup', {
+  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string; allUsers?: boolean } }>('/api/settings/clickup', {
     onRequest: requireOwner,
     schema: { body: {
       type: 'object', required: ['workspaceId', 'timeZone'], additionalProperties: false,
       properties: {
         token: { type: 'string', maxLength: 200 }, workspaceId: { type: 'string', pattern: '^[0-9]{0,20}$' },
-        timeZone: { type: 'string', maxLength: 64 },
+        timeZone: { type: 'string', maxLength: 64 }, allUsers: { type: 'boolean' },
       },
     } },
   }, (req, reply) => {
     const b = req.body;
     const next: Saved = {
       token: b.token === undefined ? load(store).token : b.token.trim(),
-      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(),
+      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(), allUsers: b.allUsers ?? false,
     };
     if (next.timeZone && !validTimeZone(next.timeZone)) return reply.code(400).send({ error: `unknown time zone: ${next.timeZone}` });
     store.setKv(KEY, JSON.stringify(next));
