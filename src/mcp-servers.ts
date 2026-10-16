@@ -27,6 +27,8 @@ export interface McpLaunch { codexArgs: string[]; claudeServers: Record<string, 
 
 const KEY = 'mcp_servers';
 const NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+// Taken by this gateway's own server (`dalang`) and by the panel's other tabs in Settings → MCP.
+const RESERVED_NAMES = new Set(['dalang', 'clickup', 'add']);
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 // Variables a server's env may not set: they go into the agent's own environment too.
 const RESERVED_ENV = /^(LZVR_.*|PATH|HOME|USERPROFILE|CODEX_HOME|CLAUDE_CONFIG_DIR)$/i;
@@ -119,7 +121,7 @@ export function mcpServerRoutes(app: FastifyInstance, d: { store: Store }): void
     const { name } = req.params;
     const b = req.body;
     const bad = (m: string) => reply.code(400).send({ error: m });
-    if (!NAME.test(name) || name === 'dalang') return bad('name: lowercase letters, digits, - and _ (not "dalang")');
+    if (!NAME.test(name) || RESERVED_NAMES.has(name)) return bad(`name: lowercase letters, digits, - and _ (not ${[...RESERVED_NAMES].join(', ')})`);
     const list = loadMcpServers(store);
     const old = list.find((s) => s.name === name);
     const url = b.url?.trim() ?? '';
@@ -129,6 +131,10 @@ export function mcpServerRoutes(app: FastifyInstance, d: { store: Store }): void
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(command ? b.env ?? {} : {})) {
       if (!ENV_NAME.test(k) || RESERVED_ENV.test(k)) return bad(`env: ${k} cannot be set`);
+      // A turn's servers share one environment (Codex forwards a variable by its own name), so two servers setting the
+      // same variable would hand one of them the other's value.
+      const other = list.find((s) => s.name !== name && Object.keys(s.env).some((e) => e.toUpperCase() === k.toUpperCase()));
+      if (other) return bad(`env: ${k} is already set by ${other.name}; one variable can belong to one server only`);
       const value = v ?? old?.env[k];
       if (value === undefined) return bad(`env: ${k} has no value`);
       env[k] = value;
