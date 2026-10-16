@@ -14,6 +14,8 @@ import type { Conversation, QueueItem, Store } from './store.js';
 import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+/** How much of a sub-agent's last answer goes into its report to the parent. */
+const REPORT_MAX = 6000;
 
 export interface LiveEvent { id: number; type: string; payload: string; created_at: string }
 
@@ -421,6 +423,29 @@ export class Dispatcher {
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
     if (interrupted) return; // shutting down: no notification
+    try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
+  }
+
+  /**
+   * A sub-agent's turn that its parent asked for comes back to the parent as a new prompt, so the parent goes on
+   * without polling. It waits until the sub-agent has nothing more of the parent's queued: one report per batch.
+   * The parent's turn that reads it reports in turn to the parent's own parent, if any.
+   */
+  private reportToParent(convId: string, item: QueueItem, status: string, lastMessage: string): void {
+    const conv = this.store.getConversation(convId);
+    if (!conv?.parent || item.from_conv !== conv.parent) return;
+    const parent = this.store.getConversation(conv.parent);
+    if (!parent || this.store.listQueue(convId).some((q) => q.from_conv === parent.id)) return;
+    const model = conv.model || this.store.getDefaultModel(conv.backend) || 'the CLI default';
+    const answer = lastMessage.length > REPORT_MAX ? `${lastMessage.slice(0, REPORT_MAX)}\n[cut here; get_events has the rest]` : lastMessage;
+    const busy = this.store.listConversations(parent.project_id)
+      .filter((c) => c.parent === parent.id && c.id !== convId && (this.isRunning(c.id) || this.store.listQueue(c.id).length)).length;
+    const text = `[Sub-agent] "${conv.title ?? 'untitled'}" (conversation ${conv.id}, model ${model}) `
+      + `${status === 'completed' ? 'finished' : `stopped: ${status}`}.${busy ? ` ${busy} other sub-agent(s) of yours are still working.` : ''}\n\n`
+      + `Its last answer:\n\n${answer || '(none)'}\n\n`
+      + 'Check the work before relying on it. send_prompt gives it more to do; set_model moves it up a model if this fell short.';
+    this.store.enqueue(parent.id, text, [], '', item.on_behalf, parent.parent);
+    this.kick(parent.id);
   }
 }

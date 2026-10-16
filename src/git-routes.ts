@@ -6,16 +6,16 @@ import { createPullRequest, mergePr, parsePrUrl, parseRemote, prStatus, remoteRe
 import * as git from './git.js';
 import type { GitUsers } from './git-users.js';
 import { gitContext } from './git.js';
-import type { AuthUser } from './util.js';
+import type { AuthUser, Backend } from './util.js';
 import type { Conversation, Project, Store } from './store.js';
 
 /**
  * A new chat with its own worktree: a branch `dalang/<id>` from the project's HEAD, checked out under
  * `<STATE_DIR>/worktrees/<chat id>`, so parallel chats in one project never write over each other's files.
  */
-export async function createWorktreeChat(store: Store, cfg: Config, project: Project): Promise<Conversation> {
+export async function createWorktreeChat(store: Store, cfg: Config, project: Project, o: { backend?: Backend; parent?: string } = {}): Promise<Conversation> {
   if (!(await git.isRepo(project.path))) throw new git.GitError('the project folder is not a git repository');
-  const conv = store.createConversation(project.id);
+  const conv = store.createConversation(project.id, o.backend, o.parent);
   const dir = join(cfg.stateDir, 'worktrees', conv.id);
   const branch = `dalang/${conv.id.slice(0, 8)}`;
   try {

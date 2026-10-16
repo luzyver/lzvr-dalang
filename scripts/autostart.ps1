@@ -37,6 +37,11 @@ function Require-Task { if (-not (Get-Task)) { Fail "No '$taskName' task yet: ru
 # Stops the task, then waits for the port to close. A node still holding it after that is killed; anything else is not.
 function Stop-Dalang {
   if ((Get-Task).State -eq 'Running') { Info "Stopping task '$taskName'..."; Stop-ScheduledTask -TaskName $taskName }
+  # Stop-ScheduledTask ends only conhost: the task's powershell and its npm / node children live on. Kill that tree,
+  # found by the command line the install action registers (run.ps1 piped into the log), so a run.cmd by hand is spared.
+  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like "*$repo\scripts\run.ps1*" -and $_.CommandLine -like "*$log*" } |
+    ForEach-Object { Info "Killing leftover run.ps1 tree (pid $($_.ProcessId))..."; taskkill /T /F /PID $_.ProcessId | Out-Null }
   for ($i = 0; $i -lt 20 -and (Get-Listener); $i++) { Start-Sleep -Milliseconds 500 }
   $listener = Get-Listener
   if (-not $listener) { return }
@@ -48,6 +53,16 @@ function Stop-Dalang {
   } else {
     Fail "Port $port is held by $($proc.ProcessName) (pid $($listener.OwningProcess)), not Dalang's node: free it first."
   }
+}
+
+# npm ci here in the console, not in the task: under conhost --headless an install script that spawns cmd.exe (ssh2's)
+# dies with 0xC0000142. Same staleness check as run.ps1, so the task then skips it.
+function Install-Deps {
+  $installed = 'node_modules/.package-lock.json'
+  if ((Test-Path $installed) -and (Get-Item 'package-lock.json').LastWriteTime -le (Get-Item $installed).LastWriteTime) { return }
+  Info 'Installing dependencies (npm ci)...'
+  npm ci
+  if ($LASTEXITCODE -ne 0) { Fail 'npm ci failed.' }
 }
 
 # Starts the task and waits for the port; the build runs first, so this can take a while.
@@ -80,6 +95,7 @@ switch ($Action) {
     Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Settings $settings | Out-Null
     Info "Registered task '$taskName': it starts at every logon."
     if (Get-Listener) { Fail "Port $port is already in use (Dalang started by hand?): stop it, then autostart.cmd restart -NoPull." }
+    Install-Deps
     Start-Dalang
   }
   'restart' {
@@ -90,6 +106,7 @@ switch ($Action) {
       if ($LASTEXITCODE -ne 0) { Fail 'git pull failed: fix it (or use -NoPull) and retry. Dalang was left running.' }
     }
     Stop-Dalang
+    Install-Deps
     Start-Dalang
   }
   'stop' { Require-Task; Stop-Dalang; Write-Host 'Dalang stopped.' -ForegroundColor Green }

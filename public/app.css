@@ -160,6 +160,8 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .form-card { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
 .form-card > strong { font-size: var(--fs-md); }
 .form-card.reveal { border-color: var(--accent-line); background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface)); }
+.agent-models { display: grid; gap: 2px; margin: 0; padding-left: 22px; }
+.agent-models > li > .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { display: grid; justify-items: center; gap: 6px; padding: 32px 16px; text-align: center; color: var(--text-dim); }
 .empty strong { color: var(--text); font-weight: 600; }
 .empty-body { font-size: var(--fs-sm); max-width: 340px; }
@@ -244,6 +246,13 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .chat-row:hover .chat-branch { visibility: hidden; }
 .chat .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-branch { display: grid; color: var(--text-faint); }
+.chat-row.sub { margin-left: calc(var(--depth) * 14px); }
+.chat-row.sub::before { content: ""; position: absolute; left: -7px; top: -1px; bottom: -1px; border-left: 1px solid var(--line); }
+.chat-fold { position: absolute; left: -17px; z-index: 1; display: grid; place-items: center; width: 16px; height: 22px; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-faint); }
+.chat-fold:hover { color: var(--text); background: var(--hover); }
+.chat-row.sub:has(.chat-fold)::before { display: none; }
+.chat-model { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-faint); font-family: var(--mono, monospace); }
+.chat-row:hover .chat-model { visibility: hidden; }
 .chat-row.active { background: var(--surface); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); }
 .chat-row.active .chat { color: var(--text); font-weight: 550; }
 .chat.ghost { color: var(--text-faint); }
@@ -539,7 +548,8 @@ dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, c
 .stash-dialog { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; }
 .stash-dialog > .dialog-head { gap: 8px; }
 .stash-new > input { flex: 1; min-width: 0; }
-.stash-list { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 8px; align-content: start; }
+.stash-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.stash-list > * { flex: none; }
 .stash { border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; min-width: 0; }
 .stash-row { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 4px; background: var(--surface-2); min-width: 0; }
 .stash-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 6px; border: 0; background: none; color: inherit; text-align: left; border-radius: var(--r-sm); }

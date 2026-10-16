@@ -70,10 +70,87 @@ function DefaultsFor({ backend, title }) {
   </section>`;
 }
 
+/**
+ * The models agents may give the chats they start or run over MCP (create_conversation, set_model), weakest first, and
+ * the highest effort. Agents start low and step up one model at a time when a result falls short.
+ */
+function AgentChoiceFor({ backend, title }) {
+  const q = backend === 'claude' ? '?backend=claude' : '';
+  const [models, setModels] = useState([]);
+  const [list, setList] = useState(null);
+  const [maxEffort, setMaxEffort] = useState('');
+  const [pick, setPick] = useState('');
+  useEffect(() => {
+    api(`/api/settings/agent-models${q}`).then((r) => { setList(r.models); setMaxEffort(r.maxEffort); }).catch((e) => toast(e.message, 'err'));
+    api(`/api/models${q}`).then(setModels).catch(() => {});
+  }, []);
+  // A slug typed but not yet added still counts: Save keeps what is on screen.
+  const withPick = (l) => { const v = pick.trim(); return v && !l.includes(v) ? [...l, v] : l; };
+  const save = guarded(async () => {
+    const models = withPick(list);
+    await api('/api/settings/agent-models', { method: 'PUT', body: { models, maxEffort, backend } });
+    setList(models);
+    setPick('');
+    toast(`${title} agent models saved`);
+  });
+  if (list == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  const nameOf = (slug) => models.find((m) => m.slug === slug)?.name ?? slug;
+  const up = (i) => setList([...list.slice(0, i - 1), list[i], list[i - 1], ...list.slice(i + 1)]);
+  const add = () => { setList(withPick(list)); setPick(''); };
+  const left = models.filter((m) => !list.includes(m.slug));
+  return html`<section class="form-card">
+    <strong>${title}</strong>
+    ${list.length ? html`<ol class="agent-models">${list.map((slug, i) => html`<li key=${slug} class="row">
+      <span class="grow">${nameOf(slug)} <span class="dim small mono">${slug}</span></span>
+      <button class="icon-btn sm" aria-label=${`Move ${slug} up`} title="Weaker than the one above" disabled=${i === 0} onClick=${() => up(i)}><${Icon} name="arrow-up" /></button>
+      <button class="icon-btn sm danger" aria-label=${`Remove ${slug}`} onClick=${() => setList(list.filter((x) => x !== slug))}><${Icon} name="x" /></button>
+    </li>`)}</ol>` : html`<span class="dim small">None: agents keep the default model.</span>`}
+    <div class="row">
+      ${left.length ? html`<select value="" onChange=${(e) => { const v = e.currentTarget.value; if (v) setList([...list, v]); }}>
+        <option value="">Add a model…</option>${left.map((m) => html`<option value=${m.slug}>${m.name} (${m.slug})</option>`)}</select>`
+        : html`<input class="mono" placeholder="model slug" value=${pick} onInput=${(e) => setPick(e.currentTarget.value)}
+            onKeyDown=${(e) => { if (e.key === 'Enter') add(); }} />
+          <button class="btn sm" disabled=${!pick.trim()} onClick=${add}><${Icon} name="plus" />Add</button>`}
+    </div>
+    <${Field} label="Highest reasoning effort"><select value=${maxEffort} onChange=${(e) => setMaxEffort(e.currentTarget.value)}>
+      <option value="">None: agents keep the default</option>${EFFORTS.map((v) => html`<option value=${v}>${v}</option>`)}</select><//>
+    <div class="row"><${AsyncButton} class="btn primary sm" onClick=${save}>Save<//></div>
+  </section>`;
+}
+
+/** How far agents may go with sub-agents: how many per chat, how deep, and whether they may send them work unasked. */
+function SubagentLimits() {
+  const [p, setP] = useState(null);
+  useEffect(() => { api('/api/settings/subagents').then(setP).catch((e) => toast(e.message, 'err')); }, []);
+  const save = guarded(async () => {
+    await api('/api/settings/subagents', { method: 'PUT', body: p });
+    toast('Sub-agent limits saved');
+  });
+  if (p == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  const num = (k, max) => (e) => setP({ ...p, [k]: Math.max(0, Math.min(max, Number(e.currentTarget.value) || 0)) });
+  return html`<section class="form-card">
+    <strong>Sub-agents</strong>
+    <span class="dim small">A chat's agent decides itself when to start sub-agents, how many and with which model, within these limits.
+      Each one's answer comes back to it as a message.</span>
+    <div class="row wrap">
+      <${Field} label="Sub-agents per chat" hint="0 turns sub-agents off"><input type="number" min="0" max="50" value=${p.maxChildren} onInput=${num('maxChildren', 50)} /><//>
+      <${Field} label="Levels deep" hint="1: only a person's chat starts them"><input type="number" min="0" max="5" value=${p.maxDepth} onInput=${num('maxDepth', 5)} /><//>
+    </div>
+    <label class="row"><input type="checkbox" checked=${p.autoSend} onChange=${(e) => setP({ ...p, autoSend: e.currentTarget.checked })} />
+      <span>Agents send their own sub-agents work without asking <span class="dim small">(same project only; off: each prompt waits in Approvals)</span></span></label>
+    <div class="row"><${AsyncButton} class="btn primary sm" onClick=${save}>Save<//></div>
+  </section>`;
+}
+
 const Defaults = () => html`
   <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
   <${DefaultsFor} backend="codex" title="Codex" />
-  <${DefaultsFor} backend="claude" title="Claude Code" />`;
+  <${DefaultsFor} backend="claude" title="Claude Code" />
+  <p class="dim">Models agents may pick for the chats they start (sub-agents) or move up to, weakest first. Agents are told
+    to start with the weakest that fits and step up one at a time only when the work falls short.</p>
+  <${AgentChoiceFor} backend="codex" title="Codex: agents may pick" />
+  <${AgentChoiceFor} backend="claude" title="Claude Code: agents may pick" />
+  <${SubagentLimits} />`;
 
 /** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
 function PromptFor({ path, title, help }) {

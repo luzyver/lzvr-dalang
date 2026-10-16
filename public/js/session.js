@@ -48,7 +48,11 @@ export async function startSession() {
       .then(([a, c]) => { if (!a.length && !c.length) openSettings('codex'); }).catch(() => {});
   }
   clearInterval(timer);
-  timer = setInterval(refreshApprovals, 15000);
+  // Agents start sub-agents and chats change status on their own: keep the sidebar current while the panel is in view.
+  timer = setInterval(() => {
+    refreshApprovals();
+    if (document.visibilityState === 'visible') loadProjects().catch(() => {});
+  }, 15000);
   if (fromHash && !code && !sql) openChat(fromHash[1]);
 }
 
