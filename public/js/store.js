@@ -126,7 +126,7 @@ export function openView(view) {
 
 /** The code editor on a chat's folder, in a new browser tab (it signs in with the same stored token). */
 export function openCodeEditor(id) {
-  window.open(`/code#code=${encodeURIComponent(id)}`, `dalang-code-${id}`);
+  window.open(`/code#c=${encodeURIComponent(id)}`, `dalang-code-${id}`);
 }
 
 /** `worktree`: the chat gets its own git branch and folder, so it cannot collide with other chats in the project. */

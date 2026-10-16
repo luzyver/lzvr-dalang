@@ -29,11 +29,12 @@ export async function signOut() {
 export async function startSession() {
   let user;
   try { user = await api('/api/me'); } catch (e) { if (!(e instanceof Unauthorized)) showLogin(e.message); return; }
-  // A code editor tab shows the editor from its first frame, never the chat view in between.
-  const code = /#code=([\w-]+)/.exec(location.hash);
+  // Both pages name the chat with #c=<id>; under /code it opens the code editor, from its first frame (never the chat view in between).
+  const fromHash = /#c=([\w-]+)/.exec(location.hash);
+  const code = fromHash && location.pathname.startsWith('/code');
   batch(() => {
     me.value = user;
-    if (code) route.value = { view: 'code', id: code[1] };
+    if (code) route.value = { view: 'code', id: fromHash[1] };
     session.value = 'in';
   });
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, 'err'); return; }
@@ -46,9 +47,7 @@ export async function startSession() {
   }
   clearInterval(timer);
   timer = setInterval(refreshApprovals, 15000);
-  if (code) return;
-  const fromHash = /#c=([\w-]+)/.exec(location.hash);
-  if (fromHash) openChat(fromHash[1]);
+  if (fromHash && !code) openChat(fromHash[1]);
 }
 
 /**

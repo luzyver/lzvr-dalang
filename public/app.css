@@ -731,7 +731,7 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
   .diff-nav { order: 2; margin-left: auto; }
   .diff-dialog-head > .icon-btn { order: 3; }
 }
-/* ---------- 9. Code editor (its own tab, #code=<chat>): files | tabs + editor / terminal, a status bar ---------- */
+/* ---------- 9. Code editor (its own tab, /code#c=<chat>): files | tabs + editor / terminal, a status bar ---------- */
 .ide { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--bg); }
 .ide-error { height: 100dvh; display: grid; place-items: center; }
 .ide-head { display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 var(--s2) 0 var(--s3); border-bottom: 1px solid var(--line); background: var(--bg-side); min-width: 0; }
