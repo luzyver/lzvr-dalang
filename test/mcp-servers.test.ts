@@ -48,13 +48,22 @@ describe('Settings → MCP servers', () => {
   it('refuses bad names, transports, URLs and env names', async () => {
     const t = boot();
     for (const [name, body] of [
-      ['Bad Name', CONTEXT7], ['dalang', CONTEXT7],
+      ['Bad Name', CONTEXT7], ['dalang', CONTEXT7], ['clickup', CONTEXT7], ['add', CONTEXT7],
       ['x', { enabled: true, allUsers: false }], ['x', { ...CONTEXT7, command: 'npx' }],
       ['x', { ...CONTEXT7, url: 'file:///etc/passwd' }],
       ['x', { ...SENTRY, env: { PATH: '/tmp' } }], ['x', { ...SENTRY, env: { LZVR_TOKEN: 'x' } }],
       ['x', { ...SENTRY, env: { NEW_KEY: null } }],
     ] as const) expect((await t.put(name, body)).statusCode).toBe(400);
     expect(t.store.getKv('mcp_servers')).toBeNull();
+  });
+
+  it('gives one env variable to one server only', async () => {
+    const t = boot();
+    await t.put('sentry', SENTRY);
+    const r = await t.put('other', { ...SENTRY, env: { sentry_access_token: 'x' } });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error).toContain('already set by sentry');
+    expect((await t.put('sentry', { ...SENTRY, env: { SENTRY_ACCESS_TOKEN: 'new' } })).statusCode).toBe(200); // its own: fine
   });
 
   it('deletes a server', async () => {
