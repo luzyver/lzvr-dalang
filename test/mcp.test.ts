@@ -282,6 +282,18 @@ describe('ClickUp tools', () => {
     expect((await clickupNames(await as('owner'))).sort()).toEqual(CLICKUP);
     for (const author of ['', 'budi']) expect(await clickupNames(await as(author))).toEqual([]);
   });
+
+  it('reach every user once the owner marks them for all users', async () => {
+    const t = await withClickUp();
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true } });
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ configured: true, allUsers: true });
+    const dev = await mkUser(t, 'u-dev', 'dev');
+    expect((await clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }))).sort()).toEqual(CLICKUP);
+    const { a } = await twoConvs(await t.connect());
+    for (const author of ['', 'budi']) {
+      expect((await clickupNames(await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` }))).sort()).toEqual(CLICKUP);
+    }
+  });
 });
 
 describe('Settings → ClickUp', () => {
@@ -291,9 +303,9 @@ describe('Settings → ClickUp', () => {
   it('saves the settings and never sends the token back', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
-      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '' });
+      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', allUsers: false });
     const saved = await put(t, { token: ' pk_test ', workspaceId: '900', timeZone: 'Asia/Jakarta' });
-    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta' });
+    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', allUsers: false });
     expect(saved.body).not.toContain('pk_test');
     // leaving the token out keeps it
     expect((await put(t, { workspaceId: '', timeZone: '' })).json()).toMatchObject({ configured: true, tokenHint: '…test' });

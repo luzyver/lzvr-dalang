@@ -14,6 +14,8 @@ export interface ClaudeTurnOpts {
   effort?: string;
   /** Gateway MCP endpoint; the bearer token is read from LZVR_MCP_TOKEN in `env`. */
   mcpUrl?: string;
+  /** Other MCP servers (Settings → MCP), as `--mcp-config` entries; their secrets are read from `env`. */
+  mcpServers?: Record<string, object>;
   /** Extra CLI options, placed before `--resume`. */
   extraArgs?: string[];
   signal?: AbortSignal;
@@ -32,16 +34,17 @@ const PERMISSION: Record<string, string[]> = {
   'danger-full-access': ['--permission-mode', 'bypassPermissions'],
 };
 
-export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' | 'model' | 'effort' | 'mcpUrl' | 'extraArgs'>): string[] {
+export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' | 'model' | 'effort' | 'mcpUrl' | 'mcpServers' | 'extraArgs'>): string[] {
   const a = ['-p', '--output-format', 'stream-json', '--verbose', ...(PERMISSION[o.sandbox] ?? PERMISSION['read-only']!)];
   if (o.model) a.push('--model', o.model);
   if (o.effort) a.push('--effort', o.effort);
-  if (o.mcpUrl) {
-    const server = { type: 'http', url: o.mcpUrl, headers: { Authorization: 'Bearer ${LZVR_MCP_TOKEN}' } };
-    a.push('--mcp-config', JSON.stringify({ mcpServers: { dalang: server } }));
-    // Nothing can ask before an MCP call either, so the gateway's own tools are allowed up front (the per-turn token
-    // already limits them to what this chat may do).
-    a.push('--allowedTools=mcp__dalang');
+  const servers: Record<string, object> = { ...o.mcpServers };
+  if (o.mcpUrl) servers.dalang = { type: 'http', url: o.mcpUrl, headers: { Authorization: 'Bearer ${LZVR_MCP_TOKEN}' } };
+  if (Object.keys(servers).length) {
+    a.push('--mcp-config', JSON.stringify({ mcpServers: servers }));
+    // Nothing can ask before an MCP call either, so the servers' tools are allowed up front (the gateway's per-turn
+    // token already limits its tools to what this chat may do; the others are the owner's choice in Settings → MCP).
+    a.push(`--allowedTools=${Object.keys(servers).map((n) => `mcp__${n}`).join(',')}`);
   }
   a.push(...(o.extraArgs ?? []));
   if (o.threadId) a.push('--resume', o.threadId);
