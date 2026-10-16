@@ -68,6 +68,122 @@ export function pullRequestArgs(o: Omit<PullRequestOpts, 'command' | 'cwd'>): st
     : ['mr', 'create', ...repo, '--source-branch', o.branch, '--target-branch', o.base, '--title', o.title, '--description', o.body, '--yes'];
 }
 
+/** Run `gh` / `glab` like createPullRequest does (no secrets, no prompts, the caller's login) and return what it printed. */
+export function runForge(forge: Forge, command: string[], args: string[], cwd: string): Promise<string> {
+  const [cmd, ...pre] = command;
+  const name = forge === 'github' ? 'gh' : 'glab';
+  return new Promise((resolve, reject) => {
+    execFile(cmd!, [...pre, ...args], {
+      cwd, timeout: 60_000, maxBuffer: 16e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1' },
+    }, (err, out, stderr) => {
+      if (!err) return resolve(String(out));
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new GitError(`${name} is not installed on the server (or not on PATH)`));
+      reject(new GitError(withLoginHint(`${name} failed: ${(String(stderr).trim() || err.message).slice(-1500)}`)));
+    });
+  });
+}
+
+/** The parts of a pull request (GitHub) or Merge Request (GitLab) address. */
+export function parsePrUrl(url: string): { forge: Forge | null; host: string; repo: string; number: number } | null {
+  const gh = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
+  if (gh) return { forge: 'github', host: gh[1]!.toLowerCase(), repo: gh[2]!, number: Number(gh[3]) };
+  const gl = /^https?:\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(url);
+  if (gl) return { forge: 'gitlab', host: gl[1]!.toLowerCase(), repo: gl[2]!, number: Number(gl[3]) };
+  return null;
+}
+
+export type CheckState = 'pass' | 'fail' | 'pending' | 'skipped';
+
+/** Where a pull request / Merge Request stands: open or not, its checks, its review and what reviewers wrote. */
+export interface PrStatus {
+  url: string;
+  title: string;
+  state: 'open' | 'draft' | 'merged' | 'closed';
+  /** Whether the forge would merge it now (no conflicts, nothing blocking); null when it has not worked that out yet. */
+  mergeable: boolean | null;
+  review: 'approved' | 'changes_requested' | 'review_required' | null;
+  checks: { name: string; state: CheckState; url?: string }[];
+  comments: { author: string; body: string; date: string; path?: string; line?: number; kind?: string }[];
+}
+
+const checkState = (s: string): CheckState => {
+  const v = s.toLowerCase();
+  if (/^(success|passed|neutral|manual)$/.test(v)) return 'pass';
+  if (/^(failure|failed|error|timed_out|cancelled|canceled|action_required|startup_failure)$/.test(v)) return 'fail';
+  if (/^(skipped|stale)$/.test(v)) return 'skipped';
+  return 'pending';
+};
+
+const json = (text: string): any => {
+  try { return JSON.parse(text); } catch { throw new GitError(`unexpected answer: ${text.trim().slice(0, 300)}`); }
+};
+
+/** Read a pull request's / Merge Request's state through the forge's CLI. */
+export async function prStatus(forge: Forge, command: string[], cwd: string, url: string): Promise<PrStatus> {
+  const p = parsePrUrl(url);
+  if (!p) throw new GitError(`not a pull request or Merge Request address: ${url}`);
+  if (forge === 'github') {
+    const fields = 'title,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,comments,reviews';
+    const [view, inline] = await Promise.all([
+      runForge(forge, command, ['pr', 'view', url, '--json', fields], cwd).then(json),
+      runForge(forge, command, ['api', '--hostname', p.host, `repos/${p.repo}/pulls/${p.number}/comments?per_page=100`], cwd).then(json).catch(() => []),
+    ]);
+    const state = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : view.isDraft ? 'draft' : 'open';
+    const review = ({ APPROVED: 'approved', CHANGES_REQUESTED: 'changes_requested', REVIEW_REQUIRED: 'review_required' } as const)[view.reviewDecision as string] ?? null;
+    return {
+      url: view.url ?? url, title: view.title ?? '', state, review,
+      mergeable: view.mergeable === 'MERGEABLE' ? true : view.mergeable === 'CONFLICTING' ? false : null,
+      checks: (view.statusCheckRollup ?? []).map((c: any) => (c.__typename === 'StatusContext'
+        ? { name: c.context, state: checkState(c.state ?? ''), url: c.targetUrl || undefined }
+        : { name: c.name ?? c.workflowName ?? 'check', state: checkState(c.status === 'COMPLETED' ? c.conclusion ?? '' : c.status ?? ''), url: c.detailsUrl || undefined })),
+      comments: [
+        ...(view.comments ?? []).map((c: any) => ({ author: c.author?.login ?? '', body: c.body ?? '', date: c.createdAt ?? '' })),
+        ...(view.reviews ?? []).filter((r: any) => r.body?.trim()).map((r: any) => ({
+          author: r.author?.login ?? '', body: r.body, date: r.submittedAt ?? '', kind: String(r.state ?? '').toLowerCase().replace(/_/g, ' '),
+        })),
+        ...(Array.isArray(inline) ? inline : []).map((c: any) => ({
+          author: c.user?.login ?? '', body: c.body ?? '', date: c.created_at ?? '', path: c.path, line: c.line ?? c.original_line ?? undefined,
+        })),
+      ].sort((a, b) => a.date.localeCompare(b.date)),
+    };
+  }
+  const api = (path: string) => runForge(forge, command, ['api', '--hostname', p.host, path], cwd).then(json);
+  const base = `projects/${encodeURIComponent(p.repo)}/merge_requests/${p.number}`;
+  const [mr, notes, approvals] = await Promise.all([
+    api(base), api(`${base}/notes?sort=asc&per_page=100`).catch(() => []), api(`${base}/approvals`).catch(() => null),
+  ]);
+  const pipeline = mr.head_pipeline ?? mr.pipeline;
+  const jobs = pipeline?.id ? await api(`projects/${encodeURIComponent(p.repo)}/pipelines/${pipeline.id}/jobs?per_page=100`).catch(() => []) : [];
+  const state = mr.state === 'merged' ? 'merged' : mr.state === 'closed' ? 'closed' : mr.draft || mr.work_in_progress ? 'draft' : 'open';
+  const status = String(mr.detailed_merge_status ?? mr.merge_status ?? '');
+  return {
+    url: mr.web_url ?? url, title: mr.title ?? '', state,
+    mergeable: /^(mergeable|can_be_merged)$/.test(status) ? true : /conflict|cannot_be_merged|not_approved|ci_must_pass|discussions_not_resolved|blocked/.test(status) ? false : null,
+    review: approvals ? (approvals.approved ? 'approved' : 'review_required') : null,
+    checks: Array.isArray(jobs) && jobs.length
+      ? jobs.map((j: any) => ({ name: `${j.stage ? `${j.stage} · ` : ''}${j.name}`, state: checkState(j.status ?? ''), url: j.web_url || undefined }))
+      : pipeline ? [{ name: 'pipeline', state: checkState(pipeline.status ?? ''), url: pipeline.web_url || undefined }] : [],
+    comments: (Array.isArray(notes) ? notes : []).filter((n: any) => !n.system).map((n: any) => ({
+      author: n.author?.username ?? '', body: n.body ?? '', date: n.created_at ?? '',
+      path: n.position?.new_path ?? undefined, line: n.position?.new_line ?? undefined,
+    })),
+  };
+}
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+/** Merge a pull request / Merge Request on the forge, the way the forge itself would. */
+export async function mergePr(forge: Forge, command: string[], cwd: string, url: string, method: MergeMethod): Promise<void> {
+  const p = parsePrUrl(url);
+  if (!p) throw new GitError(`not a pull request or Merge Request address: ${url}`);
+  if (forge === 'github') {
+    await runForge(forge, command, ['pr', 'merge', url, `--${method}`], cwd);
+    return;
+  }
+  await runForge(forge, command, ['mr', 'merge', String(p.number), '--repo', `https://${p.host}/${p.repo}`, '--yes',
+    ...(method === 'squash' ? ['--squash'] : method === 'rebase' ? ['--rebase'] : [])], cwd);
+}
+
 const URL_RE = /https?:\/\/[^\s"'<>]+/g;
 const lastUrl = (text: string) => [...text.matchAll(URL_RE)].map((m) => m[0]).pop() ?? null;
 

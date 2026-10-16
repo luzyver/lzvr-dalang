@@ -4,7 +4,7 @@ import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal } from './ui.js';
+import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
   approvals, convs, goHome, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
@@ -33,23 +33,38 @@ export async function refreshUsage() {
 const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
 const grantable = () => Object.keys(ACCESS).filter((k) => isOwner.value || k !== 'owner');
 
+/** `my-app` from `git@github.com:acme/my-app.git` or `https://host/acme/my-app`. */
+const repoName = (url) => url.trim().replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() || '';
+
 function AddProject() {
-  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write', access: 'all' });
+  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write', access: 'all', clone: '' });
+  const [source, setSource] = useState('folder'); // or 'clone': the folder is made by cloning a repository
   const [error, setError] = useState('');
   const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
+  // A repository address fills in the name and folder while they are still untouched (or were filled in by it).
+  const setClone = (e) => {
+    const url = e.currentTarget.value;
+    const before = repoName(form.clone);
+    setForm({ ...form, clone: url, ...(form.name === before && { name: repoName(url) }), ...(form.path === before && { path: repoName(url) }) });
+  };
   const close = () => { ui.addProject.value = false; };
   const create = async () => {
     setError('');
+    const { clone, ...rest } = form;
     try {
-      await api('/api/projects', { method: 'POST', body: { ...form, name: form.name.trim(), path: form.path.trim() } });
+      await api('/api/projects', { method: 'POST', body: { ...rest, name: form.name.trim(), path: form.path.trim(), ...(source === 'clone' && { clone: clone.trim() }) } });
       close();
       await loadProjects();
     } catch (e) { setError(e.message); }
   };
   return html`<div class="dialog-body">
     <div class="dialog-head"><h2>Add project</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
-    <${Field} label="Name"><input value=${form.name} onInput=${set('name')} autofocus placeholder="my-app" /><//>
-    <${Field} label="Folder" hint="Absolute, or relative to the projects root on the server."><input class="mono" value=${form.path} onInput=${set('path')} placeholder="/srv/code/my-app" /><//>
+    <${Seg} label="Source" value=${source} onChange=${setSource} options=${[['folder', 'Existing folder', 'folder'], ['clone', 'Clone a repository', 'git-branch']]} />
+    ${source === 'clone' && html`<${Field} label="Repository" hint="SSH or HTTPS address. It is cloned with your git login (Settings → Git & forges).">
+      <input class="mono" value=${form.clone} onInput=${setClone} autofocus placeholder="git@github.com:acme/my-app.git" /><//>`}
+    <${Field} label="Name"><input value=${form.name} onInput=${set('name')} autofocus=${source === 'folder'} placeholder="my-app" /><//>
+    <${Field} label="Folder" hint=${source === 'clone' ? 'A new folder, relative to the projects root on the server.' : 'Absolute, or relative to the projects root on the server.'}>
+      <input class="mono" value=${form.path} onInput=${set('path')} placeholder=${source === 'clone' ? 'my-app' : '/srv/code/my-app'} /><//>
     <div class="row wrap">
       <${Field} label="Agent (every chat in this project)"><select value=${form.backend} onChange=${set('backend')}>
         <option value="codex">Codex</option><option value="claude">Claude Code</option></select><//>
@@ -59,7 +74,8 @@ function AddProject() {
         ${grantable().map((k) => html`<option value=${k}>${ACCESS[k]}</option>`)}</select><//>
     </div>
     ${error && html`<div class="form-error">${error}</div>`}
-    <div class="row end"><button class="btn" onClick=${close}>Cancel</button><${AsyncButton} class="btn primary" icon="folder-plus" onClick=${create}>Create<//></div>
+    <div class="row end"><button class="btn" onClick=${close}>Cancel</button>
+      <${AsyncButton} class="btn primary" icon="folder-plus" busyText=${source === 'clone' ? 'Cloning…' : undefined} onClick=${create}>${source === 'clone' ? 'Clone and create' : 'Create'}<//></div>
   </div>`;
 }
 

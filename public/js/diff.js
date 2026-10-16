@@ -59,16 +59,21 @@ function Code({ text, lang, type }) {
   return hl == null ? html`<td class=${cls}>${text}</td>` : html`<td class=${cls} dangerouslySetInnerHTML=${{ __html: hl }}></td>`;
 }
 
-/** `mode`: 'unified' | 'split'. */
-export function DiffView({ diff, path, mode = 'unified' }) {
+/**
+ * `mode`: 'unified' | 'split'. With `picks` (a Set of hunk indexes) each hunk header gets a checkbox, and `onPick(i)`
+ * runs when one is ticked or unticked: for committing some hunks of a file only.
+ */
+export function DiffView({ diff, path, mode = 'unified', picks, onPick }) {
   const hunks = parseDiff(diff);
   const lang = languageFor(path);
   if (!hunks.length) return html`<div class="diff-empty">No text diff (binary, or nothing changed).</div>`;
   const split = mode === 'split';
   return html`<div class="diff-scroll"><table class=${cx('lines', split && 'split')}>
     ${split && html`<colgroup><col class="no" /><col /><col class="no" /><col /></colgroup>`}
-    ${hunks.map((h, hi) => html`<tbody key=${hi}>
-      ${h.header && html`<tr class="hunk"><td colspan=${split ? 4 : 3}>${h.header}</td></tr>`}
+    ${hunks.map((h, hi) => html`<tbody key=${hi} class=${cx(picks && !picks.has(hi) && 'unpicked')}>
+      ${h.header && html`<tr class="hunk"><td colspan=${split ? 4 : 3}>${picks
+        ? html`<label class="hunk-pick" title="Include this hunk in the commit"><input type="checkbox" checked=${picks.has(hi)} onChange=${() => onPick(hi)} /><span>${h.header}</span></label>`
+        : h.header}</td></tr>`}
       ${split
         ? pairs(h.rows).map(([l, r]) => (l && l.type === 'note'
           ? html`<tr class="note"><td colspan="4">${l.text}</td></tr>`

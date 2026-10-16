@@ -1,12 +1,16 @@
 // History: the commits of every branch in the chat's folder, newest first, with the branches drawn as a graph beside
 // them (like `git log --graph`). Branch and tag names sit on the commits they point at. A commit opens to what it
-// changed: its message, its files and each file's diff.
+// changed: its message, its files and each file's diff; from there it can be cherry-picked, reverted or tagged. Compare
+// shows two branches, tags or commits side by side.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { Icon, Seg, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, Icon, Seg, Spinner } from './ui.js';
+import { guarded } from './store.js';
 import { DiffView, diffStats } from './diff.js';
 import { copyText } from './code.js';
+import { Compare } from './compare.js';
+import { opNote } from './git-sync.js';
 
 const ROW = 30; // px per commit
 const LANE = 14; // px between lanes
@@ -82,37 +86,71 @@ const Stats = ({ diff }) => {
   return st && html`<span class="diffstat">${st.add > 0 && html`<b class="add">+${st.add}</b>`}${st.del > 0 && html`<b class="del">−${st.del}</b>`}</span>`;
 };
 
+/** Tag a commit, annotated when there is a message, and push the tag along when asked. */
+function TagForm({ id, hash, onClose, onDone }) {
+  const [name, setName] = useState('');
+  const [message, setMessage] = useState('');
+  const [push, setPush] = useState(true);
+  const save = guarded(async (e) => {
+    e?.preventDefault();
+    const r = await api(`/api/conversations/${id}/git/tags`, { method: 'POST', body: { name: name.trim(), hash, message: message.trim(), push } });
+    onClose();
+    await onDone(`Tagged ${r.tag}${!r.push ? '' : r.push.error ? ` · push failed: ${r.push.error}` : r.push.pushed ? ` · pushed to ${r.push.pushed}` : ' · not pushed (no remote)'}`);
+  });
+  return html`<form class="tag-form" onSubmit=${save}>
+    <input class="mono" value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="v1.2.0" autofocus aria-label="Tag name" />
+    <input value=${message} onInput=${(e) => setMessage(e.currentTarget.value)} placeholder="Message (optional: makes it annotated)" aria-label="Tag message" />
+    <label class="check small"><input type="checkbox" checked=${push} onChange=${(e) => setPush(e.currentTarget.checked)} /><span>Push it</span></label>
+    <${AsyncButton} class="btn primary sm" icon="tag" disabled=${!name.trim()} onClick=${save}>Tag<//>
+    <button type="button" class="btn ghost sm" onClick=${onClose}>Cancel</button>
+  </form>`;
+}
+
 /** What one commit changed: its message, the files (pick one) and that file's diff against the commit's first parent. */
-function CommitView({ id, hash, remotes, onBack }) {
+export function CommitView({ id, hash, remotes, onBack, onDone, path: initialPath, backLabel = 'History' }) {
   const [c, setC] = useState(null);
   const [error, setError] = useState('');
   const [diffs, setDiffs] = useState({});
   const [selected, setSelected] = useState(null);
   const [mode, setMode] = useState(innerWidth > 1100 ? 'split' : 'unified');
+  const [tagging, setTagging] = useState(false);
   const fetchDiff = (path) => {
     setDiffs((d) => (path in d ? d : { ...d, [path]: null }));
     api(`/api/conversations/${id}/git/commits/${hash}/diff?path=${encodeURIComponent(path)}`)
       .then((r) => setDiffs((d) => ({ ...d, [path]: r.diff })), () => setDiffs((d) => ({ ...d, [path]: '' })));
   };
   useEffect(() => {
-    setC(null); setDiffs({}); setSelected(null); setError('');
+    setC(null); setDiffs({}); setSelected(null); setError(''); setTagging(false);
     api(`/api/conversations/${id}/git/commits/${hash}`).then((r) => {
       setC(r);
-      setSelected(r.files[0]?.path ?? null);
+      setSelected(r.files.some((f) => f.path === initialPath) ? initialPath : r.files[0]?.path ?? null);
       r.files.slice(0, MAX_DIFFS).forEach((f) => fetchDiff(f.path));
     }, (e) => setError(e.message));
   }, [id, hash]);
   const pick = (path) => { setSelected(path); if (!(path in diffs)) fetchDiff(path); };
   const file = c?.files.find((f) => f.path === selected);
   const d = file && diffs[file.path];
+  // Copy this commit onto the checked-out branch, or add one that undoes it. Either may stop on conflicts.
+  const apply = (how) => guarded(async () => {
+    const what = how === 'revert' ? 'Add a commit that undoes this one' : 'Copy this commit onto the checked-out branch';
+    if (!await confirmDialog({ title: how === 'revert' ? 'Revert this commit?' : 'Cherry-pick this commit?', message: `${what}:\n${c.subject}`, confirmText: how === 'revert' ? 'Revert' : 'Cherry-pick' })) return;
+    const r = await api(`/api/conversations/${id}/git/commits/${c.hash}/${how}`, { method: 'POST' });
+    await onDone?.(opNote(r, `${how === 'revert' ? 'Reverted' : 'Cherry-picked'} as ${r.commit}`));
+  });
   const head = html`<div class="dialog-head">
-    <button class="btn ghost sm" onClick=${onBack}><${Icon} name="chevron-left" />History</button>
+    <button class="btn ghost sm" onClick=${onBack}><${Icon} name="chevron-left" />${backLabel}</button>
     <div class="spacer"></div>
+    ${c && onDone && html`<div class="commit-actions">
+      <${AsyncButton} class="btn ghost sm" icon="git-commit-horizontal" title="Copy this commit onto the checked-out branch" onClick=${apply('cherry-pick')}>Cherry-pick<//>
+      <${AsyncButton} class="btn ghost sm" icon="undo-2" title="Add a commit that undoes this one" onClick=${apply('revert')}>Revert<//>
+      <button class="btn ghost sm" title="Tag this commit" onClick=${() => setTagging(!tagging)}><${Icon} name="tag" />Tag</button>
+    </div>`}
     ${c?.files.length > 0 && html`<${Seg} small label="Diff layout" value=${mode} onChange=${setMode} options=${[['unified', 'Unified'], ['split', 'Split']]} />`}
   </div>`;
   if (error) return html`${head}<div class="form-error">${error}</div>`;
   if (!c) return html`${head}<div class="dim small"><${Spinner} /> Loading…</div>`;
   return html`${head}
+    ${tagging && html`<${TagForm} id=${id} hash=${c.hash} onClose=${() => setTagging(false)} onDone=${onDone} />`}
     <div class="commit-head">
       <div class="commit-subject">${c.refs.map((r) => html`<${Ref} name=${r} remotes=${remotes} />`)}${c.subject}</div>
       ${c.body && html`<pre class="commit-body">${c.body}</pre>`}
@@ -142,23 +180,35 @@ function CommitView({ id, hash, remotes, onBack }) {
       </div>`}`;
 }
 
-export function History({ id, onClose }) {
+/** `onDone(message)`: something changed the folder (cherry-pick, revert, tag): refresh what shows it. */
+export function History({ id, onClose, onDone }) {
   const [limit, setLimit] = useState(150);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(null); // the commit being looked at
+  const [comparing, setComparing] = useState(false);
+  const [version, setVersion] = useState(0);
   useEffect(() => {
     api(`/api/conversations/${id}/git/log?limit=${limit}`).then(setData, (e) => setError(e.message));
-  }, [id, limit]);
+  }, [id, limit, version]);
+  const done = async (message) => { setVersion((v) => v + 1); await onDone?.(message); };
   const { rows, width } = data ? layout(data.commits) : { rows: [], width: 1 };
   const shown = Math.min(width, 12); // a very wide graph would leave no room for the subjects
+  // The comparison stays mounted under an opened commit, so going back finds it as it was.
+  const compare = comparing && html`<div class="dialog-body history commit-view" hidden=${!!open}>
+    <${Compare} id=${id} remotes=${data?.remotes || []} onBack=${() => setComparing(false)} onOpen=${setOpen} />
+  </div>`;
   if (open) {
-    return html`<div class="dialog-body history commit-view">
-      <${CommitView} id=${id} hash=${open} remotes=${data?.remotes || []} onBack=${() => setOpen(null)} />
+    return html`${compare}<div class="dialog-body history commit-view">
+      <${CommitView} id=${id} hash=${open} remotes=${data?.remotes || []} onBack=${() => setOpen(null)} onDone=${done} backLabel=${comparing ? 'Compare' : 'History'} />
     </div>`;
   }
+  if (comparing) return compare;
   return html`<div class="dialog-body history">
-    <div class="dialog-head"><h2>History</h2><button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button></div>
+    <div class="dialog-head"><h2>History</h2>
+      <div class="spacer"></div>
+      <button class="btn ghost sm" title="Compare two branches, tags or commits" onClick=${() => setComparing(true)}><${Icon} name="git-compare" />Compare</button>
+      <button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button></div>
     ${error && html`<div class="form-error">${error}</div>`}
     ${!data ? !error && html`<div class="dim small"><${Spinner} /> Loading…</div>`
       : !data.commits.length ? html`<div class="dim small">No commits yet.</div>`

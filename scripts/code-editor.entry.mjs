@@ -3,8 +3,8 @@
 // of that language is opened.
 export { Compartment, EditorSelection, EditorState } from '@codemirror/state';
 export {
-  crosshairCursor, drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars,
-  keymap, lineNumbers, rectangularSelection,
+  crosshairCursor, drawSelection, dropCursor, EditorView, gutter, GutterMarker, highlightActiveLine, highlightActiveLineGutter,
+  highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
 } from '@codemirror/view';
 export {
   addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, cursorMatchingBracket, defaultKeymap, deleteLine, history,

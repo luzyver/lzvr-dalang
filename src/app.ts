@@ -1,14 +1,14 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { extname, join } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { clickupClient, clickupRoutes } from './clickup-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
-import { GitError } from './git.js';
+import { git as gitCmd, gitContext, GitError } from './git.js';
 import { GitAuth } from './git-auth.js';
 import { GitUsers } from './git-users.js';
 import { gitAuthRoutes } from './git-auth-routes.js';
@@ -413,17 +413,38 @@ export function buildApp(
 
   // An admin cannot make a project they could not open themselves (they would lose it): 'owner' is the owner's.
   const mayGrant = (user: AuthUser, access: ProjectAccess | undefined) => !access || canAccess(user, access);
-  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend; access?: ProjectAccess } }>('/api/projects', {
+  // With `clone`, the folder is made by cloning that repository into `path` (which must not exist yet, or be empty),
+  // with the caller's own git setup (their keys and logins).
+  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend; access?: ProjectAccess; clone?: string } }>('/api/projects', {
     onRequest: requireAdmin,
     schema: { body: {
       type: 'object', required: ['name', 'path'], additionalProperties: false,
       properties: {
         name: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
         sandbox: { enum: [...SANDBOXES] }, backend: { enum: [...BACKENDS] }, access: { enum: [...PROJECT_ACCESS] },
+        clone: { type: 'string', minLength: 1, maxLength: 2000 },
       },
     } },
-  }, (req, reply) => {
+  }, async (req, reply) => {
     if (!mayGrant(req.user!, req.body.access)) return reply.code(403).send({ error: `only the owner can limit a project to ${req.body.access}` });
+    if (req.body.clone) {
+      const url = req.body.clone.trim();
+      if (url.startsWith('-') || /^ext::/i.test(url)) return reply.code(400).send({ error: 'not a repository address' });
+      const root = realpathSync(cfg.workspaceRoot);
+      const target = resolve(root, req.body.path);
+      const parent = insideRoot(cfg.workspaceRoot, dirname(target));
+      const rel = relative(root, target);
+      if (!parent || !rel || rel.startsWith('..') || isAbsolute(rel)) return reply.code(400).send({ error: 'path must be a new folder inside WORKSPACE_ROOT' });
+      if (existsSync(target) && readdirSync(target).length) return reply.code(400).send({ error: `${req.body.path} already exists and is not empty` });
+      try {
+        const clone = () => gitCmd(parent, ['clone', '--', url, target], 600_000);
+        const ctx = gitUsers.forUser(req.user!.id);
+        await (ctx ? gitContext.run(ctx, clone) : clone());
+      } catch (e) {
+        if (e instanceof GitError) return reply.code(400).send({ error: `clone failed: ${e.message}` });
+        throw e;
+      }
+    }
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
     return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox, req.body.backend, req.body.access));

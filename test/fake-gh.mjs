@@ -1,9 +1,34 @@
 // Fake `gh` / `glab`: `fake-gh.mjs <log file> <args...>`. Appends its arguments and folder to the log as a JSON line and
 // prints a new pull request address; once the log has an entry, it answers like gh does for a branch that has one already.
-import { appendFileSync, existsSync } from 'node:fs';
+// `pr view` and `api` answer with a pull request that has checks, a review and comments (merged once `pr merge` ran);
+// `pr merge` is logged too.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 const [log, ...args] = process.argv.slice(2);
 const url = 'https://github.com/acme/app/pull/7';
+const merged = () => existsSync(log) && readFileSync(log, 'utf8').includes('"merge"');
+
+if (args[0] === 'pr' && args[1] === 'view') {
+  console.log(JSON.stringify({
+    title: 'feat: Add b', url, state: merged() ? 'MERGED' : 'OPEN', isDraft: false, mergeable: 'MERGEABLE', reviewDecision: 'CHANGES_REQUESTED',
+    statusCheckRollup: [
+      { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/1' },
+      { __typename: 'CheckRun', name: 'lint', status: 'IN_PROGRESS', conclusion: '' },
+      { __typename: 'StatusContext', context: 'deploy', state: 'SUCCESS', targetUrl: '' },
+    ],
+    comments: [{ author: { login: 'ann' }, body: 'Looks close.', createdAt: '2026-01-01T10:00:00Z' }],
+    reviews: [{ author: { login: 'bob' }, body: 'Please rename x.', state: 'CHANGES_REQUESTED', submittedAt: '2026-01-01T11:00:00Z' }],
+  }));
+  process.exit(0);
+}
+if (args[0] === 'api') {
+  console.log(JSON.stringify([{ user: { login: 'bob' }, body: 'Off by one here.', path: 'b.txt', line: 1, created_at: '2026-01-01T12:00:00Z' }]));
+  process.exit(0);
+}
+if (args[0] === 'pr' && args[1] === 'merge') {
+  appendFileSync(log, `${JSON.stringify({ args, cwd: process.cwd(), leaked: process.env.LZVR_TOKEN ?? null, merge: true })}\n`);
+  process.exit(0);
+}
 if (existsSync(log)) {
   console.error(`a pull request for branch "x" into branch "main" already exists:\n${url}`);
   process.exit(1);

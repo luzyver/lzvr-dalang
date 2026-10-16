@@ -6,6 +6,7 @@ import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
+import { isRepo, saveCheckpoint } from './git.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
 import type { Conversation, QueueItem, Store } from './store.js';
@@ -30,6 +31,8 @@ export interface DispatcherOpts {
   mcpUrl?: string;
   /** Have the chat's agent give each new chat a short title from its first prompt (else the prompt itself is the title). */
   autoTitle?: boolean;
+  /** Snapshot the agent's folder before and after each turn, so a turn's changes can be shown and undone (default on). */
+  checkpoints?: boolean;
   /** Called after every turn (completed, failed or cancelled), e.g. to send a push notification. */
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
@@ -277,6 +280,12 @@ export class Dispatcher {
     return ev;
   }
 
+  /** A checkpoint of the folder (see saveCheckpoint). Never fails the turn: one that cannot be taken is only logged. */
+  private async checkpoint(cwd: string, convId: string, name: string): Promise<void> {
+    if (!this.store.getConversation(convId)) return; // deleted meanwhile: its checkpoints are being dropped
+    try { await saveCheckpoint(cwd, convId, name); } catch (e) { console.warn(`no checkpoint ${name} for chat ${convId}: ${(e as Error).message}`); }
+  }
+
   private async run(convId: string, item: QueueItem, ac: AbortController): Promise<void> {
     const conv = this.store.getConversation(convId);
     const project = conv && this.store.getProject(conv.project_id);
@@ -300,6 +309,8 @@ export class Dispatcher {
     if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
       void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
     }
+    const checkpoints = this.opts.checkpoints !== false && project.sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
+    if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
     let failed = false;
     let usage: unknown = null;
     let lastMessage = '';
@@ -399,6 +410,7 @@ export class Dispatcher {
     const cancelled = ac.signal.aborted;
     const interrupted = cancelled && this.stopping;
     const status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : failed ? 'failed' : 'completed';
+    if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-after`);
     this.store.endTurn(turnId, status, usage);
     const conversationStatus = failed && !cancelled ? 'failed' : 'idle';
     this.store.setStatus(convId, conversationStatus);

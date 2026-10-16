@@ -1,4 +1,5 @@
 // Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this.
+// FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
@@ -50,6 +51,10 @@ process.stdin.on('end', async () => {
   }
   if (mode === 'stubborn') process.on('SIGTERM', () => {}); // ignores polite kills
   if (mode === 'slow' || mode === 'stubborn') await new Promise((r) => setTimeout(r, 30000));
+  if (process.env.FAKE_WRITE) { // FAKE_WRITE=name=content: write that file in the folder it works in (-C)
+    const [name, ...content] = process.env.FAKE_WRITE.split('=');
+    writeFileSync(join(args[args.indexOf('-C') + 1], name), content.join('='));
+  }
   if (mode === 'fail') {
     out({ type: 'turn.failed', error: { message: 'boom' } });
     process.exit(1);
