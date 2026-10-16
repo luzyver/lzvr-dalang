@@ -131,6 +131,9 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   messages, e.g. "what did I work on last week?" (see "ClickUp" below).
 - **More MCP servers** (optional): Context7, Playwright, Sentry or any other, given to the agents' turns; the
   owner's only, unless one is marked for all users (see "Other MCP servers" below).
+- **SQL editor**: **SQL Editor** in the sidebar opens `/sql` in its own tab, for the whole panel rather than one chat:
+  PostgreSQL, MySQL, MariaDB and SQLite connections, their tables, query consoles and a result grid. Each connection
+  says whether agents may use it, read-only or read-write (see "SQL editor" below).
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
@@ -530,6 +533,40 @@ filled in; every field can be changed. In a server's tab a switch turns it off w
 writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then
 refuses every MCP call ("requires approval"). With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
 if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else keeps working).
+
+### SQL editor
+
+**SQL Editor** in the sidebar (or the command palette) opens `/sql` in a tab of its own. It is not tied to a chat: the
+connections belong to the panel.
+
+- **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
+  protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, or a SQLite file on this machine (not one in
+  `STATE_DIR`). **Test connection** tries the form before saving. Passwords never go back to the panel; like the
+  other secrets they sit in Dalang's database. **Who may open it** works like a project's access: everyone, owner and
+  admins, or the owner only. **Read-only for everyone** makes the database refuse every write, from the panel too.
+- **Other databases on a PostgreSQL server**: a PostgreSQL connection is bound to one database, so by default the
+  connection opens only the one it names. **Show every database on the server** lists every database its user may
+  connect to (`pg_database`) under the connection, each opened through its own connection. Each console picks its
+  database next to its connection, and agents pass `database` to `db_schema` and `db_query`; access and agent access
+  cover every database listed.
+  MySQL and MariaDB need none of this: leave **Database** empty and every database shows as a schema.
+- **Querying**: the tree lists schemas, tables and views with their columns (double-click a table for its first rows).
+  Each console tab has its connection; `Ctrl Enter` runs the selection or the statement at the cursor, `Ctrl Shift
+  Enter` the whole console, statement by statement, stopping at the first error (the results before it stay). A
+  statement returns at most the row limit (100 to 10 000; the rest is never fetched) and stops after two minutes.
+  Results copy as TSV or download as CSV; consoles are kept in the browser. Every run opens its own connection, so a
+  transaction lasts one run: `BEGIN; ...; COMMIT;` in one go.
+- **Agent access** per connection: **Off** (the default), **Read-only** or **Read and write**. A connection that is
+  not off is given to agents through this gateway's MCP (`db_list_connections`, `db_schema`, `db_query`), so chats
+  need `MCP_INJECT=1`. An agent only sees connections the user whose prompt it runs may open (with nobody behind it:
+  the "everyone" ones). Every MCP caller counts as an agent here, an outside client with a token too. The last 200
+  agent queries per connection are logged (**Agent queries** in its `⋯` menu, admins).
+- **How read-only holds**: the database enforces it, the SQL is never inspected. PostgreSQL runs each statement in a
+  `READ ONLY` transaction that is rolled back, MySQL/MariaDB in a session set to `TRANSACTION READ ONLY` (DDL is
+  refused there too), SQLite opens the file read-only; each statement gets a fresh connection, so one cannot loosen
+  the next. This keeps an agent from writing *through these tools*. An agent with a shell can still reach a database
+  whose address and credentials it finds (a `.env` in its project, say), so for a strict limit give the connection a
+  database user that may only read.
 
 ## Develop
 

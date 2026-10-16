@@ -17,8 +17,8 @@ self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const convId = e.notification.data && e.notification.data.convId;
   e.waitUntil((async () => {
-    // A code editor tab is not where a chat opens.
-    const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((w) => !new URL(w.url).pathname.startsWith('/code'));
+    // A code or SQL editor tab is not where a chat opens.
+    const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((w) => !/^\/(code|sql)\b/.test(new URL(w.url).pathname));
     for (const w of wins) {
       await w.focus();
       w.postMessage({ convId });

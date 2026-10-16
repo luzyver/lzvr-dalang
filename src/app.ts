@@ -12,6 +12,7 @@ import { git as gitCmd, gitContext, GitError } from './git.js';
 import { GitAuth } from './git-auth.js';
 import { GitUsers } from './git-users.js';
 import { gitAuthRoutes } from './git-auth-routes.js';
+import { databaseRoutes } from './database-routes.js';
 import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
@@ -187,6 +188,7 @@ export function buildApp(
   mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store) });
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });
+  databaseRoutes(app, { store, stateDir: cfg.stateDir });
   dispatcher.mcpServersFor = (author) => mcpLaunch(mcpServersFor(store, author));
   const ghCommand = cfg.ghCommand ?? ['gh'];
   const glabCommand = cfg.glabCommand ?? ['glab'];

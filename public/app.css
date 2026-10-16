@@ -987,4 +987,51 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
   .tree-input { font-size: 16px; } /* no zoom-in on iOS */
 }
 
+/* ---------- 10. SQL editor (its own tab, /sql): connections | consoles / results, on the code editor's layout ---------- */
+.ide.sql .err, .sql-dialog .err { color: var(--err); }
+.sql-tag { display: inline-grid; place-items: center; flex: none; color: var(--text-faint); }
+.sql-tag .i { width: 12px; height: 12px; }
+.sql-tag.warn { color: var(--warn); }
+.tree-icon.pk { color: var(--warn); }
+.sql-col { cursor: default; }
+.sql-type { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font: 11px var(--mono); color: var(--text-faint); }
+.sql-new { flex: none; align-self: center; margin: 0 4px; }
+.sql-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; flex: none; border-bottom: 1px solid var(--line); min-width: 0; }
+.sql-conn { min-height: 28px !important; height: 28px; padding: 0 8px !important; font-size: 12.5px; max-width: 260px; }
+.sql-db { max-width: 180px; font-family: var(--mono); }
+.sql-limit { display: inline-flex; align-items: center; gap: 6px; }
+.sql-limit select { min-height: 26px !important; height: 26px; padding: 0 6px !important; font-size: 12px; }
+.sql-results { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.term-tab.err { color: var(--err); }
+.sql-grid-wrap { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.sql-grid { border-collapse: separate; border-spacing: 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.sql-grid th, .sql-grid td { max-width: 420px; padding: 3px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.sql-grid th { position: sticky; top: 0; z-index: 1; background: var(--bg-side); font-weight: 600; color: var(--text); }
+.sql-grid th small { margin-left: 6px; font-weight: 400; color: var(--text-faint); }
+.sql-grid td.num { text-align: right; }
+.sql-grid td.null { color: var(--text-faint); font-style: italic; }
+.sql-grid .rownum { position: sticky; left: 0; background: var(--bg-side); color: var(--text-faint); text-align: right; font-weight: 400; }
+.sql-grid th.rownum { z-index: 2; }
+.sql-grid tbody tr:hover td { background: var(--hover); }
+.sql-grid tbody tr:hover td.rownum { background: var(--surface-3); }
+.sql-more { padding: 8px 12px; }
+.sql-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 4px 12px; flex: none; border-top: 1px solid var(--line); }
+.sql-foot > span { display: inline-flex; align-items: center; gap: 4px; }
+.sql-error { display: flex; gap: 8px; padding: 10px 14px; color: var(--err); overflow: auto; }
+.sql-error > .i { flex: none; margin-top: 2px; }
+.sql-error pre { margin: 2px 0 0; font: 12.5px var(--mono); white-space: pre-wrap; word-break: break-word; }
+.sql-dialog { width: 600px; }
+/* The dialog itself clips; a long form (or agent log) scrolls inside it. */
+.sql-dialog > .dialog-body { max-height: calc(100dvh - 34px); overflow-y: auto; overscroll-behavior: contain; }
+.sql-port { width: 100px; }
+.sql-form .row.wrap > .field:has(.sql-port) { flex: 0 0 110px; }
+.sql-log { display: grid; gap: 8px; max-height: 65vh; overflow: auto; }
+.sql-log-item { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.sql-log-item.failed { border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+.sql-log-item pre { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+@media (max-width: 760px) {
+  .sql-bar { flex-wrap: wrap; }
+  .sql-conn { max-width: none; flex: 1 1 100%; font-size: 16px; }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

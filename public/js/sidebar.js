@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, convs, goHome, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openView, projects, route,
+  approvals, convs, goHome, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -181,6 +181,8 @@ export function Sidebar() {
         <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
       ${isAdmin.value && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('approvals'); }}>
         <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
+      <a class="nav-item" href="/sql" target="dalang-sql" title="Opens in its own tab" onClick=${(e) => { e.preventDefault(); openSqlEditor(); }}>
+        <${Icon} name="database" />SQL Editor</a>
     </nav>
     <div class="side-section">
       <div class="section-head"><span>Projects</span>

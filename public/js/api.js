@@ -21,8 +21,9 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   if (res.status === 401) { handleUnauthorized(); throw new Unauthorized(); }
   if (!res.ok) {
     let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-    throw Object.assign(new Error(msg), { status: res.status });
+    let detail;
+    try { detail = await res.json(); msg = detail.error || msg; } catch { /* not json */ }
+    throw Object.assign(new Error(msg), { status: res.status, detail });
   }
   return res.status === 204 ? null : res.json();
 }

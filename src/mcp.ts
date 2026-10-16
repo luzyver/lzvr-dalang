@@ -4,6 +4,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUp, startOfDay } from './clickup.js';
 import type { Config } from './config.js';
+import { logDbQuery } from './database-routes.js';
+import { type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
@@ -171,6 +173,9 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
   const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
   if (cu) clickupTools(server, cu);
+  // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
+  const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
+  if (dbs.length) databaseTools(server, store, dbs, { who: onBehalf, conv: source });
   return server;
 }
 
@@ -210,6 +215,78 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
     from: a.from, to: a.to, workspaceIds: a.workspace_ids, channelIds: a.channel_ids, mineOnly: a.mine_only,
     includeReplies: a.include_replies, limit: a.limit,
   })));
+}
+
+const AGENT_DB_TIMEOUT_MS = 30_000;
+
+/**
+ * The SQL editor's connections that are open to agents (Settings in /sql: "Agent access"). A read-only one runs every
+ * statement in a read-only transaction or session, enforced by the database. Each query goes into the connection's log.
+ */
+function databaseTools(server: McpServer, store: Store, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
+  const get = (id: string) => dbs.find((c) => c.id === id);
+  const readOnly = (c: DbConnection) => c.readOnly || c.agent !== 'read-write';
+  const none = (id: string) => fail(`no such connection: ${id} (see db_list_connections)`);
+  const DATABASE = z.string().optional()
+    .describe('another database on the same server, for a connection that lists several (default: its own)');
+
+  server.registerTool('db_list_connections', {
+    description: 'List the database connections you may query: id, engine, its database (or, for a PostgreSQL connection '
+      + 'that opens several, every database you may pass as database) and whether you may only read.',
+  }, async () => text(await Promise.all(dbs.map(async (c) => ({
+    id: c.id, label: c.label, engine: c.driver, database: c.driver === 'sqlite' ? c.file : c.database || (multiDatabase(c) ? 'postgres' : ''),
+    ...(multiDatabase(c) && { databases: await listDatabases(c).catch((e: Error) => `could not list them: ${e.message}`) }),
+    access: readOnly(c) ? 'read-only' : 'read-write',
+  })))));
+
+  server.registerTool('db_schema', {
+    description: 'Tables and views of a connection with their columns (name, type, nullable, primary key). Narrow it with schema or table on a big database.',
+    inputSchema: {
+      connection: z.string(), database: DATABASE, schema: z.string().optional().describe('only this schema'),
+      table: z.string().optional().describe('only tables whose name contains this'),
+    },
+  }, async ({ connection, database, schema, table }) => {
+    const c = get(connection);
+    if (!c) return none(connection);
+    try {
+      const info = await readSchema(onDatabase(c, database), AGENT_DB_TIMEOUT_MS);
+      const schemas = info.schemas.filter((s) => !schema || s.name === schema)
+        .map((s) => ({ ...s, tables: s.tables.filter((t) => !table || t.name.toLowerCase().includes(table.toLowerCase())) }))
+        .filter((s) => s.tables.length);
+      const count = schemas.reduce((n, s) => n + s.tables.length, 0);
+      // A large answer lists only names; asking again with a schema or table gives the columns.
+      if (count > 150) return text({ note: `${count} tables: names only. Pass schema or table for their columns.`, schemas: schemas.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })) });
+      return text({ schemas: schemas.map((s) => ({ name: s.name, tables: s.tables.map((t) => ({
+        name: t.name, kind: t.kind, columns: t.columns.map((col) => `${col.name} ${col.type}${col.pk ? ' PK' : ''}${col.nullable ? '' : ' NOT NULL'}`),
+      })) })) });
+    } catch (e) { return fail((e as Error).message); }
+  });
+
+  server.registerTool('db_query', {
+    description: 'Run SQL on a connection: one statement or several separated by ;. Returns the columns and rows of each statement '
+      + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database.',
+    inputSchema: {
+      connection: z.string(), database: DATABASE, sql: z.string().min(1).max(100_000),
+      limit: z.number().int().min(1).max(1000).optional().describe('max rows per statement, default 100'),
+    },
+  }, async ({ connection, database, sql, limit }) => {
+    const c = get(connection);
+    if (!c) return none(connection);
+    const t0 = Date.now();
+    const log = (ok: boolean, rows: number, error?: string) =>
+      logDbQuery(store, c.id, {
+        at: t0, who: by.who, conv: by.conv, ...(database && { database }), sql: sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }),
+      });
+    try {
+      const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
+      log(true, results.reduce((n, r) => n + r.rows.length, 0));
+      return text({ results: results.map((r) => ({ columns: r.columns.map((col) => col.name), rows: r.rows, affected: r.affected, truncated: r.truncated })) });
+    } catch (e) {
+      const done = e instanceof QueryError ? e.results.length : 0;
+      log(false, 0, (e as Error).message);
+      return fail(`${done ? `statement ${done + 1} failed (the ${done} before it ran): ` : ''}${(e as Error).message}`);
+    }
+  });
 }
 
 /** Stateless Streamable HTTP MCP endpoint: every POST gets its own server+transport and answers with plain JSON. */
