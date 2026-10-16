@@ -7,11 +7,12 @@ import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api, downloadFile } from './api.js';
-import { confirmDialog, Empty, Icon, Logo, Seg, Spinner } from './ui.js';
+import { confirmDialog, Empty, Icon, Logo, Modal, Seg, Spinner } from './ui.js';
 import { guarded, toast } from './store.js';
 import { theme } from './theme.js';
 import { copyText } from './code.js';
-import { createState, EditorView, loadLanguage, languageOf, openSearchPanel, symbolsOf, wrapOn, wrapping } from './code-mirror.js';
+import { blameGutter, blaming, createState, EditorView, loadLanguage, languageOf, openSearchPanel, symbolsOf, wrapOn, wrapping } from './code-mirror.js';
+import { CommitView } from './history.js';
 import { beginNew, FileTree, refreshGitMarks, refreshTree, reveal, tree } from './code-files.js';
 import { Keys, openPalette, Palette } from './code-palette.js';
 import { search, SearchView } from './code-search.js';
@@ -40,6 +41,9 @@ const ed = {
   pane: signal('editor'),
   /** the first key of a chord (Ctrl+K) while the second is awaited */
   chord: signal(null),
+  /** git: the commits of one file ({ path, commits }, commits null while loading), and one commit opened ({ hash, path }) */
+  fileLog: signal(null),
+  commit: signal(null),
 };
 /** The one CodeMirror view; switching tabs swaps its state. `view.dalangDoc` is the doc it shows. */
 let view = null;
@@ -198,6 +202,7 @@ async function save(doc, { force = false } = {}) {
     doc.dirty = !stateOf(doc).doc.eq(doc.saved); // typed on while it was saving
     doc.changedOnDisk = false;
     refreshGitMarks(ed.convId);
+    if (doc.blame) showBlame(doc, true); // the lines moved: blame them again
   } catch (e) {
     if (e.status === 409 && /changed on disk/.test(e.message)) {
       doc.changedOnDisk = true;
@@ -215,6 +220,65 @@ async function save(doc, { force = false } = {}) {
     doc.saving = false;
     bump();
   }
+}
+
+/** Reconfigure one file's editor state, whether or not it is the one showing. */
+function reconfigure(doc, effects) {
+  if (view?.dalangDoc === doc) { view.dispatch({ effects }); doc.state = view.state; } else doc.state = stateOf(doc).update({ effects }).state;
+}
+
+/** Show (or, with `on` false, hide) who last changed each line of a file, in a gutter; a click opens that commit. */
+async function showBlame(doc, on = !doc.blame) {
+  if (!doc || doc.kind !== 'text') return;
+  if (!on) { doc.blame = false; reconfigure(doc, blaming.reconfigure([])); bump(); return; }
+  try {
+    const b = await api(`/api/conversations/${ed.convId}/git/blame?path=${encodeURIComponent(doc.path)}`);
+    doc.blame = true;
+    reconfigure(doc, blaming.reconfigure(blameGutter(b, (hash) => { ed.commit.value = { hash, path: doc.path }; })));
+  } catch (e) {
+    toast(e.status === 400 && /no such path|not a git|fatal/i.test(e.message) ? 'No blame: this file is not committed (or the folder is not a git repository)' : e.message, 'err');
+  }
+  bump();
+}
+
+/** The commits that changed a file, newest first, in a dialog. */
+async function fileHistory(doc) {
+  if (!doc) return;
+  ed.fileLog.value = { path: doc.path, commits: null };
+  try {
+    const r = await api(`/api/conversations/${ed.convId}/git/file-log?path=${encodeURIComponent(doc.path)}`);
+    if (ed.fileLog.value?.path === doc.path) ed.fileLog.value = { path: doc.path, commits: r.commits };
+  } catch (e) {
+    ed.fileLog.value = null;
+    toast(e.message, 'err');
+  }
+}
+
+/** The file history and the commit opened from it or from the blame gutter. */
+function GitDialogs() {
+  const log = ed.fileLog.value;
+  const commit = ed.commit.value;
+  const closeCommit = () => { ed.commit.value = null; };
+  return html`
+    <${Modal} open=${!!log && !commit} label="File history" class="history-modal" onClose=${() => { ed.fileLog.value = null; }}>
+      ${log && html`<div class="dialog-body history">
+        <div class="dialog-head"><h2>History of <span class="mono">${nameOf(log.path)}</span></h2>
+          <button class="icon-btn" aria-label="Close" onClick=${() => { ed.fileLog.value = null; }}><${Icon} name="x" /></button></div>
+        ${!log.commits ? html`<div class="dim small"><${Spinner} /> Loading…</div>`
+          : !log.commits.length ? html`<div class="dim small">No commits have changed this file yet.</div>`
+          : html`<div class="log">${log.commits.map((c) => html`<div key=${c.hash} class="log-row" title="Show what this commit changed"
+              onClick=${() => { ed.commit.value = { hash: c.hash, path: log.path }; }}>
+            <div class="log-main"><span class="log-subject" title=${c.subject}>${c.subject}</span>
+              <span class="log-meta dim"><span class="mono">${c.hash.slice(0, 7)}</span><span>${c.author}</span>
+                <span>${new Date(c.date * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</span></span></div>
+          </div>`)}</div>`}
+      </div>`}
+    <//>
+    <${Modal} open=${!!commit} label="Commit" class="history-modal" onClose=${closeCommit}>
+      ${commit && html`<div class="dialog-body history commit-view">
+        <${CommitView} id=${ed.convId} hash=${commit.hash} path=${commit.path} remotes=${[]} onBack=${closeCommit} backLabel=${log ? 'File history' : 'Back'} />
+      </div>`}
+    <//>`;
 }
 
 async function saveAll() {
@@ -324,6 +388,9 @@ function Crumbs({ doc }) {
   return html`<div class="editor-crumbs">
     ${parts.map((p, i) => html`${i > 0 && html`<${Icon} name="chevron-right" class="tiny" />`}<span class=${cx(i === parts.length - 1 && 'last')}>${p}</span>`)}
     <div class="spacer"></div>
+    ${doc.kind === 'text' && html`<button class=${cx('crumb-btn', doc.blame && 'on')} aria-pressed=${!!doc.blame}
+      title="Blame: who last changed each line (click a line for its commit)" onClick=${() => showBlame(doc)}><${Icon} name="eye" /><span>Blame</span></button>`}
+    <button class="crumb-btn" title="The commits that changed this file" onClick=${() => fileHistory(doc)}><${Icon} name="history" /><span>History</span></button>
     ${doc.kind === 'text' && html`<button class=${cx('crumb-btn', wrapOn.value && 'on')} aria-pressed=${wrapOn.value}
       title=${`Word wrap: ${wrapOn.value ? 'on' : 'off'} (Alt+Z)`} onClick=${() => setWrap(!wrapOn.value)}><${Icon} name="wrap-text" /><span>Wrap</span></button>`}
   </div>`;
@@ -566,6 +633,8 @@ export function CodeEditor({ id }) {
       { id: 'termMax', title: 'Terminal: Toggle Maximized Panel', run: () => { if (!termShown) toggleTerm(true); setTermMax(!termMax); } },
     ] : []),
     { id: 'wrap', title: 'View: Toggle Word Wrap', keys: 'Alt+Z', run: () => setWrap(!wrapOn.value) },
+    { id: 'blame', title: 'Git: Toggle Blame', run: () => showBlame(activeDoc()) },
+    { id: 'fileHistory', title: 'Git: View File History', run: () => fileHistory(activeDoc()) },
     { id: 'zoomIn', title: 'View: Zoom In (editor and terminal)', keys: 'Ctrl+=', scope: 'any', run: () => zoom(fontPx + 1) },
     { id: 'zoomOut', title: 'View: Zoom Out (editor and terminal)', keys: 'Ctrl+-', scope: 'any', run: () => zoom(fontPx - 1) },
     { id: 'zoomReset', title: 'View: Reset Zoom', keys: 'Ctrl+0', scope: 'any', run: () => zoom(13) },
@@ -710,6 +779,7 @@ export function CodeEditor({ id }) {
       </div>
     </div>
     <${StatusBar} />
+    <${GitDialogs} />
     <nav class="ide-nav"><${Seg} value=${pane} label="Pane" options=${panes} onChange=${(v) => { ed.pane.value = v; }} /></nav>
     <${Palette} convId=${id} commands=${commands.filter((c) => !c.hidden)} recent=${ed.docs.value.map((d) => d.path)}
       symbols=${() => (textDoc() ? symbolsOf(view.state) : null)} lines=${() => (textDoc() ? view.state.doc.lines : null)}

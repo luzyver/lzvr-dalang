@@ -3,7 +3,7 @@
 import {
   addCursorAbove, addCursorBelow, autocompletion, bracketMatching, closeBrackets, closeBracketsKeymap, Compartment,
   completionKeymap, crosshairCursor, defaultKeymap, drawSelection, dropCursor, EditorState, EditorView, ensureSyntaxTree,
-  foldGutter, foldKeymap, highlightActiveLine, highlightActiveLineGutter, highlightSelectionMatches, highlightSpecialChars,
+  foldGutter, foldKeymap, gutter, GutterMarker, highlightActiveLine, highlightActiveLineGutter, highlightSelectionMatches, highlightSpecialChars,
   HighlightStyle, history, historyKeymap, indentOnInput, indentUnit, indentWithTab, keymap, LanguageDescription, languages,
   lineNumbers, openSearchPanel, rectangularSelection, searchKeymap, syntaxHighlighting, tags as t,
 } from '../vendor/code/editor.js';
@@ -14,6 +14,8 @@ export { EditorState, EditorView, openSearchPanel };
 export const wrapping = new Compartment();
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
 export const wrapOn = { value: pref('dalang-code-wrap', innerWidth <= 760) }; // phones start with it on
+/** The blame gutter, per file: off until asked for (see blameGutter). */
+export const blaming = new Compartment();
 
 const theme = EditorView.theme({
   '&': { height: '100%', fontSize: 'var(--code-fs, 13px)', color: 'var(--text)', backgroundColor: 'var(--bg)' },
@@ -48,6 +50,9 @@ const theme = EditorView.theme({
   '.cm-tooltip-autocomplete > ul > li': { padding: '2px 8px !important' },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--accent-soft-2)', color: 'var(--text)' },
   '.cm-completionMatchedText': { textDecoration: 'none', color: 'var(--accent-text)', fontWeight: 600 },
+  '.cm-blameGutter .cm-gutterElement': { padding: '0 10px 0 12px', fontSize: '11.5px', color: 'var(--text-faint)', cursor: 'pointer', whiteSpace: 'pre' },
+  '.cm-blameGutter .cm-gutterElement:hover': { color: 'var(--accent-text)' },
+  '.cm-blame-new': { color: 'var(--warn)' },
 });
 
 // The same colours the panel's highlighted code blocks use (--syn-*).
@@ -108,7 +113,7 @@ export function createState(text, path, { readOnly = false, onSave, onChange, ke
       syntaxHighlighting(highlight, { fallback: true }), theme, lang.of([]),
       indentUnit.of(indent), EditorState.tabSize.of(indent === '\t' ? 4 : indent.length),
       crlf ? EditorState.lineSeparator.of('\r\n') : [],
-      wrapping.of(wrapOn.value ? EditorView.lineWrapping : []),
+      wrapping.of(wrapOn.value ? EditorView.lineWrapping : []), blaming.of([]),
       EditorState.readOnly.of(readOnly), // still focusable: the cursor, selection and find work
       keymap.of([
         { key: 'Mod-s', preventDefault: true, run: () => { onSave?.(); return true; } },
@@ -185,4 +190,62 @@ export function symbolsOf(state) {
     }
   }
   return out.map((sym) => ({ ...sym, line: doc.lineAt(sym.pos).number }));
+}
+
+// ---------- blame ----------
+
+const UNCOMMITTED = '0'.repeat(40);
+
+/** 5m, 3h, 2d, 4mo, 2y: how long ago a Unix time was. */
+function ago(seconds) {
+  const s = Math.max(0, Date.now() / 1000 - seconds);
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  if (s < 86400 * 45) return `${Math.round(s / 86400)}d`;
+  if (s < 86400 * 365) return `${Math.round(s / (86400 * 30))}mo`;
+  return `${Math.round(s / (86400 * 365))}y`;
+}
+
+class BlameMarker extends GutterMarker {
+  constructor(text, title, fresh) { super(); this.text = text; this.title = title; this.fresh = fresh; }
+  eq(o) { return o.text === this.text && o.title === this.title; }
+  toDOM() {
+    const el = document.createElement('span');
+    el.textContent = this.text;
+    el.title = this.title;
+    if (this.fresh) el.className = 'cm-blame-new';
+    return el;
+  }
+}
+
+const WIDTH = 30; // characters of the gutter: hash, author, age
+
+/**
+ * A gutter naming the commit behind each line (as the server's /git/blame gives it): its short hash, author and age on
+ * the first line of each run, the subject on hover. A click on a line runs `onOpen(hash)` for a committed line.
+ */
+export function blameGutter(blame, onOpen) {
+  const label = (hash) => {
+    const c = blame.commits[hash];
+    if (hash === UNCOMMITTED) return 'not committed yet';
+    const who = c.author.length > 14 ? `${c.author.slice(0, 13)}…` : c.author;
+    return `${hash.slice(0, 7)} ${who.padEnd(14)} ${ago(c.date).padStart(3)}`;
+  };
+  const markers = blame.lines.map((hash, i) => {
+    const c = blame.commits[hash];
+    const title = hash === UNCOMMITTED ? 'Changed since the last commit' : `${c.subject}\n${c.author} · ${new Date(c.date * 1000).toLocaleString()}\n${hash}`;
+    return new BlameMarker(i === 0 || blame.lines[i - 1] !== hash ? label(hash) : '', title, hash === UNCOMMITTED);
+  });
+  return gutter({
+    class: 'cm-blameGutter',
+    lineMarker: (view, line) => markers[view.state.doc.lineAt(line.from).number - 1] ?? null,
+    initialSpacer: () => new BlameMarker(' '.repeat(WIDTH), '', false),
+    domEventHandlers: {
+      click: (view, line) => {
+        const hash = blame.lines[view.state.doc.lineAt(line.from).number - 1];
+        if (hash && hash !== UNCOMMITTED) onOpen(hash);
+        return true;
+      },
+    },
+  });
 }

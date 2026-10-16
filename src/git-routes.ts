@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
-import { createPullRequest, parseRemote, remoteRepo, sshHostName } from './forge.js';
+import { createPullRequest, mergePr, parsePrUrl, parseRemote, prStatus, remoteRepo, sshHostName, type MergeMethod } from './forge.js';
 import * as git from './git.js';
 import type { GitUsers } from './git-users.js';
 import { gitContext } from './git.js';
@@ -29,13 +29,14 @@ export async function createWorktreeChat(store: Store, cfg: Config, project: Pro
 }
 
 /**
- * Remove the worktrees of chats that are being deleted. Call after cancelling their turns: it waits for each agent to
- * exit first, since its files are still open until then. Never throws (a leftover folder is only logged).
+ * Remove the worktrees and turn checkpoints of chats that are being deleted. Call after cancelling their turns: it waits
+ * for each agent to exit first, since its files are still open until then. Never throws (a leftover folder is only logged).
  */
 export async function dropWorktrees(dispatcher: Dispatcher, project: Project, convs: Conversation[]): Promise<void> {
   for (const c of convs) {
-    if (!c.worktree) continue;
     for (let i = 0; i < 200 && dispatcher.isRunning(c.id); i++) await new Promise((r) => setTimeout(r, 50));
+    await git.dropCheckpoints(project.path, c.id);
+    if (!c.worktree) continue;
     await git.removeWorktree(project.path, c.worktree, c.branch).catch((e) => console.error(`could not remove worktree ${c.worktree}`, e));
   }
 }
@@ -265,10 +266,26 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const s = await git.status(c.cwd);
     if (!s.repo) return s;
     const t = await mrTarget(c.conv, c.project);
-    // Commits on the branch that its target (or, if a worktree had none, the project folder's HEAD) does not have yet.
-    const mr = t && { branch: t.branch, base: t.base.name, ahead: await aheadOf(c.project.path, t), pr: prFor(c.conv, t.branch) };
+    const base = await syncBase(c);
+    // Commits on the branch that its target (or, if a worktree had none, the project folder's HEAD) does not have yet,
+    // and the ones the target got since the branch left it (as of the last fetch).
+    const mr = t && {
+      branch: t.branch, base: t.base.name, ahead: await aheadOf(c.project.path, t), pr: prFor(c.conv, t.branch),
+      behind: base ? Number((await git.git(c.cwd, ['rev-list', '--count', `HEAD..${base.ref}`]).catch(() => '0')).trim()) || 0 : 0,
+      baseRef: base?.ref ?? null,
+    };
     return { ...s, worktree: c.conv.worktree ? mr : null, mr };
   });
+
+  /**
+   * What "sync with the base branch" brings in: the branch a Merge Request from here would go into, as the remote has it
+   * when it has it (a local copy may be stale), else the local branch. Null when there is no such branch.
+   */
+  const syncBase = async (c: { conv: Conversation; project: Project; cwd: string }) => {
+    const t = await mrTarget(c.conv, c.project);
+    if (!t?.base.name) return null;
+    return { name: t.base.name, ref: (await git.remoteBranch(c.cwd, t.base.name)) ?? t.base.ref };
+  };
 
   /**
    * What the credentials card shows, for whoever asks: the owner sees the server's setup; anyone else their own, with
@@ -330,19 +347,72 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
 
   const pathsSchema = { type: 'array', maxItems: 1000, items: { type: 'string', minLength: 1 } };
 
-  app.post<{ Params: { id: string }; Body: { message: string; paths?: string[] } }>('/api/conversations/:id/git/commit', {
-    schema: { body: { type: 'object', required: ['message'], additionalProperties: false,
-      properties: { message: { type: 'string', minLength: 1, maxLength: 10_000, pattern: '\\S' }, paths: pathsSchema } } },
+  // `paths` left out: every change; `hunks`: files of which only those hunks go in (indexes into the diff /git/diff
+  // shows). `amend` replaces the last commit; one already pushed is force-pushed (with a lease), never on the default branch.
+  // `hunkDiffs`: for each file in `hunks`, the fingerprint (git.diffFingerprint) of the diff its hunks were picked in;
+  // a file that changed since is refused (409), as its hunk indexes may now point at other hunks.
+  app.post<{ Params: { id: string }; Body: { message: string; paths?: string[]; hunks?: Record<string, number[]>; hunkDiffs?: Record<string, string>; amend?: boolean; push?: boolean } }>('/api/conversations/:id/git/commit', {
+    schema: { body: { type: 'object', required: ['message'], additionalProperties: false, properties: {
+      message: { type: 'string', minLength: 1, maxLength: 10_000, pattern: '\\S' }, paths: pathsSchema, amend: { type: 'boolean' }, push: { type: 'boolean' },
+      hunks: { type: 'object', maxProperties: 1000, additionalProperties: { type: 'array', minItems: 1, maxItems: 10_000, items: { type: 'integer', minimum: 0 } } },
+      hunkDiffs: { type: 'object', maxProperties: 1000, additionalProperties: { type: 'string', pattern: '^[0-9a-f]{8}$' } },
+    } } },
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
-    const paths = req.body.paths ?? [];
-    if (paths.length && !(await pick(c.cwd, paths, reply))) return;
-    // A commit goes straight to the remote too (a worktree chat's branch gets one there, ready for a Merge Request).
+    const { paths, hunks, amend } = req.body;
+    if (paths?.length && !(await pick(c.cwd, paths, reply))) return;
+    if (!paths && !amend && hunks) return reply.code(400).send({ error: 'name the files to commit when picking hunks' });
+    if (paths && !paths.length && !amend) return reply.code(400).send({ error: 'nothing to commit: pick at least one file' });
+    if (hunks) {
+      const files = await pick(c.cwd, Object.keys(hunks), reply);
+      if (!files) return;
+      const whole = files.find((f) => f.status === '??' || f.status[0] === 'A' || f.from || git.isConflict(f));
+      if (whole) return reply.code(400).send({ error: `${whole.path} is committed whole: hunks are only picked in changed files git already tracks` });
+      for (const f of files) {
+        const seen = req.body.hunkDiffs?.[f.path];
+        if (!seen) return reply.code(400).send({ error: `hunkDiffs must name the diff the hunks of ${f.path} were picked in` });
+        if (git.diffFingerprint(await git.fileDiff(c.cwd, f)) !== seen) {
+          return reply.code(409).send({ error: `${f.path} changed since its hunks were picked: open its diff and pick them again`, stale: f.path });
+        }
+      }
+    }
+    // A commit goes straight to the remote too unless `push` is false (a worktree chat's branch gets one there, ready
+    // for a Merge Request).
     try {
-      const commit = await git.commit(c.cwd, req.body.message, paths);
-      return { commit, push: await git.push(c.cwd) };
+      const r = await git.commit(c.cwd, req.body.message, paths ?? null, { amend, hunks });
+      return { commit: r.commit, push: req.body.push === false ? null : await git.push(c.cwd, { force: r.rewrote }) };
     } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Push the checked-out branch (it gets an upstream on its first push). `force` replaces the remote branch after a
+  // rebase, with a lease (see git.push), and never the default branch. The body is optional.
+  app.post<{ Params: { id: string }; Body: { force?: unknown } | undefined }>('/api/conversations/:id/git/push', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    const force = req.body?.force === true;
+    if (force && (await git.currentBranch(c.cwd)) === (await git.defaultBranch(c.cwd))?.name) {
+      return reply.code(400).send({ error: 'the default branch is never force-pushed from here' });
+    }
+    const push = await git.push(c.cwd, { force });
+    if (!push.pushed) return reply.code(400).send({ error: push.error ? `push failed: ${push.error}` : 'nothing to push to: no remote, or a detached HEAD' });
+    return { push };
+  });
+
+  // Take back the last commit; its changes become uncommitted again. A pushed one needs `force` (409 without), and the
+  // remote branch then moves back too.
+  // The body is optional, so it is checked here rather than by a schema.
+  app.post<{ Params: { id: string }; Body: { force?: unknown } | undefined }>('/api/conversations/:id/git/undo-commit', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
+    try {
+      return await git.undoCommit(c.cwd, req.body?.force === true);
+    } catch (e) {
+      if (e instanceof git.PushedError) return reply.code(409).send({ error: e.message, pushed: true });
+      return gitFailed(reply, e);
+    }
   });
 
   // Draft a commit message with the chat's own agent CLI and model. Changes nothing, so it is not limited like the rest.
@@ -558,5 +628,332 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       if (e instanceof git.UnmergedError) return reply.code(409).send({ error: e.message, unmerged: true });
       return gitFailed(reply, e);
     }
+  });
+
+  /** The chat and its folder for a route that changes files there, or null after replying (404, 403, 409, 400). */
+  const writable = async (req: { params: { id: string }; user?: { role: string } }, reply: Reply) => {
+    const c = load(req.params.id, reply);
+    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return null;
+    if (!(await git.isRepo(c.cwd))) { reply.code(400).send({ error: 'not a git repository' }); return null; }
+    return c;
+  };
+  const readable = async (req: { params: { id: string } }, reply: Reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return null;
+    if (!(await git.isRepo(c.cwd))) { reply.code(400).send({ error: 'not a git repository' }); return null; }
+    return c;
+  };
+
+  // Ask the remote what it has, so ahead/behind counts and the branch lists are current.
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/git/fetch', async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    try {
+      return { remote: await git.fetchRemote(c.cwd) };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Bring the branch up to date, merged or rebased: from its own upstream (`upstream`, for when it went apart from the
+  // remote and a pull cannot fast-forward), or from the branch a Merge Request from here would go into (`base`). The
+  // remote is fetched first. Conflicts are not an error: the answer lists them, and the operation waits.
+  app.post<{ Params: { id: string }; Body: { from: 'upstream' | 'base'; mode: 'merge' | 'rebase' } }>('/api/conversations/:id/git/sync', {
+    schema: { body: { type: 'object', required: ['from', 'mode'], additionalProperties: false, properties: {
+      from: { enum: ['upstream', 'base'] }, mode: { enum: ['merge', 'rebase'] } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      await git.fetchRemote(c.cwd).catch(() => null); // offline: go on with what was fetched last
+      const onto = req.body.from === 'upstream' ? await git.upstreamRef(c.cwd) : (await syncBase(c))?.ref;
+      if (!onto) {
+        return reply.code(400).send({ error: req.body.from === 'upstream' ? 'this branch has no remote branch to sync with yet' : 'there is no base branch to sync with' });
+      }
+      return { ...(await git.integrate(c.cwd, onto, req.body.mode)), onto };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Settle a conflicted file: this branch's side, the incoming side, or "resolved" once edited by hand.
+  app.post<{ Params: { id: string }; Body: { path: string; take: 'mine' | 'theirs' | 'resolved' } }>('/api/conversations/:id/git/conflicts/resolve', {
+    schema: { body: { type: 'object', required: ['path', 'take'], additionalProperties: false, properties: {
+      path: { type: 'string', minLength: 1 }, take: { enum: ['mine', 'theirs', 'resolved'] } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      await git.resolveConflict(c.cwd, req.body.path, req.body.take);
+      return reply.code(204).send();
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/git/conflicts/continue', async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      return await git.continueOperation(c.cwd);
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/git/conflicts/abort', async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      return { aborted: await git.abortOperation(c.cwd) };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Copy one commit onto the checked-out branch, or add one undoing it. Either may stop on conflicts.
+  for (const how of ['cherry-pick', 'revert'] as const) {
+    app.post<{ Params: { id: string; hash: string } }>(`/api/conversations/:id/git/commits/:hash/${how}`, async (req, reply) => {
+      const c = await writable(req, reply);
+      if (!c) return;
+      try {
+        return await git.applyCommit(c.cwd, req.params.hash, how);
+      } catch (e) { return gitFailed(reply, e); }
+    });
+  }
+
+  // Stashes: uncommitted work put aside, to bring back later (here or in another chat of the same repository).
+  app.get<{ Params: { id: string } }>('/api/conversations/:id/git/stashes', async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    return git.stashes(c.cwd);
+  });
+
+  // The body (a message) is optional, so it is checked here rather than by a schema.
+  app.post<{ Params: { id: string }; Body: { message?: unknown } | undefined }>('/api/conversations/:id/git/stashes', async (req, reply) => {
+    const message = req.body?.message ?? '';
+    if (typeof message !== 'string' || message.length > 500) return reply.code(400).send({ error: 'message must be a string of at most 500 characters' });
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      await git.stashPush(c.cwd, message.trim());
+      return reply.code(204).send();
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  const stashIndex = { type: 'object', required: ['index'], properties: { index: { type: 'integer', minimum: 0, maximum: 10_000 } } };
+
+  // `pop` also drops it once its changes are back (it stays if they clashed). The body is optional.
+  app.post<{ Params: { id: string; index: number }; Body: { pop?: unknown } | undefined }>('/api/conversations/:id/git/stashes/:index/apply', {
+    schema: { params: { ...stashIndex, required: ['id', 'index'], properties: { ...stashIndex.properties, id: { type: 'string' } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      return await git.stashApply(c.cwd, req.params.index, req.body?.pop === true);
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.post<{ Params: { id: string; index: number } }>('/api/conversations/:id/git/stashes/:index/drop', {
+    schema: { params: { ...stashIndex, required: ['id', 'index'], properties: { ...stashIndex.properties, id: { type: 'string' } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      await git.stashDrop(c.cwd, req.params.index);
+      return reply.code(204).send();
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.get<{ Params: { id: string; index: number }; Querystring: { path: string } }>('/api/conversations/:id/git/stashes/:index/diff', {
+    schema: { params: { ...stashIndex, required: ['id', 'index'], properties: { ...stashIndex.properties, id: { type: 'string' } } },
+      querystring: { type: 'object', required: ['path'], properties: { path: { type: 'string', minLength: 1 } } } },
+  }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    try {
+      return { diff: await git.stashFileDiff(c.cwd, req.params.index, req.query.path) };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  /** A path inside the chat's folder as the caller gave it, relative and with forward slashes, or null after a 400. */
+  const repoPath = (path: string, reply: Reply) => {
+    const p = path.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!p || p.startsWith('/') || /^[a-z]:/i.test(p) || p.split('/').some((s) => s === '..' || s === '') || p.startsWith('-')) {
+      reply.code(400).send({ error: `not a path inside the folder: ${path}` });
+      return null;
+    }
+    return p;
+  };
+  const fileQuery = { querystring: { type: 'object', required: ['path'], properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } };
+
+  // Who last changed each line of a file, for the code editor's blame view. Changes nothing.
+  app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/git/blame', { schema: fileQuery }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    const path = repoPath(req.query.path, reply);
+    if (!path) return;
+    try {
+      return await git.blame(c.cwd, path);
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // The commits that changed one file, following renames. Changes nothing.
+  app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/git/file-log', { schema: fileQuery }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    const path = repoPath(req.query.path, reply);
+    if (!path) return;
+    return { commits: await git.fileLog(c.cwd, path) };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/conversations/:id/git/tags', async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    return git.tags(c.cwd);
+  });
+
+  // Tag a commit (annotated with a message), and push the tag when asked.
+  app.post<{ Params: { id: string }; Body: { name: string; hash: string; message?: string; push?: boolean } }>('/api/conversations/:id/git/tags', {
+    schema: { body: { type: 'object', required: ['name', 'hash'], additionalProperties: false, properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 }, hash: { type: 'string', minLength: 4, maxLength: 64 },
+      message: { type: 'string', maxLength: 10_000 }, push: { type: 'boolean' } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      const push = await git.createTag(c.cwd, req.body.name.trim(), req.body.hash, { message: req.body.message?.trim() || undefined, push: req.body.push });
+      return { tag: req.body.name.trim(), push };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.post<{ Params: { id: string }; Body: { name: string; remote?: boolean } }>('/api/conversations/:id/git/tags/delete', {
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 }, remote: { type: 'boolean' } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    try {
+      return { push: await git.deleteTag(c.cwd, req.body.name, !!req.body.remote) };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Two branches, tags or commits compared as a Merge Request from `head` into `base` would be. Changes nothing.
+  const refsQuery = { type: 'object', required: ['base', 'head'], properties: {
+    base: { type: 'string', minLength: 1, maxLength: 300 }, head: { type: 'string', minLength: 1, maxLength: 300 }, path: { type: 'string', minLength: 1 } } };
+  app.get<{ Params: { id: string }; Querystring: { base: string; head: string } }>('/api/conversations/:id/git/compare', {
+    schema: { querystring: refsQuery },
+  }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    try {
+      return await git.compare(c.cwd, req.query.base, req.query.head);
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { base: string; head: string; path?: string } }>('/api/conversations/:id/git/compare/diff', {
+    schema: { querystring: { ...refsQuery, required: ['base', 'head', 'path'] } },
+  }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    try {
+      const { files } = await git.compare(c.cwd, req.query.base, req.query.head);
+      const file = files.find((f) => f.path === req.query.path);
+      if (!file) return reply.code(400).send({ error: `not changed between them: ${req.query.path}` });
+      return { diff: await git.compareFileDiff(c.cwd, req.query.base, req.query.head, file) };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Turn checkpoints: the folder before and after each agent turn (see saveCheckpoint), newest turn first, with what
+  // the turn changed. Only turns that have both are listed.
+  const MAX_CHECKPOINTS = 30;
+  const turnCheckpoints = async (cwd: string, convId: string, turnId: number) => {
+    const [before, after] = await Promise.all([git.checkpoint(cwd, convId, `${turnId}-before`), git.checkpoint(cwd, convId, `${turnId}-after`)]);
+    return before && after ? { before, after } : null;
+  };
+  app.get<{ Params: { id: string } }>('/api/conversations/:id/git/checkpoints', async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    const out = [];
+    for (const t of store.listTurns(c.conv.id).reverse()) {
+      if (out.length >= MAX_CHECKPOINTS) break;
+      const cp = await turnCheckpoints(c.cwd, c.conv.id, t.id);
+      if (!cp) continue;
+      out.push({ turn: t.id, prompt: t.prompt, status: t.status, started_at: t.started_at, ended_at: t.ended_at, files: await git.changedBetween(c.cwd, cp.before, cp.after) });
+    }
+    return { checkpoints: out, undo: !!(await git.checkpoint(c.cwd, c.conv.id, 'undo')) };
+  });
+
+  app.get<{ Params: { id: string; turn: number }; Querystring: { path: string } }>('/api/conversations/:id/git/checkpoints/:turn/diff', {
+    schema: { params: { type: 'object', required: ['id', 'turn'], properties: { id: { type: 'string' }, turn: { type: 'integer', minimum: 1 } } },
+      querystring: { type: 'object', required: ['path'], properties: { path: { type: 'string', minLength: 1 } } } },
+  }, async (req, reply) => {
+    const c = await readable(req, reply);
+    if (!c) return;
+    const cp = await turnCheckpoints(c.cwd, c.conv.id, req.params.turn);
+    if (!cp) return reply.code(404).send({ error: 'no checkpoint for that turn' });
+    const file = (await git.changedBetween(c.cwd, cp.before, cp.after)).find((f) => f.path === req.query.path);
+    if (!file) return reply.code(400).send({ error: `not changed in that turn: ${req.query.path}` });
+    return { diff: await git.diffBetween(c.cwd, cp.before, cp.after, file) };
+  });
+
+  // Put the files back as they were before (or right after) a turn. The folder as it is now is kept first, so
+  // /checkpoints/undo can take the restore back.
+  app.post<{ Params: { id: string; turn: number }; Body: { to: 'before' | 'after' } }>('/api/conversations/:id/git/checkpoints/:turn/restore', {
+    schema: { params: { type: 'object', required: ['id', 'turn'], properties: { id: { type: 'string' }, turn: { type: 'integer', minimum: 1 } } },
+      body: { type: 'object', required: ['to'], additionalProperties: false, properties: { to: { enum: ['before', 'after'] } } } },
+  }, async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    const hash = await git.checkpoint(c.cwd, c.conv.id, `${req.params.turn}-${req.body.to}`);
+    if (!hash) return reply.code(404).send({ error: 'no checkpoint for that turn' });
+    try {
+      const r = await git.restoreSnapshot(c.cwd, hash);
+      await git.keepUndo(c.cwd, c.conv.id, r.undo);
+      return { files: r.files };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/git/checkpoints/undo', async (req, reply) => {
+    const c = await writable(req, reply);
+    if (!c) return;
+    const hash = await git.checkpoint(c.cwd, c.conv.id, 'undo');
+    if (!hash) return reply.code(404).send({ error: 'there is no restore to undo' });
+    try {
+      const r = await git.restoreSnapshot(c.cwd, hash);
+      await git.keepUndo(c.cwd, c.conv.id, r.undo); // undoing the undo puts the restore back
+      return { files: r.files };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  /** The forge CLI for this chat's pull request / Merge Request, read from its address. */
+  const prCli = (url: string) => {
+    const forge = parsePrUrl(url)?.forge ?? cfg.forge ?? null;
+    if (!forge) return null;
+    return { forge, command: (forge === 'github' ? cfg.ghCommand : cfg.glabCommand) ?? [forge === 'github' ? 'gh' : 'glab'] };
+  };
+  const openPr = async (c: { conv: Conversation; project: Project }) => {
+    const t = await mrTarget(c.conv, c.project);
+    return t ? prFor(c.conv, t.branch) : null;
+  };
+
+  // Where the chat's pull request / Merge Request stands: state, checks, review and comments, from the forge.
+  app.get<{ Params: { id: string } }>('/api/conversations/:id/git/pull-request', async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    const url = await openPr(c);
+    if (!url) return reply.code(404).send({ error: 'this chat has no Merge Request open' });
+    const cli = prCli(url);
+    if (!cli) return reply.code(400).send({ error: `cannot tell whether ${url} is GitHub or GitLab` });
+    try {
+      return { ...(await prStatus(cli.forge, cli.command, c.cwd, url)), forge: cli.forge };
+    } catch (e) { return gitFailed(reply, e); }
+  });
+
+  // Merge the chat's pull request / Merge Request on the forge (merge commit, squash or rebase).
+  app.post<{ Params: { id: string }; Body: { method: MergeMethod } }>('/api/conversations/:id/git/pull-request/merge', {
+    schema: { body: { type: 'object', required: ['method'], additionalProperties: false, properties: { method: { enum: ['merge', 'squash', 'rebase'] } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
+    const url = await openPr(c);
+    if (!url) return reply.code(404).send({ error: 'this chat has no Merge Request open' });
+    const cli = prCli(url);
+    if (!cli) return reply.code(400).send({ error: `cannot tell whether ${url} is GitHub or GitLab` });
+    try {
+      await mergePr(cli.forge, cli.command, c.cwd, url, req.body.method);
+      return { ...(await prStatus(cli.forge, cli.command, c.cwd, url)), forge: cli.forge };
+    } catch (e) { return gitFailed(reply, e); }
   });
 }

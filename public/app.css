@@ -410,7 +410,13 @@ dialog.image-modal img { display: block; max-width: calc(100vw - 48px); max-heig
 .head-row > .head-branch { min-width: 0; flex: 1; }
 .head-row > .head-actions { flex: none; }
 .head-branch .branch-btn { flex: 0 1 auto; min-width: 0; max-width: none; }
-.head-commit { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: calc(var(--s3) * -1 + 2px); }
+.head-commit { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; margin-top: calc(var(--s3) * -1 + 2px); }
+.head-commit > .ellip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.head-commit-actions { display: flex; flex: none; opacity: .55; }
+.head-commit:hover .head-commit-actions, .head-commit-actions:focus-within { opacity: 1; }
+@media (hover: none) { .head-commit-actions { opacity: 1; } }
+.head-actions .icon-btn:has(.count) { width: auto; padding: 0 6px; gap: 3px; grid-auto-flow: column; }
+.head-actions .count { font: 650 11px var(--font); color: var(--accent-text); }
 .branch-btn { height: 24px; padding: 0 6px; max-width: 60%; flex: none; color: var(--text); }
 .branch-btn .mono { overflow: hidden; text-overflow: ellipsis; }
 .branch-list { padding: 0; max-height: min(50vh, 380px); }
@@ -512,6 +518,50 @@ dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, c
 .info dt { color: var(--text-faint); }
 .info dd { margin: 0; overflow-wrap: anywhere; }
 .info dd.mono { font-size: 12.5px; }
+/* sync and conflicts, picked hunks, commit options (Changes tab) */
+.fstat.u { color: var(--err); }
+.conflict-menu { display: contents; }
+.sync-card { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
+.sync-card.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn-soft) 55%, var(--surface-2)); }
+.sync-card .row { flex-wrap: wrap; }
+.sync-line { display: flex; align-items: flex-start; gap: 7px; font-size: var(--fs-sm); min-width: 0; overflow-wrap: anywhere; }
+.sync-line > .i { flex: none; margin-top: 2px; color: var(--text-dim); }
+.sync-card.warn .sync-line > .i { color: var(--warn); }
+.commit-opts { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.commit-opts .check { font-weight: 500; }
+.lines tbody.unpicked td { opacity: .45; }
+.lines tbody.unpicked tr.hunk td { opacity: 1; }
+.hunk-pick { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+/* stashes and agent checkpoints */
+.stash-dialog { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; }
+.stash-dialog > .dialog-head { gap: 8px; }
+.stash-new > input { flex: 1; min-width: 0; }
+.stash-list { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 8px; align-content: start; }
+.stash { border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; min-width: 0; }
+.stash-row { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 4px; background: var(--surface-2); min-width: 0; }
+.stash-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 6px; border: 0; background: none; color: inherit; text-align: left; border-radius: var(--r-sm); }
+.stash-title:hover { background: var(--hover); }
+.stash-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 550; }
+.stash-title > .dim { flex: none; }
+.stash-files { border-top: 1px solid var(--line); }
+.stash-files .file:first-child { border-top: 0; }
+.stash-diff { border-top: 1px solid var(--line); }
+.stash-diff .diff-scroll { max-height: 50vh; }
+.stash-diff .pane-loading, .cp-none { padding: 10px 12px; }
+@media (max-width: 640px) { .stash-title > .dim { display: none; } }
+/* the chat's Merge Request on the forge */
+.pr-status { display: grid; gap: 8px; min-width: 0; }
+.pr-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pill.accent { background: var(--accent-soft); color: var(--accent-text); }
+.pr-checks { display: grid; gap: 3px; font-size: 12.5px; min-width: 0; }
+.pr-check { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.pr-check .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pr-check .i.ok { color: var(--ok); } .pr-check .i.err { color: var(--err); } .pr-check .i.warn { color: var(--warn); } .pr-check .i.dim { color: var(--text-faint); }
+.pr-comments { display: grid; gap: 6px; justify-items: start; }
+.pr-comment { display: grid; gap: 3px; width: 100%; padding: 8px 10px; border-left: 2px solid var(--line-strong); background: var(--surface); border-radius: 0 var(--r-sm) var(--r-sm) 0; box-sizing: border-box; }
+.pr-comment-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-sm); max-height: 200px; overflow: auto; }
+.pr-actions { flex-wrap: wrap; }
+.warn.small.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* schedules */
 .sched { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); min-width: 0; }
@@ -538,7 +588,13 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .log-row { display: flex; align-items: stretch; height: 30px; padding: 0 8px; border-radius: var(--r-sm); }
 .log-row { cursor: pointer; }
 .log-row:hover { background: var(--hover); }
-.commit-view > .dialog-head { justify-content: flex-start; }
+.commit-view > .dialog-head { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.commit-view[hidden] { display: none; }
+.commit-actions { display: flex; gap: 2px; flex-wrap: wrap; }
+.tag-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
+.tag-form > input { flex: 1 1 160px; min-width: 0; }
+.compare-form > input { flex: 1; min-width: 0; }
+.compare-log { max-height: 180px; overflow: auto; flex: none; }
 .commit-head { display: grid; gap: 6px; }
 .commit-subject { font-weight: 600; overflow-wrap: anywhere; }
 .commit-body { margin: 0; max-height: 140px; overflow: auto; white-space: pre-wrap; font: 12.5px/1.5 var(--mono); color: var(--text-dim); }
@@ -572,6 +628,11 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .ref.tag { color: var(--text); }
 @media (max-width: 640px) { .log-meta > span { display: none; } }
 .dialog-body { display: grid; gap: 14px; padding: 16px 20px 20px; }
+/* tall dialogs fill their modal: a column whose list (or diff) takes the room left, rather than grid rows stretching */
+.dialog-body.history, .dialog-body.stash-dialog { display: flex; flex-direction: column; }
+.dialog-body.history > *, .dialog-body.stash-dialog > * { flex: none; }
+.dialog-body.history > .log, .dialog-body.history > .commit-split, .dialog-body.stash-dialog > .stash-list { flex: 1; min-height: 0; }
+.dialog-body.history > .compare-log { flex: 0 1 auto; min-height: 60px; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .dialog-head h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; flex: 1; }
 .palette { width: 640px; margin-top: 11vh; }

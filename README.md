@@ -5,7 +5,8 @@
 between your own Codex accounts. Part of the `lzvr` toolbox (environment variables are `LZVR_*`).
 
 - **Projects and chats**: register folders as projects; each project has parallel chats, each with its own Codex
-  session, draft and prompt queue.
+  session, draft and prompt queue. **Add project → Clone a repository** clones one into a new folder under
+  `WORKSPACE_ROOT` first, with the git login of whoever adds it.
 - **Live view**: tool activity, commands and answers stream into the panel over SSE.
 - **Worktree per chat** (optional, git projects): "New chat in own worktree" in a project's `⋯` menu gives the chat a
   branch `dalang/<id>` from the project's HEAD, checked out under `<STATE_DIR>/worktrees/<chat id>`. Its agent works only
@@ -14,9 +15,9 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   Changes renames it (say to `feat/login`); a pushed branch moves on the remote too, unless a Merge Request is open for it.
 - **Changes**: the branch button in a chat's header opens the **Changes** tab of the inspector beside the chat: what git
   sees in the folder that chat works in, with each file's diff (unified or side by side, syntax highlighted). Commit all or selected files, revert one file, discard everything, and open a Merge
-  Request (see below). Dalang never merges a branch itself: a worktree chat's work reaches the target branch only through
-  a reviewed Merge Request / pull request. These actions are refused while an agent is running in the same folder, and in
-  `read-only` projects they are admin only.
+  Request (see below). Dalang never merges a branch on its own: a worktree chat's work reaches the target branch only
+  through a reviewed Merge Request / pull request (or a sync you start, see "More git" below). These actions are refused
+  while an agent is running in the same folder, and in `read-only` projects they are admin only.
   Under the commit button the tab says which credentials are used: the author (and whether the repository sets its own;
   **Change** sets one for this repository only, `git config --local`, shared by its worktrees, and **Use the global
   author** drops it again),
@@ -33,8 +34,9 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   branch deletes it here only (the remote keeps its copy); not the checked-out or the default branch, and one with
   commits that are neither in the current branch nor on its remote only after a second confirmation. A worktree chat
   stays on its own branch.
-  A commit is **pushed right away** (to the branch's upstream, or to `origin` under the same name, which becomes its
-  upstream; a worktree chat's `dalang/<id>` branch thus appears on the remote, ready for a Merge Request). Without a
+  A commit is **pushed right away** unless **Push** under the message is unticked (to the branch's upstream, or to
+  `origin` under the same name, which becomes its upstream; a worktree chat's `dalang/<id>` branch thus appears on the
+  remote, ready for a Merge Request); the arrow-up button with a count pushes what is left. Without a
   remote nothing is pushed; a failed push (credentials, rejected) is shown and the
   local commit stays. The push uses the VM's own git credentials (SSH key or credential helper of the user Dalang runs as)
   and never prompts. Deleting a worktree chat also deletes its branch on the remote, but only when it is merged into the
@@ -49,6 +51,33 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   (the same for Codex and Claude Code). These runs are read-only, have no tools, keep no session
   (`codex exec --ephemeral`, `claude --no-session-persistence`) and use the same account failover; they do count against
   the account's usage.
+- **More git in Changes**:
+  - **Sync**: Refresh fetches first, so the tab knows how far the branch is from its upstream. When the remote has
+    commits the branch lacks, a card offers **Pull** (fast-forward), or, once the two went apart, **Rebase onto it** /
+    **Merge it** (and, for a feature branch you rebased, a force push with a lease). When the branch a Merge Request
+    would go into moved on, another card rebases onto it or merges it in. Uncommitted changes are put aside for the
+    time (`--autostash`).
+  - **Conflicts**: a merge, rebase, cherry-pick, revert or stash that stops on conflicts marks those files `U`. Each
+    one's menu keeps this branch's side, takes the incoming one, or marks it resolved once edited (refused while
+    conflict markers are left). **Ask the agent** hands the files to the chat's agent instead; **Continue** finishes
+    the operation and **Abort** puts everything back.
+  - **Amend and undo**: **Amend last commit** puts the picked files and the message into the last commit; the pencil
+    next to the last commit rewords it, and the undo arrow takes it back (`reset --soft`: its changes stay). A commit
+    already on the remote is replaced there with a lease after a second confirmation, and never on the default branch.
+  - **Hunks**: in a changed file's diff each hunk has a checkbox; a file with only some ticked commits only those (the
+    rest stays in the working copy).
+  - **Stashes** (the box icon): put every change, new files too, aside with a note, look at each stash's files and
+    diffs, and pop, apply or drop them. Git keeps one list per repository, so worktree chats share it.
+  - **Agent checkpoints** (the circular arrow): before and after every agent turn (not in `read-only` projects) the
+    whole folder is saved as a commit under `refs/dalang/checkpoints/<chat>/`, without touching the branch, the index
+    or the files. The dialog lists each turn's prompt with the files it changed and their diffs; **Undo turn** puts the
+    files back as they were before it (later changes too; commits and branches stay), **After** as they were right
+    after it, and **Undo the last restore** takes a restore back. A chat's checkpoints go with the chat.
+  - **History** gains **Cherry-pick**, **Revert** and **Tag** (annotated with a message, pushed if asked) on a commit,
+    and **Compare**: two branches, tags or commits side by side, as a Merge Request from one into the other would be.
+  - **The Merge Request after it is opened**: its state, CI checks, review decision and comments (inline ones too)
+    come from `gh pr view` / `glab api`. **Address comments** and **Fix checks** send them to the chat's agent as a
+    prompt; **Merge** merges it on the forge (squash, merge commit or rebase).
 - **Create Merge Request**: **Create Merge Request** on the Changes page pushes the chat's branch and opens a Merge
   Request (GitLab, through `glab`) or pull request (GitHub, through `gh`). A worktree chat proposes its `dalang/<id>`
   branch into the branch it started from. A plain chat proposes whatever branch the project folder has checked out into
@@ -66,7 +95,9 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   folders. The keys are VS Code's: `Ctrl P` goes to a file, `Ctrl Shift P` lists every command with its key, `Ctrl Shift O`
   goes to a symbol of the file, `Ctrl G` to a line, `Ctrl Shift F` / `Ctrl Shift H` search and replace across all files
   (case, whole word, regex, files to include/exclude), `Ctrl K S` saves all, `Ctrl B` hides the side bar, ``Ctrl ` ``
-  the terminal (``Ctrl Shift ` `` opens another), `Alt Z` wraps lines, `Ctrl =` / `Ctrl -` zoom; in the file `Ctrl D`,
+  the terminal (``Ctrl Shift ` `` opens another), `Alt Z` wraps lines, `Ctrl =` / `Ctrl -` zoom. **Blame** (above the
+  file) shows who last changed each line, and clicking a line opens that commit; **History** lists the commits that
+  changed the file (following renames). In the file `Ctrl D`,
   `Ctrl Shift L`, `Ctrl Alt ↑/↓` (cursors), `Alt ↑/↓` (move line), `Ctrl /` (comment), `Ctrl Shift [` (fold) and the rest.
   The few the browser keeps for itself have stand-ins: `Alt W` closes a tab (`Ctrl W`), `Alt N` makes a new file,
   `Alt Shift T` reopens a closed tab, `Ctrl Alt ←/→` and `Alt 1`–`9` switch tabs (`Ctrl Tab`). A file

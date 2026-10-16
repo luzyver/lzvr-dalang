@@ -653,7 +653,7 @@ describe('Merge Requests on GitHub / GitLab', () => {
 
     const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
     expect(s.worktree).toBeNull();
-    expect(s.mr).toEqual({ branch: 'feature/x', base: 'main', ahead: 1, pr: null });
+    expect(s.mr).toEqual({ branch: 'feature/x', base: 'main', ahead: 1, behind: 0, baseRef: 'origin/main', pr: null });
     const prompt = (await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`)).json().description as string;
     expect(prompt).toContain('merging branch feature/x into main');
     expect(prompt).toContain('+x');
