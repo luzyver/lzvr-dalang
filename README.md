@@ -73,10 +73,11 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   that changes on disk (the agent, a terminal) reloads by itself, or, with unsaved edits, says so and lets you pick
   whose version stays; a save never silently overwrites a newer file. Saving and every other change follow the agent's
   rules: refused in a `read-only` project, and while an agent is working in that folder (the status bar says so).
-  `.git` is never touched. **Terminals** are for admins only (a shell can do anything the user Dalang runs as can):
-  PowerShell on Windows, the login shell elsewhere (`TERMINAL_SHELL` picks another), started in the chat's folder with
-  your own git setup and without Dalang's `LZVR_*` secrets. On a VM they can run as an account without root and
-  without sudo instead (`TERMINAL_USER`, see "Terminals without root"). They outlive the tab: reopening the editor re-attaches and
+  `.git` is never touched. **Terminals**: the owner's run as the account Dalang runs as (root on a VM); admins and
+  devs get terminals only once `TERMINAL_USER` is set, and theirs run as that account, without root and without sudo
+  (see "Terminals without root"), and never see the owner's. PowerShell on Windows, the login shell elsewhere
+  (`TERMINAL_SHELL` picks another), started in the chat's folder without Dalang's `LZVR_*` secrets; each tab names
+  the account it runs as. They outlive the tab: reopening the editor re-attaches and
   replays their recent output; one nobody has looked at for an hour is closed, as are a chat's when it is deleted. On a
   phone the editor shows one pane at a time (Files, Editor, Terminal). Files over 5 MB and binary files open as a
   download only.
@@ -152,19 +153,26 @@ scripts/update.sh'`. Don't run it from a Dalang chat: the restart stops the serv
 
 ### Terminals without root
 
-The service runs as root, so by default a terminal in the code editor is a root shell. With `TERMINAL_USER` its
-terminals run as an ordinary account instead, one that cannot use sudo:
+The service runs as root, so a terminal in the code editor would be a root shell. That one is for the owner alone
+(the main token, or a sign-in with an owner email). Admins and devs get terminals only with `TERMINAL_USER`, and
+theirs run as that ordinary account, one that cannot use sudo; the owner's root terminals are never listed to them.
+Use an account made for this alone, never one somebody logs in with (its password is locked below), and run the
+`chgrp` lines only on project folders, never on `/root`, `/home` or `/`: they change everything below that folder,
+and a group-writable `/root/.ssh` makes sshd refuse every key for root.
 
 ```bash
-useradd -m -s /bin/bash dalang          # no sudo, wheel or admin group
+useradd -m -s /bin/bash dalang          # a new account: no sudo, wheel or admin group
 passwd -l dalang                        # no password: nobody logs in as it, only the panel's terminals
-# Let it work in the projects (here: a group shared with root, which the agents run as):
+# Let it work in the projects (here: a group shared with root, which the agents run as). One project folder at a time:
 groupadd -f devs && usermod -aG devs dalang
-chgrp -R devs /srv/projects && chmod -R g+rwX /srv/projects && find /srv/projects -type d -exec chmod g+s {} +
+P=/srv/projects/app
+chgrp -R devs "$P" && chmod -R g+rwX "$P" && find "$P" -type d -exec chmod g+s {} +
 sudo -u dalang git config --global --add safe.directory '*'   # repositories owned by root
+# It must not read the main token or Dalang's state:
+chmod 600 /etc/systemd/system/lzvr-dalang.service && chmod 700 /opt/lzvr-dalang/state && systemctl daemon-reload
 ```
 
-Then `Environment=TERMINAL_USER=dalang` in the service and restart it. Every new terminal then:
+Then `Environment=TERMINAL_USER=dalang` in the service and restart it. Every new terminal of an admin or dev then:
 
 - **starts as that account** (`dalang@vm:~$`) with its home, its login shell and its own `~/.gitconfig` and `~/.ssh`
   (the git setup of Settings → Git & forges belongs to root and is not used there);
@@ -173,7 +181,8 @@ Then `Environment=TERMINAL_USER=dalang` in the service and restart it. Every new
 - **is refused** if the account does not exist, is root, is in the `sudo`, `wheel`, `admin` or `root` group, or is
   named in a sudoers file (checked each time a terminal opens).
 
-Only the terminals change: the agents, the editor's file changes and git in Changes still run as the service's user.
+Only those terminals change: the owner's terminals, the agents, the editor's file changes and git in Changes still run
+as the service's user.
 A terminal can only write where that account may, so give it the project folders (above) and the worktrees
 (`<STATE_DIR>/worktrees`) if it should work in them; files it creates belong to it. On Windows and macOS
 `TERMINAL_USER` is ignored: there Dalang usually runs as your own account, and so do its terminals.
@@ -371,7 +380,7 @@ Known limits:
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
 | `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. |
 | `TERMINAL_SHELL` | PowerShell / login shell | The shell the code editor's terminals start (a path, no arguments). |
-| `TERMINAL_USER` | unset | Linux: the account the code editor's terminals run as instead of the service's (root). It may not be root or able to use sudo, and its shells can never gain rights (see "Terminals without root"). |
+| `TERMINAL_USER` | unset | Linux: the account the code editor's terminals of admins and devs run as (the owner's run as the service's). Unset, only the owner has terminals. It may not be root or able to use sudo, and its shells can never gain rights (see "Terminals without root"). |
 
 ### Security
 

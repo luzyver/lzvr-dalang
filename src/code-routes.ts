@@ -8,6 +8,7 @@ import * as git from './git.js';
 import { agentBusy } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Store } from './store.js';
+import type { AuthUser } from './util.js';
 
 type Reply = FastifyReply;
 
@@ -85,7 +86,11 @@ const looksBinary = (buf: Buffer) => buf.subarray(0, 8000).includes(0);
  * a chat works in (its worktree, else the project folder). Changing files follows the agent's rules there: never in a
  * read-only project, and not while an agent is working in that folder. `.git` is never written to.
  */
-export function codeRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher; terminalAvailable: () => Promise<boolean> }): void {
+export function codeRoutes(app: FastifyInstance, deps: {
+  store: Store; dispatcher: Dispatcher;
+  /** As whom this caller's terminals run ('server' or TERMINAL_USER's name), or null for none. */
+  terminalAs: (user: AuthUser) => Promise<string | null>;
+}): void {
   const { store, dispatcher } = deps;
   const notFound = (reply: Reply) => reply.code(404).send({ error: 'not found' });
 
@@ -146,7 +151,8 @@ export function codeRoutes(app: FastifyInstance, deps: { store: Store; dispatche
       root: basename(c.root),
       readOnly: c.project.sandbox === 'read-only',
       busy: busy(c),
-      terminal: req.user?.role === 'admin' && (await deps.terminalAvailable()),
+      terminal: !!req.user && (await deps.terminalAs(req.user)) !== null && !(c.project.sandbox === 'read-only' && req.user.role !== 'admin'),
+      terminalAs: req.user ? await deps.terminalAs(req.user) : null,
     };
   });
 

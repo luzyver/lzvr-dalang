@@ -238,12 +238,44 @@ describe('code editor: terminals', () => {
   // A "shell" that echoes what it reads, so the test does not depend on the machine's shell.
   const echo = () => new Terminals({ shell: [process.execPath, '-e', 'process.stdin.on("data", (d) => process.stdout.write("got:" + d))'] });
 
-  it('are for admins only, and offered to them', async () => {
+  it('are the owner\'s alone without TERMINAL_USER: admins and devs get none', async () => {
     const t = await withChat({ terminals: echo() });
-    expect((await t.call('GET', '/code')).json().terminal).toBe(true);
-    const dev = await mkUser(t, 'dev2', 'dev');
+    expect((await t.call('GET', '/code')).json()).toMatchObject({ terminal: true, terminalAs: 'server' });
+    for (const [name, role] of [['dev2', 'dev'], ['adm2', 'admin']] as const) {
+      const u = await mkUser(t, name, role);
+      expect((await t.call('GET', '/code', undefined, bearer(u.token))).json()).toMatchObject({ terminal: false, terminalAs: null });
+      expect((await t.call('POST', '/terminals', {}, bearer(u.token))).statusCode).toBe(403);
+      expect((await t.call('GET', '/terminals', undefined, bearer(u.token))).statusCode).toBe(403);
+    }
+  });
+
+  it('with TERMINAL_USER: admins and devs run as that account, and never see or reach the owner\'s root shells', async () => {
+    const terminals = echo();
+    Object.defineProperty(terminals, 'userName', { get: () => 'dalang' }); // as on a Linux server with TERMINAL_USER=dalang
+    const t = await withChat({ terminals });
+    const own = (await t.call('POST', '/terminals', {})).json();
+    expect(own.account).not.toBe('dalang'); // the owner's runs as the server's account
+
+    const dev = await mkUser(t, 'dev3', 'dev');
+    expect((await t.call('GET', '/code', undefined, bearer(dev.token))).json()).toMatchObject({ terminal: true, terminalAs: 'dalang' });
+    expect((await t.call('GET', '/terminals', undefined, bearer(dev.token))).json()).toEqual([]);
+    expect((await t.app.inject({ method: 'POST', url: `/api/terminals/${own.id}/ticket`, headers: bearer(dev.token) })).statusCode).toBe(404);
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/terminals/${own.id}`, headers: bearer(dev.token) })).statusCode).toBe(404);
+    expect(terminals.list(t.id)).toHaveLength(1);
+    // What they open goes through the TERMINAL_USER checks (here there is no such account), never to the server's shell.
+    const theirs = await t.call('POST', '/terminals', {}, bearer(dev.token));
+    if (theirs.statusCode === 201) expect(theirs.json().account).toBe('dalang');
+    else expect(theirs.statusCode).toBe(409);
+    expect(terminals.list(t.id).filter((x) => x.account !== 'dalang')).toHaveLength(1);
+  });
+
+  it('are refused to devs in a read-only project', async () => {
+    const terminals = echo();
+    Object.defineProperty(terminals, 'userName', { get: () => 'dalang' });
+    const t = await withChat({ sandbox: 'read-only', terminals });
+    const dev = await mkUser(t, 'dev4', 'dev');
+    expect((await t.call('GET', '/code', undefined, bearer(dev.token))).json().terminal).toBe(false);
     expect((await t.call('POST', '/terminals', {}, bearer(dev.token))).statusCode).toBe(403);
-    expect((await t.call('GET', '/terminals', undefined, bearer(dev.token))).statusCode).toBe(403);
   });
 
   it('opens a shell in the chat folder, streams it over a ticketed socket, and closes it', async () => {

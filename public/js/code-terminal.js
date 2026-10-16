@@ -211,6 +211,7 @@ export function TerminalPanel({ convId, shown, maximized, onMaximize, onHide }) 
         ${list.map((t) => html`<div key=${t.id} role="tab" aria-selected=${t.id === active} class=${cx('term-tab', t.id === active && 'active', t.exitCode !== null && 'exited')}
           onClick=${() => { terms.active.value = t.id; }} onAuxClick=${(e) => { if (e.button === 1) closeTerminal(t); }}>
           <${Icon} name="terminal" /><span>${t.title}</span>
+          ${t.account && html`<span class=${cx('term-acct', t.account === 'root' && 'root')} title=${`Runs as ${t.account}`}>${t.account}</span>`}
           <button class="icon-btn xs" aria-label=${`Close ${t.title}`} title="Close terminal" onClick=${(e) => { e.stopPropagation(); closeTerminal(t); }}><${Icon} name="x" /></button>
         </div>`)}
       </div>

@@ -197,7 +197,10 @@ export function buildApp(
   gitAuthRoutes(app, { users: gitUsers });
   scheduleRoutes(app, { store, dispatcher });
   const terminals = deps.terminals ?? new Terminals();
-  codeRoutes(app, { store, dispatcher, terminalAvailable: () => terminals.available() });
+  codeRoutes(app, { store, dispatcher, terminalAs: async (user) => {
+    const mode = terminals.modeFor(user);
+    return mode && (await terminals.available()) ? (mode === 'server' ? 'server' : terminals.userName) : null;
+  } });
   terminalRoutes(app, { store, dispatcher, terminals, noteFailure });
 
   // Search the chats: titles, prompts and the agents' answers. Every word has to occur (in any order).

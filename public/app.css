@@ -842,6 +842,8 @@ body.resizing-h, body.resizing-h * { cursor: row-resize !important; user-select:
 .term-tab:hover { background: var(--hover); color: var(--text); }
 .term-tab.active { background: var(--surface-3); color: var(--text); }
 .term-tab.exited span { color: var(--text-faint); }
+.term-acct { font: 500 10.5px var(--mono); padding: 0 5px; border-radius: 4px; background: var(--surface-3); color: var(--text-dim); }
+.term-acct.root { background: var(--err-soft); color: var(--err); }
 .term-host { flex: 1; min-height: 0; position: relative; }
 .term-screen { position: absolute; inset: 6px 4px 2px 12px; }
 .term-screen .xterm { height: 100%; }
