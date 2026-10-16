@@ -12,6 +12,7 @@ import {
   previewEdits, QueryError, type QueryResult, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES, testConnection,
 } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
+import { keyProblem, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import { type AuthUser, canAccess, PROJECT_ACCESS } from './util.js';
 
@@ -21,7 +22,12 @@ export const PANEL_LIMIT = 500;
 const PANEL_TIMEOUT_MS = 120_000;
 
 /** What the panel sees of a connection: everything but the password. */
-const view = ({ password, ...c }: DbConnection) => ({ ...c, hasPassword: !!password });
+const view = ({ password, ssh, ...c }: DbConnection) => ({
+  ...c, hasPassword: !!password,
+  // The SSH tunnel without its password, key or passphrase: only whether they are set.
+  ...(ssh && { ssh: { enabled: ssh.enabled, host: ssh.host, port: ssh.port, user: ssh.user, auth: ssh.auth, hostKey: ssh.hostKey,
+    hasPassword: !!ssh.password, hasKey: !!ssh.privateKey, hasPassphrase: !!ssh.passphrase } }),
+});
 
 /** One agent query, for the connection's log (admins read it in the SQL editor). */
 export interface DbLogEntry {
@@ -70,6 +76,8 @@ interface Body {
   allDatabases?: boolean;
   /** Omitted keeps the saved one, '' removes it. */
   password?: string;
+  /** The SSH tunnel; its password, privateKey and passphrase as `password` above. hostKey: the one Test connection showed. */
+  ssh?: { enabled: boolean; host?: string; port?: number; user?: string; auth?: 'password' | 'key'; password?: string; privateKey?: string; passphrase?: string; hostKey?: string };
   /** The workspaces it is in (all of them, replacing the old set). Omitted: as it was; a new one goes in the first. */
   workspaces?: string[];
 }
@@ -83,6 +91,11 @@ const BODY = {
     database: { type: 'string', maxLength: 255 }, ssl: { enum: [...SSL_MODES] }, file: { type: 'string', maxLength: 1000 },
     access: { enum: [...PROJECT_ACCESS] }, readOnly: { type: 'boolean' }, agent: { enum: [...AGENT_MODES] },
     allDatabases: { type: 'boolean' },
+    ssh: { type: 'object', required: ['enabled'], additionalProperties: false, properties: {
+      enabled: { type: 'boolean' }, host: { type: 'string', maxLength: 255 }, port: { type: 'integer', minimum: 0, maximum: 65535 },
+      user: { type: 'string', maxLength: 255 }, auth: { enum: ['password', 'key'] }, password: { type: 'string', maxLength: 1000 },
+      privateKey: { type: 'string', maxLength: 20_000 }, passphrase: { type: 'string', maxLength: 1000 }, hostKey: { type: 'string', maxLength: 200 },
+    } },
     workspaces: { type: 'array', maxItems: 200, items: { type: 'string', maxLength: 40 } },
   },
 };
@@ -151,6 +164,29 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       if (!rel || (!rel.startsWith('..') && !isAbsolute(rel))) return 'files in Dalang\'s state folder cannot be opened';
       Object.assign(c, { host: '', port: 0, user: '', password: '', database: '', ssl: 'disable', file: real });
     } else if (!c.host) return 'a host is needed';
+    if (b.driver !== 'sqlite' && (b.ssh || old?.ssh)) {
+      const s = b.ssh ?? { enabled: false };
+      const was = old?.ssh;
+      const ssh: SshConf = {
+        enabled: s.enabled, host: (s.host ?? was?.host ?? '').trim(), port: s.port || was?.port || 22, user: (s.user ?? was?.user ?? '').trim(),
+        auth: s.auth ?? was?.auth ?? 'password',
+        password: s.password === undefined ? was?.password ?? '' : s.password,
+        privateKey: s.privateKey === undefined ? was?.privateKey ?? '' : s.privateKey.trim() ? `${s.privateKey.trim()}\n` : '',
+        passphrase: s.passphrase === undefined ? was?.passphrase ?? '' : s.passphrase,
+        // A key trusted for one server says nothing about another: a new address starts untrusted.
+        hostKey: s.hostKey ?? (was && was.host === (s.host ?? was.host).trim() && was.port === (s.port || was.port) ? was.hostKey : ''),
+      };
+      if (ssh.enabled) {
+        if (!ssh.host || !ssh.user) return 'the SSH tunnel needs a host and a user';
+        if (/^(mongodb(\+srv)?|rediss?):\/\//i.test(c.host)) return 'through SSH, give the database\'s host and port rather than a URI';
+        if (ssh.auth === 'key') {
+          if (!ssh.privateKey) return 'the SSH tunnel needs a private key';
+          const bad = keyProblem(ssh.privateKey, ssh.passphrase);
+          if (bad) return `the SSH private key cannot be read: ${bad}`;
+        }
+      }
+      c.ssh = ssh;
+    }
     return c;
   };
 

@@ -570,7 +570,7 @@ connections belong to the panel.
   in the background once it is a week old.
   Each console tab has its connection, and beside it the database unqualified names are in: on MySQL/MariaDB a
   database of the server (what `USE` picks; "No database" means writing `db.table`), on PostgreSQL a schema, put first
-  in `search_path`. `Ctrl Enter` runs the
+  in `search_path`. That picker is typed in to find one (↑ ↓ and Enter pick, Esc closes). `Ctrl Enter` runs the
   selection or the statement at the cursor, `Ctrl Shift Enter` the whole console, statement by statement, stopping at
   the first error (the results before it stay). A statement returns at most the row limit (100 to 10 000; the rest is
   never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
@@ -650,6 +650,19 @@ grid, Format, SQL `INSERT` export, DDL; MongoDB shows a collection's indexes and
   **Test connection** warns about a MongoDB user with roles beyond reading (or a server without users) and a Redis
   user that may run every command. A MongoDB user with the `read` role, or a Redis ACL user without write commands, is
   the real limit.
+
+### Databases behind an SSH server
+
+A connection (any engine but SQLite) can go through an SSH tunnel: tick **Connect through an SSH tunnel** and give the
+SSH host, port (22 if empty), user, and a password or a private key (paste its text or **Load a key file**; a
+passphrase if it has one). The database's host and port are then as the SSH server sees them, often `localhost`. The
+host field cannot hold a URI then. A tunnel is opened for each query, tree read or test and closed after it; TLS to
+the database still checks the database's own name.
+
+The SSH server's key is trusted on first use: **Test connection** shows its fingerprint (`SHA256:...`) and **Save**
+trusts it. From then on a server with another key is refused until the connection is tested and saved again (for a
+reinstalled server); changing the SSH host or port forgets the trusted key. SSH passwords, keys and passphrases are
+stored like the database password and never sent back to the browser.
 
 ## Develop
 

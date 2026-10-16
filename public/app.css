@@ -1000,6 +1000,21 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .sql-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; flex: none; border-bottom: 1px solid var(--line); min-width: 0; }
 .sql-conn { min-height: 28px !important; height: 28px; padding: 0 8px !important; font-size: 12.5px; max-width: 260px; }
 .sql-db { max-width: 180px; font-family: var(--mono); }
+.sql-picker { position: relative; flex: none; }
+.sql-picker-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 120px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
+.sql-picker-btn:hover { border-color: var(--line-hover); }
+.sql-picker-btn[aria-expanded="true"] { border-color: var(--accent); }
+.sql-picker-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-picker-pop { position: absolute; z-index: 150; top: calc(100% + 4px); left: 0; width: max(100%, 280px); max-width: min(420px, calc(100vw - 24px)); display: flex; flex-direction: column; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.sql-picker-find { margin: 0 0 6px; }
+.sql-picker-list { max-height: min(340px, 50vh); overflow: auto; overscroll-behavior: contain; }
+.sql-picker-item { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border-radius: var(--r-sm); font: 12.5px var(--mono); cursor: pointer; white-space: nowrap; }
+.sql-picker-item span { overflow: hidden; text-overflow: ellipsis; }
+.sql-picker-item.hi { background: var(--hover); }
+.sql-picker-item.on { color: var(--accent-text); }
+.sql-picker-item .i.invisible { visibility: hidden; }
+.sql-picker-item mark { background: var(--warn-soft); color: inherit; border-radius: 2px; }
+.sql-picker-note { padding: 6px 8px 2px; }
 .sql-limit { display: inline-flex; align-items: center; gap: 6px; }
 .sql-limit select { min-height: 26px !important; height: 26px; padding: 0 6px !important; font-size: 12px; }
 .sql-results { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
@@ -1100,8 +1115,14 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .sql-error pre { margin: 2px 0 0; font: 12.5px var(--mono); white-space: pre-wrap; word-break: break-word; }
 .sql-dialog { width: 600px; }
 /* The dialog itself clips; a long form (or agent log) scrolls inside it. */
-.sql-dialog > .dialog-body { max-height: calc(100dvh - 34px); overflow-y: auto; overscroll-behavior: contain; }
+.sql-dialog > .dialog-body { max-height: calc(100dvh - 34px); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+/* The engines (six, with their logos) fit on one line, and wrap where the dialog is narrower. */
+.sql-form > .seg { flex-wrap: wrap; max-width: 100%; justify-self: start; }
+.sql-form > .seg button { padding: 4px 9px; gap: 5px; }
 .sql-port { width: 100px; }
+.sql-ssh { display: grid; gap: 10px; padding: 10px 0 2px 14px; border-left: 2px solid var(--line-strong); }
+.sql-key { font-size: 11.5px; resize: vertical; min-height: 84px; }
+.sql-key-file { height: 24px; padding: 0 6px; font-weight: 500; }
 .sql-form .row.wrap > .field:has(.sql-port) { flex: 0 0 110px; }
 .sql-log { display: grid; gap: 8px; max-height: 65vh; overflow: auto; }
 .sql-log-item { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); }

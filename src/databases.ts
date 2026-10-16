@@ -15,6 +15,7 @@ import Cursor from 'pg-cursor';
 import {
   mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlUnsafe, redisSchema, redisScript, redisTest, splitNoSql,
 } from './nosql.js';
+import { openTunnel, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import type { ProjectAccess } from './util.js';
 
@@ -51,6 +52,10 @@ export interface DbConnection {
   ssl: SslMode;
   /** SQLite: the database file on this machine. */
   file: string;
+  /** Reach the database through an SSH server (its host and port are then as that server sees them). */
+  ssh?: SshConf;
+  /** Set on the copy a run uses inside a tunnel: the database's own host name, for TLS (it is reached at 127.0.0.1). */
+  tunneledFrom?: string;
   /** Who may open it in the panel (as for projects). */
   access: ProjectAccess;
   /** Panel queries are read-only too. */
@@ -206,7 +211,7 @@ function pgClient(c: DbConnection, timeoutMs: number): pg.Client {
   return new pg.Client({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT.postgres, user: c.user || undefined,
     password: c.password || undefined, database: c.database || (c.allDatabases ? 'postgres' : undefined), application_name: 'dalang',
-    ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full' },
+    ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS, statement_timeout: timeoutMs, query_timeout: timeoutMs + 5000,
     types: pgTypes as never,
   });
@@ -293,7 +298,7 @@ function myConnection(c: DbConnection): mysql.Connection {
   return mysql.createConnection({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver], user: c.user || undefined,
     password: c.password || undefined, database: c.database || undefined,
-    ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full' },
+    ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectTimeout: CONNECT_TIMEOUT_MS, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true,
     multipleStatements: false,
   });
@@ -435,8 +440,32 @@ function withResults(e: unknown, results: QueryResult[], o?: RunOpts): QueryErro
   return new QueryError(message, [...done], done.length, refusedAsReadOnly(err as never));
 }
 
+// ---------- through SSH ----------
+
+/** Whether this run goes through an SSH tunnel (not for SQLite, a file on this machine). */
+const tunneled = (c: DbConnection) => !!c.ssh?.enabled && c.driver !== 'sqlite';
+
+/**
+ * Runs `fn` with the connection reached through its SSH tunnel: a copy pointed at the tunnel's local port (without the
+ * SSH settings, so nothing inside opens another). `trustNew`: testing, a server key not trusted yet is accepted and
+ * handed to `onKey`.
+ */
+async function withTunnel<T>(c: DbConnection, fn: (t: DbConnection) => Promise<T>, trustNew = false, onKey?: (key: string) => void): Promise<T> {
+  const ssh = c.ssh!;
+  if (!ssh.host || !ssh.user) throw new Error('the SSH tunnel needs a host and a user');
+  if (/^(mongodb(\+srv)?|rediss?):\/\//i.test(c.host)) throw new Error('through SSH, give the database\'s host and port rather than a URI');
+  const t = await openTunnel(ssh, { host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver] }, { trustNew });
+  onKey?.(t.hostKey);
+  try {
+    return await fn({ ...c, host: t.host, port: t.port, ssh: undefined, tunneledFrom: c.host || 'localhost' });
+  } finally { await t.close(); }
+}
+
 /** Runs every statement of `script` in turn and stops at the first error (a QueryError with the results so far). */
 export async function runScript(c: DbConnection, script: string, o: RunOpts): Promise<QueryResult[]> {
+  if (tunneled(c)) {
+    try { return await withTunnel(c, (t) => runScript(t, script, o)); } catch (e) { throw withResults(e, [], o); }
+  }
   const statements = statementsOf(script, c.driver);
   if (!statements.length) throw new QueryError('nothing to run', [], 0);
   if (statements.length > MAX_STATEMENTS) throw new QueryError(`at most ${MAX_STATEMENTS} statements at a time`, [], 0);
@@ -464,6 +493,7 @@ export function onDatabase(c: DbConnection, db?: string): DbConnection {
 
 /** The databases a connection may open: its own, or (allDatabases) those on the server it may connect to. */
 export async function listDatabases(c: DbConnection): Promise<string[]> {
+  if (tunneled(c) && multiDatabase(c)) return withTunnel(c, listDatabases);
   if (!multiDatabase(c)) return [c.database];
   const [r] = await runScript(c, 'SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname',
     { readOnly: true, limit: 10_000, timeoutMs: 15_000 });
@@ -476,7 +506,18 @@ export async function listDatabases(c: DbConnection): Promise<string[]> {
  * The server's version, to show that the connection works, and what about its user deserves a warning: rights that
  * reach past the tables (superuser, server files, other sessions). Read-only does not take those away.
  */
-export async function testConnection(c: DbConnection): Promise<{ version: string; warnings: string[] }> {
+export async function testConnection(c: DbConnection): Promise<{ version: string; warnings: string[]; sshHostKey?: string }> {
+  // Testing is where an SSH server's key is first seen and shown, to be trusted when the connection is saved.
+  if (tunneled(c)) {
+    let sshHostKey = '';
+    // Any key is accepted here (the one trusted is compared below), so a server whose key changed can be trusted again.
+    const r = await withTunnel({ ...c, ssh: { ...c.ssh!, hostKey: '' } }, testConnection, true, (k) => { sshHostKey = k; });
+    const was = c.ssh!.hostKey;
+    const warnings = was && was !== sshHostKey
+      ? [`The SSH server's key changed: it is ${sshHostKey}, and ${was} was trusted. If you did not expect that (a reinstalled server), someone may be in between: do not save.`, ...r.warnings]
+      : r.warnings;
+    return { ...r, warnings, sshHostKey };
+  }
   if (c.driver === 'mongodb') return mongoTest(c);
   if (c.driver === 'redis') return redisTest(c);
   const o: RunOpts = { readOnly: true, limit: 200, timeoutMs: 15_000 };
@@ -532,6 +573,7 @@ const catalogLiteral = (driver: Driver, s: string) => `'${(isMy(driver) ? s.repl
  * schema `loaded: false`; ask again with `schema` for its columns).
  */
 export async function readSchema(c: DbConnection, timeoutMs = 30_000, only?: string): Promise<SchemaInfo> {
+  if (tunneled(c)) return withTunnel(c, (t) => readSchema(t, timeoutMs, only));
   if (c.driver === 'mongodb') return mongoSchema(c, timeoutMs, only);
   if (c.driver === 'redis') return redisSchema(c, timeoutMs, only);
   const o: RunOpts = { readOnly: true, limit: MAX_TABLES * 50, timeoutMs, maxCell: 500 };
@@ -639,6 +681,7 @@ export function previewEdits(c: DbConnection, schema: string, table: string, edi
  * exactly one row undoes everything. Returns how many rows changed.
  */
 export async function editRows(c: DbConnection, schema: string, table: string, edits: RowEdit[]): Promise<number> {
+  if (tunneled(c)) return withTunnel(c, (t) => editRows(t, schema, table, edits));
   if (isNoSql(c.driver)) throw new Error('rows are edited in SQL databases only');
   const ref = tableRef(c, schema, table);
   const stmts = edits.map((e) => editSql(c.driver, ref, e));
@@ -693,6 +736,7 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
 
 /** The CREATE statement(s) of a table or view: as the server gives them (MySQL, SQLite) or rebuilt from the catalog. */
 export async function readDdl(c: DbConnection, schema: string, name: string): Promise<string> {
+  if (tunneled(c)) return withTunnel(c, (t) => readDdl(t, schema, name));
   if (c.driver === 'mongodb') return mongoDdl(c, schema, name);
   if (c.driver === 'redis') throw new Error('Redis keys have no DDL');
   const q = (n: string) => quoteIdent(c.driver, n);

@@ -1302,6 +1302,12 @@ function ConnectionForm({ conn }) {
     ssl: conn?.ssl ?? 'disable', file: conn?.file ?? '', access: conn?.access ?? 'admin', readOnly: conn?.readOnly ?? false,
     agent: conn?.agent ?? 'off', allDatabases: conn?.allDatabases ?? false,
   }));
+  // The SSH tunnel; its secrets are never sent here, so their fields start empty (empty keeps the saved one).
+  const [ssh, setSsh] = useState(() => ({
+    enabled: conn?.ssh?.enabled ?? false, host: conn?.ssh?.host ?? '', port: conn?.ssh?.port ? String(conn.ssh.port) : '', user: conn?.ssh?.user ?? '',
+    auth: conn?.ssh?.auth ?? 'password', password: '', privateKey: '', passphrase: '',
+  }));
+  const setS = (k) => (e) => setSsh({ ...ssh, [k]: e.currentTarget.type === 'checkbox' ? e.currentTarget.checked : e.currentTarget.value });
   const [error, setError] = useState('');
   const [tested, setTested] = useState(null);
   const set = (k) => (e) => setF({ ...f, [k]: e.currentTarget.type === 'checkbox' ? e.currentTarget.checked : e.currentTarget.value });
@@ -1313,8 +1319,21 @@ function ConnectionForm({ conn }) {
       host: f.host.trim(), port: Number(f.port) || PORTS[f.driver], user: f.user.trim(), database: f.database.trim(), ssl: f.ssl,
       ...(f.password && { password: f.password }),
       ...(f.driver === 'postgres' && { allDatabases: f.allDatabases }),
+      ...((ssh.enabled || conn?.ssh) && { ssh: {
+        enabled: ssh.enabled, host: ssh.host.trim(), port: Number(ssh.port) || 22, user: ssh.user.trim(), auth: ssh.auth,
+        ...(ssh.password && { password: ssh.password }), ...(ssh.privateKey.trim() && { privateKey: ssh.privateKey }),
+        ...(ssh.passphrase && { passphrase: ssh.passphrase }),
+        // The server key the last successful test saw: trusted from now on.
+        ...(tested?.ok && tested.sshHostKey && { hostKey: tested.sshHostKey }),
+      } }),
     }),
   });
+  /** A key file's text, into the private key field. */
+  const loadKey = (e) => {
+    const file = e.currentTarget.files?.[0];
+    if (file) file.text().then((t) => setSsh((x) => ({ ...x, privateKey: t })));
+    e.currentTarget.value = '';
+  };
   const save = async () => {
     setError('');
     const id = (conn?.id ?? f.id).trim();
@@ -1371,7 +1390,33 @@ function ConnectionForm({ conn }) {
       </div>
       ${f.driver === 'postgres' && html`
         <label class="check small"><input type="checkbox" checked=${f.allDatabases} onChange=${set('allDatabases')} />
-          Show every database on the server this user may connect to, not only the one above (agent access covers them too)</label>`}`}
+          Show every database on the server this user may connect to, not only the one above (agent access covers them too)</label>`}
+      <label class="check small"><input type="checkbox" checked=${ssh.enabled} onChange=${setS('enabled')} />
+        Connect through an SSH tunnel</label>
+      ${ssh.enabled && html`<div class="sql-ssh">
+        <span class="small dim">The database's host and port above are as the SSH server sees them (often <span class="mono">localhost</span>).</span>
+        <div class="row wrap">
+          <${Field} label="SSH host"><input class="mono" value=${ssh.host} onInput=${setS('host')} placeholder="bastion.example.com" /><//>
+          <${Field} label="Port"><input class="mono sql-port" inputmode="numeric" value=${ssh.port} onInput=${setS('port')} placeholder="22" /><//>
+        </div>
+        <div class="row wrap">
+          <${Field} label="SSH user"><input class="mono" autocomplete="off" value=${ssh.user} onInput=${setS('user')} placeholder="deploy" /><//>
+          <div class="field"><span class="field-label">Sign in with</span>
+            <${Seg} small label="SSH sign-in" value=${ssh.auth} onChange=${(v) => setSsh({ ...ssh, auth: v })} options=${[['password', 'Password'], ['key', 'Private key']]} /></div>
+        </div>
+        ${ssh.auth === 'password' ? html`<${Field} label="SSH password" hint=${conn?.ssh?.hasPassword ? 'Saved. Leave empty to keep it.' : ''}>
+            <input type="password" class="mono" autocomplete="new-password" value=${ssh.password} onInput=${setS('password')} placeholder=${conn?.ssh?.hasPassword ? '••••••••' : ''} /><//>`
+          : html`<div class="field"><span class="field-head">Private key
+              <label class="btn ghost sm sql-key-file"><${Icon} name="upload" />Load a key file<input type="file" hidden onChange=${loadKey} /></label></span>
+            <textarea class="mono sql-key" rows="4" spellcheck="false" value=${ssh.privateKey} onInput=${setS('privateKey')}
+              placeholder=${conn?.ssh?.hasKey ? 'Saved; never shown. Paste another to replace it.' : '-----BEGIN OPENSSH PRIVATE KEY-----'}></textarea>
+            <span class="field-hint">The key file's text (id_ed25519, id_rsa, ...), not the .pub one.</span></div>
+          <${Field} label="Passphrase" hint=${conn?.ssh?.hasPassphrase ? 'Saved. Leave empty to keep it.' : 'Only if the key has one.'}>
+            <input type="password" class="mono" autocomplete="new-password" value=${ssh.passphrase} onInput=${setS('passphrase')} placeholder=${conn?.ssh?.hasPassphrase ? '••••••••' : ''} /><//>`}
+        <span class="small dim">${conn?.ssh?.hostKey && !(tested?.sshHostKey && tested.sshHostKey !== conn.ssh.hostKey)
+          ? html`Trusted server key: <span class="mono">${conn.ssh.hostKey}</span>`
+          : 'The SSH server\'s key is trusted once you test the connection and save.'}</span>
+      </div>`}`}
     <div class="row wrap">
       <${Field} label="Who may open it"><select value=${f.access} onChange=${set('access')}>
         ${access.map((k) => html`<option value=${k}>${ACCESS[k]}</option>`)}</select><//>
@@ -1385,6 +1430,7 @@ function ConnectionForm({ conn }) {
     </div>
     ${f.agent !== 'off' && html`<p class="small dim">An agent with a shell can still reach a database it has the address and credentials of (a <span class="mono">.env</span> in its project, say). For a strict limit, give this connection a database user that may only read.</p>`}
     ${tested && (tested.ok ? html`<p class="small"><${Icon} name="circle-check" /> Connected: ${tested.version}</p>
+      ${tested.sshHostKey && html`<p class="small dim">Through SSH. Server key <span class="mono">${tested.sshHostKey}</span>${tested.sshHostKey === conn?.ssh?.hostKey ? ' (trusted)' : ': trusted when you save.'}</p>`}
       ${tested.warnings?.map((w) => html`<div class="sql-warning small" role="alert"><${Icon} name="triangle-alert" /><span>${w}${f.agent !== 'off' ? ' Agents have these rights too, whatever the agent access says.' : ''}</span></div>`)}`
       : html`<div class="form-error" role="alert">${tested.error}</div>`)}
     ${error && html`<div class="form-error" role="alert">${error}</div>`}
@@ -1490,6 +1536,67 @@ function EditorHost() {
   return html`<div class="cm-host" ref=${host}></div>`;
 }
 
+/** Names as a Picker's options, each once. */
+const names = (list) => [...new Set(list)].map((n) => ({ value: n, label: n }));
+/** The most a Picker draws at once (type to narrow a longer list). */
+const PICKER_MAX = 300;
+
+/**
+ * A list to pick from that typing narrows (the console's database or schema): a click opens it with the search box
+ * focused, ↑ ↓ move, Enter picks, Esc closes.
+ */
+function Picker({ label, title, value, options, onPick }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  const wrap = useRef(null);
+  const box = useRef(null);
+  const listEl = useRef(null);
+  const needle = q.trim().toLowerCase();
+  const found = needle ? options.filter((o) => o.label.toLowerCase().includes(needle)) : options;
+  const shown = found.slice(0, PICKER_MAX);
+  const close = () => { setOpen(false); setQ(''); };
+  const pick = (o) => { close(); if (o && o.value !== value) onPick(o.value); };
+  useEffect(() => {
+    if (!open) return undefined;
+    box.current?.focus();
+    const away = (e) => { if (!wrap.current?.contains(e.target)) close(); };
+    document.addEventListener('pointerdown', away, true);
+    return () => document.removeEventListener('pointerdown', away, true);
+  }, [open]);
+  // The current one is highlighted when it opens, the first match as soon as one types (at once, so a quick ↓ after
+  // typing moves from there).
+  const openIt = () => { setHi(Math.max(0, options.slice(0, PICKER_MAX).findIndex((o) => o.value === value))); setOpen(true); };
+  const type = (v) => { setQ(v); setHi(0); };
+  useEffect(() => { listEl.current?.children[hi]?.scrollIntoView({ block: 'nearest' }); }, [hi, open]);
+  const key = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(Math.min(hi + 1, shown.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(Math.max(hi - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(shown[hi]); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+  };
+  const current = options.find((o) => o.value === value)?.label ?? value;
+  return html`<div class="sql-picker" ref=${wrap}>
+    <button type="button" class="sql-conn sql-db sql-picker-btn" aria-label=${label} title=${title} aria-haspopup="listbox" aria-expanded=${open}
+      onClick=${() => (open ? close() : openIt())}>
+      <span class="sql-picker-value">${current}</span><${Icon} name="chevron-down" class="tiny dim" />
+    </button>
+    ${open && html`<div class="sql-picker-pop">
+      <div class="sql-find sql-picker-find"><${Icon} name="search" class="tiny dim" />
+        <input ref=${box} value=${q} placeholder=${`Find a ${label.toLowerCase()}`} aria-label=${`Find a ${label.toLowerCase()}`}
+          onInput=${(e) => type(e.currentTarget.value)} onKeyDown=${key} /></div>
+      <div class="sql-picker-list" role="listbox" aria-label=${label} ref=${listEl}>
+        ${shown.map((o, i) => html`<div key=${o.value} role="option" aria-selected=${o.value === value}
+          class=${cx('sql-picker-item', i === hi && 'hi', o.value === value && 'on')}
+          onMouseDown=${(e) => { e.preventDefault(); pick(o); }} onMouseEnter=${() => setHi(i)}>
+          <${Icon} name="check" class=${cx('tiny', o.value !== value && 'invisible')} /><span>${needle ? marked(o.label, needle) : o.label}</span></div>`)}
+      </div>
+      ${!found.length && html`<div class="sql-picker-note small dim">Nothing matches.</div>`}
+      ${found.length > shown.length && html`<div class="sql-picker-note small dim">${found.length - shown.length} more: type more of the name.</div>`}
+    </div>`}
+  </div>`;
+}
+
 function Toolbar() {
   const c = activeConsole();
   const conn0 = activeConsole() && connOf(activeConsole().connId);
@@ -1509,20 +1616,17 @@ function Toolbar() {
       ${!conn && html`<option value="">Pick a connection…</option>`}
       ${conns.map((x) => html`<option value=${x.id}>${x.label} (${DRIVERS[x.driver]})</option>`)}
     </select>
-    ${multi(conn) && html`<select class="sql-conn sql-db" aria-label="Database" value=${c.database || ownDb(conn)} onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
-      ${[...new Set([ownDb(conn), ...(c.database ? [c.database] : []), ...(sq.dbs.value.get(conn.id)?.list || [])])]
-        .map((name) => html`<option value=${name}>${name}</option>`)}
-    </select>`}
-    ${my && html`<select class="sql-conn sql-db" aria-label="Database"
+    ${multi(conn) && html`<${Picker} label="Database" title="The database this console runs in" value=${c.database || ownDb(conn)} onPick=${setConsoleDb}
+      options=${names([ownDb(conn), ...(c.database ? [c.database] : []), ...(sq.dbs.value.get(conn.id)?.list || [])])} />`}
+    ${my && html`<${Picker} label="Database"
       title=${conn.driver === 'redis' ? 'The database the commands run in (SELECT)' : conn.driver === 'mongodb' ? 'The database db. commands run in' : 'The database unqualified table names are in (USE)'}
-      value=${c.database || conn.database || (conn.driver === 'redis' ? 'db0' : '')} onChange=${(e) => setConsoleDb(e.currentTarget.value)}>
-      ${!conn.database && conn.driver !== 'redis' && html`<option value="">${conn.driver === 'mongodb' ? 'No database (show dbs only)' : 'No database (write db.table)'}</option>`}
-      ${[...new Set([...(conn.database ? [conn.database] : []), ...(c.database ? [c.database] : []), ...myDatabases])].map((name) => html`<option value=${name}>${name}</option>`)}
-    </select>`}
-    ${conn?.driver === 'postgres' && pgSchemas.length > 1 && html`<select class="sql-conn sql-db" aria-label="Schema" title="The schema unqualified table names are looked up in first (search_path)"
-      value=${c.schema || 'public'} onChange=${(e) => setConsoleSchema(e.currentTarget.value)}>
-      ${[...new Set(['public', ...(c.schema ? [c.schema] : []), ...pgSchemas])].map((name) => html`<option value=${name}>${name}</option>`)}
-    </select>`}
+      value=${c.database || conn.database || (conn.driver === 'redis' ? 'db0' : '')} onPick=${setConsoleDb}
+      options=${[
+        ...(!conn.database && conn.driver !== 'redis' ? [{ value: '', label: conn.driver === 'mongodb' ? 'No database (show dbs only)' : 'No database (write db.table)' }] : []),
+        ...names([...(conn.database ? [conn.database] : []), ...(c.database ? [c.database] : []), ...myDatabases]),
+      ]} />`}
+    ${conn?.driver === 'postgres' && pgSchemas.length > 1 && html`<${Picker} label="Schema" title="The schema unqualified table names are looked up in first (search_path)"
+      value=${c.schema || 'public'} onPick=${setConsoleSchema} options=${names(['public', ...(c.schema ? [c.schema] : []), ...pgSchemas])} />`}
     ${running ? html`<button class="btn sm" title="Stop the running statement" onClick=${cancelRun}><${Spinner} />Cancel</button>`
       : html`<button class="btn primary sm" disabled=${!conn} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>
         <${Icon} name="play" />Run</button>`}

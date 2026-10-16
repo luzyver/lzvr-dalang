@@ -230,12 +230,14 @@ const DB_WRITES = new Set(['createCollection', 'dropDatabase', 'createView']);
 const isMongoUri = (s: string) => /^mongodb(\+srv)?:\/\//i.test(s);
 
 function mongoClient(c: DbConnection, timeoutMs: number): MongoClient {
-  const tls = c.ssl === 'disable' ? {} : { tls: true, tlsAllowInvalidCertificates: c.ssl !== 'verify-full' };
+  // Through an SSH tunnel the server is 127.0.0.1: its certificate is still checked, but not against that name, and the
+  // driver talks to that one server rather than looking for the others of a replica set (it could not reach them).
+  const tls = c.ssl === 'disable' ? {} : { tls: true, tlsAllowInvalidCertificates: c.ssl !== 'verify-full', ...(c.tunneledFrom && { tlsAllowInvalidHostnames: true }) };
   const auth = c.user ? { auth: { username: c.user, password: c.password || undefined } } : {};
   const uri = isMongoUri(c.host) ? c.host : `mongodb://${c.host.includes(':') && !c.host.startsWith('[') ? `[${c.host}]` : c.host}:${c.port || 27017}/`;
   return new MongoClient(uri, {
     ...tls, ...auth, appName: 'dalang', serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS, connectTimeoutMS: CONNECT_TIMEOUT_MS,
-    socketTimeoutMS: timeoutMs + 5000, maxPoolSize: 2,
+    socketTimeoutMS: timeoutMs + 5000, maxPoolSize: 2, ...(c.tunneledFrom && { directConnection: true }),
   });
 }
 
@@ -533,7 +535,7 @@ function redisClient(c: DbConnection, timeoutMs: number, db: number): Redis {
     lazyConnect: true, connectTimeout: CONNECT_TIMEOUT_MS, commandTimeout: timeoutMs, maxRetriesPerRequest: 0, enableOfflineQueue: false,
     retryStrategy: () => null, db, connectionName: 'dalang',
     ...(c.user && { username: c.user }), ...(c.password && { password: c.password }),
-    ...(c.ssl !== 'disable' && { tls: { rejectUnauthorized: c.ssl === 'verify-full' } }),
+    ...(c.ssl !== 'disable' && { tls: { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) } }),
   };
   return /^rediss?:\/\//i.test(c.host) ? new Redis(c.host, opts) : new Redis({ host: c.host || 'localhost', port: c.port || 6379, ...opts });
 }
