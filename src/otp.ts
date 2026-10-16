@@ -13,7 +13,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export interface Mail { to: string; subject: string; text: string; html: string; from?: string }
 export type SendMail = (mail: Mail) => Promise<void>;
 
-/** Hands the mail to the GEM Mailer (`POST /mail/send`, answered 202 once queued). */
+/** Hands the mail to the mailer service (`POST /mail/send`, answered 202 once queued). */
 export const mailerSend = (url: string): SendMail => async (mail) => {
   const res = await fetch(`${url}/mail/send`, {
     method: 'POST',

@@ -1005,6 +1005,11 @@ button.ide-stat:hover { background: var(--hover); color: var(--text); }
 .sql-results { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .term-tab.err { color: var(--err); }
 .sql-results .term-tab { padding-right: 3px; }
+.menu-ext { margin-left: 8px; font-size: 11px; }
+.sql-ws { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.sql-ws select { min-height: 28px !important; height: 28px; padding: 0 26px 0 8px !important; font-size: 12.5px; font-weight: 600; max-width: 260px; }
+.sql-ws-pick { display: grid; gap: 8px; max-height: 50vh; overflow: auto; padding: 2px; }
+.sql-ws-empty { margin-top: 8px; gap: 6px; }
 /* Results full screen: only the results are left. */
 .ide.sql.term-max { grid-template-rows: minmax(0, 1fr); }
 .ide.sql.term-max .ide-head, .ide.sql.term-max .ide-files, .ide.sql.term-max .ide-resize, .ide.sql.term-max .ide-status, .ide.sql.term-max .ide-nav { display: none !important; }

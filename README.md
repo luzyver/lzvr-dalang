@@ -124,7 +124,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   **Scheduled** in the sidebar. Anyone who may send prompts may schedule them.
 - **Account failover**: with two or more of *your own* Codex accounts, a usage limit moves the same turn to the next
   account and resumes the session.
-- **Email sign-in + push**: sign in with a 6-digit code mailed to you (through the GEM Mailer), installable PWA, Web Push when a turn finishes,
+- **Email sign-in + push**: sign in with a 6-digit code mailed to you (through the mailer service), installable PWA, Web Push when a turn finishes,
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 - **ClickUp Chat history** (optional): read-only MCP tools that let the owner's chats read their ClickUp Chat
@@ -250,7 +250,7 @@ Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), s
 
 ### Signing in
 
-The sign-in screen asks for an email and **Send code**: Dalang mails a 6-digit code through the GEM Mailer
+The sign-in screen asks for an email and **Send code**: Dalang mails a 6-digit code through the mailer service
 (`POST $MAILER_URL/mail/send`; the mailer's nginx must allow the VM's address). The code is valid for 5 minutes, can be
 asked for again after 60 seconds, and dies after 5 wrong tries. The emails in `LZVR_OWNER_EMAILS` (comma-separated) sign
 in as the owner; a panel user signs in with the email set on their user. Unknown emails get the same answer and no mail.
@@ -539,6 +539,12 @@ if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else ke
 **SQL Editor** in the sidebar (or the command palette) opens `/sql` in a tab of its own. It is not tied to a chat: the
 connections belong to the panel.
 
+- **Workspaces**: the picker next to "SQL Editor" switches between named sets of connections ("Production",
+  "Shop Dev", ...), each with its own consoles (kept in the browser) and query history; `/sql#w=<id>` opens one
+  directly. Admins add, rename and delete them and choose their connections (`⋯` beside the picker); a connection can
+  be in several, a new one goes into the workspace it was added in, and the first time every connection is in one
+  named Default. Workspaces only group: who may open a connection is still set on the connection.
+
 - **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
   protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, or a SQLite file on this machine (not one in
   `STATE_DIR`). **Test connection** tries the form before saving and warns about a user whose rights reach past the
@@ -562,8 +568,9 @@ connections belong to the panel.
   on another table adds a tab, one on the same table (or the same query again) refreshes its tab, and statements
   that return no rows share an **Output** tab (at most 12 tabs; the oldest go). The maximize button (or
   `Ctrl Shift '`) shows only the results, full screen (the browser's own full screen where it allows it); `Esc`
-  brings the rest back. Results copy as TSV or download as CSV; consoles
-  are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
+  brings the rest back. A result's rows (those it holds, up to the row limit) copy or download as CSV (with a BOM, so
+  Excel reads UTF-8), TSV, Excel (`.xlsx`, header bold and frozen), JSON, JSON Lines, SQL `INSERT` statements (for the
+  result's table, in the connection's dialect), a Markdown or an HTML table. Consoles are kept in the browser. Every run opens its own connection, so a transaction lasts one run: `BEGIN; ...; COMMIT;`
   in one go.
 - **Every row at once**: an `UPDATE` or `DELETE` without a `WHERE` of its own (one in a string, a comment or a
   subquery does not count), and `TRUNCATE`, does not run straight away. The server holds the whole script and the

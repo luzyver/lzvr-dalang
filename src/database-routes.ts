@@ -70,6 +70,8 @@ interface Body {
   allDatabases?: boolean;
   /** Omitted keeps the saved one, '' removes it. */
   password?: string;
+  /** The workspaces it is in (all of them, replacing the old set). Omitted: as it was; a new one goes in the first. */
+  workspaces?: string[];
 }
 
 const BODY = {
@@ -81,8 +83,36 @@ const BODY = {
     database: { type: 'string', maxLength: 255 }, ssl: { enum: [...SSL_MODES] }, file: { type: 'string', maxLength: 1000 },
     access: { enum: [...PROJECT_ACCESS] }, readOnly: { type: 'boolean' }, agent: { enum: [...AGENT_MODES] },
     allDatabases: { type: 'boolean' },
+    workspaces: { type: 'array', maxItems: 200, items: { type: 'string', maxLength: 40 } },
   },
 };
+
+/**
+ * A workspace of the SQL editor: a named set of connections (one connection may be in several). The panel shows one at
+ * a time, with its own consoles; who may open a connection is still the connection's own access.
+ */
+export interface DbWorkspace { id: string; name: string; conns: string[] }
+const WORKSPACES = 'db_workspaces';
+/** The workspaces; the first time, one named Default with every connection in it. */
+export function loadWorkspaces(store: Store): DbWorkspace[] {
+  try {
+    const list = JSON.parse(store.getKv(WORKSPACES) ?? 'null');
+    if (Array.isArray(list) && list.length) return list;
+  } catch { /* made again below */ }
+  const first = [{ id: 'default', name: 'Default', conns: loadConnections(store).map((c) => c.id) }];
+  store.setKv(WORKSPACES, JSON.stringify(first));
+  return first;
+}
+const saveWorkspaces = (store: Store, list: DbWorkspace[]) => store.setKv(WORKSPACES, JSON.stringify(list));
+/** Puts connection `id` in exactly the workspaces `ids` (unknown ids are skipped). */
+function setMembership(store: Store, id: string, ids: string[]): void {
+  saveWorkspaces(store, loadWorkspaces(store).map((w) => {
+    const has = w.conns.includes(id);
+    const want = ids.includes(w.id);
+    return has === want ? w : { ...w, conns: want ? [...w.conns, id] : w.conns.filter((c) => c !== id) };
+  }));
+}
+const WS_NAME = { type: 'string', minLength: 1, maxLength: 60 };
 /** `?database=` / `database`: one of the connection's other databases (PostgreSQL with "every database"). */
 const DATABASE = { type: 'string', minLength: 1, maxLength: 63 };
 
@@ -135,13 +165,65 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     const next = build(id, req.body, req.user!, old);
     if (typeof next === 'string') return reply.code(400).send({ error: next });
     saveConnections(store, old ? list.map((c) => (c === old ? next : c)) : [...list, next]);
+    if (req.body.workspaces) setMembership(store, id, req.body.workspaces);
+    else if (!old) setMembership(store, id, [loadWorkspaces(store)[0]!.id]);
     return view(next);
   });
 
   app.delete<{ Params: { id: string } }>('/api/db/connections/:id', { onRequest: requireAdmin }, (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     saveConnections(store, loadConnections(store).filter((c) => c.id !== req.params.id));
+    setMembership(store, req.params.id, []);
     store.setKv(logKey(req.params.id), '[]');
+    return reply.code(204).send();
+  });
+
+  // Workspaces: everyone reads them (a connection one may not open stays hidden: the panel lists those it may); admins
+  // add, rename and remove them, and say which connections are in each.
+  app.get('/api/db/workspaces', () => loadWorkspaces(store));
+
+  app.post<{ Body: { name: string } }>('/api/db/workspaces', {
+    onRequest: requireAdmin, schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: WS_NAME } } },
+  }, (req, reply) => {
+    const list = loadWorkspaces(store);
+    const name = req.body.name.trim();
+    if (!name) return reply.code(400).send({ error: 'a workspace needs a name' });
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'workspace';
+    let id = base;
+    for (let n = 2; list.some((w) => w.id === id); n++) id = `${base}-${n}`;
+    const w: DbWorkspace = { id, name, conns: [] };
+    saveWorkspaces(store, [...list, w]);
+    return reply.code(201).send(w);
+  });
+
+  app.patch<{ Params: { id: string }; Body: { name?: string; conns?: string[] } }>('/api/db/workspaces/:id', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', additionalProperties: false, properties: {
+      name: WS_NAME, conns: { type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 32 } },
+    } } },
+  }, (req, reply) => {
+    const list = loadWorkspaces(store);
+    const w = list.find((x) => x.id === req.params.id);
+    if (!w) return reply.code(404).send({ error: 'not found' });
+    if (req.body.name !== undefined) {
+      if (!req.body.name.trim()) return reply.code(400).send({ error: 'a workspace needs a name' });
+      w.name = req.body.name.trim();
+    }
+    if (req.body.conns) {
+      // Connections this admin cannot see stay as they were (an admin cannot take out the owner's own ones).
+      const known = new Set(loadConnections(store).map((c) => c.id));
+      const hidden = w.conns.filter((c) => known.has(c) && !find(req.user!, c));
+      w.conns = [...new Set([...hidden, ...req.body.conns.filter((c) => known.has(c) && find(req.user!, c))])];
+    }
+    saveWorkspaces(store, list);
+    return w;
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/db/workspaces/:id', { onRequest: requireAdmin }, (req, reply) => {
+    const list = loadWorkspaces(store);
+    if (!list.some((w) => w.id === req.params.id)) return reply.code(404).send({ error: 'not found' });
+    if (list.length === 1) return reply.code(409).send({ error: 'the last workspace stays' });
+    saveWorkspaces(store, list.filter((w) => w.id !== req.params.id));
     return reply.code(204).send();
   });
 

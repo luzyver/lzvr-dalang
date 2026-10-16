@@ -246,6 +246,47 @@ describe('SQL editor connections', () => {
   });
 });
 
+describe('SQL editor workspaces', () => {
+  it('starts with a Default workspace holding every connection, and puts new ones in the first', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const ws = () => t.app.inject({ url: '/api/db/workspaces', headers: AUTH }).then((r) => r.json());
+    expect(await ws()).toEqual([{ id: 'default', name: 'Default', conns: ['app'] }]);
+    await t.put('app2', {});
+    expect((await ws())[0].conns).toEqual(['app', 'app2']);
+  });
+
+  it('adds, renames and removes workspaces, and keeps a connection in several', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const add = await t.app.inject({ method: 'POST', url: '/api/db/workspaces', headers: AUTH, payload: { name: 'Main Production' } });
+    expect(add.json()).toEqual({ id: 'main-production', name: 'Main Production', conns: [] });
+    const again = await t.app.inject({ method: 'POST', url: '/api/db/workspaces', headers: AUTH, payload: { name: 'Main production!' } });
+    expect(again.json().id).toBe('main-production-2');
+    // A connection goes into a second workspace through its own form, and the workspace's list can be set directly.
+    await t.put('app', { workspaces: ['default', 'main-production'] });
+    let list = (await t.app.inject({ url: '/api/db/workspaces', headers: AUTH })).json();
+    expect(list.map((w: { conns: string[] }) => w.conns)).toEqual([['app'], ['app'], []]);
+    await t.app.inject({ method: 'PATCH', url: '/api/db/workspaces/main-production-2', headers: AUTH, payload: { name: 'Reports', conns: ['app', 'nope'] } });
+    list = (await t.app.inject({ url: '/api/db/workspaces', headers: AUTH })).json();
+    expect(list[2]).toEqual({ id: 'main-production-2', name: 'Reports', conns: ['app'] });
+    // Removing the connection takes it out of every workspace.
+    await t.app.inject({ method: 'DELETE', url: '/api/db/connections/app', headers: AUTH });
+    list = (await t.app.inject({ url: '/api/db/workspaces', headers: AUTH })).json();
+    expect(list.every((w: { conns: string[] }) => !w.conns.length)).toBe(true);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/db/workspaces/default', headers: AUTH })).statusCode).toBe(204);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/db/workspaces/main-production', headers: AUTH })).statusCode).toBe(204);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/db/workspaces/main-production-2', headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it('lets only admins change workspaces', async () => {
+    const t = await boot();
+    const dev = await mkUser(t, 'dana', 'dev');
+    expect((await t.app.inject({ url: '/api/db/workspaces', headers: bearer(dev.token) })).statusCode).toBe(200);
+    expect((await t.app.inject({ method: 'POST', url: '/api/db/workspaces', headers: bearer(dev.token), payload: { name: 'x' } })).statusCode).toBe(403);
+  });
+});
+
 describe('SQL editor connections for agents', () => {
   it('gives agents no database tools while every connection is off', async () => {
     const t = await boot();

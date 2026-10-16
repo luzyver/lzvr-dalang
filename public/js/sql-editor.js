@@ -13,6 +13,7 @@ import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
 import { ResultGrid } from './sql-grid.js';
 import { AskAgent, contextFor } from './sql-ask.js';
+import { download, FORMATS } from './sql-export.js';
 
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
@@ -67,6 +68,11 @@ const sq = {
   unsafe: signal(null),
   /** the results fill the page (the console hides) */
   resMax: signal(false),
+  /** the workspaces ({ id, name, conns }) and the one shown; each has its own consoles */
+  workspaces: signal(null),
+  ws: signal(null),
+  /** the workspace dialog: { mode: 'new' | 'rename' | 'conns' } */
+  wsDialog: signal(null),
 };
 /** console id -> the AbortController of its running query */
 const ctrls = new Map();
@@ -76,6 +82,13 @@ const langs = new Map();
 let view = null;
 
 const connOf = (id) => sq.conns.value?.find((c) => c.id === id);
+const currentWs = () => sq.workspaces.value?.find((w) => w.id === sq.ws.value);
+/** The connections of the workspace shown (those this user may open), in the workspace's order. */
+const wsConns = () => {
+  const w = currentWs();
+  if (!w) return sq.conns.value || [];
+  return w.conns.map(connOf).filter(Boolean);
+};
 /** A PostgreSQL connection that opens every database on its server (each through its own connection). */
 const multi = (conn) => conn?.driver === 'postgres' && !!conn.allDatabases;
 /** The database a connection starts in. */
@@ -91,12 +104,17 @@ const setRun = (id, patch) => {
 };
 
 let saveTimer = 0;
+const consolesKey = (ws) => `dalang-sql-consoles:${ws}`;
+/** Keeps the shown workspace's consoles (their text, the active one) in this browser, now. */
+function persistNow() {
+  clearTimeout(saveTimer);
+  if (!sq.ws.value) return;
+  const consoles = sq.consoles.value.map((c) => ({ ...c, text: states.get(c.id)?.doc.toString() ?? c.text }));
+  keep(consolesKey(sq.ws.value), { consoles, active: sq.active.value });
+}
 function persist() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const consoles = sq.consoles.value.map((c) => ({ ...c, text: states.get(c.id)?.doc.toString() ?? c.text }));
-    keep('dalang-sql-consoles', { consoles, active: sq.active.value });
-  }, 400);
+  saveTimer = setTimeout(persistNow, 400);
 }
 
 // ---------- statements ----------
@@ -151,6 +169,40 @@ function currentStatement(state, driver) {
 }
 
 // ---------- data ----------
+
+async function loadWorkspaces() {
+  try { sq.workspaces.value = await api('/api/db/workspaces'); } catch (e) { sq.workspaces.value = sq.workspaces.value || []; toast(e.message, 'err'); }
+}
+
+/** Shows workspace `id` with its consoles (the shown one's are kept first). */
+function openWorkspace(id) {
+  const list = sq.workspaces.value || [];
+  const w = list.find((x) => x.id === id) || list[0];
+  if (!w) return;
+  if (sq.ws.value === w.id && sq.consoles.value.length) return;
+  persistNow();
+  let saved = pref(consolesKey(w.id), null);
+  // Consoles from before workspaces existed go to the first workspace opened.
+  const old = pref('dalang-sql-consoles', null);
+  if (!saved && old) { saved = old; try { localStorage.removeItem('dalang-sql-consoles'); } catch { /* private mode */ } }
+  batch(() => {
+    sq.ws.value = w.id;
+    sq.consoles.value = saved?.consoles || [];
+    activate(saved?.consoles?.some((c) => c.id === saved.active) ? saved.active : saved?.consoles?.[0]?.id ?? null);
+  });
+  keep('dalang-sql-ws', w.id);
+  history.replaceState(null, '', `${location.pathname}#w=${encodeURIComponent(w.id)}`);
+  if (!sq.consoles.value.length && wsConns().length) newConsole(wsConns()[0].id);
+  persistNow();
+}
+
+/** Puts connection `connId` in the shown workspace (`on`) or takes it out. */
+const setInWorkspace = (connId, on) => guarded(async () => {
+  const w = currentWs();
+  const conns = on ? [...new Set([...w.conns, connId])] : w.conns.filter((c) => c !== connId);
+  await api(`/api/db/workspaces/${w.id}`, { method: 'PATCH', body: { conns } });
+  await loadWorkspaces();
+})();
 
 async function loadConns() {
   try { sq.conns.value = await api('/api/db/connections'); } catch (e) { sq.conns.value = sq.conns.value || []; toast(e.message, 'err'); }
@@ -355,7 +407,7 @@ async function run(all, script, confirmed = false) {
   const before = sq.runs.value.get(c.id);
   setRun(c.id, { running: true, at: t0, script: sql });
   if (mobile()) sq.pane.value = 'terminal';
-  const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, at: t0, ms: Date.now() - t0, ok, rows });
+  const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, ws: sq.ws.value, at: t0, ms: Date.now() - t0, ok, rows });
   try {
     const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(confirmed && { confirmed }) } });
     // A table's rows need its primary key: the table list must be there to tell.
@@ -488,17 +540,20 @@ function askAboutRun() {
 
 // ---------- results ----------
 
-const csvCell = (v) => (v === null ? '' : /[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
-const toCsv = (r) => [r.columns.map((col) => csvCell(col.name)).join(','), ...r.rows.map((row) => row.map(csvCell).join(','))].join('\r\n');
-const toTsv = (r) => [r.columns.map((col) => col.name).join('\t'), ...r.rows.map((row) => row.map((v) => (v === null ? '' : String(v).replace(/[\t\n]/g, ' '))).join('\t'))].join('\n');
-
-function download(text, name) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
-  const a = Object.assign(document.createElement('a'), { href: url, download: name, hidden: true });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+/** Copy and Download, each a menu of the formats in sql-export.js. */
+function ExportMenus({ result, tab, conn }) {
+  const ctx = { driver: conn?.driver, table: tab.meta ? { schema: tab.meta.schema, table: tab.meta.table } : null, sheet: tabLabel(tab) };
+  const name = tabLabel(tab).replace(/[^\w-]+/g, '_') || 'result';
+  const rows = `${result.rows.length}${result.truncated ? ' (the row limit)' : ''} row${result.rows.length === 1 ? '' : 's'}`;
+  return html`
+    <${Menu} icon="copy" label="Copy rows as…" buttonClass="xs">
+      <div class="menu-label">Copy ${rows} as</div>
+      ${FORMATS.filter((f) => f.copy).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => copyText(f.build(result, ctx), `copied as ${f.label.replace(/ \(.*/, '')}`)}>${f.label}<//>`)}
+    <//>
+    <${Menu} icon="arrow-down-to-line" label="Download as…" buttonClass="xs">
+      <div class="menu-label">Download ${rows} as</div>
+      ${FORMATS.map((f) => html`<${MenuItem} key=${f.id} onClick=${() => download(f, result, ctx, name)}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
+    <//>`;
 }
 
 const summary = (r) => (r.columns.length
@@ -560,9 +615,7 @@ function Results() {
       ${r.running && html`<span class="dim small row"><${Spinner} /> Running…</span>
         <button class="btn sm" onClick=${cancelRun}><${Icon} name="square" />Cancel</button>`}
       ${!r.running && (tab || onError) && html`<button class="btn ghost sm" title="Send this query and its error or result to an agent" onClick=${askAboutRun}><${Icon} name="bot" />Ask the agent</button>`}
-      ${shown && !r.running && html`
-        <button class="icon-btn xs" title="Copy as TSV (pastes into a spreadsheet)" aria-label="Copy rows" onClick=${() => copyText(toTsv(shown), 'rows copied')}><${Icon} name="copy" /></button>
-        <button class="icon-btn xs" title="Download CSV" aria-label="Download CSV" onClick=${() => download(toCsv(shown), `${tabLabel(tab).replace(/[^\w-]+/g, '_')}.csv`)}><${Icon} name="arrow-down-to-line" /></button>`}
+      ${shown && !r.running && html`<${ExportMenus} result=${shown} tab=${tab} conn=${conn} />`}
     </div>
     ${onError && html`<div class="sql-error" role="alert"><${Icon} name="circle-alert" /><div>
       ${r.error.done > 0 && html`<div class="small dim">Statement ${r.error.index + 1} failed; the ${r.error.done} before it ran.</div>`}
@@ -705,6 +758,7 @@ function ConnNode({ conn }) {
           <${MenuItem} icon="refresh-cw" onClick=${refresh}>Refresh<//>
           ${isAdmin.value && html`<div class="menu-sep"></div>
             <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
+            ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
             <${MenuItem} icon="history" onClick=${() => { sq.log.value = conn.id; }}>Agent queries<//>
             <${MenuItem} icon="trash-2" danger onClick=${remove}>Remove<//>`}
         <//>
@@ -749,17 +803,92 @@ function TableNode({ conn, db, schema, t, depth }) {
 }
 
 function Tree() {
-  const conns = sq.conns.value;
+  const ready = sq.conns.value != null && sq.workspaces.value != null;
+  const conns = wsConns();
+  const others = (sq.conns.value || []).length > conns.length;
   return html`<div class="files-pane">
     <div class="pane-head"><span class="pane-title">Database</span><div class="spacer"></div>
+      ${isAdmin.value && others && html`<button class="icon-btn xs" title="Choose this workspace's connections" aria-label="Choose connections" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}><${Icon} name="sliders-horizontal" /></button>`}
       ${isAdmin.value && html`<button class="icon-btn xs" title="Add a connection" aria-label="Add a connection" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" /></button>`}
-      <button class="icon-btn xs" title="Reload connections" aria-label="Reload connections" onClick=${loadConns}><${Icon} name="refresh-cw" /></button>
+      <button class="icon-btn xs" title="Reload connections" aria-label="Reload connections" onClick=${() => { loadConns(); loadWorkspaces(); }}><${Icon} name="refresh-cw" /></button>
     </div>
     <div class="tree">
-      ${conns == null ? html`<div class="tree-empty"><${Spinner} /></div>`
+      ${!ready ? html`<div class="tree-empty"><${Spinner} /></div>`
         : conns.length ? conns.map((c) => html`<${ConnNode} key=${c.id} conn=${c} />`)
-          : html`<div class="tree-empty small dim">${isAdmin.value ? 'No connections yet. Add one with the + above.' : 'No connections yet. An admin adds them.'}</div>`}
+          : html`<div class="tree-empty small dim">${!isAdmin.value ? 'No connections in this workspace yet. An admin adds them.' : html`
+              No connections in this workspace yet.
+              <div class="row wrap sql-ws-empty">
+                <button class="btn sm" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" />New connection</button>
+                ${others && html`<button class="btn sm" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}>Choose existing</button>`}
+              </div>`}</div>`}
     </div>
+  </div>`;
+}
+
+/** New workspace, rename it, or pick its connections (admins). */
+function WorkspaceDialog({ mode }) {
+  const w = currentWs();
+  const [name, setName] = useState(mode === 'rename' ? w?.name ?? '' : '');
+  const [picked, setPicked] = useState(new Set(w?.conns ?? []));
+  const [error, setError] = useState('');
+  const close = () => { sq.wsDialog.value = null; };
+  const save = async () => {
+    setError('');
+    try {
+      if (mode === 'new') {
+        const made = await api('/api/db/workspaces', { method: 'POST', body: { name } });
+        await loadWorkspaces();
+        openWorkspace(made.id);
+        // A new workspace starts empty: pick its connections next.
+        sq.wsDialog.value = (sq.conns.value || []).length ? { mode: 'conns' } : null;
+        return;
+      }
+      await api(`/api/db/workspaces/${w.id}`, { method: 'PATCH', body: mode === 'rename' ? { name } : { conns: [...picked] } });
+      await loadWorkspaces();
+      if (mode === 'conns' && !sq.consoles.value.length && wsConns().length) newConsole(wsConns()[0].id);
+      close();
+    } catch (e) { setError(e.message); }
+  };
+  const toggle = (id) => { const next = new Set(picked); if (next.has(id)) next.delete(id); else next.add(id); setPicked(next); };
+  const title = mode === 'new' ? 'New workspace' : mode === 'rename' ? 'Rename workspace' : `Connections in ${w?.name}`;
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>${title}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    ${mode === 'conns' ? html`
+      <p class="small dim">A connection can be in several workspaces. Who may open it is still set on the connection.</p>
+      <div class="sql-ws-pick">${(sq.conns.value || []).map((c) => html`<label key=${c.id} class="check small">
+        <input type="checkbox" checked=${picked.has(c.id)} onChange=${() => toggle(c.id)} />
+        <span>${c.label} <span class="dim">· ${DRIVERS[c.driver]}${c.database ? ` · ${c.database}` : ''}</span></span></label>`)}</div>`
+      : html`<${Field} label="Name"><input value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="e.g. Production, Reports" autofocus
+          onKeyDown=${(e) => { if (e.key === 'Enter') save(); }} /><//>`}
+    ${error && html`<div class="form-error" role="alert">${error}</div>`}
+    <div class="row end"><button class="btn" onClick=${close}>Cancel</button><${AsyncButton} class="btn primary" onClick=${save}>${mode === 'new' ? 'Create' : 'Save'}<//></div>
+  </div>`;
+}
+
+/** The workspace picker in the header, with its menu for admins. */
+function WorkspacePicker() {
+  const list = sq.workspaces.value || [];
+  const w = currentWs();
+  const remove = guarded(async () => {
+    if (!await confirmDialog({ title: `Delete workspace ${w.name}?`, message: 'Its connections stay (in other workspaces and the server); its consoles in this browser go.', confirmText: 'Delete', danger: true })) return;
+    await api(`/api/db/workspaces/${w.id}`, { method: 'DELETE' });
+    try { localStorage.removeItem(consolesKey(w.id)); } catch { /* private mode */ }
+    sq.consoles.value = [];
+    sq.ws.value = null;
+    await loadWorkspaces();
+    openWorkspace(sq.workspaces.value[0]?.id);
+  });
+  if (!w) return null;
+  return html`<div class="sql-ws">
+    <select aria-label="Workspace" title="Workspace" value=${w.id} onChange=${(e) => openWorkspace(e.currentTarget.value)}>
+      ${list.map((x) => html`<option value=${x.id}>${x.name}</option>`)}
+    </select>
+    ${isAdmin.value && html`<${Menu} label="Workspace options" buttonClass="sm">
+      <${MenuItem} icon="plus" onClick=${() => { sq.wsDialog.value = { mode: 'new' }; }}>New workspace<//>
+      <${MenuItem} icon="pencil" onClick=${() => { sq.wsDialog.value = { mode: 'rename' }; }}>Rename<//>
+      <${MenuItem} icon="database" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}>Choose connections<//>
+      ${list.length > 1 && html`<div class="menu-sep"></div><${MenuItem} icon="trash-2" danger onClick=${remove}>Delete workspace<//>`}
+    <//>`}
   </div>`;
 }
 
@@ -790,7 +919,8 @@ function ConnectionForm({ conn }) {
     const id = (conn?.id ?? f.id).trim();
     try {
       if (!conn && sq.conns.value?.some((c) => c.id === id)) throw new Error(`there already is a connection named ${id}`);
-      await api(`/api/db/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: body() });
+      await api(`/api/db/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: { ...body(), ...(!conn && sq.ws.value && { workspaces: [sq.ws.value] }) } });
+      await loadWorkspaces();
       await loadConns();
       loadSchema(id, '', true);
       if (f.driver === 'postgres' && f.allDatabases) loadDatabases(id, true);
@@ -908,7 +1038,8 @@ function History() {
   const [all, setAll] = useState(!c?.connId);
   const [q, setQ] = useState('');
   const close = () => { sq.history.value = false; };
-  const list = pref(HISTORY, []).filter((h) => (all || (h.connId === c?.connId && (h.database || '') === (c?.database || '')))
+  const list = pref(HISTORY, []).filter((h) => (!h.ws || h.ws === sq.ws.value)
+    && (all || (h.connId === c?.connId && (h.database || '') === (c?.database || '')))
     && (!q || h.sql.toLowerCase().includes(q.toLowerCase()))).slice(0, 200);
   const put = (h, andRun) => {
     if (!view || !c) return;
@@ -923,7 +1054,7 @@ function History() {
     <div class="dialog-head"><h2>Query history</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
     <div class="row wrap">
       <input class="sql-history-search" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} placeholder="Search" autofocus />
-      <label class="check small"><input type="checkbox" checked=${all} onChange=${(e) => setAll(e.currentTarget.checked)} />Every connection</label>
+      <label class="check small"><input type="checkbox" checked=${all} onChange=${(e) => setAll(e.currentTarget.checked)} />Every connection of this workspace</label>
     </div>
     ${!list.length ? html`<${Empty} icon="history" title="Nothing here yet">Every query you run is kept in this browser (the last 300).<//>`
       : html`<div class="sql-log">${list.map((h, i) => html`<div key=${i} class=${cx('sql-log-item sql-history-item', !h.ok && 'failed')}>
@@ -955,7 +1086,9 @@ function EditorHost() {
 
 function Toolbar() {
   const c = activeConsole();
-  const conns = sq.conns.value || [];
+  const conn0 = activeConsole() && connOf(activeConsole().connId);
+  // The workspace's connections, and the console's own even if it left the workspace.
+  const conns = [...wsConns(), ...(conn0 && !wsConns().includes(conn0) ? [conn0] : [])];
   const conn = c && connOf(c.connId);
   const running = c && sq.runs.value.get(c.id)?.running;
   return html`<div class="sql-bar">
@@ -989,7 +1122,7 @@ function ConsoleTabs() {
       <${Icon} name="square-code" class="tiny dim" /><span class="editor-tab-name">${c.title}</span>
       <button class="icon-btn xs editor-tab-close" aria-label=${`Close ${c.title}`} onClick=${(e) => { e.stopPropagation(); closeConsole(c.id); }}><${Icon} name="x" /></button>
     </div>`)}
-    <button class="icon-btn sm sql-new" title="New console" aria-label="New console" onClick=${() => newConsole(activeConsole()?.connId || sq.conns.value?.[0]?.id || '')}><${Icon} name="plus" /></button>
+    <button class="icon-btn sm sql-new" title="New console" aria-label="New console" onClick=${() => newConsole(activeConsole()?.connId || wsConns()[0]?.id || '')}><${Icon} name="plus" /></button>
   </div>`;
 }
 
@@ -1002,12 +1135,11 @@ export function SqlEditor() {
 
   useEffect(() => {
     document.title = 'SQL Editor · Dalang';
-    const saved = pref('dalang-sql-consoles', null);
-    loadConns().then(() => {
-      if (saved?.consoles?.length) {
-        batch(() => { sq.consoles.value = saved.consoles; activate(saved.consoles.some((c) => c.id === saved.active) ? saved.active : saved.consoles[0].id); });
-      } else if (sq.conns.value?.length) newConsole(sq.conns.value[0].id);
-    });
+    // The workspace in the address (#w=...), else the one used last here, else the first.
+    const fromHash = () => decodeURIComponent(/#w=([^&]+)/.exec(location.hash)?.[1] ?? '');
+    Promise.all([loadConns(), loadWorkspaces()]).then(() => openWorkspace(fromHash() || pref('dalang-sql-ws', '')));
+    const hash = () => { const id = fromHash(); if (id && id !== sq.ws.value) openWorkspace(id); };
+    addEventListener('hashchange', hash);
     // The browser's own Ctrl+Enter / Ctrl+S do nothing useful here; outside the editor they run too.
     const key = (e) => {
       // Esc brings the console back, unless it closes something else first (a dialog, the value panel).
@@ -1024,7 +1156,7 @@ export function SqlEditor() {
     const screen = () => { if (!document.fullscreenElement && sq.resMax.value) sq.resMax.value = false; };
     addEventListener('keydown', key);
     document.addEventListener('fullscreenchange', screen);
-    return () => { removeEventListener('keydown', key); document.removeEventListener('fullscreenchange', screen); };
+    return () => { removeEventListener('keydown', key); removeEventListener('hashchange', hash); document.removeEventListener('fullscreenchange', screen); };
   }, []);
 
   const c = activeConsole();
@@ -1034,7 +1166,8 @@ export function SqlEditor() {
   return html`<div class=${cx('ide sql', sq.resMax.value && 'term-max')} data-pane=${pane} style=${{ '--tree-w': `${treeW}px`, '--term-h': `${resH}px` }}>
     <header class="ide-head">
       <a class="ide-brand" href="/" title="Back to Dalang" aria-label="Back to Dalang"><${Logo} size=${22} /></a>
-      <div class="crumbs"><span class="crumb-title">SQL Editor</span></div>
+      <div class="crumbs"><span class="crumb-title">SQL Editor</span><${Icon} name="chevron-right" class="tiny dim crumb-sep" /></div>
+      <${WorkspacePicker} />
       <div class="spacer"></div>
       ${conn && html`<span class="ide-chip hide-mobile" title=${conn.driver === 'sqlite' ? conn.file : `${conn.host}:${conn.port}`}><${Icon} name="database" />${DRIVERS[conn.driver]} · ${c.database || conn.database || (multi(conn) ? ownDb(conn) : conn.label)}</span>`}
     </header>
@@ -1051,7 +1184,7 @@ export function SqlEditor() {
           <div class="editor-body">
             <div class="cm-wrap" hidden=${!c}><${EditorHost} /></div>
             ${!c && html`<div class="editor-placeholder"><${Empty} icon="database" title="No console open">
-              ${sq.conns.value?.length ? html`Double-click a connection, or <button class="btn sm" onClick=${() => newConsole(sq.conns.value[0].id)}>open a console</button>`
+              ${wsConns().length ? html`Double-click a connection, or <button class="btn sm" onClick=${() => newConsole(wsConns()[0].id)}>open a console</button>`
                 : isAdmin.value ? html`<button class="btn sm" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" />Add a connection</button>` : 'An admin adds the connections.'}<//></div>`}
           </div>
         </div>
@@ -1076,6 +1209,8 @@ export function SqlEditor() {
       ${sq.editing.value && html`<${ConnectionForm} conn=${sq.editing.value.conn} />`}<//>
     <${Modal} open=${!!sq.log.value} label="Agent queries" class="dialog sql-dialog" onClose=${() => { sq.log.value = null; }}>
       ${sq.log.value && html`<${AgentLog} id=${sq.log.value} />`}<//>
+    <${Modal} open=${!!sq.wsDialog.value} label="Workspace" class="dialog sql-dialog" onClose=${() => { sq.wsDialog.value = null; }}>
+      ${sq.wsDialog.value && html`<${WorkspaceDialog} key=${sq.wsDialog.value.mode} mode=${sq.wsDialog.value.mode} />`}<//>
     <${Modal} open=${!!sq.unsafe.value} label="Change every row?" class="dialog sql-dialog" onClose=${() => { sq.unsafe.value = null; }}>
       ${sq.unsafe.value && html`<${UnsafeConfirm} ...${sq.unsafe.value} />`}<//>
     <${Modal} open=${sq.history.value} label="Query history" class="dialog sql-dialog" onClose=${() => { sq.history.value = false; }}>

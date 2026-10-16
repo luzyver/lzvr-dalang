@@ -3,14 +3,14 @@ import { ClickUp } from '../src/clickup.js';
 export const wib = (iso: string) => Date.parse(`${iso}+07:00`);
 const ME = '11';
 
-/** A fake ClickUp API. GEM: a channel with two pages of messages and a thread, an empty DM. Side: a DM with one late message. */
+/** A fake ClickUp API. Acme: a channel with two pages of messages and a thread, an empty DM. Side: a DM with one late message. */
 export function fakeClickUp(calls: string[] = []): typeof fetch {
   const msg = (id: string, at: string, user: string, content: string, replies = 0) =>
     ({ id, date: wib(at), user_id: user, content, replies_count: replies, type: 'message' });
   const routes: Record<string, unknown> = {
     '/api/v2/user': { user: { id: 11, username: 'luz', email: 'luz@example.com', timezone: 'Asia/Jakarta' } },
     '/api/v2/team': { teams: [
-      { id: 900, name: 'GEM', members: [{ user: { id: 11, username: 'luz' } }, { user: { id: 22, username: 'sari' } }] },
+      { id: 900, name: 'Acme', members: [{ user: { id: 11, username: 'luz' } }, { user: { id: 22, username: 'sari' } }] },
       { id: 901, name: 'Side', members: [{ user: { id: 11, username: 'luz' } }, { user: { id: 33, username: 'budi' } }] },
     ] },
     '/api/v3/workspaces/900/chat/channels': { data: [{ id: 'c1', name: 'dev-team', type: 'CHANNEL' }, { id: 'c2', name: '', type: 'DM' }], next_cursor: '' },

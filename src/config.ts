@@ -33,7 +33,7 @@ export interface Config {
   autoTitle?: boolean;
   /** When set, every Codex turn is given this MCP endpoint plus a token bound to its conversation. */
   mcpUrl?: string;
-  /** GEM Mailer base URL (`POST <url>/mail/send`) that delivers the sign-in codes. */
+  /** Mailer service base URL (`POST <url>/mail/send`) that delivers the sign-in codes. */
   mailerUrl?: string;
   /** Sender of the sign-in mail; the mailer's own default when unset. */
   mailFrom?: string;
