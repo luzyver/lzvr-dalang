@@ -229,7 +229,7 @@ select { appearance: none; padding-right: 30px; cursor: pointer;
 .project-toggle { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 0 4px 0 8px; border: 0; background: none; text-align: left; font-size: var(--fs-sm); }
 .project-toggle .caret { width: 13px; height: 13px; color: var(--text-faint); }
 .project-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-meta { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; color: var(--text-faint); }
+.project-meta { display: flex; align-items: center; gap: 4px; flex: none; margin-right: -2px; color: var(--text-faint); }
 .project-tag { display: inline-flex; }
 .project-tag .i { width: 13px; height: 13px; }
 .project-tag.danger { color: var(--err); }

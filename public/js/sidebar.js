@@ -132,12 +132,12 @@ function Project({ p }) {
     <div class="project-row">
       <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
         <${Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} class="caret" />
-        <span class="project-name" title=${p.path}>${p.name}</span>
         <span class="project-meta">
           <${Tag} name=${p.backend === 'claude' ? 'asterisk' : 'code-xml'} label=${p.backend === 'claude' ? 'Claude Code' : 'Codex'} />
           <${Tag} ...${SANDBOX_TAGS[p.sandbox]} />
           ${p.access && p.access !== 'all' && html`<${Tag} name=${p.access === 'owner' ? 'user' : 'users'} label=${`Access: ${ACCESS[p.access]}`} />`}
         </span>
+        <span class="project-name" title=${p.path}>${p.name}</span>
       </button>
       <button class="icon-btn sm row-action" aria-label=${`New chat in ${p.name}`} title="New chat" onClick=${newChat(p)}><${Icon} name="plus" /></button>
       <${Menu} label="Project options" buttonClass="sm row-action">
