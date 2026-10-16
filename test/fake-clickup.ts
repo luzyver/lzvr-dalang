@@ -42,4 +42,4 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
 }
 
 export const fakeClient = (calls?: string[], workspaceId?: string) =>
-  new ClickUp({ token: 'pk_test', workHours: '09:00-18:00', workspaceId, fetch: fakeClickUp(calls) });
+  new ClickUp({ token: 'pk_test', workspaceId, fetch: fakeClickUp(calls) });

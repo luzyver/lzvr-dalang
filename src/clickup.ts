@@ -1,7 +1,7 @@
 /**
  * Read-only ClickUp Chat client for the MCP gateway: lists chat channels and reads messages in a date range, each
- * stamped with its local date and time and whether it fell outside working hours (to answer "when did I work late,
- * and on what"). Uses a personal API token (pk_...), so it sees what that ClickUp user sees.
+ * stamped with its local date, time and weekday. Uses a personal API token (pk_...), so it sees what that ClickUp
+ * user sees.
  */
 
 export interface ClickUpOpts {
@@ -10,8 +10,6 @@ export interface ClickUpOpts {
   workspaceId?: string;
   /** IANA time zone the dates are read in; the ClickUp user's own time zone when unset. */
   timeZone?: string;
-  /** Normal working hours, `HH:MM-HH:MM`. Anything outside, and all of Saturday and Sunday, counts as overtime. */
-  workHours: string;
   baseUrl?: string;
   fetch?: typeof fetch;
 }
@@ -25,8 +23,6 @@ export interface HistoryQuery {
   channelIds?: string[];
   /** Only messages written by the token's own user (default true). */
   mineOnly?: boolean;
-  overtimeOnly?: boolean;
-  workHours?: string;
   /** Also read thread replies (one more request per thread, so slower). */
   includeReplies?: boolean;
   limit?: number;
@@ -36,24 +32,12 @@ interface Channel { id: string; name: string; type: string; workspace_id: string
 interface Workspace { id: string; name: string; members: Map<string, string> }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; replies_count?: number; parent_message?: string }
 
-export const DEFAULT_WORK_HOURS = '09:00-18:00';
 const DAY_MS = 86_400_000;
 const MAX_DAYS = 93;
 const MAX_REQUESTS = 250; // per call, so one question cannot spend the whole ClickUp rate limit (100/min on most plans)
 const MAX_CONTENT = 1500;
 const REPLY_LOOKBACK_MS = 7 * DAY_MS; // threads started this long before `from` are still read for replies
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** `09:00-18:00` -> minutes after midnight; throws on anything else. */
-export function parseWorkHours(s: string): { start: number; end: number } {
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(s.trim());
-  const start = m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
-  const end = m ? Number(m[3]) * 60 + Number(m[4]) : NaN;
-  if (!(start >= 0 && end <= 24 * 60 && start < end && Number(m![2]) < 60 && Number(m![4]) < 60)) {
-    throw new Error(`work hours must look like 09:00-18:00 (got ${s})`);
-  }
-  return { start, end };
-}
 
 export function validTimeZone(tz: string): boolean {
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
@@ -69,7 +53,7 @@ export function localParts(ms: number, tz: string) {
   const hour = Number(p.hour) % 24;
   return {
     date: `${p.year}-${p.month}-${p.day}`, time: `${String(hour).padStart(2, '0')}:${p.minute}`, weekday: p.weekday!,
-    minutes: hour * 60 + Number(p.minute), offsetMs: Date.UTC(+p.year!, +p.month! - 1, +p.day!, hour, +p.minute!, +p.second!) - Math.floor(ms / 1000) * 1000,
+    offsetMs: Date.UTC(+p.year!, +p.month! - 1, +p.day!, hour, +p.minute!, +p.second!) - Math.floor(ms / 1000) * 1000,
   };
 }
 
@@ -80,9 +64,6 @@ export function startOfDay(date: string, tz: string): number {
   const first = guess - localParts(guess, tz).offsetMs;
   return guess - localParts(first, tz).offsetMs; // second pass settles days where the offset changes (DST)
 }
-
-export const isOvertime = (weekday: string, minutes: number, h: { start: number; end: number }) =>
-  weekday === 'Sat' || weekday === 'Sun' || minutes < h.start || minutes >= h.end;
 
 export class ClickUpError extends Error {}
 
@@ -97,7 +78,6 @@ export class ClickUp {
   private dmNames = new Map<string, string>(); // DM channel id -> "DM with ...", learned once
 
   constructor(private readonly o: ClickUpOpts) {
-    parseWorkHours(o.workHours);
     if (o.timeZone && !validTimeZone(o.timeZone)) throw new Error(`unknown time zone: ${o.timeZone}`);
     this.base = (o.baseUrl ?? 'https://api.clickup.com').replace(/\/+$/, '');
     this.fetch = o.fetch ?? fetch;
@@ -166,7 +146,7 @@ export class ClickUp {
     const [me, all, tz] = await Promise.all([this.user(), this.allWorkspaces(), this.timeZone()]);
     return {
       user: { id: me.id, username: me.username, email: me.email }, workspaces: all.map((w) => ({ id: w.id, name: w.name })),
-      default_workspace: this.o.workspaceId ?? 'all', time_zone: tz, work_hours: this.o.workHours,
+      default_workspace: this.o.workspaceId ?? 'all', time_zone: tz,
     };
   }
 
@@ -239,7 +219,6 @@ export class ClickUp {
 
   async history(q: HistoryQuery) {
     if (!DATE_RE.test(q.from) || !DATE_RE.test(q.to)) throw new ClickUpError('from and to must be dates like 2026-10-01');
-    const hours = parseWorkHours(q.workHours ?? this.o.workHours);
     const [me, workspaces, tz] = await Promise.all([this.user(), this.workspaces(q.workspaceIds), this.timeZone()]);
     const members = new Map(workspaces.map((w) => [w.id, w.members]));
     const fromMs = startOfDay(q.from, tz);
@@ -271,7 +250,7 @@ export class ClickUp {
         const p = localParts(m.date, tz);
         const content = (m.content ?? '').trim();
         return {
-          id: m.id, date: p.date, time: p.time, weekday: p.weekday, overtime: isOvertime(p.weekday, p.minutes, hours),
+          id: m.id, date: p.date, time: p.time, weekday: p.weekday,
           workspace: c.workspace, channel: c.name, channel_id: c.id, author: members.get(c.workspace_id)?.get(String(m.user_id)) ?? String(m.user_id),
           ...(m.parent_message && { reply_to: m.parent_message }),
           content: content.length > MAX_CONTENT ? `${content.slice(0, MAX_CONTENT)}…` : content,
@@ -280,22 +259,12 @@ export class ClickUp {
       })
       .sort((a, b) => a.ts - b.ts);
 
-    // One line per day that has messages: when the first and last ones were, and how many fell outside hours.
-    const days = new Map<string, { date: string; weekday: string; messages: number; overtime_messages: number; first: string; last: string }>();
-    for (const r of rows) {
-      const d = days.get(r.date);
-      if (!d) days.set(r.date, { date: r.date, weekday: r.weekday, messages: 1, overtime_messages: r.overtime ? 1 : 0, first: r.time, last: r.time });
-      else { d.messages++; if (r.overtime) d.overtime_messages++; d.last = r.time; }
-    }
-
-    const picked = q.overtimeOnly ? rows.filter((r) => r.overtime) : rows;
     const limit = q.limit ?? 300;
-    if (picked.length > limit) warnings.push(`${picked.length} messages matched; only the last ${limit} are listed (raise limit or narrow the range)`);
+    if (rows.length > limit) warnings.push(`${rows.length} messages matched; only the last ${limit} are listed (raise limit or narrow the range)`);
     return {
-      time_zone: tz, work_hours: q.workHours ?? this.o.workHours, overtime_rule: 'outside work hours, or any time on Saturday/Sunday',
-      range: { from: q.from, to: q.to }, user: mineOnly ? me.username : 'everyone', workspaces: workspaces.map((w) => w.name), channels_read: channels.length,
-      days: [...days.values()].filter((d) => !q.overtimeOnly || d.overtime_messages > 0),
-      messages: picked.slice(-limit).map(({ ts: _ts, ...r }) => r),
+      time_zone: tz, range: { from: q.from, to: q.to }, user: mineOnly ? me.username : 'everyone',
+      workspaces: workspaces.map((w) => w.name), channels_read: channels.length,
+      messages: rows.slice(-limit).map(({ ts: _ts, ...r }) => r),
       ...(warnings.length && { warnings }),
     };
   }

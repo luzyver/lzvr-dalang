@@ -186,7 +186,7 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
-    description: 'The ClickUp user the ClickUp tools read as, every workspace it can see (and which one is read by default), the time zone dates are given in, and the normal work hours.',
+    description: 'The ClickUp user the ClickUp tools read as, every workspace it can see (and which one is read by default), and the time zone dates are given in.',
   }, async () => run(() => cu.whoami()));
 
   server.registerTool('clickup_list_channels', {
@@ -196,22 +196,18 @@ function clickupTools(server: McpServer, cu: ClickUp): void {
 
   server.registerTool('clickup_chat_history', {
     description: 'Read ClickUp Chat messages (channels, DMs and group DMs) between two local dates (both included, at most 93 days), '
-      + 'oldest first, each with local date, time, weekday, workspace, channel and an overtime flag (outside work hours, or on a weekend). Also returns a per-day '
-      + 'summary (first/last message time, message and overtime counts). By default only messages the ClickUp user wrote. '
-      + 'To find overtime ("lembur"): overtime_only=true, then read the messages of those days (mine_only=false shows the '
-      + 'conversation around them). Public holidays are not known: treat them as overtime yourself.',
+      + 'oldest first, each with local date, time, weekday, workspace, channel and author. By default only messages the ClickUp '
+      + 'user wrote; mine_only=false shows the conversation around them.',
     inputSchema: {
       from: DATE, to: DATE, workspace_ids: WORKSPACES,
       channel_ids: z.array(z.string()).optional().describe('only these channels (ids from clickup_list_channels)'),
       mine_only: z.boolean().optional().describe('default true'),
-      overtime_only: z.boolean().optional(),
-      work_hours: z.string().optional().describe('override the normal work hours, e.g. 08:00-17:00'),
       include_replies: z.boolean().optional().describe('also read thread replies (slower, more requests)'),
       limit: z.number().int().min(1).max(1000).optional().describe('max messages listed, default 300'),
     },
   }, async (a) => run(() => cu.history({
-    from: a.from, to: a.to, workspaceIds: a.workspace_ids, channelIds: a.channel_ids, mineOnly: a.mine_only, overtimeOnly: a.overtime_only,
-    workHours: a.work_hours, includeReplies: a.include_replies, limit: a.limit,
+    from: a.from, to: a.to, workspaceIds: a.workspace_ids, channelIds: a.channel_ids, mineOnly: a.mine_only,
+    includeReplies: a.include_replies, limit: a.limit,
   })));
 }
 

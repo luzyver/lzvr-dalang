@@ -1,22 +1,25 @@
 import type { FastifyInstance } from 'fastify';
-import { ClickUp, DEFAULT_WORK_HOURS, parseWorkHours, validTimeZone } from './clickup.js';
+import { ClickUp, validTimeZone } from './clickup.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
 
 /** What Settings → ClickUp saves (kv `clickup`). Empty strings mean "not set". */
-interface Saved { token: string; workspaceId: string; timeZone: string; workHours: string }
+interface Saved { token: string; workspaceId: string; timeZone: string }
 
 const KEY = 'clickup';
-const EMPTY: Saved = { token: '', workspaceId: '', timeZone: '', workHours: '' };
+const EMPTY: Saved = { token: '', workspaceId: '', timeZone: '' };
 
 function load(store: Store): Saved {
-  try { return { ...EMPTY, ...JSON.parse(store.getKv(KEY) ?? '{}') }; } catch { return EMPTY; }
+  try {
+    const s = { ...EMPTY, ...JSON.parse(store.getKv(KEY) ?? '{}') };
+    return { token: s.token, workspaceId: s.workspaceId, timeZone: s.timeZone }; // drops keys older versions saved
+  } catch { return EMPTY; }
 }
 
 /** The token is never sent back to the panel, only its last four characters. */
 const view = (s: Saved) => ({
   configured: Boolean(s.token), tokenHint: s.token ? `…${s.token.slice(-4)}` : '',
-  workspaceId: s.workspaceId, timeZone: s.timeZone, workHours: s.workHours, defaultWorkHours: DEFAULT_WORK_HOURS,
+  workspaceId: s.workspaceId, timeZone: s.timeZone,
 });
 
 /**
@@ -32,8 +35,7 @@ export function clickupClient(store: Store, fetchImpl?: typeof fetch): () => Cli
       let client: ClickUp | undefined;
       try {
         client = s.token ? new ClickUp({
-          token: s.token, workspaceId: s.workspaceId || undefined, timeZone: s.timeZone || undefined,
-          workHours: s.workHours || DEFAULT_WORK_HOURS, fetch: fetchImpl,
+          token: s.token, workspaceId: s.workspaceId || undefined, timeZone: s.timeZone || undefined, fetch: fetchImpl,
         }) : undefined;
       } catch { client = undefined; } // saved settings are checked on save; never let a bad row break /mcp
       last = { raw, client };
@@ -55,25 +57,22 @@ export function clickupRoutes(app: FastifyInstance, d: { store: Store; client: (
   app.get('/api/settings/clickup', { onRequest: requireOwner }, () => view(load(store)));
 
   // `token`: omitted keeps the saved one, '' removes it (which turns the ClickUp tools off).
-  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string; workHours: string } }>('/api/settings/clickup', {
+  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string } }>('/api/settings/clickup', {
     onRequest: requireOwner,
     schema: { body: {
-      type: 'object', required: ['workspaceId', 'timeZone', 'workHours'], additionalProperties: false,
+      type: 'object', required: ['workspaceId', 'timeZone'], additionalProperties: false,
       properties: {
         token: { type: 'string', maxLength: 200 }, workspaceId: { type: 'string', pattern: '^[0-9]{0,20}$' },
-        timeZone: { type: 'string', maxLength: 64 }, workHours: { type: 'string', maxLength: 20 },
+        timeZone: { type: 'string', maxLength: 64 },
       },
     } },
   }, (req, reply) => {
     const b = req.body;
     const next: Saved = {
       token: b.token === undefined ? load(store).token : b.token.trim(),
-      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(), workHours: b.workHours.trim(),
+      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(),
     };
     if (next.timeZone && !validTimeZone(next.timeZone)) return reply.code(400).send({ error: `unknown time zone: ${next.timeZone}` });
-    if (next.workHours) {
-      try { parseWorkHours(next.workHours); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
-    }
     store.setKv(KEY, JSON.stringify(next));
     return view(next);
   });

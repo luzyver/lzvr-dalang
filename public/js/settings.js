@@ -106,7 +106,7 @@ const Prompts = () => html`
   <${PromptFor} path="commit-prompt" title="Commit message" help=${COMMIT_HELP} />
   <${PromptFor} path="mr-prompt" title="Merge Request description" help=${MR_HELP} />`;
 
-/** The owner's ClickUp token and how overtime is judged, for the read-only ClickUp Chat tools on /mcp. */
+/** The owner's ClickUp token, workspace and time zone, for the read-only ClickUp Chat tools on /mcp. */
 function ClickUpSection() {
   const [s, setS] = useState(null);
   const [token, setToken] = useState('');
@@ -114,7 +114,7 @@ function ClickUpSection() {
   const load = (v) => { setS(v); setToken(''); setResult(null); };
   useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
-  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, workHours: s.workHours, ...extra });
+  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, ...extra });
   // An empty token field keeps the saved token.
   const save = guarded(async () => {
     load(await api('/api/settings/clickup', { method: 'PUT', body: body(token.trim() ? { token } : {}) }));
@@ -132,7 +132,7 @@ function ClickUpSection() {
   if (s == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`
-    <p class="dim">Lets your chats read your ClickUp Chat messages, e.g. "when did I work overtime last month, and on what?".
+    <p class="dim">Lets your chats read your ClickUp Chat messages, e.g. "what did I work on last week?".
       Read only, and only for you: other users' prompts never get it. Chats reach it through this gateway's MCP (<span class="mono">MCP_INJECT=1</span>).</p>
     <section class="form-card">
       <strong>Connection</strong>
@@ -141,15 +141,8 @@ function ClickUpSection() {
           placeholder=${s.configured ? '••••••••' : 'pk_...'} /><//>
       <${Field} label="Default workspace ID" hint="Empty = every workspace the token can see. A chat can still ask for a particular one.">
         <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="all workspaces" /><//>
-    </section>
-    <section class="form-card">
-      <strong>Overtime</strong>
-      <div class="row wrap">
-        <${Field} label="Time zone" hint="Empty = your ClickUp profile's time zone.">
-          <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>
-        <${Field} label="Work hours" hint="Messages outside these hours, or on Saturday/Sunday, count as overtime.">
-          <input class="mono" value=${s.workHours} onInput=${set('workHours')} placeholder=${s.defaultWorkHours} /><//>
-      </div>
+      <${Field} label="Time zone" hint="Message dates and times are given in it. Empty = your ClickUp profile's time zone.">
+        <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>
       <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
     </section>
     <div class="row wrap">
@@ -160,7 +153,7 @@ function ClickUpSection() {
     ${result && (result.ok
       ? html`<p class="small"><${Icon} name="circle-check" /> Connected as <strong>${result.user.username || result.user.email}</strong>
           with ${result.workspaces.length} workspace(s): ${result.workspaces.map((w) => `${w.name || 'unnamed'} (${w.id})`).join(', ')}.
-          Time zone ${result.time_zone}, work hours ${result.work_hours}.</p>`
+          Time zone ${result.time_zone}.</p>`
       : html`<div class="form-error" role="alert">${result.error}</div>`)}`;
 }
 

@@ -96,7 +96,7 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   fails or needs input.
 - **MCP gateway** at `/mcp` (15 tools) so other agents can drive chats; messages between chats can require approval.
 - **ClickUp Chat history** (optional): read-only MCP tools that let the owner's chats read their ClickUp Chat
-  messages, e.g. "when did I work overtime last month, and on what?" (see "ClickUp" below).
+  messages, e.g. "what did I work on last week?" (see "ClickUp" below).
 
 - **Claude Code too**: a chat can run on Claude Code instead of Codex (chosen per project when it is added; such a project shows a `CC` badge). Needs the
   `claude` CLI on PATH (or `CLAUDE_BIN`). Accounts are added in Settings ("Claude Code accounts"), each with its own
@@ -438,23 +438,22 @@ Set up in the panel: **Settings → ClickUp** (shown to the owner only). Paste a
 → Apps → API Token) and Save; **Test connection** shows which ClickUp user it reads as and the workspaces it can see.
 One token reads every workspace that ClickUp user is in (a workspace under another ClickUp login needs that login's
 token, which is not supported). Optional: a default workspace ID (default: all of them; a chat can still ask for
-particular ones), the time zone (default your ClickUp profile's) and the
-work hours (default `09:00-18:00`; messages outside them, or on Saturday/Sunday, count as overtime). The token is stored
+particular ones) and the time zone message times are given in (default your ClickUp profile's). The token is stored
 in the database and never sent back to the panel, only its last four characters. **Remove token** turns the tools off.
 
 Once a token is saved, `/mcp` has three more read-only tools:
 
-- `clickup_whoami`: the ClickUp user it reads as, its workspaces (and the default), the time zone and the work hours.
+- `clickup_whoami`: the ClickUp user it reads as, its workspaces (and the default) and the time zone.
 - `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date), with
   their workspace. DMs are named after who they are with (`DM with sari`).
 - `clickup_chat_history`: messages between two dates (at most 93 days per call), oldest first, each with local date,
-  time, weekday, workspace, channel (DMs and group DMs included) and an `overtime` flag, plus one line per day (first and last message, counts). Options:
-  `workspace_ids`, `overtime_only`, `mine_only` (default: only your own messages), `channel_ids`, `work_hours` (e.g. `08:00-17:00`),
-  `include_replies` (thread replies; one more request per thread) and `limit`.
+  time, weekday, workspace, channel (DMs and group DMs included) and author. Options: `workspace_ids`, `mine_only`
+  (default: only your own messages), `channel_ids`, `include_replies` (thread replies; one more request per thread) and `limit`.
 
-So in a chat you can ask: *"cek chat ClickUp gue bulan September, kapan aja gue lembur dan ngerjain apa?"* The agent asks
-for the overtime days, then reads those days' messages to tell what the work was. Overtime is judged by when you wrote
-messages, so it is an estimate: public holidays are not known, and work you did not chat about does not show.
+The tools only return messages; what to make of them is up to the prompt. For example: *"cek chat ClickUp gue bulan
+September, jam kerja gue 09:00-18:00, kapan aja gue lembur (di luar jam kerja atau weekend) dan ngerjain apa?"* The agent
+reads the month's messages and works out the late days and the work from their times and content. Work you did not
+chat about does not show.
 
 **Only the owner gets them**, since they read with the owner's ClickUp token: the main token or the owner's own email
 sign-in from outside, and inside a chat only during a turn the owner sent (prompts from other panel users, agents,
