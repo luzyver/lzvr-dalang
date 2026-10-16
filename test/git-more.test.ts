@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parsePrUrl } from '../src/forge.js';
-import { saveCheckpoint, splitHunks } from '../src/git.js';
+import { diffFingerprint, saveCheckpoint, splitHunks } from '../src/git.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { setupApp } from './setup-app.js';
 
@@ -214,6 +214,23 @@ describe('commit, push, amend and undo', { timeout: 60_000 }, () => {
     expect((await t.call('POST', '/undo-commit', { force: true })).json().error).toMatch(/first commit|default branch/);
   });
 
+  it('commits only what was picked, not whatever else was staged before', async () => {
+    const t = await project();
+    writeFileSync(join(t.repo, 'staged.txt'), 'staged by someone else\n');
+    sh(t.repo, 'add', 'staged.txt'); // e.g. the agent ran `git add`
+    writeFileSync(join(t.repo, 'a.txt'), 'picked\n');
+    await t.call('POST', '/commit', { message: 'feat: Only a', paths: ['a.txt'], push: false });
+    expect(sh(t.repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('a.txt');
+    expect((await t.status()).files).toEqual([{ status: '??', path: 'staged.txt' }]); // still there, just not committed
+
+    // Rewording (an amend with no files) changes the message only.
+    sh(t.repo, 'add', 'staged.txt');
+    expect((await t.call('POST', '/commit', { message: 'feat: Change a', amend: true, paths: [], push: false })).statusCode).toBe(200);
+    expect(sh(t.repo, 'log', '-1', '--format=%s')).toBe('feat: Change a');
+    expect(sh(t.repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('a.txt');
+    expect(existsSync(join(t.repo, 'staged.txt'))).toBe(true);
+  });
+
   it('commits only the picked hunks of a file', async () => {
     const t = await project();
     const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
@@ -226,7 +243,17 @@ describe('commit, push, amend and undo', { timeout: 60_000 }, () => {
     const d = (await t.call('GET', '/diff?path=long.txt')).json().diff as string;
     expect(splitHunks(d).hunks).toHaveLength(2);
 
-    const r = await t.call('POST', '/commit', { message: 'only last', paths: ['long.txt', 'a.txt'], hunks: { 'long.txt': [1] }, push: false });
+    const fp = { 'long.txt': diffFingerprint(d) };
+    // The hunks must be picked in the diff as it is now: without saying which diff, or after the file changed, refused.
+    expect((await t.call('POST', '/commit', { message: 'x', paths: ['long.txt'], hunks: { 'long.txt': [1] } })).json().error).toMatch(/hunkDiffs/);
+    writeFileSync(join(t.repo, 'long.txt'), `${['EARLIER', ...changed.slice(1)].join('\n')}\n`);
+    const stale = await t.call('POST', '/commit', { message: 'x', paths: ['long.txt'], hunks: { 'long.txt': [1] }, hunkDiffs: fp });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ stale: 'long.txt', error: expect.stringMatching(/changed since its hunks were picked/) });
+    expect(sh(t.repo, 'log', '-1', '--format=%s')).toBe('long');
+    writeFileSync(join(t.repo, 'long.txt'), `${changed.join('\n')}\n`);
+
+    const r = await t.call('POST', '/commit', { message: 'only last', paths: ['long.txt', 'a.txt'], hunks: { 'long.txt': [1] }, hunkDiffs: fp, push: false });
     expect(r.statusCode).toBe(200);
     const committed = sh(t.repo, 'show', 'HEAD:long.txt');
     expect(committed).toContain('LAST');
@@ -236,7 +263,7 @@ describe('commit, push, amend and undo', { timeout: 60_000 }, () => {
     expect((await t.status()).files).toEqual([{ status: ' M', path: 'long.txt' }]);
 
     writeFileSync(join(t.repo, 'new.txt'), 'n\n');
-    expect((await t.call('POST', '/commit', { message: 'x', paths: ['new.txt'], hunks: { 'new.txt': [0] } })).json().error).toMatch(/committed whole/);
+    expect((await t.call('POST', '/commit', { message: 'x', paths: ['new.txt'], hunks: { 'new.txt': [0] }, hunkDiffs: { 'new.txt': '00000000' } })).json().error).toMatch(/committed whole/);
     expect((await t.call('POST', '/commit', { message: 'x', hunks: { 'long.txt': [0] } })).json().error).toMatch(/name the files/);
   });
 });

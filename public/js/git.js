@@ -35,19 +35,33 @@ const splitPath = (p) => {
 
 const MAX_DIFFS = 50; // more files than this are listed without their diff stats until opened
 
-/** Diffs of the listed files, fetched again whenever the file list changes. `load(path)` fetches one on demand. */
-function useDiffs(id, files) {
+/** The server's git.diffFingerprint: FNV-1a over the diff's UTF-16 code units, as hex. */
+export function diffFingerprint(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Diffs of the listed files, fetched again whenever git's status is read again (`version`), since a file can change
+ * without its status changing (an agent turn, a terminal). A diff already shown stays until the new one arrives, and
+ * diffs of files no longer listed are dropped. `load(path)` fetches one on demand.
+ */
+function useDiffs(id, files, version) {
   const [diffs, setDiffs] = useState({});
   const fetchOne = (path) => {
     setDiffs((d) => (path in d ? d : { ...d, [path]: null }));
     api(`/api/conversations/${id}/git/diff?path=${encodeURIComponent(path)}`)
       .then((r) => setDiffs((d) => ({ ...d, [path]: r.diff })), () => setDiffs((d) => ({ ...d, [path]: '' })));
   };
-  const key = files.map((f) => `${f.status}${f.path}`).join('\n');
+  useEffect(() => setDiffs({}), [id]);
   useEffect(() => {
-    setDiffs({});
-    files.slice(0, MAX_DIFFS).forEach((f) => fetchOne(f.path));
-  }, [id, key]);
+    const listed = new Set(files.map((f) => f.path));
+    setDiffs((d) => Object.fromEntries(Object.entries(d).filter(([p]) => listed.has(p))));
+    // The first ones, and any other already opened.
+    const paths = new Set([...files.slice(0, MAX_DIFFS).map((f) => f.path), ...Object.keys(diffs).filter((p) => listed.has(p))]);
+    paths.forEach(fetchOne);
+  }, [id, version]);
   return [diffs, (path) => { if (!(path in diffs)) fetchOne(path); }];
 }
 
@@ -357,20 +371,25 @@ export function ChangesPane({ id }) {
   const s = chat.git.value;
   const files = s?.files || [];
   const [unpicked, setUnpicked] = useState(new Set());
-  const [hunks, setHunks] = useState({}); // path → Set of picked hunk indexes, for files only partly picked
+  // path → { picks: Set of hunk indexes, fp: fingerprint of the diff they were picked in }, for files only partly picked
+  const [hunks, setHunks] = useState({});
   const [selected, setSelected] = useState(null);
   const [mode, setMode] = useState(innerWidth > 1100 ? 'split' : 'unified');
   const [message, setMessage] = useState('');
   const [amend, setAmend] = useState(false);
   const [pushAfter, setPushAfter] = useState(() => localStorage.getItem(PUSH_KEY) !== '0');
   const [dialog, setDialog] = useState(null); // 'branches' | 'rename' | 'history' | 'stash' | 'checkpoints' | 'reword'
-  const [diffs, loadDiff] = useDiffs(id, files);
+  const [diffs, loadDiff] = useDiffs(id, files, s);
   const [creds, checkCreds, setCreds] = useCredentials(id, s?.branch);
 
   useEffect(() => { setUnpicked(new Set()); setHunks({}); setSelected(null); setMessage(''); setAmend(false); setDialog(null); }, [id]);
-  // Hunk picks are for the diff they were made in: a changed file list starts them over.
-  const key = files.map((f) => `${f.status}${f.path}`).join('\n');
-  useEffect(() => setHunks({}), [key]);
+  // Hunk picks are for the diff they were made in: once a file's diff reads differently (or it is gone), its picks go.
+  useEffect(() => {
+    const stale = Object.keys(hunks).filter((p) => diffs[p] !== null && (diffs[p] === undefined || diffFingerprint(diffs[p]) !== hunks[p].fp));
+    if (!stale.length) return;
+    setHunks((h) => Object.fromEntries(Object.entries(h).filter(([p]) => !stale.includes(p))));
+    toast(`${stale.join(', ')} changed: pick ${stale.length === 1 ? 'its' : 'their'} hunks again`, 'err');
+  }, [diffs]);
   // The file whose diff is open in the dialog; it closes by itself when that file is no longer changed.
   const current = files.find((f) => f.path === selected) || null;
   useEffect(() => { if (current) loadDiff(current.path); }, [current?.path]);
@@ -387,7 +406,7 @@ export function ChangesPane({ id }) {
   };
   // The hunks of a file that go in: its own pick when partly picked, else all or none with the file.
   const hunkCount = (path) => (diffs[path] && !diffs[path].includes('\n… diff truncated') ? parseDiff(diffs[path]).length : 0);
-  const picksFor = (f) => hunks[f.path] ?? new Set(unpicked.has(f.path) ? [] : Array.from({ length: hunkCount(f.path) }, (_, i) => i));
+  const picksFor = (f) => hunks[f.path]?.picks ?? new Set(unpicked.has(f.path) ? [] : Array.from({ length: hunkCount(f.path) }, (_, i) => i));
   const pickHunk = (f) => (i) => {
     const next = new Set(picksFor(f));
     if (next.has(i)) next.delete(i); else next.add(i);
@@ -395,7 +414,7 @@ export function ChangesPane({ id }) {
     const u = new Set(unpicked);
     if (next.size === hunkCount(f.path)) { delete h[f.path]; u.delete(f.path); } // every hunk: the file whole
     else if (!next.size) { delete h[f.path]; u.add(f.path); } // none: the file stays out
-    else { h[f.path] = next; u.delete(f.path); }
+    else { h[f.path] = { picks: next, fp: diffFingerprint(diffs[f.path]) }; u.delete(f.path); }
     setHunks(h);
     setUnpicked(u);
   };
@@ -440,7 +459,10 @@ export function ChangesPane({ id }) {
       body: {
         message: message.trim(), ...(amend && { amend }), ...(!pushAfter && !(amend && s.head?.pushed) && { push: false }),
         ...((picked.length < files.length || partly.length) && { paths: picked }),
-        ...(partly.length && { hunks: Object.fromEntries(partly.map(([p, set]) => [p, [...set]])) }),
+        ...(partly.length && {
+          hunks: Object.fromEntries(partly.map(([p, h]) => [p, [...h.picks]])),
+          hunkDiffs: Object.fromEntries(partly.map(([p, h]) => [p, h.fp])),
+        }),
       },
     });
     setMessage('');
@@ -547,7 +569,7 @@ export function ChangesPane({ id }) {
           const st = d ? diffStats(d) : null;
           const part = hunks[f.path];
           return html`<div key=${f.path} class=${cx('file', f.path === current?.path && 'selected')} onClick=${() => setSelected(f.path)}>
-            <input type="checkbox" title=${part ? `${plural(part.size, 'hunk')} of ${hunkCount(f.path)} picked (open the diff to change)` : 'Include in the commit'}
+            <input type="checkbox" title=${part ? `${plural(part.picks.size, 'hunk')} of ${hunkCount(f.path)} picked (open the diff to change)` : 'Include in the commit'}
               checked=${!unpicked.has(f.path)} indeterminate=${!!part} onClick=${(e) => e.stopPropagation()} onChange=${() => togglePick(f.path)} />
             <span class=${cx('fstat', letter.toLowerCase())} title=${word}>${letter}</span>
             <span class="fpath" title=${f.from ? `${f.from} → ${f.path}` : f.path}><span class="dim">${dir}</span>${name}</span>

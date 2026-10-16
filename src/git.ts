@@ -203,6 +203,17 @@ const hunksOnly = (out: string) => {
   return at === -1 ? (out.startsWith('@@') ? out : '') : out.slice(at + 1).replace(/\n$/, '');
 };
 
+/**
+ * A short fingerprint of a diff as `fileDiff` gives it (FNV-1a over its UTF-16 code units, as hex). The panel sends the
+ * one of the diff it picked hunks in, so a file that changed since is refused instead of staging other hunks.
+ * public/js/git.js computes the same.
+ */
+export function diffFingerprint(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 /** A unified diff's header (up to the first hunk) and its hunks, each with its `@@` line. */
 export function splitHunks(diff: string): { header: string; hunks: string[] } {
   const parts = diff.split(/^(?=@@ )/m);
@@ -246,6 +257,14 @@ export interface CommitOpts {
 export async function commit(cwd: string, message: string, paths: string[] | null, opts: CommitOpts = {}): Promise<{ commit: string; rewrote: boolean }> {
   if (await operation(cwd)) throw new GitError('finish or abort the merge or rebase in progress first');
   const rewrote = opts.amend ? await mayRewrite(cwd, 'amend') : false;
+  // `git commit` takes the whole index: with named paths, whatever was staged before (by the agent, a terminal, a
+  // failed commit) would go in too. So the index starts from HEAD, and only what was picked is staged on top.
+  if (paths !== null) {
+    const left = ((await status(cwd)) as GitStatus).files.filter(isConflict).map((f) => f.path);
+    if (left.length) throw new GitError(`resolve these conflicts first: ${left.join(', ')}`);
+    const head = await git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(() => true, () => false);
+    await git(cwd, head ? ['reset', '-q'] : ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', '.']);
+  }
   const hunked = Object.keys(opts.hunks ?? {});
   for (const p of hunked) await stageHunks(cwd, p, opts.hunks![p]!);
   const all = paths ?? (hunked.length ? ((await status(cwd)) as GitStatus).files.map((f) => f.path) : ['.']);

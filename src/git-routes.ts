@@ -349,10 +349,13 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
 
   // `paths` left out: every change; `hunks`: files of which only those hunks go in (indexes into the diff /git/diff
   // shows). `amend` replaces the last commit; one already pushed is force-pushed (with a lease), never on the default branch.
-  app.post<{ Params: { id: string }; Body: { message: string; paths?: string[]; hunks?: Record<string, number[]>; amend?: boolean; push?: boolean } }>('/api/conversations/:id/git/commit', {
+  // `hunkDiffs`: for each file in `hunks`, the fingerprint (git.diffFingerprint) of the diff its hunks were picked in;
+  // a file that changed since is refused (409), as its hunk indexes may now point at other hunks.
+  app.post<{ Params: { id: string }; Body: { message: string; paths?: string[]; hunks?: Record<string, number[]>; hunkDiffs?: Record<string, string>; amend?: boolean; push?: boolean } }>('/api/conversations/:id/git/commit', {
     schema: { body: { type: 'object', required: ['message'], additionalProperties: false, properties: {
       message: { type: 'string', minLength: 1, maxLength: 10_000, pattern: '\\S' }, paths: pathsSchema, amend: { type: 'boolean' }, push: { type: 'boolean' },
       hunks: { type: 'object', maxProperties: 1000, additionalProperties: { type: 'array', minItems: 1, maxItems: 10_000, items: { type: 'integer', minimum: 0 } } },
+      hunkDiffs: { type: 'object', maxProperties: 1000, additionalProperties: { type: 'string', pattern: '^[0-9a-f]{8}$' } },
     } } },
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
@@ -366,6 +369,13 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       if (!files) return;
       const whole = files.find((f) => f.status === '??' || f.status[0] === 'A' || f.from || git.isConflict(f));
       if (whole) return reply.code(400).send({ error: `${whole.path} is committed whole: hunks are only picked in changed files git already tracks` });
+      for (const f of files) {
+        const seen = req.body.hunkDiffs?.[f.path];
+        if (!seen) return reply.code(400).send({ error: `hunkDiffs must name the diff the hunks of ${f.path} were picked in` });
+        if (git.diffFingerprint(await git.fileDiff(c.cwd, f)) !== seen) {
+          return reply.code(409).send({ error: `${f.path} changed since its hunks were picked: open its diff and pick them again`, stale: f.path });
+        }
+      }
     }
     // A commit goes straight to the remote too unless `push` is false (a worktree chat's branch gets one there, ready
     // for a Merge Request).
