@@ -236,8 +236,7 @@ Each project has an **access** level, picked when it is added and changeable fro
 
 | Access | Who may open it |
 |---|---|
-| `all` (default) | the owner, admins and devs |
-| `dev` | the owner, admins and devs |
+| `all` (default) | everyone: the owner, admins and devs |
 | `admin` | the owner and admins |
 | `owner` | the owner only |
 

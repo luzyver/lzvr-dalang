@@ -30,7 +30,7 @@ export async function refreshUsage() {
 }
 
 /** Who may open a project (the server enforces it). The owner always may; an admin may only pick what keeps them in. */
-const ACCESS = { all: 'Everyone', dev: 'Owner, admins and devs', admin: 'Owner and admins', owner: 'Owner only' };
+const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
 const grantable = () => Object.keys(ACCESS).filter((k) => isOwner.value || k !== 'owner');
 
 function AddProject() {

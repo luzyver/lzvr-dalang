@@ -130,6 +130,7 @@ export class Store {
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('projects', 'access', "TEXT NOT NULL DEFAULT 'all'");
+    this.run("UPDATE projects SET access='all' WHERE access='dev'"); // 'dev' (owner, admins and devs) was the same as 'all'
     this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('events', 'created_at', 'TEXT');
     this.ensureColumn('conversations', 'worktree', 'TEXT');

@@ -14,7 +14,7 @@ async function world() {
   const admin = bearer((await mkUser(t, 'sari', 'admin')).token);
   const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
   const p: Record<string, { id: string; conv: string }> = {};
-  for (const access of ['all', 'owner', 'admin', 'dev']) {
+  for (const access of ['all', 'owner', 'admin']) {
     const r = await call(t, 'POST', '/api/projects', AUTH, { name: access, path: 'proj', access });
     expect(r.statusCode).toBe(201);
     p[access] = { id: r.json().id, conv: t.store.createConversation(r.json().id).id };
@@ -27,9 +27,9 @@ describe('project access', () => {
   it('defaults to all and lists each project only to who may open it', async () => {
     const { t, admin, dev, names } = await world();
     expect((await call(t, 'POST', '/api/projects', AUTH, { name: 'x', path: 'proj' })).json().access).toBe('all');
-    expect(await names(AUTH)).toEqual(['admin', 'all', 'dev', 'owner', 'x']);
-    expect(await names(admin)).toEqual(['admin', 'all', 'dev', 'x']);
-    expect(await names(dev)).toEqual(['all', 'dev', 'x']);
+    expect(await names(AUTH)).toEqual(['admin', 'all', 'owner', 'x']);
+    expect(await names(admin)).toEqual(['admin', 'all', 'x']);
+    expect(await names(dev)).toEqual(['all', 'x']);
   });
 
   it('answers 404 for a hidden project, its chats and what is in them', async () => {
@@ -47,9 +47,9 @@ describe('project access', () => {
       expect((await call(t, 'DELETE', `/api/conversations/${p.owner!.conv}`, h)).statusCode).toBe(404);
       expect((await call(t, 'GET', '/api/schedules', h)).json()).toEqual([]);
     }
-    expect((await call(t, 'GET', `/api/conversations/${p.dev!.conv}`, admin)).statusCode).toBe(200);
+    expect((await call(t, 'GET', `/api/conversations/${p.admin!.conv}`, admin)).statusCode).toBe(200);
     expect((await call(t, 'GET', `/api/conversations/${p.admin!.conv}`, dev)).statusCode).toBe(404);
-    expect((await call(t, 'GET', `/api/conversations/${p.dev!.conv}`, dev)).statusCode).toBe(200);
+    expect((await call(t, 'GET', `/api/conversations/${p.all!.conv}`, dev)).statusCode).toBe(200);
     expect((await call(t, 'GET', `/api/conversations/${p.owner!.conv}`, AUTH)).statusCode).toBe(200);
     expect((await call(t, 'GET', '/api/schedules', AUTH)).json()).toHaveLength(1);
   });
@@ -64,14 +64,14 @@ describe('project access', () => {
   it('lets an admin change access only to levels they keep; the owner to any', async () => {
     const { t, admin, dev, p, names } = await world();
     expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, dev, { access: 'admin' })).statusCode).toBe(403);
-    expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, admin, { access: 'dev' })).json().access).toBe('dev');
+    expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, admin, { access: 'dev' })).statusCode).toBe(400);
     expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, admin, { access: 'owner' })).statusCode).toBe(403);
     expect((await call(t, 'POST', '/api/projects', admin, { name: 'y', path: 'proj', access: 'owner' })).statusCode).toBe(403);
     expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, admin, { access: 'admin' })).json().access).toBe('admin');
-    expect(await names(dev)).toEqual(['dev']);
+    expect(await names(dev)).toEqual([]);
     expect((await call(t, 'PATCH', `/api/projects/${p.owner!.id}`, admin, { access: 'all' })).statusCode).toBe(404);
-    expect((await call(t, 'PATCH', `/api/projects/${p.owner!.id}`, AUTH, { access: 'dev' })).statusCode).toBe(200);
-    expect(await names(dev)).toEqual(['dev', 'owner']);
+    expect((await call(t, 'PATCH', `/api/projects/${p.owner!.id}`, AUTH, { access: 'all' })).statusCode).toBe(200);
+    expect(await names(dev)).toEqual(['owner']);
     expect((await call(t, 'PATCH', `/api/projects/${p.all!.id}`, AUTH, { access: 'root' })).statusCode).toBe(400);
   });
 });
@@ -99,14 +99,14 @@ describe('project access over MCP', () => {
       ((await c.callTool({ name, arguments: args })) as { isError?: boolean }).isError ?? false;
 
     const asDev = await connect(dev);
-    expect(await projects(asDev)).toEqual(['all', 'dev']);
+    expect(await projects(asDev)).toEqual(['all']);
     expect(await tool(asDev, 'get_conversation', { conversation_id: p.owner!.conv })).toBe(true);
     expect(await tool(asDev, 'send_prompt', { conversation_id: p.admin!.conv, prompt: 'x' })).toBe(true);
-    expect(await tool(asDev, 'get_conversation', { conversation_id: p.dev!.conv })).toBe(false);
+    expect(await tool(asDev, 'get_conversation', { conversation_id: p.all!.conv })).toBe(false);
 
-    // An agent in the dev project, on a turn budi sent: budi's projects. With no author: the shared ones and its own.
-    expect(await projects(await connect(bearer(t.dispatcher.issueMcpToken(p.dev!.conv, 'budi'))))).toEqual(['all', 'dev']);
+    // An agent on a turn budi sent: budi's projects. With no author: the 'all' ones and its own.
+    expect(await projects(await connect(bearer(t.dispatcher.issueMcpToken(p.all!.conv, 'budi'))))).toEqual(['all']);
     expect(await projects(await connect(bearer(t.dispatcher.issueMcpToken(p.admin!.conv, ''))))).toEqual(['admin', 'all']);
-    expect(await projects(await connect(bearer(t.dispatcher.issueMcpToken(p.all!.conv, 'owner'))))).toEqual(['admin', 'all', 'dev', 'owner']);
+    expect(await projects(await connect(bearer(t.dispatcher.issueMcpToken(p.all!.conv, 'owner'))))).toEqual(['admin', 'all', 'owner']);
   });
 });

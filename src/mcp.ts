@@ -220,7 +220,7 @@ export function mcpRoutes(app: FastifyInstance, d: Deps): void {
   app.post('/mcp', async (req, reply) => {
     const owner = req.mcpConv ? req.mcpAuthor === 'owner' : req.user?.id === null;
     const onBehalf = req.mcpConv ? req.mcpAuthor ?? '' : req.user?.name ?? '';
-    // An agent sees the projects of the user whose prompt it runs; with none (an approval, another agent), the shared ones.
+    // An agent sees the projects of the user whose prompt it runs; with none (an approval, another agent), the 'all' ones.
     const author = req.mcpConv && !owner ? d.store.listUsers().find((u) => u.name === req.mcpAuthor) : undefined;
     const viewer: Viewer = !req.mcpConv ? { id: req.user?.id ?? null, role: req.user?.role ?? 'admin' }
       : owner ? { id: null, role: 'admin' } : { id: author?.id ?? '', role: author?.role ?? null };

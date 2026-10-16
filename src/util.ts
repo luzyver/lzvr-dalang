@@ -14,17 +14,11 @@ export type Backend = (typeof BACKENDS)[number];
 
 export const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
 
-/**
- * Who may open a project, as the lowest role that may: 'owner' = the owner alone, 'admin' = the owner and the admins,
- * 'dev' (like 'all') = the owner, admins and devs.
- */
-export const PROJECT_ACCESS = ['all', 'owner', 'admin', 'dev'] as const;
+/** Who may open a project: 'all' = everyone, 'admin' = the owner and the admins, 'owner' = the owner alone. */
+export const PROJECT_ACCESS = ['all', 'admin', 'owner'] as const;
 export type ProjectAccess = (typeof PROJECT_ACCESS)[number];
 
-const ACCESS_RANK: Record<string, number> = { all: 0, dev: 1, admin: 2, owner: 3 };
-
-/** Whether `user` may open a project with this access. `role` null = nobody in particular: only 'all' projects. */
+/** Whether `user` (the owner when `id` is null) may open a project with this access. */
 export function canAccess(user: { id: string | null; role: 'admin' | 'dev' | null }, access: string): boolean {
-  const rank = user.id === null ? 3 : user.role === 'admin' ? 2 : user.role === 'dev' ? 1 : 0;
-  return rank >= (ACCESS_RANK[access] ?? 3);
+  return access === 'all' || user.id === null || (access === 'admin' && user.role === 'admin');
 }
