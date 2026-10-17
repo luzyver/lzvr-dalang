@@ -121,13 +121,15 @@ describe('SQL editor connections', () => {
     expect(t.store.getKv('db_connections')).toContain('s3cret-pass');
   });
 
-  it('refuses Dalang\'s own state files, relative paths and bad names', async () => {
+  it('allows Dalang\'s own state files only for owner-only connections', async () => {
     const t = await boot();
     expect((await t.put('x', { file: 'app.db' })).statusCode).toBe(400);
     expect((await t.put('Bad Name', {})).statusCode).toBe(400);
     const own = join(t.cfg.stateDir, 'own.db');
     new DatabaseSync(own).close();
     expect((await t.put('x', { file: own })).json().error).toMatch(/state folder/);
+    expect((await t.put('x', { file: own, access: 'admin' })).json().error).toMatch(/state folder/);
+    expect((await t.put('x', { file: own, access: 'owner' })).statusCode).toBe(200);
   });
 
   it('runs queries, keeps read-only connections read-only, and reports where a script failed', async () => {

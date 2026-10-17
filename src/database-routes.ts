@@ -166,10 +166,10 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       const file = b.file?.trim() ?? '';
       if (!isAbsolute(file)) return 'the database file must be an absolute path';
       if (!existsSync(file) || !statSync(file).isFile()) return `no such file: ${file}`;
-      // Dalang's own state (sessions, other connections' passwords) stays out of reach.
+      // Dalang's own state (sessions, other connections' passwords) is only available to the owner.
       const real = realpathSync(file);
       const rel = relative(realpathSync(resolve(d.stateDir)), real);
-      if (!rel || (!rel.startsWith('..') && !isAbsolute(rel))) return 'files in Dalang\'s state folder cannot be opened';
+      if ((!rel || (!rel.startsWith('..') && !isAbsolute(rel))) && b.access !== 'owner') return 'files in Dalang\'s state folder cannot be opened';
       Object.assign(c, { host: '', port: 0, user: '', password: '', database: '', ssl: 'disable', file: real });
     } else if (!c.host) return 'a host is needed';
     if (b.driver !== 'sqlite' && (b.ssh || old?.ssh)) {

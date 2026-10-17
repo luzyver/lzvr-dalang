@@ -574,8 +574,8 @@ connections belong to the panel.
   named Default. Workspaces only group: who may open a connection is still set on the connection.
 
 - **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
-  protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, MongoDB, Redis, or a SQLite file on this machine (not one in
-  `STATE_DIR`). **Test connection** tries the form before saving and warns about a user whose rights reach past the
+  protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, MongoDB, Redis, or a SQLite file on this machine (a file
+  in `STATE_DIR` is allowed only for an owner-only connection). **Test connection** tries the form before saving and warns about a user whose rights reach past the
   tables (a PostgreSQL superuser or a member of `pg_read_server_files` and the like, MySQL `ALL PRIVILEGES`, `FILE` or
   `SUPER` on `*.*`): read-only does not take those away. Passwords never go back to the panel; like the
   other secrets they sit in Dalang's database. **Who may open it** works like a project's access: everyone, owner and
