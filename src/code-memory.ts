@@ -292,11 +292,15 @@ export class CodeMemory {
     const st = this.state(project.id);
     if (!this.active || !st?.graph) return '';
     return `Code memory: this project's code is indexed as a graph (symbols, calls, imports, routes), last on
-${new Date(st.indexedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC: code changed since is not in it. For questions about
-structure (where something is defined, who calls what, what a change affects, how the parts fit together) use the dalang
-MCP tools code_search_graph, code_trace_path, code_get_code_snippet, code_get_architecture and code_query_graph (in Claude
-Code they may need loading first: search your tools for "mcp__dalang__code") before grepping or reading many files. They
-work on this chat's project; leave project_id out. Use grep for literal text, and read a file before you change it.`
+${new Date(st.indexedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC: code changed since is not in it. Ask the graph FIRST,
+before any grep, glob or reading files one by one, whenever you look for code by what it is rather than by its exact text:
+- where a function, class, method, route or variable is defined: code_search_graph
+- who calls it, what it calls, what a change to it affects: code_trace_path
+- its source, once found: code_get_code_snippet (or code_get_file_outline for a whole file)
+- how the project or a part of it is put together: code_get_architecture; anything multi-hop: code_query_graph
+These are dalang MCP tools (in Claude Code they may need loading first: search your tools for "mcp__dalang__code"). They
+work on this chat's project; leave project_id out. Grep only for literal text (strings, messages, config keys), when the
+graph has no answer, or for code newer than the index. Read a file before you change it.`
       + (worktree ? `\nThe graph is of the project's main folder, not of your worktree: for files you changed yourself, read them.` : '');
   }
 
