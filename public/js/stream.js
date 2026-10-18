@@ -57,6 +57,7 @@ export function startStream(convId, onEvents) {
 }
 
 const ms = (ts) => toDate(ts)?.getTime() ?? Date.now();
+const HOOK_TRUST_NOTICE = '--dangerously-bypass-hook-trust is enabled.';
 
 /** One tool step from a completed item; a file change gives one step per file. */
 function steps(item, id, at) {
@@ -114,6 +115,12 @@ export class ThreadModel {
         const item = d.item;
         if (!item) break;
         this.live = null;
+        if (item.type === 'error') {
+          this.#closeSteps();
+          const message = typeof item.message === 'string' ? item.message : 'The agent reported an error.';
+          this.#note(message, message.includes(HOOK_TRUST_NOTICE) ? 'warn' : 'err', e.id);
+          break;
+        }
         if (item.type === 'agent_message') {
           this.#closeSteps();
           const block = { type: 'agent', key: `a${e.id}`, text: item.text || '', at, eventId: e.id, usage: null, v: 0 };
