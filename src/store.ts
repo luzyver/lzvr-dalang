@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { AGENT_GIT_DEFAULTS, type AgentGitPolicy } from './agent-git.js';
 import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
@@ -245,6 +246,7 @@ export class Store {
 
   getKv(key: string): string | null { return this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null; }
   setKv(key: string, value: string): void { this.run('INSERT OR REPLACE INTO kv (key,value) VALUES (?,?)', key, value); }
+  deleteKv(key: string): void { this.run('DELETE FROM kv WHERE key=?', key); }
   // Global model/effort defaults are kept per backend: a Codex model name means nothing to Claude Code.
   private defaultKey(name: string, backend: Backend): string { return backend === 'claude' ? `${name}_claude` : name; }
   getDefaultModel(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_model', backend)) ?? ''; }
@@ -263,6 +265,11 @@ export class Store {
     try { return { ...SUBAGENT_DEFAULTS, ...(JSON.parse(this.getKv('subagents') ?? '{}') as Partial<SubagentPolicy>) }; } catch { return SUBAGENT_DEFAULTS; }
   }
   setSubagentPolicy(p: SubagentPolicy): void { this.setKv('subagents', JSON.stringify(p)); }
+  /** Whether chat agents may commit and push themselves (see agent-git.ts); by default neither. */
+  getAgentGit(): AgentGitPolicy {
+    try { return { ...AGENT_GIT_DEFAULTS, ...(JSON.parse(this.getKv('agent_git') ?? '{}') as Partial<AgentGitPolicy>) }; } catch { return AGENT_GIT_DEFAULTS; }
+  }
+  setAgentGit(p: AgentGitPolicy): void { this.setKv('agent_git', JSON.stringify(p)); }
 
   createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
     const p = { id: randomUUID(), name, path, sandbox, backend, access };

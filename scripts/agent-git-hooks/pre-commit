@@ -1,0 +1,4 @@
+#!/bin/sh
+# Set by Dalang for chat agents (core.hooksPath, see src/agent-git.ts): agents may not commit here.
+echo "Dalang: agents may not commit in this project. Leave the changes uncommitted; the person commits them from the Dalang panel (the chat's Changes tab)." >&2
+exit 1

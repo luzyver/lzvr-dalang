@@ -157,6 +157,28 @@ function SubagentLimits() {
   </section>`;
 }
 
+/** Whether chat agents may commit and push themselves; by default the person does both from the chat's Changes tab. */
+function AgentGit() {
+  const [p, setP] = useState(null);
+  useEffect(() => { api('/api/settings/agent-git').then(setP).catch((e) => toast(e.message, 'err')); }, []);
+  const save = guarded(async (next) => {
+    setP(next);
+    await api('/api/settings/agent-git', { method: 'PUT', body: next });
+    toast("Saved: applies from each chat's next turn");
+  });
+  if (p == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  return html`<section class="form-card">
+    <strong>Commits and pushes</strong>
+    <span class="dim small">Off: agents leave their changes for you to commit and push from the chat's Changes tab, as they are
+      told, and their own git refuses (a pre-commit hook, and push URLs that lead nowhere). Your commits and pushes from the
+      panel always work.</span>
+    <label class="row"><input type="checkbox" checked=${p.commit} onChange=${(e) => save({ ...p, commit: e.currentTarget.checked })} />
+      <span>Agents may commit</span></label>
+    <label class="row"><input type="checkbox" checked=${p.push} onChange=${(e) => save({ ...p, push: e.currentTarget.checked })} />
+      <span>Agents may push</span></label>
+  </section>`;
+}
+
 const Defaults = () => html`
   <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
   <${DefaultsFor} backend="codex" title="Codex" />
@@ -165,7 +187,8 @@ const Defaults = () => html`
     to start with the weakest that fits and step up one at a time only when the work falls short.</p>
   <${AgentChoiceFor} backend="codex" title="Codex: agents may pick" />
   <${AgentChoiceFor} backend="claude" title="Claude Code: agents may pick" />
-  <${SubagentLimits} />`;
+  <${SubagentLimits} />
+  <${AgentGit} />`;
 
 /** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
 function PromptFor({ path, title, help }) {

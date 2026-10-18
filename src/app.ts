@@ -5,7 +5,10 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { AgentGitPolicy } from './agent-git.js';
 import { clickupClient, clickupForAll, clickupRoutes } from './clickup-routes.js';
+import { CodeMemory } from './code-memory.js';
+import { codeMemoryRoutes } from './code-memory-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { git as gitCmd, gitContext, GitError } from './git.js';
@@ -79,6 +82,8 @@ export function buildApp(
     gitSshCommand?: string[];
     /** The code editor's shells (tests: another shell, or a node-pty that fails to load). */
     terminals?: Terminals;
+    /** Code memory (tests: one with a fake CBM); by default one that starts the configured binary when turned on. */
+    codeMemory?: CodeMemory;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -185,7 +190,10 @@ export function buildApp(
   authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   const clickup = clickupClient(store, deps.clickupFetch);
-  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store) });
+  const codeMemory = deps.codeMemory ?? new CodeMemory(store, { cwd: cfg.stateDir });
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), codeMemory });
+  codeMemoryRoutes(app, { store, codeMemory });
+  dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });
   databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher });
@@ -323,6 +331,16 @@ export function buildApp(
       } } },
   }, (req, reply) => {
     store.setSubagentPolicy({ ...store.getSubagentPolicy(), ...req.body });
+    return reply.code(204).send();
+  });
+  // Whether chat agents may commit and push themselves (see agent-git.ts); the panel's own commit and push always work.
+  app.get('/api/settings/agent-git', { onRequest: requireAdmin }, () => store.getAgentGit());
+  app.put<{ Body: AgentGitPolicy }>('/api/settings/agent-git', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['commit', 'push'], additionalProperties: false,
+      properties: { commit: { type: 'boolean' }, push: { type: 'boolean' } } } },
+  }, (req, reply) => {
+    store.setAgentGit({ commit: req.body.commit, push: req.body.push });
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.
@@ -480,7 +498,8 @@ export function buildApp(
     }
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
-    return reply.code(201).send(store.createProject(req.body.name, real, req.body.sandbox, req.body.backend, req.body.access));
+    const created = store.createProject(req.body.name, real, req.body.sandbox, req.body.backend, req.body.access);
+    return reply.code(201).send(created);
   });
 
   app.patch<{ Params: { id: string }; Body: { access: ProjectAccess } }>('/api/projects/:id', {
@@ -498,6 +517,7 @@ export function buildApp(
     for (const c of convs) { dispatcher.cancel(c.id); terminals.killConv(c.id); }
     store.deleteProject(project.id);
     void dropWorktrees(dispatcher, project, convs);
+    void codeMemory.forget(project);
     return reply.code(204).send();
   });
 

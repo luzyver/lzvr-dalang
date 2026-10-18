@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
+import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -11,7 +12,7 @@ import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
-import { type Conversation, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
+import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -97,12 +98,31 @@ export class Dispatcher {
   gitEnvFor?: (name: string, projectId: string) => Record<string, string>;
   /** The other MCP servers (Settings → MCP) a turn sent by `author` gets. Set by the app; unset, none. */
   mcpServersFor?: (author: string) => McpLaunch;
+  /** Code memory (see CodeMemory): what a turn is told about its project's graph, and the news that a turn may have changed the project folder. */
+  codeMemory?: {
+    guide(project: Project, worktree: boolean): string;
+    hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
+  };
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
+  private hookTrustFlag: Promise<boolean> | null = null;
 
   constructor(private store: Store, private opts: DispatcherOpts) {
     this.accounts = new Accounts([...opts.homes], opts.blockMs); // own copy: accounts can be added while running
     this.claudeAccounts = new Accounts([...(opts.claudeHomes ?? [])], opts.blockMs);
     this.bus.setMaxListeners(0);
+  }
+
+  /**
+   * Whether the Codex CLI knows `--dangerously-bypass-hook-trust` (which code memory's hooks need, see CodeMemory.hooks),
+   * read once from `codex exec --help`: an unknown flag would fail every turn. Restart Dalang after updating Codex.
+   */
+  private codexTrustsHooks(): Promise<boolean> {
+    this.hookTrustFlag ??= new Promise((resolve) => {
+      const [cmd, ...pre] = this.opts.command ?? ['codex'];
+      execFile(cmd!, [...pre, 'exec', '--help'], { env: { ...process.env, ...this.opts.env }, timeout: 15_000, maxBuffer: 4e6 },
+        (err, out) => resolve(!err && String(out).includes('--dangerously-bypass-hook-trust')));
+    });
+    return this.hookTrustFlag;
   }
 
   private accountsOf(backend: Backend): Accounts { return backend === 'claude' ? this.claudeAccounts : this.accounts; }
@@ -351,9 +371,19 @@ export class Dispatcher {
       if (model) extraArgs.push('-m', model);
       if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
     }
-    const guide = mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide()].filter(Boolean).join('\n\n') : '';
+    // Whether the agent may commit and push itself (else the person does it from the panel): told, and blocked in its git.
+    const agentGit = this.store.getAgentGit();
+    const guide = [
+      ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+      agentGitGuide(agentGit),
+    ].filter(Boolean).join('\n\n');
     // A JSON string is also a valid TOML basic string, which is what `-c` reads.
     if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
+    // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
+    // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
+    const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
+    const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
+    if (hooks) extraArgs.push(...hooks.args);
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       for (;;) {
@@ -382,11 +412,12 @@ export class Dispatcher {
           ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
-        const env = { ...this.opts.env, ...servers?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
+        const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
+        const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
-            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: guide ? extraArgs : undefined, signal: ac.signal,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: extraArgs.length ? extraArgs : undefined, signal: ac.signal,
           })
           : runTurn({
             command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,

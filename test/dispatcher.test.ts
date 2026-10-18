@@ -185,6 +185,7 @@ describe('Dispatcher', () => {
 
   it('tells a turn how to start sub-agents only when agents decide themselves and the chat still may', async () => {
     const { dir, store, conv } = setupDispatcher();
+    store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
     const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
     const argsOf = async (id: string, n: number) => {
       store.enqueue(id, 'x', []);
@@ -211,8 +212,23 @@ describe('Dispatcher', () => {
     expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toMatch(/^Split big work\.\n\nFor this chat: project_id .*4 more sub-agent\(s\) allowed/);
   });
 
+  it('gives Codex the code memory hook only when it knows the flag the hook needs', async () => {
+    for (const [old, want] of [[false, true], [true, false]] as const) {
+      const { dir, store, conv } = setupDispatcher();
+      const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, env: old ? { FAKE_OLD_CODEX: '1' } : {} });
+      d.codeMemory = { guide: () => '', hooks: () => ({ args: ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[]'], env: {} }) };
+      store.enqueue(conv.id, 'x', []);
+      d.kick(conv.id);
+      await until(() => turnsDone(store, conv.id, 1));
+      const ev = store.eventsAfter(conv.id, 0).filter((e) => e.type === 'item.completed').at(-1)!;
+      expect((JSON.parse(ev.payload) as { item: { args: string[] } }).item.args.includes('--dangerously-bypass-hook-trust')).toBe(want);
+      expect(store.listTurns(conv.id)[0]).toMatchObject({ status: 'completed' });
+    }
+  });
+
   it('tells a turn to use the db tools while a database connection is open to agents', async () => {
     const { dir, store, conv } = setupDispatcher();
+    store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
     const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
     const guideOf = async (n: number) => {
       store.enqueue(conv.id, 'x', []);

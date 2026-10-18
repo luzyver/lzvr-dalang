@@ -42,6 +42,20 @@ describe('Dispatcher with the claude backend', () => {
     expect(store.eventsAfter(conv.id, 0).some((e) => e.payload.includes('|system:You are running inside Dalang'))).toBe(true);
   });
 
+  it('gives a Claude Code turn the code memory hooks and their environment', async () => {
+    const { store, dispatcher, conv } = setup();
+    const project = store.getProject(conv.project_id)!;
+    dispatcher.codeMemory = {
+      guide: () => '',
+      hooks: (p, backend) => (p.id === project.id && backend === 'claude' ? { args: ['--settings', '{"hooks":{}}'], env: { LZVR_CODE_ROOT: p.path } } : null),
+    };
+    store.enqueue(conv.id, 'hello', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
+    expect(texts.some((t) => t.includes(`|settings:{"hooks":{}}|root:${project.path}`))).toBe(true);
+  });
+
   it('moves the same turn to the next Claude account at a usage limit', async () => {
     const { store, dispatcher, conv } = setup({ FAKE_LIMIT_HOMES: 'a' }, ['a', 'b']);
     store.enqueue(conv.id, 'hi', []);

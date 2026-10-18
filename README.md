@@ -131,6 +131,8 @@ between your own Codex accounts. Part of the `lzvr` toolbox (environment variabl
   messages, e.g. "what did I work on last week?" (see "ClickUp" below).
 - **More MCP servers** (optional): Context7, Playwright, Sentry or any other, given to the agents' turns; the
   owner's only, unless one is marked for all users (see "Other MCP servers" below).
+- **Code memory** (optional): a graph of every project's code from codebase-memory-mcp, kept fresh by Dalang, that
+  every user's chats query through `/mcp`, each on the projects its user may open (see "Code memory" below).
 - **SQL editor**: **SQL Editor** in the sidebar opens `/sql` in its own tab, for the whole panel rather than one chat:
   PostgreSQL, MySQL, MariaDB, SQLite, MongoDB and Redis connections, their tables, query consoles and a result grid. Each connection
   says whether agents may use it, read-only or read-write (see "SQL editor" below).
@@ -561,6 +563,56 @@ filled in; every field can be changed. In a server's tab a switch turns it off w
 writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then
 refuses every MCP call ("requires approval"). With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
 if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else keeps working).
+
+### Agents and git
+
+By default a chat's agent does not commit or push: you do that from the chat's **Changes** tab (commit, push, Merge
+Request), which Dalang runs with its own git, outside any turn. **Settings → Model & effort → Commits and pushes**
+(admins) has a switch for each.
+
+- **Told**: every turn is told not to commit or push, even when asked, and to leave its changes ready for you.
+- **Blocked** in the agent's own git, for Codex and Claude Code alike, through git config in the turn's environment
+  (`GIT_CONFIG_COUNT`, read by every git it runs): `core.hooksPath` points at `scripts/agent-git-hooks`, whose
+  `pre-commit` and `pre-merge-commit` refuse, and every push URL is rewritten (`pushInsteadOf`) to a path that cannot
+  exist. Fetching, branches, stashes and the rest work as before.
+- **Limits**: `--no-verify` skips the commit hooks, and the hooks path leaves the repository's own git hooks out of the
+  agent's git. This stops habit, not an agent set on getting round it; a push needs more (an explicit `pushurl`).
+
+
+**Settings → MCP → Code memory** (the owner only) turns on a graph of each project's code (symbols, calls, imports,
+HTTP routes) from [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (CBM), so agents answer
+"who calls this", "what does this change touch" or "how does this fit together" from the graph instead of grepping
+file by file. Give the path of the CBM binary (a release from its GitHub page; nothing to configure in the agents),
+**Test binary**, turn it on.
+
+- **Dalang runs it**: one CBM session for the whole server, started with Dalang's state dir as its folder. A project
+  is indexed only when you click **Index** (later **Reindex**) in the tab, never on its own: not after turns, pulls or
+  edits, so indexing never takes the machine by surprise. A first index uses several cores for seconds to minutes;
+  indexing again only reads what changed and takes seconds. The tab lists each project's index, and marks it
+  **files changed since** when the project's git state (HEAD or uncommitted changes) differs from the one it indexed.
+  Turns are told when their graph was built, so they know newer code is not in it.
+- **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), also
+  when the project goes while its index still runs. One CBM cannot delete right then (code memory off) is deleted
+  when the next CBM session starts.
+- **Chats query it through `/mcp`**, as `code_search_graph`, `code_trace_path`, `code_get_code_snippet`,
+  `code_get_architecture`, `code_query_graph` and the other read tools, on their own chat's project (or another project
+  their user may open, by `project_id`). CBM itself would show every indexed repository to anyone; through the gateway
+  a chat never reaches a project its user may not open. Indexing, deleting and listing other repositories stay with
+  Dalang. Every user's chats get it, so it needs `MCP_INJECT=1` like the rest of `/mcp`.
+- **Turns are told** (next to the sub-agent and database guides) that the project has a graph and to use it before
+  grepping. A chat in its own worktree uses the project folder's graph, and is told to read files it changed itself.
+- **Hooks** (on by default, a checkbox in the tab): turns also run `scripts/code-memory-hook.mjs` next to their own
+  searches. It hands the hook event to CBM's `hook-augment` with the project folder as its folder, so the agent sees
+  the graph symbols matching its search next to the tool's own result, from its own project's graph only, worktree
+  chats included. The hook never blocks a tool: an error or a 4-second timeout just adds nothing.
+  - **Claude Code** gets `--settings` hooks before each Grep, Glob or Bash search, and after each Read (what the graph
+    could not parse in that file).
+  - **Codex** gets an inline `-c hooks.PreToolUse` hook before its shell commands (`rg`, `grep`, ...). Codex runs only
+    hooks a person trusted in `/hooks`, so the turn gets `--dangerously-bypass-hook-trust`, which runs *every* enabled
+    hook unreviewed for that turn: the account's own (`CODEX_HOME`, yours) and a repository's `.codex/` hooks if Codex
+    loads them. A turn whose folder or project folder has `.codex/hooks.json` or hooks in `.codex/config.toml` therefore
+    gets no hook from Dalang (and no bypass). Codex 0.162.1 was checked. Dalang reads `codex exec --help` once
+    (restart it after updating Codex): a Codex that does not know the flag gets no hook rather than a failed turn.
 
 ### SQL editor
 
