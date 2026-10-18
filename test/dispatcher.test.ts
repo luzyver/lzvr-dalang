@@ -185,6 +185,7 @@ describe('Dispatcher', () => {
 
   it('tells a turn how to start sub-agents only when agents decide themselves and the chat still may', async () => {
     const { dir, store, conv } = setupDispatcher();
+    store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
     const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
     const argsOf = async (id: string, n: number) => {
       store.enqueue(id, 'x', []);
@@ -213,6 +214,7 @@ describe('Dispatcher', () => {
 
   it('tells a turn to use the db tools while a database connection is open to agents', async () => {
     const { dir, store, conv } = setupDispatcher();
+    store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
     const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
     const guideOf = async (n: number) => {
       store.enqueue(conv.id, 'x', []);

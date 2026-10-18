@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUp, startOfDay } from './clickup.js';
+import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
 import { createDbApproval, logDbQuery, readDbApprovals } from './database-routes.js';
 import {
@@ -12,10 +13,13 @@ import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
-import type { Conversation, Store } from './store.js';
+import type { Conversation, Project, Store } from './store.js';
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
-type Deps = { cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined; clickupForAll?: () => boolean };
+type Deps = {
+  cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined; clickupForAll?: () => boolean;
+  codeMemory?: CodeMemory;
+};
 
 const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
@@ -112,7 +116,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   }, async ({ name, path, sandbox }) => {
     const real = insideRoot(cfg.workspaceRoot, path);
     if (!real) return fail('path must be an existing directory inside WORKSPACE_ROOT');
-    return text(store.createProject(name, real, sandbox));
+    const created = store.createProject(name, real, sandbox);
+    return text(created);
   });
 
   s.registerTool('delete_project', {
@@ -125,6 +130,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     for (const c of convs) dispatcher.cancel(c.id);
     store.deleteProject(project_id);
     void dropWorktrees(dispatcher, project, convs);
+    void d.codeMemory?.forget(project);
     return text({ deleted: true });
   });
 
@@ -285,7 +291,29 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, dbs, { who: onBehalf, conv: source });
+  if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
   return server;
+}
+
+/**
+ * Code memory: CBM's query tools as code_<name>, on the graph of the caller's own chat project or of another project it
+ * may open (never one it may not: CBM is asked for that project's graph only).
+ */
+function codeTools(server: McpServer, cm: CodeMemory, own: string | undefined, getProject: (id: string) => Project | null): void {
+  for (const t of cm.tools()) {
+    server.registerTool(`code_${t.name}`, {
+      description: `Code memory: ${t.description ?? t.name}`,
+      inputSchema: {
+        ...shapeOf(t.inputSchema, ['project']),
+        project_id: own ? z.string().optional().describe("another project you may open (default: this chat's project)") : z.string(),
+      },
+    }, async ({ project_id, ...args }: Record<string, unknown>) => {
+      const id = (project_id as string | undefined) || own;
+      const project = id ? getProject(id) : null;
+      if (!project) return fail(`no such project: ${id ?? ''}`);
+      try { return await cm.query(project, t.name, args); } catch (e) { return fail((e as Error).message); }
+    });
+  }
 }
 
 const WORKSPACES = z.array(z.string()).optional()

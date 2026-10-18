@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
+import { CodeMemory } from './code-memory.js';
 import { loadConfig } from './config.js';
 import { Dispatcher } from './dispatcher.js';
 import { Logins } from './login.js';
@@ -39,8 +40,10 @@ dispatcher.loadDisabled();
 // A crash can leave turns `running`; fail them and restart any leftover queues.
 for (const id of store.resetRunning()) dispatcher.kick(id);
 
-const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins });
+const codeMemory = new CodeMemory(store, { cwd: cfg.stateDir });
+const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins, codeMemory });
 await app.listen({ host: cfg.host, port: cfg.port });
+codeMemory.start();
 const scheduler = new Scheduler(store, dispatcher);
 scheduler.start();
 
@@ -53,6 +56,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     void (async () => {
       scheduler.stop();
       await dispatcher.shutdown();
+      await codeMemory.stop();
       await app.close().catch(() => {});
       process.exit(0);
     })();

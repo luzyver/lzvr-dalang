@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildApp } from '../src/app.js';
+import { type CbmClient, CodeMemory } from '../src/code-memory.js';
 import type { Config } from '../src/config.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import type { GitAuth } from '../src/git-auth.js';
@@ -35,6 +36,8 @@ export interface AppExtras {
   homes?: string[];
   /** Environment for the fake `codex login` (FAKE_LOGIN=...). */
   loginEnv?: Record<string, string>;
+  /** A fake CBM session for code memory (default: the real binary, which the tests never turn on). */
+  cbm?: CbmClient;
 }
 
 export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}) {
@@ -53,7 +56,8 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   const logins = new Logins({
     command: FAKE, baseDir: join(cfg.stateDir, 'accounts'), accounts: dispatcher.accounts, store, env: extra.loginEnv,
   });
-  const { cfg: _cfg, pushSend: _p, loginEnv: _l, homes: _h, ...appExtras } = extra;
-  const app = buildApp({ cfg, store, dispatcher, push, logins, ...appExtras });
-  return { app, store, dispatcher, push, logins, cfg, root, base };
+  const { cfg: _cfg, pushSend: _p, loginEnv: _l, homes: _h, cbm, ...appExtras } = extra;
+  const codeMemory = new CodeMemory(store, { cwd: cfg.stateDir, ...(cbm && { connect: async () => cbm }) });
+  const app = buildApp({ cfg, store, dispatcher, push, logins, codeMemory, ...appExtras });
+  return { app, store, dispatcher, push, logins, cfg, root, base, codeMemory };
 }

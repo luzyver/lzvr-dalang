@@ -16,5 +16,5 @@ if ((process.env.FAKE_LIMIT_HOMES || '').split(',').includes(basename(process.en
 out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.125, resetsAt: 2000000000 } } } });
 out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo hi' } }] } });
 out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'hi', is_error: false }] } });
-out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: `echo:${prompt}|${basename(process.env.CLAUDE_CONFIG_DIR || '')}${args.includes('--append-system-prompt') ? `|system:${args[args.indexOf('--append-system-prompt') + 1]}` : ''}` }] } });
+out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: `echo:${prompt}|${basename(process.env.CLAUDE_CONFIG_DIR || '')}${args.includes('--append-system-prompt') ? `|system:${args[args.indexOf('--append-system-prompt') + 1]}` : ''}${args.includes('--settings') ? `|settings:${args[args.indexOf('--settings') + 1]}|root:${process.env.LZVR_CODE_ROOT}` : ''}${process.env.GIT_CONFIG_COUNT ? `|gitcfg:${process.env.GIT_CONFIG_COUNT}` : ''}` }] } });
 out({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 2 } });
