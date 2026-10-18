@@ -104,11 +104,25 @@ export class Dispatcher {
     hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
   };
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
+  private hookTrustFlag: Promise<boolean> | null = null;
 
   constructor(private store: Store, private opts: DispatcherOpts) {
     this.accounts = new Accounts([...opts.homes], opts.blockMs); // own copy: accounts can be added while running
     this.claudeAccounts = new Accounts([...(opts.claudeHomes ?? [])], opts.blockMs);
     this.bus.setMaxListeners(0);
+  }
+
+  /**
+   * Whether the Codex CLI knows `--dangerously-bypass-hook-trust` (which code memory's hooks need, see CodeMemory.hooks),
+   * read once from `codex exec --help`: an unknown flag would fail every turn. Restart Dalang after updating Codex.
+   */
+  private codexTrustsHooks(): Promise<boolean> {
+    this.hookTrustFlag ??= new Promise((resolve) => {
+      const [cmd, ...pre] = this.opts.command ?? ['codex'];
+      execFile(cmd!, [...pre, 'exec', '--help'], { env: { ...process.env, ...this.opts.env }, timeout: 15_000, maxBuffer: 4e6 },
+        (err, out) => resolve(!err && String(out).includes('--dangerously-bypass-hook-trust')));
+    });
+    return this.hookTrustFlag;
   }
 
   private accountsOf(backend: Backend): Accounts { return backend === 'claude' ? this.claudeAccounts : this.accounts; }
@@ -366,7 +380,9 @@ export class Dispatcher {
     // A JSON string is also a valid TOML basic string, which is what `-c` reads.
     if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
     // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
-    const hooks = this.codeMemory?.hooks(project, conv.backend, cwd);
+    // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
+    const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
+    const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
     if (hooks) extraArgs.push(...hooks.args);
     try {
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.

@@ -1,5 +1,6 @@
 // Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this.
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
+// exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
@@ -7,6 +8,13 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const args = process.argv.slice(2);
+
+// `exec --help`: the flags this Codex knows. FAKE_OLD_CODEX=1: one from before hooks could skip trust.
+if (args[0] === 'exec' && args.includes('--help')) {
+  console.log(['Usage: codex exec [OPTIONS] [PROMPT]', '  --json', '  -c, --config <key=value>',
+    ...(process.env.FAKE_OLD_CODEX ? [] : ['  --dangerously-bypass-hook-trust'])].join('\n'));
+  process.exit(0);
+}
 
 if (args[0] === 'login') {
   const home = process.env.CODEX_HOME || '';

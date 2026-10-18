@@ -591,6 +591,9 @@ file by file. Give the path of the CBM binary (a release from its GitHub page; n
   indexing again only reads what changed and takes seconds. The tab lists each project's index, and marks it
   **files changed since** when the project's git state (HEAD or uncommitted changes) differs from the one it indexed.
   Turns are told when their graph was built, so they know newer code is not in it.
+- **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), also
+  when the project goes while its index still runs. One CBM cannot delete right then (code memory off) is deleted
+  when the next CBM session starts.
 - **Chats query it through `/mcp`**, as `code_search_graph`, `code_trace_path`, `code_get_code_snippet`,
   `code_get_architecture`, `code_query_graph` and the other read tools, on their own chat's project (or another project
   their user may open, by `project_id`). CBM itself would show every indexed repository to anyone; through the gateway
@@ -608,7 +611,8 @@ file by file. Give the path of the CBM binary (a release from its GitHub page; n
     hooks a person trusted in `/hooks`, so the turn gets `--dangerously-bypass-hook-trust`, which runs *every* enabled
     hook unreviewed for that turn: the account's own (`CODEX_HOME`, yours) and a repository's `.codex/` hooks if Codex
     loads them. A turn whose folder or project folder has `.codex/hooks.json` or hooks in `.codex/config.toml` therefore
-    gets no hook from Dalang (and no bypass). Codex 0.162.1 was checked; an older Codex may not know the flag.
+    gets no hook from Dalang (and no bypass). Codex 0.162.1 was checked. Dalang reads `codex exec --help` once
+    (restart it after updating Codex): a Codex that does not know the flag gets no hook rather than a failed turn.
 
 ### SQL editor
 

@@ -51,6 +51,8 @@ type JsonSchema = {
 
 const KEY = 'code_memory';
 const stateKey = (projectId: string) => `${KEY}:${projectId}`;
+/** Graphs of deleted projects CBM could not delete yet (see CodeMemory.dropGraph). */
+const ORPHANS_KEY = 'code_memory_orphans';
 const EMPTY: CodeMemorySettings = { enabled: false, command: '', cacheDir: '', runtimeDir: '', hooks: true };
 /** The hook Claude Code runs (scripts/, next to src/ and dist/), with the node running Dalang. */
 const HOOK_SCRIPT = fileURLToPath(new URL('../scripts/code-memory-hook.mjs', import.meta.url));
@@ -195,6 +197,7 @@ export class CodeMemory {
       const p = (this.opts.connect ?? connectCbm)(s, this.opts.cwd).then(async (c) => {
         c.onClose = () => { if (this.client === p) this.client = null; }; // CBM exited: the next call starts it again
         this.toolList = (await c.listTools()).filter((t) => CODE_TOOLS.includes(t.name));
+        void this.dropOrphans(c);
         return c;
       });
       p.catch(() => { if (this.client === p) this.client = null; });
@@ -249,17 +252,22 @@ export class CodeMemory {
       return;
     }
     this.setState(project.id, { ...base, status: 'indexing', error: '' });
+    // A project deleted while its index ran was forgotten meanwhile (see forget): its state stays gone, and the graph
+    // the index just built goes too.
+    const gone = () => !this.store.getProject(project.id);
     try {
       const fp = await fingerprint(project.path).catch(() => null);
       const c = await this.connection();
       const r = await c.callTool('index_repository', { repo_path: project.path }, INDEX_TIMEOUT_MS);
       const j = resultJson(r);
       if (r.isError || !j || typeof j.project !== 'string') throw new Error(resultText(r).slice(0, 1000) || 'CBM gave no answer');
+      if (gone()) { await this.dropGraph(j.project); return; }
       this.setState(project.id, {
         status: 'ready', graph: j.project, nodes: Number(j.nodes) || 0, edges: Number(j.edges) || 0,
         indexedAt: Date.now(), fingerprint: fp, error: '',
       });
     } catch (e) {
+      if (gone()) return;
       this.setState(project.id, { ...base, status: 'failed', error: (e as Error).message.slice(0, 1000) });
     }
   }
@@ -279,9 +287,39 @@ export class CodeMemory {
   async forget(project: Project): Promise<void> {
     const st = this.state(project.id);
     this.store.deleteKv(stateKey(project.id));
-    // Another project on the same folder shares the graph.
-    if (!st?.graph || this.store.listProjects().some((p) => p.id !== project.id && this.state(p.id)?.graph === st.graph)) return;
-    try { await (await this.connection()).callTool('delete_project', { project: st.graph }, QUERY_TIMEOUT_MS); } catch { /* off or gone */ }
+    if (st?.graph) await this.dropGraph(st.graph);
+  }
+
+  private orphans(): string[] {
+    try { return JSON.parse(this.store.getKv(ORPHANS_KEY) ?? '[]'); } catch { return []; }
+  }
+  private setOrphans(graphs: string[]): void {
+    if (graphs.length) this.store.setKv(ORPHANS_KEY, JSON.stringify(graphs)); else this.store.deleteKv(ORPHANS_KEY);
+  }
+
+  /**
+   * Delete a graph from CBM unless a project still uses it (another project on the same folder shares it). One CBM
+   * cannot delete now (code memory off, the binary gone) is kept and deleted when the next CBM session starts.
+   */
+  private async dropGraph(graph: string): Promise<void> {
+    if (this.store.listProjects().some((p) => this.state(p.id)?.graph === graph)) return;
+    try {
+      await (await this.connection()).callTool('delete_project', { project: graph }, QUERY_TIMEOUT_MS);
+      this.setOrphans(this.orphans().filter((g) => g !== graph));
+    } catch {
+      this.setOrphans([...new Set([...this.orphans(), graph])]);
+    }
+  }
+
+  /** Delete the graphs left behind while CBM could not be asked (see dropGraph), on a new CBM session. */
+  private async dropOrphans(c: CbmClient): Promise<void> {
+    for (const graph of this.orphans()) {
+      if (this.store.listProjects().some((p) => this.state(p.id)?.graph === graph)) { this.setOrphans(this.orphans().filter((g) => g !== graph)); continue; }
+      try {
+        await c.callTool('delete_project', { project: graph }, QUERY_TIMEOUT_MS);
+        this.setOrphans(this.orphans().filter((g) => g !== graph));
+      } catch { return; } // CBM went away again: the next session tries again
+    }
   }
 
   /**

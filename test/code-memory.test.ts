@@ -17,6 +17,8 @@ const OBJ = (props: Record<string, object>, required: string[] = []) => ({ type:
 /** A CBM session that answers from memory and records what it was asked. */
 function fakeCbm() {
   const calls: { name: string; args: Record<string, unknown> }[] = [];
+  /** While set, index_repository waits for it (an index in flight). */
+  const hold: { index: Promise<void> | null } = { index: null };
   const cbm: CbmClient = {
     listTools: async () => [
       { name: 'search_graph', description: 'Find symbols.', inputSchema: OBJ({ project: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer' } }, ['project']) },
@@ -26,6 +28,7 @@ function fakeCbm() {
     ],
     callTool: async (name, args) => {
       calls.push({ name, args });
+      if (name === 'index_repository' && hold.index) await hold.index;
       const answer = name === 'index_repository'
         ? { project: `G-${basename(String(args.repo_path))}`, nodes: 10, edges: 20, status: 'indexed' }
         : { tool: name, project: args.project, query: args.query };
@@ -33,11 +36,11 @@ function fakeCbm() {
     },
     close: async () => {},
   };
-  return { cbm, calls };
+  return { cbm, calls, hold };
 }
 
 async function boot() {
-  const { cbm, calls } = fakeCbm();
+  const { cbm, calls, hold } = fakeCbm();
   const t = setupApp({}, { cbm });
   opened.push({ close: () => t.codeMemory.stop() }, { close: () => t.app.close() });
   await t.app.listen({ host: '127.0.0.1', port: 0 });
@@ -57,7 +60,7 @@ async function boot() {
     for (const p of t.store.listProjects()) expect((await index(p.id)).statusCode).toBe(202);
     await until(() => t.store.listProjects().every((p) => t.codeMemory.state(p.id)?.status === 'ready'));
   };
-  return { ...t, calls, connect, settings, index, turnOn };
+  return { ...t, calls, hold, connect, settings, index, turnOn };
 }
 
 async function call(c: Client, name: string, args: Record<string, unknown> = {}) {
@@ -200,6 +203,35 @@ describe('code memory', () => {
     writeFileSync(join(p.path, '.codex', 'hooks.json'), '{"hooks":{}}');
     expect(t.codeMemory.hooks(p, 'codex', p.path)).toBeNull();
     expect(t.codeMemory.hooks(p, 'claude', p.path)).not.toBeNull(); // Claude Code takes ours through --settings, no trust bypass
+  });
+  it('leaves nothing behind of a project deleted while its index runs', async () => {
+    const t = await boot();
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    let release!: () => void;
+    t.hold.index = new Promise((r) => { release = r; });
+    await t.index(p.id);
+    await until(() => t.calls.some((c) => c.name === 'index_repository'));
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
+    release();
+    await until(() => t.calls.some((c) => c.name === 'delete_project'));
+    expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' }); // the graph it just built
+    expect(t.codeMemory.state(p.id)).toBeNull(); // not brought back
+  });
+
+  it('deletes the graph of a project deleted while code memory was off once it is on again', async () => {
+    const t = await boot();
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    await t.turnOn();
+    await t.settings({ enabled: false, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(t.calls.some((c) => c.name === 'delete_project')).toBe(false); // CBM could not be asked
+    expect(t.store.getKv('code_memory_orphans')).toBe('["G-proj"]');
+    await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    await until(() => t.calls.some((c) => c.name === 'delete_project'));
+    expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' });
+    await until(() => t.store.getKv('code_memory_orphans') === null);
   });
 });
 
