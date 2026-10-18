@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
-import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfterMs } from './accounts.js';
+import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
@@ -402,7 +402,8 @@ export class Dispatcher {
         failed = false;
         let completed = false;
         let limited = false;
-        let limitMs = 0;
+        let limitMs: number | null = null; // how long the limit lasts, when the failure says
+        let windows: LimitWindow[] = []; // the account's usage as the CLI last reported it in this attempt
         let worked = false;
         const threadId = this.store.getConversation(convId)?.thread_id ?? null;
         const attemptStart = Date.now() - 1000;
@@ -427,7 +428,7 @@ export class Dispatcher {
           if (!claude && ev.type === 'item.completed' && (ev.item as { type?: string } | undefined)?.type === 'file_change') {
             ev = await this.withCodexDiffs(ev, this.store.getConversation(convId)?.thread_id ?? null, attemptStart, usedDiffs);
           }
-          if (ev.type === 'account.limits') { this.recordLimits('claude', home, ev.windows as LimitWindow[]); continue; }
+          if (ev.type === 'account.limits') { windows = ev.windows as LimitWindow[]; this.recordLimits('claude', home, windows); continue; }
           if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
           if (ev.type.startsWith('item.')) worked = true;
           if (ev.type === 'turn.completed') { usage = ev.usage ?? null; failed = false; completed = true; }
@@ -437,7 +438,7 @@ export class Dispatcher {
             failed = true;
             if (!limited && isLimit(ev, this.opts.limitRe ?? DEFAULT_LIMIT_RE)) {
               limited = true;
-              limitMs = retryAfterMs(ev, this.opts.blockMs ?? 60 * 60 * 1000);
+              limitMs = retryAfter(ev);
             }
           }
           this.emit(convId, turnId, ev);
@@ -445,10 +446,11 @@ export class Dispatcher {
         if (!claude) { // Codex only reports usage inside the session file it writes
           const t = this.store.getConversation(convId)?.thread_id;
           const sessionsHome = this.accounts.primary();
-          if (t && sessionsHome) this.recordLimits('codex', home, codexLimits(sessionsHome, t));
+          if (t && sessionsHome) this.recordLimits('codex', home, windows = codexLimits(sessionsHome, t));
         }
         if (limited && !completed && !ac.signal.aborted) {
-          accounts.block(home, limitMs);
+          // Not said in the failure: until the used-up usage window resets, else the configured time.
+          accounts.block(home, limitMs ?? windowsResetMs(windows) ?? this.opts.blockMs ?? 60 * 60 * 1000);
           this.emit(convId, turnId, { type: 'account.switched', from: basename(home) });
           workDone ||= worked;
           continue;

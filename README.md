@@ -430,12 +430,16 @@ a narrower `WORKSPACE_ROOT` (for example `/var/www`).
 
 ### Failover: two things to confirm on your first run
 
-1. **How a usage limit looks.** The built-in regex is a best guess (`usage limit`, `rate limit`, `too many requests`,
-   `exceeded your quota`, `limit reached`) and is applied only to the error message (or the last 1000 characters of
-   stderr for a process that died), never to the whole event, so "Disk quota exceeded" or a line number `429` does not
-   take an account offline. If the message says "try again in N minutes/hours" the account is skipped for that long
-   (max 24 h), otherwise for `LIMIT_BLOCK_MINUTES`. When an account really hits its limit, look at the event stream;
-   if it was not recognised, set `LIMIT_REGEX`.
+1. **How a usage limit looks.** Claude Code marks a refusal at the account's usage limit as such (`usage_limit_reached`,
+   or a `rate_limit_event` that is `rejected`), with when it resets; that is trusted whatever the text says. Everything
+   else (and all of Codex) is judged by a regex over the texts the CLIs print today (`usage limit`, `rate limit`,
+   `too many requests`, `exceeded your quota`, `limit reached`, `hit your ... limit`, `out of credits`, `spend cap`),
+   applied only to the error message (or the last 1000 characters of stderr for a process that died), never to the
+   whole event, so "Disk quota exceeded" or a line number `429` does not take an account offline. The account is
+   skipped until the limit resets (max 24 h): the reset Claude Code reports, "try again in N minutes" or Codex's
+   "try again at 3:04 PM", else the usage window the CLI last reported as used up, else `LIMIT_BLOCK_MINUTES`. When
+   an account really hits its limit and the chat does not move on, look at the event stream; if it was not
+   recognised, set `LIMIT_REGEX` (it replaces the built-in regex, not Claude Code's marking).
    If a limit hits after the agent already did work, the next account is told to continue and not repeat finished
    steps instead of receiving the bare request again.
 2. **Resuming on another account.** A session can only resume if the new account can see its session file. On start
