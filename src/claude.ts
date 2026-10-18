@@ -79,6 +79,9 @@ export class ClaudeEvents {
   private commands = new Map<string, string>(); // Bash tool_use id -> command, until its result arrives
   private edits = new Map<string, string>(); // file tool_use id -> path, until its result (with the patch) arrives
   private started = false;
+  private ended = false;
+  /** Set once Claude Code says a request was refused by the account's usage limit: the turn's failure is then one. */
+  private limit: { resetsAt?: number } | null = null;
 
   map(ev: CodexEvent): CodexEvent[] {
     switch (ev.type) {
@@ -87,12 +90,14 @@ export class ClaudeEvents {
         this.started = true;
         return [{ type: 'thread.started', thread_id: ev.session_id }];
       }
-      case 'assistant': return this.assistant(ev);
+      case 'assistant': this.noteLimit(ev); return this.assistant(ev);
       case 'user': return this.toolResults(ev);
       case 'result': {
+        this.ended = true;
+        this.noteLimit(ev);
         if (ev.is_error) {
           const message = String(ev.result || ev.terminal_reason || ev.subtype || 'Claude Code failed');
-          return [{ type: 'turn.failed', error: { message } }];
+          return [{ type: 'turn.failed', error: { message }, ...(this.limit && { limit: this.limit }) }];
         }
         const u = (ev.usage ?? {}) as { input_tokens?: number; output_tokens?: number };
         return [{ type: 'turn.completed', usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens } }];
@@ -102,9 +107,25 @@ export class ClaudeEvents {
     }
   }
 
+  /** A process that died without a result after a usage limit was reported: still a limit. */
+  exit(ev: CodexEvent): CodexEvent {
+    return this.limit && !this.ended ? { ...ev, limit: this.limit } : ev;
+  }
+
+  /**
+   * The API error Claude Code wraps in an assistant message (and repeats on the result) names its cause: at a usage limit
+   * `api_error` is `usage_limit_reached` (older versions: `error: 'rate_limit'`), with when it resets.
+   */
+  private noteLimit(ev: CodexEvent): void {
+    if (ev.api_error !== 'usage_limit_reached' && ev.error !== 'rate_limit') return;
+    const info = (ev.api_error_params as { rate_limit_info?: { resetsAt?: unknown } } | undefined)?.rate_limit_info;
+    this.limit = typeof info?.resetsAt === 'number' ? { resetsAt: info.resetsAt } : (this.limit ?? {});
+  }
+
   /** Both rate windows Claude reports (utilization is 0-1), as the account's usage for the panel. */
   private limits(ev: CodexEvent): CodexEvent[] {
-    const info = ev.rate_limit_info as { unifiedWindows?: Record<string, { utilization: number; resetsAt: number }> } | undefined;
+    const info = ev.rate_limit_info as { status?: string; resetsAt?: number; unifiedWindows?: Record<string, { utilization: number; resetsAt: number }> } | undefined;
+    if (info?.status === 'rejected') this.limit = typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : (this.limit ?? {});
     const names: Record<string, string> = { five_hour: '5h', seven_day: '7d' };
     const windows = Object.entries(info?.unifiedWindows ?? {}).filter(([k]) => names[k])
       .map(([k, w]) => ({ label: names[k]!, usedPercent: Math.round(w.utilization * 1000) / 10, resetsAt: w.resetsAt }));
@@ -166,7 +187,8 @@ export async function* runClaudeTurn(o: ClaudeTurnOpts): AsyncGenerator<CodexEve
     command: o.command ?? ['claude'], args: buildClaudeArgs(o), env: { ...o.env, CLAUDE_CONFIG_DIR: o.home },
     cwd: o.cwd, prompt: o.prompt, signal: o.signal, killGraceMs: o.killGraceMs,
   })) {
-    if (ev.type === 'process.exit' || ev.type === 'raw') yield ev;
+    if (ev.type === 'process.exit') yield events.exit(ev);
+    else if (ev.type === 'raw') yield ev;
     else yield* events.map(ev);
   }
 }

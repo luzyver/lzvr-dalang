@@ -64,7 +64,10 @@ describe('Dispatcher with the claude backend', () => {
     expect(store.listTurns(conv.id)[0]).toMatchObject({ status: 'completed' });
     const types = store.eventsAfter(conv.id, 0).map((e) => e.type);
     expect(types).toContain('account.switched');
-    expect(dispatcher.claudeAccounts.list().find((a) => a.name === 'a')!.blockedUntil).not.toBeNull();
+    // Blocked until the reset Claude Code reported (two hours on), not the default hour.
+    const blockedUntil = dispatcher.claudeAccounts.list().find((a) => a.name === 'a')!.blockedUntil!;
+    expect(blockedUntil - Date.now()).toBeGreaterThan(110 * 60_000);
+    expect(blockedUntil - Date.now()).toBeLessThanOrEqual(2 * 3_600_000);
   });
 
   it('says so when no Claude account exists', async () => {

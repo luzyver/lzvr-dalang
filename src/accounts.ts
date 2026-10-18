@@ -1,10 +1,11 @@
 import { lstatSync, mkdirSync, symlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-// The exact error text Codex prints at a usage limit is undocumented; this is a best guess.
-// Override with LIMIT_REGEX once the real output is known (see README). Bare "quota" and "429" are
-// deliberately not matched: "Disk quota exceeded" or a line number must not take an account offline.
-export const DEFAULT_LIMIT_RE = /usage limit|rate.?limit|too many requests|insufficient_quota|exceeded your (current )?quota|limit (has been )?reached/i;
+// The texts the CLIs print at a limit (Codex: "You've hit your usage limit", "Your workspace is out of credits", "You hit
+// your spend cap"; Claude Code: "You've hit your session limit · resets 3pm"). Claude Code also marks its limit as such
+// (see `limit` below), so the text only has to catch what is not marked. Override with LIMIT_REGEX (see README). Bare
+// "quota" and "429" are deliberately not matched: "Disk quota exceeded" or a line number must not take an account offline.
+export const DEFAULT_LIMIT_RE = /usage limit|rate.?limit|too many requests|insufficient_quota|exceeded your (current )?quota|limit (has been )?reached|hit your [\w ]*limit|out of credits|spend cap/i;
 
 type Failure = { type: string; [k: string]: unknown };
 
@@ -15,17 +16,54 @@ function failureText(ev: Failure): string {
   return [err?.message, ev.message].filter((x): x is string => typeof x === 'string').join('\n');
 }
 
+/** A failure the CLI itself marked as a usage limit (set by the Claude Code mapper, never by the agent). */
+function marked(ev: Failure): { resetsAt?: number } | null {
+  return ev.limit && typeof ev.limit === 'object' ? ev.limit as { resetsAt?: number } : null;
+}
+
 export function isLimit(ev: Failure, re: RegExp = DEFAULT_LIMIT_RE): boolean {
-  return re.test(failureText(ev));
+  return !!marked(ev) || re.test(failureText(ev));
 }
 
 const UNIT_MS = { second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 } as const;
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
-/** How long the limit lasts if the message says ("try again in 3 minutes"), else `fallback`. Capped at 24 hours. */
+/**
+ * How long the limit lasts, if the failure says: the reset time Claude Code marks it with, "try again in 3 minutes", or
+ * Codex's "Try again at 3:04 PM" / "Try again at Oct 20th, 2026 3:04 PM" (local time, which Codex and we share). Else null.
+ * Capped at 24 hours.
+ */
+export function retryAfter(ev: Failure, now = Date.now()): number | null {
+  const cap = (ms: number) => (ms > 0 ? Math.min(ms, UNIT_MS.day) : null);
+  const resetsAt = marked(ev)?.resetsAt;
+  if (typeof resetsAt === 'number' && resetsAt > 0) return cap(resetsAt * 1000 - now);
+  const text = failureText(ev);
+  const m = /try again in (\d+)\s*(second|minute|hour|day)s?/i.exec(text);
+  if (m) return cap(Number(m[1]) * UNIT_MS[m[2]!.toLowerCase() as keyof typeof UNIT_MS]);
+  const at = /try again at (?:([a-z]{3})[a-z]* (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? )?(\d{1,2}):(\d{2})\s*([ap]m)?/i.exec(text);
+  if (!at) return null;
+  let hour = Number(at[4]) % (at[6] ? 12 : 24);
+  if (at[6]?.toLowerCase() === 'pm') hour += 12;
+  const d = new Date(now);
+  if (at[1]) {
+    const month = MONTHS.indexOf(at[1].toLowerCase());
+    if (month < 0) return null;
+    d.setFullYear(Number(at[3]), month, Number(at[2]));
+  }
+  d.setHours(hour, Number(at[5]), 0, 0);
+  if (!at[1] && d.getTime() <= now) d.setDate(d.getDate() + 1); // a bare time that has passed today means tomorrow
+  return cap(d.getTime() - now);
+}
+
+/** retryAfter, or `fallback` when the failure does not say. */
 export function retryAfterMs(ev: Failure, fallback: number): number {
-  const m = /try again in (\d+)\s*(second|minute|hour|day)s?/i.exec(failureText(ev));
-  if (!m) return fallback;
-  return Math.min(Number(m[1]) * UNIT_MS[m[2]!.toLowerCase() as keyof typeof UNIT_MS], UNIT_MS.day);
+  return retryAfter(ev) ?? fallback;
+}
+
+/** Until the latest reset of a usage window the account has used up (as the CLI last reported it), or null. Capped at 24 hours. */
+export function windowsResetMs(windows: { usedPercent: number; resetsAt: number }[], now = Date.now()): number | null {
+  const ends = windows.filter((w) => w.usedPercent >= 100 && w.resetsAt * 1000 > now).map((w) => w.resetsAt * 1000 - now);
+  return ends.length ? Math.min(Math.max(...ends), UNIT_MS.day) : null;
 }
 
 export class Accounts {

@@ -74,6 +74,31 @@ describe('ClaudeEvents', () => {
     ]);
     expect(ev).toEqual([{ type: 'turn.failed', error: { message: 'Claude AI usage limit reached' } }]);
   });
+
+  it('marks a failure at a usage limit with when it resets, whatever the text says', () => {
+    const text = "You've hit your weekly limit · resets Oct 20";
+    expect(run([
+      { type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] }, is_api_error_message: true,
+        api_error: 'usage_limit_reached', api_error_params: { rate_limit_info: { status: 'rejected', resetsAt: 2000000000 } } },
+      { type: 'result', is_error: true, result: text },
+    ])).toEqual([{ type: 'turn.failed', error: { message: text }, limit: { resetsAt: 2000000000 } }]);
+    // A rejected rate_limit_event counts too; one that is still allowed does not mark anything.
+    expect(run([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1900000000 } },
+      { type: 'result', is_error: true, result: 'API Error' },
+    ])).toEqual([{ type: 'turn.failed', error: { message: 'API Error' }, limit: { resetsAt: 1900000000 } }]);
+    expect(run([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', resetsAt: 1900000000 } },
+      { type: 'result', is_error: true, result: 'boom' },
+    ])).toEqual([{ type: 'turn.failed', error: { message: 'boom' } }]);
+  });
+
+  it('marks a process that died after a usage limit without a result', () => {
+    const e = new ClaudeEvents();
+    e.map({ type: 'assistant', message: { model: '<synthetic>', content: [] }, error: 'rate_limit' });
+    expect(e.exit({ type: 'process.exit', code: 1, stderr: '' })).toEqual({ type: 'process.exit', code: 1, stderr: '', limit: {} });
+    expect(new ClaudeEvents().exit({ type: 'process.exit', code: 1, stderr: '' })).toEqual({ type: 'process.exit', code: 1, stderr: '' });
+  });
 });
 
 describe('buildClaudeArgs', () => {

@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Accounts, isLimit, linkSessions, retryAfterMs } from '../src/accounts.js';
+import { Accounts, isLimit, linkSessions, retryAfter, retryAfterMs, windowsResetMs } from '../src/accounts.js';
 
 describe('Accounts', () => {
   it('picks the first unblocked account, in configured order', () => {
@@ -57,6 +57,24 @@ describe('isLimit', () => {
     expect(isLimit({ type: 'process.exit', code: 1, stderr: 'ERROR: You exceeded your current quota' })).toBe(true);
   });
 
+  it('recognises the texts Claude Code and Codex print today', () => {
+    for (const message of [
+      "You've hit your session limit · resets 3pm (Asia/Jakarta)", // Claude Code
+      "You've hit your weekly limit · resets Oct 20",
+      'Claude AI usage limit reached|1792333200',
+      "You’ve hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again at 3:04 PM.", // Codex
+      "You’ve hit your usage limit for gpt-6-sol. Switch to another model now, or try again at Oct 20th, 2026 3:04 PM.",
+      'Your workspace is out of credits. Add credits to continue using Codex.',
+      'You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.',
+      "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex.",
+    ]) expect(isLimit({ type: 'turn.failed', error: { message } }), message).toBe(true);
+  });
+
+  it('trusts a failure the CLI marked as a usage limit, whatever its text', () => {
+    expect(isLimit({ type: 'turn.failed', error: { message: 'API Error' }, limit: { resetsAt: 1 } })).toBe(true);
+    expect(isLimit({ type: 'process.exit', code: 1, stderr: '', limit: {} }, /never/)).toBe(true);
+  });
+
   it('ignores unrelated failures, including look-alike words and numbers', () => {
     expect(isLimit({ type: 'turn.failed', error: { message: 'boom' } })).toBe(false);
     expect(isLimit({ type: 'process.exit', code: 1, stderr: 'permission denied' })).toBe(false);
@@ -86,6 +104,33 @@ describe('retryAfterMs', () => {
   it('falls back when there is no hint, and caps absurd hints at 24 hours', () => {
     expect(retryAfterMs(ev('usage limit reached'), 555)).toBe(555);
     expect(retryAfterMs(ev('usage limit, try again in 9 days'), 555)).toBe(24 * 3_600_000);
+  });
+
+  it('reads the reset time a marked failure carries', () => {
+    const now = 1_800_000_000_000;
+    expect(retryAfter({ type: 'turn.failed', error: { message: 'x' }, limit: { resetsAt: now / 1000 + 5400 } }, now)).toBe(5_400_000);
+    expect(retryAfter({ type: 'turn.failed', error: { message: 'x' }, limit: { resetsAt: now / 1000 - 5 } }, now)).toBeNull(); // already past
+    expect(retryAfter({ type: 'turn.failed', error: { message: 'x' }, limit: {} }, now)).toBeNull();
+  });
+
+  it("reads Codex's local \"try again at\" time, today, tomorrow or on a date", () => {
+    const now = new Date(2026, 9, 18, 13, 0, 0).getTime(); // 18 Oct 2026, 1:00 PM local
+    expect(retryAfter(ev('usage limit, or try again at 3:04 PM.'), now)).toBe((2 * 60 + 4) * 60_000);
+    expect(retryAfter(ev('usage limit, or try again at 12:30 PM.'), now)).toBe((23 * 60 + 30) * 60_000); // passed: tomorrow
+    expect(retryAfter(ev('usage limit, or try again at Oct 19th, 2026 9:00 AM.'), now)).toBe(20 * 3_600_000);
+    expect(retryAfter(ev('usage limit, or try again at Oct 25th, 2026 9:00 AM.'), now)).toBe(24 * 3_600_000); // capped
+    expect(retryAfter(ev('usage limit, try again later.'), now)).toBeNull();
+  });
+});
+
+describe('windowsResetMs', () => {
+  it('waits for the latest used-up window to reset', () => {
+    const now = 1_000_000_000;
+    const s = now / 1000;
+    expect(windowsResetMs([{ usedPercent: 100, resetsAt: s + 60 }, { usedPercent: 40, resetsAt: s + 9000 }], now)).toBe(60_000);
+    expect(windowsResetMs([{ usedPercent: 100, resetsAt: s + 60 }, { usedPercent: 100, resetsAt: s + 600 }], now)).toBe(600_000);
+    expect(windowsResetMs([{ usedPercent: 99, resetsAt: s + 60 }], now)).toBeNull();
+    expect(windowsResetMs([{ usedPercent: 100, resetsAt: s - 60 }], now)).toBeNull();
   });
 });
 

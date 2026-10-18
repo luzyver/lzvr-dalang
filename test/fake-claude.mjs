@@ -10,7 +10,12 @@ for await (const c of process.stdin) prompt += c;
 
 out({ type: 'system', subtype: 'init', session_id: sid });
 if ((process.env.FAKE_LIMIT_HOMES || '').split(',').includes(basename(process.env.CLAUDE_CONFIG_DIR || ''))) {
-  out({ type: 'result', is_error: true, result: 'Claude AI usage limit reached' });
+  // As Claude Code 2.1 reports it: the text alone matches no older limit wording; the typed api_error says what it is.
+  const resetsAt = Math.floor(Date.now() / 1000) + 2 * 3600;
+  const text = "You've hit your session limit · resets 3pm";
+  out({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] }, error: 'rate_limit', is_api_error_message: true,
+    api_error: 'usage_limit_reached', api_error_params: { rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: 'five_hour' } } });
+  out({ type: 'result', subtype: 'success', is_error: true, result: text });
   process.exit(1);
 }
 out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.125, resetsAt: 2000000000 } } } });
