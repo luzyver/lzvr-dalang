@@ -828,16 +828,17 @@ export interface UnsafeStatement { index: number; sql: string; kind: 'update' | 
 
 /**
  * The statement with string literals, comments and everything inside parentheses blanked out, so only its top level
- * is left to read (a WHERE in a subquery or a string does not count). Quoted identifiers stay.
+ * is left to read (a WHERE in a subquery or a string does not count). Quoted identifiers stay. `nested`: what is inside
+ * parentheses (and the parentheses) stays too; only strings and comments are blanked.
  */
-function topLevel(sql: string, driver: Driver): string {
+function topLevel(sql: string, driver: Driver, nested = false): string {
   const my = isMy(driver);
   let out = '';
   let depth = 0;
   let i = 0;
   const n = sql.length;
   const blank = (s: string) => s.replace(/[^\n]/g, ' ');
-  const put = (s: string) => { out += depth > 0 ? blank(s) : s; };
+  const put = (s: string) => { out += depth > 0 && !nested ? blank(s) : s; };
   while (i < n) {
     const ch = sql[i]!;
     const next = sql[i + 1];
@@ -865,14 +866,19 @@ function topLevel(sql: string, driver: Driver): string {
       continue;
     }
     if (end >= 0) { out += blank(sql.slice(i, end)); i = end; continue; }
-    if (ch === '(') { depth++; out += ' '; } else if (ch === ')') { depth = Math.max(0, depth - 1); out += ' '; } else put(ch);
+    if (ch === '(') { depth++; out += nested ? ch : ' '; } else if (ch === ')') { depth = Math.max(0, depth - 1); out += nested ? ch : ' '; } else put(ch);
     i++;
   }
   return out;
 }
 
 const NAME = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+)(?:\s*\.\s*(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+))*`;
-const VERB = /^\s*(?:with\s+(?:recursive\s+)?[\s\S]*?\b(?=update\b|delete\b|insert\b|select\b|merge\b|values\b))?(update|delete|truncate)\b([\s\S]*)$/i;
+/**
+ * A statement's own verb and what follows it. After a WITH it is the first verb at the top level (the CTEs' bodies are
+ * blanked out), so the DO UPDATE of an INSERT's ON CONFLICT is not taken for it.
+ */
+const VERB = /^\s*(?:with\s+(?:recursive\s+)?[\s\S]*?\b(?=(?:update|delete|insert|select|merge|values|replace)\b))?(\w+)\b([\s\S]*)$/i;
+const CHANGES_ALL = new Set(['update', 'delete', 'truncate']);
 const UPDATE_TABLE = new RegExp(String.raw`^\s*(?:only\s+)?(?:(?:low_priority|ignore)\s+)*(${NAME})`, 'i');
 const DELETE_TABLE = new RegExp(String.raw`^\s*(?:(?:low_priority|quick|ignore)\s+)*(?:from\s+)?(?:only\s+)?(${NAME})`, 'i');
 const TRUNCATE_TABLE = new RegExp(String.raw`^\s*(?:table\s+)?(?:only\s+)?(${NAME})`, 'i');
@@ -883,7 +889,7 @@ export function findUnsafe(script: string, driver: Driver): UnsafeStatement[] {
   const out: UnsafeStatement[] = [];
   statementsOf(script, driver).forEach((sql, index) => {
     const m = VERB.exec(topLevel(sql, driver));
-    if (!m) return;
+    if (!m || !CHANGES_ALL.has(m[1]!.toLowerCase())) return;
     const kind = m[1]!.toLowerCase() as UnsafeStatement['kind'];
     const rest = m[2]!;
     if (kind !== 'truncate' && /\bwhere\b/i.test(rest)) return;
@@ -916,22 +922,32 @@ export const describeUnsafe = (u: UnsafeStatement) => (u.kind === 'truncate' ? `
 
 /**
  * A read of the rows one statement of a write is about to change or remove: `read` is a SELECT (MongoDB: the find, as
- * text; `filter` is what runs). `optional`: it may fail without stopping the write (DROP TABLE IF EXISTS of a table
- * that is not there).
+ * text; `filter`, `sort` and `limit` are what runs: a write of one document reads one). `optional`: a table that is
+ * not there does not stop the write (DROP TABLE IF EXISTS).
  */
-export interface BackupRead { index: number; statement: string; table: string; read: string; optional?: boolean; filter?: object }
+export interface BackupRead {
+  index: number; statement: string; table: string; read: string; optional?: boolean; filter?: object; sort?: object; limit?: number;
+}
 /** The reads a backup takes, and the statements that change data it cannot read beforehand (described). */
 export interface BackupPlan { reads: BackupRead[]; skipped: string[] }
 /** What one read kept: rows (SQL) or documents (MongoDB, as canonical Extended JSON). */
-export type BackupTable = Omit<BackupRead, 'filter' | 'optional'> & { columns?: string[]; rows?: unknown[][]; documents?: unknown[]; error?: string };
+export type BackupTable = Omit<BackupRead, 'filter' | 'sort' | 'limit' | 'optional'> & { columns?: string[]; rows?: unknown[][]; documents?: unknown[]; error?: string };
 
 const ALIAS = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+)`;
 /** A target of one table, with its alias if any: `[ONLY] name [*] [[AS] alias]`. */
 const SINGLE_TARGET = new RegExp(String.raw`^\s*(?:only\s+)?(${NAME})\s*\*?(?:\s+(?:as\s+)?(${ALIAS}))?\s*$`, 'i');
-const CUT_STATEMENT = /^\s*(?:with\s+(?:recursive\s+)?[\s\S]*?\b(?=update\b|delete\b|insert\b|select\b|merge\b|values\b))?(update|delete|truncate)\b/i;
 const DROP_TABLE = /^\s*drop\s+table\s+(if\s+exists\s+)?/i;
-/** Writes that change rows already there in ways no SELECT before them can single out. */
-const UNREADABLE = /^\s*(?:with\b[\s\S]*?)?\b(merge\b|replace\b|insert\b[\s\S]*\bon\s+(?:conflict\b[\s\S]*\bdo\s+update|duplicate\s+key\s+update)\b|alter\s+table\b[\s\S]*\bdrop\b)/i;
+/**
+ * Writes that change rows already there in ways no SELECT before them can single out, by the statement's verb and what
+ * follows it: MERGE, REPLACE, upserts (INSERT OR REPLACE, ON CONFLICT DO UPDATE, ON DUPLICATE KEY UPDATE), ALTER ... DROP.
+ */
+const UNREADABLE: Record<string, RegExp> = {
+  merge: /^/, replace: /^/,
+  insert: /^\s*or\s+replace\b|\bon\s+(?:conflict\b[\s\S]*\bdo\s+update|duplicate\s+key\s+update)\b/i,
+  alter: /^\s*table\b[\s\S]*\bdrop\b/i,
+};
+/** A table that is not there, as PostgreSQL, MySQL/MariaDB and SQLite say it. */
+const NO_SUCH_TABLE = /\brelation\b[\s\S]*\bdoes not exist\b|\btable\b[\s\S]*\bdoesn't exist\b|\bno such table\b/i;
 
 /**
  * The SELECTs that read what a script's UPDATE, DELETE, TRUNCATE and DROP TABLE statements are about to change (the
@@ -966,15 +982,19 @@ export function planBackup(script: string, driver: Driver): BackupPlan {
       for (const t of rest.split(',').map((x) => x.trim()).filter(Boolean)) add(t, `SELECT * FROM ${t}`, !!drop[1]);
       return;
     }
-    const m = CUT_STATEMENT.exec(top);
-    if (!m) {
-      if (UNREADABLE.test(top)) skip('an upsert, MERGE, REPLACE or ALTER ... DROP: what it changes cannot be read beforehand');
+    const m = VERB.exec(top);
+    if (!m) return;
+    const verb = m[1]!.toLowerCase();
+    const verbEnd = top.length - m[2]!.length;
+    // A WITH before it stays in front of the SELECT.
+    const prefix = sql.slice(0, verbEnd - verb.length);
+    // PostgreSQL: CTEs that write (WITH d AS (DELETE ... RETURNING *) ...) cannot run in a read-only SELECT.
+    if (/^\s*with\b/i.test(top) && /\(\s*(?:insert|update|delete|merge)\b/i.test(topLevel(prefix, driver, true))) {
+      skip('a WITH whose queries write: what they change cannot be read beforehand');
       return;
     }
-    const verb = m[1]!.toLowerCase();
-    const verbEnd = m[0].length;
-    // A WITH before it stays in front of the SELECT.
-    const prefix = sql.slice(0, verbEnd - m[1]!.length);
+    if (UNREADABLE[verb]?.test(m[2]!)) { skip('an upsert, MERGE, REPLACE or ALTER ... DROP: what it changes cannot be read beforehand'); return; }
+    if (!CHANGES_ALL.has(verb)) return;
     const end = first(at(/\breturning\b/, verbEnd));
     if (verb === 'truncate') {
       const optsAt = first(at(/\b(restart|continue|cascade|restrict)\b/, verbEnd));
@@ -1022,7 +1042,7 @@ export function planBackup(script: string, driver: Driver): BackupPlan {
 export async function readBackup(c: DbConnection, plan: BackupPlan, cap: number, timeoutMs: number): Promise<BackupTable[]> {
   if (!plan.reads.length) return [];
   if (tunneled(c)) return withTunnel(c, (t) => readBackup(t, plan, cap, timeoutMs));
-  const strip = ({ filter: _f, optional: _o, ...r }: BackupRead) => r;
+  const strip = ({ filter: _f, sort: _s, limit: _l, optional: _o, ...r }: BackupRead) => r;
   if (c.driver === 'mongodb') {
     const docs = await mongoBackupRead(c, plan.reads, cap, timeoutMs);
     return plan.reads.map((r, i) => ({ ...strip(r), documents: docs[i]! }));
@@ -1034,7 +1054,8 @@ export async function readBackup(c: DbConnection, plan: BackupPlan, cap: number,
     try {
       [res] = await runScript(c, r.read, { readOnly: true, limit: cap - total, timeoutMs, maxCell: Infinity }) as [QueryResult];
     } catch (e) {
-      if (!r.optional) throw new Error(`reading ${r.table} failed: ${(e as Error).message}`);
+      // Only a table that is not there is passed over (DROP TABLE IF EXISTS): a timeout or a lost connection is not.
+      if (!r.optional || !NO_SUCH_TABLE.test((e as Error).message)) throw new Error(`reading ${r.table} failed: ${(e as Error).message}`);
       out.push({ ...strip(r), error: (e as Error).message });
       continue;
     }

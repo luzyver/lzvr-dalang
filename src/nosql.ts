@@ -799,6 +799,8 @@ export function noSqlUnsafe(statements: string[], driver: 'mongodb' | 'redis'): 
 /** Writes whose first argument is the filter of the documents they change or remove. */
 const MONGO_FILTERED = new Set(['updateOne', 'updateMany', 'update', 'replaceOne', 'deleteOne', 'deleteMany', 'remove',
   'findOneAndUpdate', 'findOneAndReplace', 'findOneAndDelete']);
+/** Those of them that change one document at most (update without multi too). */
+const MONGO_ONE = new Set(['updateOne', 'replaceOne', 'deleteOne', 'findOneAndUpdate', 'findOneAndReplace', 'findOneAndDelete']);
 
 /**
  * What a script's writes are about to change: per MongoDB write, a find with its filter (every document a drop removes);
@@ -822,8 +824,13 @@ export function noSqlBackupPlan(statements: string[], driver: 'mongodb' | 'redis
     const coll = cmd.collection!;
     const filter = first.name === 'drop' ? {} : MONGO_FILTERED.has(first.name) ? (first.args[0] ?? {}) as object : null;
     if (filter) {
-      reads.push({ index, statement: sql, table: coll, filter,
-        read: `db.getCollection(${JSON.stringify(coll)}).find(${EJSON.stringify(filter, { relaxed: false })})` });
+      // A write of one document reads the one it picks (with its sort, if given), not every match of a loose filter.
+      const a = first.args as any[];
+      const one = MONGO_ONE.has(first.name) || (first.name === 'update' && !a[2]?.multi);
+      const opts = (first.name === 'deleteOne' || first.name === 'findOneAndDelete' ? a[1] : a[2]) as { sort?: object } | undefined;
+      const sort = one && opts?.sort && typeof opts.sort === 'object' ? opts.sort : undefined;
+      reads.push({ index, statement: sql, table: coll, filter, ...(sort && { sort }), ...(one && { limit: 1 }),
+        read: `db.getCollection(${JSON.stringify(coll)}).find(${EJSON.stringify(filter, { relaxed: false })})${sort ? `.sort(${EJSON.stringify(sort)})` : ''}${one ? '.limit(1)' : ''}` });
     } else if (first.name === 'bulkWrite' || (first.name === 'aggregate' && pipelineWrites(aggregateArgs(first.args).pipeline))
       || (first.name === 'renameCollection' && (first.args[1] as { dropTarget?: boolean } | undefined)?.dropTarget)) {
       skipped.push(`statement ${index + 1} (${first.name}: what it changes cannot be read beforehand): ${short(sql)}`);
@@ -832,7 +839,7 @@ export function noSqlBackupPlan(statements: string[], driver: 'mongodb' | 'redis
   return { reads, skipped };
 }
 
-/** Every document each read's filter matches now, as canonical Extended JSON; more than `cap` in all fails. */
+/** The documents each read's filter matches now (one for a write of one), as canonical Extended JSON; more than `cap` in all fails. */
 export async function mongoBackupRead(c: DbConnection, reads: BackupRead[], cap: number, timeoutMs: number): Promise<unknown[][]> {
   if (!c.database) throw new Error('no database picked');
   const client = mongoClient(c, timeoutMs);
@@ -842,7 +849,9 @@ export async function mongoBackupRead(c: DbConnection, reads: BackupRead[], cap:
     const out: unknown[][] = [];
     let total = 0;
     for (const r of reads) {
-      const docs = await db.collection(r.table).find(r.filter ?? {}, { maxTimeMS: timeoutMs }).limit(cap - total + 1).toArray();
+      let cursor = db.collection(r.table).find(r.filter ?? {}, { maxTimeMS: timeoutMs });
+      if (r.sort) cursor = cursor.sort(r.sort as never);
+      const docs = await cursor.limit(Math.min(r.limit ?? Infinity, cap - total + 1)).toArray();
       total += docs.length;
       if (total > cap) throw new Error(`it would change more than ${cap.toLocaleString('en')} documents`);
       out.push(docs.map((d) => EJSON.serialize(d, { relaxed: false })));

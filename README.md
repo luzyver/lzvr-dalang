@@ -702,10 +702,13 @@ connections belong to the panel.
   `--append-system-prompt`, Codex: `developer_instructions`).
 - **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
   it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
-  same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match) and keeps them as JSON in
+  same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match, only the one picked for
+  `updateOne`, `deleteOne`, `findOneAnd...` and the like) and keeps them as JSON in
   `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection). Admins find them under **Backups** in the connection's `⋯` menu (when, who, which chat, the SQL, how many rows of which tables; **download** gives the file), and an agent query that took one has a **backup** link in its log. If that read
-  fails, or the write would change more than 50 000 rows, nothing runs. Inserts change nothing that was there and
-  are not backed up. Upserts, `MERGE`, `REPLACE`, `ALTER ... DROP`, MongoDB `bulkWrite` / `$out` / `$merge` and Redis
+  fails, or the write would change more than 50 000 rows, nothing runs (`DROP TABLE IF EXISTS` of a table that is not
+  there goes ahead; any other failed read stops it). Inserts change nothing that was there and are not backed up.
+  Upserts (`ON CONFLICT DO UPDATE`, `ON DUPLICATE KEY UPDATE`, `INSERT OR REPLACE`), `MERGE`, `REPLACE`,
+  `ALTER ... DROP`, a PostgreSQL `WITH` whose queries write, MongoDB `bulkWrite` / `$out` / `$merge` and Redis
   writes cannot be read beforehand: they run, and the agent and the approval outcome say they were not backed up.
 - **How read-only holds**: the database enforces it, the SQL is never inspected. PostgreSQL runs each statement in a
   `READ ONLY` transaction that is rolled back, MySQL/MariaDB in a session set to `TRANSACTION READ ONLY` (DDL is

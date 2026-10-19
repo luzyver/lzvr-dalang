@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentRefusal, type DbConnection, findUnsafe, onDatabase, planBackup, previewEdits, statementsOf } from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, onDatabase, planBackup, previewEdits, readBackup, statementsOf } from '../src/databases.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -65,9 +65,35 @@ describe('backup reads', () => {
     expect(planBackup('INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 2', 'postgres').skipped).toHaveLength(1);
   });
 
+  it('takes the verb of the statement itself, and lists upserts and CTEs that write as not backed up', () => {
+    // The DO UPDATE of an upsert after a WITH is not an UPDATE (its read would be broken, and the write refused).
+    const upsert = 'WITH s AS (SELECT 1 AS id) INSERT INTO t (id) SELECT id FROM s ON CONFLICT (id) DO UPDATE SET x = 1';
+    expect(planBackup(upsert, 'postgres')).toMatchObject({ reads: [], skipped: [expect.stringMatching(/an upsert/)] });
+    expect(findUnsafe(upsert, 'postgres')).toEqual([]);
+    expect(planBackup('INSERT OR REPLACE INTO t (id, x) VALUES (1, 2)', 'sqlite').skipped).toEqual([expect.stringMatching(/an upsert/)]);
+    expect(planBackup('REPLACE INTO t (id) VALUES (1)', 'mysql').skipped).toHaveLength(1);
+    expect(planBackup('WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d', 'postgres'))
+      .toMatchObject({ reads: [], skipped: [expect.stringMatching(/a WITH whose queries write/)] });
+    // Words in strings and a SELECT's replace() are not writes.
+    expect(planBackup("WITH x AS (SELECT '(delete' AS a) SELECT replace(a, 'x', 'y') FROM x", 'postgres')).toEqual({ reads: [], skipped: [] });
+  });
+
+  it('passes over only a missing table for DROP TABLE IF EXISTS, and fails on any other error', async () => {
+    const c = { id: 'app', driver: 'sqlite', file: sampleDb() } as DbConnection;
+    const tables = await readBackup(c, planBackup('DROP TABLE IF EXISTS nope, users', 'sqlite'), 100, 5000);
+    expect(tables).toMatchObject([{ table: 'nope', error: expect.stringMatching(/no such table/) }, { table: 'users', rows: [[1, 'ann', null], [2, 'bob', 'x']] }]);
+    const broken = { reads: [{ index: 0, statement: '', table: 'users', read: 'SELECT * FROM users WHERE', optional: true }], skipped: [] };
+    await expect(readBackup(c, broken, 100, 5000)).rejects.toThrow(/reading users failed/);
+  });
+
   it('reads what MongoDB updates, deletes and drops are about to change, and lists Redis writes as not backed up', () => {
     expect(planBackup('db.users.updateMany({ age: { $gt: 3 } }, { $set: { a: 1 } }); db.users.insertOne({ a: 1 }); db.logs.drop()', 'mongodb').reads)
       .toMatchObject([{ table: 'users', filter: { age: { $gt: 3 } } }, { table: 'logs', filter: {} }]);
+    // A write of one document reads the one it picks, not every match of its filter.
+    const [one, sorted, many] = planBackup('db.users.updateOne({}, { $set: { a: 1 } }); db.users.findOneAndDelete({ a: 1 }, { sort: { at: -1 } }); db.users.update({}, { $set: { a: 1 } }, { multi: true })', 'mongodb').reads;
+    expect(one).toMatchObject({ limit: 1, read: 'db.getCollection("users").find({}).limit(1)' });
+    expect(sorted).toMatchObject({ limit: 1, sort: { at: -1 } });
+    expect(many!.limit).toBeUndefined();
     expect(planBackup('GET a\nSET a 1', 'redis')).toMatchObject({ reads: [], skipped: [expect.stringMatching(/Redis commands are not backed up\): SET a 1/)] });
   });
 });
