@@ -1,11 +1,11 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentRefusal, type DbConnection, findUnsafe, onDatabase, previewEdits, statementsOf } from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, onDatabase, planBackup, previewEdits, readBackup, statementsOf } from '../src/databases.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -48,6 +48,55 @@ async function boot() {
   };
   return { ...t, file, put, query, agent };
 }
+
+describe('backup reads', () => {
+  const reads = (sql: string, driver: DbConnection['driver'] = 'postgres') => planBackup(sql, driver).reads.map((r) => r.read);
+  it('reads what UPDATE, DELETE, TRUNCATE and DROP TABLE are about to change', () => {
+    expect(reads("UPDATE users SET note = 'a; WHERE' WHERE id IN (SELECT id FROM x WHERE y) RETURNING *")).toEqual(['SELECT users.* FROM users WHERE id IN (SELECT id FROM x WHERE y)']);
+    expect(reads('UPDATE ONLY public.users AS u SET n = o.n FROM other o WHERE o.id = u.id')).toEqual(['SELECT u.* FROM ONLY public.users AS u, other o WHERE o.id = u.id']);
+    expect(reads('WITH old AS (SELECT id FROM t) DELETE FROM users u USING old WHERE u.id = old.id')).toEqual(['WITH old AS (SELECT id FROM t) SELECT u.* FROM users u, old WHERE u.id = old.id']);
+    expect(reads('UPDATE LOW_PRIORITY a JOIN b ON a.id = b.id SET a.x = 1 WHERE b.y = 2', 'mysql')).toEqual(['SELECT * FROM a JOIN b ON a.id = b.id WHERE b.y = 2']);
+    expect(reads('DELETE a FROM a JOIN b ON a.id = b.id WHERE b.y = 2', 'mysql')).toEqual(['SELECT a.* FROM a JOIN b ON a.id = b.id WHERE b.y = 2']);
+    expect(reads('DELETE FROM `t` WHERE x = 1 ORDER BY id LIMIT 5', 'mysql')).toEqual(['SELECT `t`.* FROM `t` WHERE x = 1 ORDER BY id LIMIT 5']);
+    expect(reads('UPDATE t SET x = 1')).toEqual(['SELECT t.* FROM t']);
+    expect(reads('TRUNCATE TABLE a, ONLY b RESTART IDENTITY')).toEqual(['SELECT * FROM a', 'SELECT * FROM b']);
+    expect(planBackup('DROP TABLE IF EXISTS a, b CASCADE', 'postgres').reads).toMatchObject([{ read: 'SELECT * FROM a', optional: true }, { read: 'SELECT * FROM b' }]);
+    expect(planBackup("INSERT INTO t VALUES (1); SELECT 1", 'postgres')).toEqual({ reads: [], skipped: [] });
+    expect(planBackup('INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 2', 'postgres').skipped).toHaveLength(1);
+  });
+
+  it('takes the verb of the statement itself, and lists upserts and CTEs that write as not backed up', () => {
+    // The DO UPDATE of an upsert after a WITH is not an UPDATE (its read would be broken, and the write refused).
+    const upsert = 'WITH s AS (SELECT 1 AS id) INSERT INTO t (id) SELECT id FROM s ON CONFLICT (id) DO UPDATE SET x = 1';
+    expect(planBackup(upsert, 'postgres')).toMatchObject({ reads: [], skipped: [expect.stringMatching(/an upsert/)] });
+    expect(findUnsafe(upsert, 'postgres')).toEqual([]);
+    expect(planBackup('INSERT OR REPLACE INTO t (id, x) VALUES (1, 2)', 'sqlite').skipped).toEqual([expect.stringMatching(/an upsert/)]);
+    expect(planBackup('REPLACE INTO t (id) VALUES (1)', 'mysql').skipped).toHaveLength(1);
+    expect(planBackup('WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d', 'postgres'))
+      .toMatchObject({ reads: [], skipped: [expect.stringMatching(/a WITH whose queries write/)] });
+    // Words in strings and a SELECT's replace() are not writes.
+    expect(planBackup("WITH x AS (SELECT '(delete' AS a) SELECT replace(a, 'x', 'y') FROM x", 'postgres')).toEqual({ reads: [], skipped: [] });
+  });
+
+  it('passes over only a missing table for DROP TABLE IF EXISTS, and fails on any other error', async () => {
+    const c = { id: 'app', driver: 'sqlite', file: sampleDb() } as DbConnection;
+    const tables = await readBackup(c, planBackup('DROP TABLE IF EXISTS nope, users', 'sqlite'), 100, 5000);
+    expect(tables).toMatchObject([{ table: 'nope', error: expect.stringMatching(/no such table/) }, { table: 'users', rows: [[1, 'ann', null], [2, 'bob', 'x']] }]);
+    const broken = { reads: [{ index: 0, statement: '', table: 'users', read: 'SELECT * FROM users WHERE', optional: true }], skipped: [] };
+    await expect(readBackup(c, broken, 100, 5000)).rejects.toThrow(/reading users failed/);
+  });
+
+  it('reads what MongoDB updates, deletes and drops are about to change, and lists Redis writes as not backed up', () => {
+    expect(planBackup('db.users.updateMany({ age: { $gt: 3 } }, { $set: { a: 1 } }); db.users.insertOne({ a: 1 }); db.logs.drop()', 'mongodb').reads)
+      .toMatchObject([{ table: 'users', filter: { age: { $gt: 3 } } }, { table: 'logs', filter: {} }]);
+    // A write of one document reads the one it picks, not every match of its filter.
+    const [one, sorted, many] = planBackup('db.users.updateOne({}, { $set: { a: 1 } }); db.users.findOneAndDelete({ a: 1 }, { sort: { at: -1 } }); db.users.update({}, { $set: { a: 1 } }, { multi: true })', 'mongodb').reads;
+    expect(one).toMatchObject({ limit: 1, read: 'db.getCollection("users").find({}).limit(1)' });
+    expect(sorted).toMatchObject({ limit: 1, sort: { at: -1 } });
+    expect(many!.limit).toBeUndefined();
+    expect(planBackup('GET a\nSET a 1', 'redis')).toMatchObject({ reads: [], skipped: [expect.stringMatching(/Redis commands are not backed up\): SET a 1/)] });
+  });
+});
 
 describe('statements', () => {
   it('splits on ; outside strings, comments and dollar quotes', () => {
@@ -340,7 +389,10 @@ describe('SQL editor connections for agents', () => {
     const pending = (await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json();
     expect(pending).toMatchObject([{ id: 1, conn: 'app', sql: "UPDATE users SET note = 'z'", who: 'owner', conv: conv.id }]);
     const ok = await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH });
-    expect(ok.json()).toMatchObject({ status: 'approved', outcome: '2 row(s) affected', decidedBy: 'owner' });
+    expect(ok.json()).toMatchObject({ status: 'approved', decidedBy: 'owner' });
+    expect(ok.json().outcome).toMatch(/^2 row\(s\) affected\nBacked up 2 row\(s\)/);
+    const backup = JSON.parse(readFileSync(join(t.cfg.stateDir, 'db-backups', 'app', ok.json().backup), 'utf8'));
+    expect(backup).toMatchObject({ connection: 'app', approval: 1, rows: 2, tables: [{ table: 'users', columns: ['id', 'name', 'note'], rows: [[1, 'ann', null], [2, 'bob', 'x']] }] });
     expect(await count()).toBe(2);
     expect(JSON.parse((await a.call('db_approval', { approval_id: 1 })).text)).toMatchObject({ status: 'approved' });
     await until(() => [...t.store.listQueue(conv.id), ...t.store.listTurns(conv.id)].some((x) => x.prompt.includes('approved your write')));
@@ -380,6 +432,28 @@ describe('SQL editor connections for agents', () => {
     const r = await (await t.agent()).call('db_query', { connection: 'app', sql: "ATTACH DATABASE '/tmp/other.db' AS o" });
     expect(r).toMatchObject({ isError: true });
     expect(r.text).toMatch(/refused for agents/);
+  });
+
+  it('backs up what an agent\'s write changes before it runs, and runs nothing when the backup fails', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'read-write' });
+    const a = await t.agent();
+    const r = JSON.parse((await a.call('db_query', { connection: 'app', sql: "UPDATE users SET note = 'y' WHERE name = 'bob'; DELETE FROM users WHERE id = 1" })).text);
+    expect(r.backup).toMatch(/^Backed up 2 row\(s\)/);
+    const [entry] = (await t.app.inject({ url: '/api/db/connections/app/log', headers: AUTH })).json();
+    expect(entry).toMatchObject({ ok: true, backupRows: 2 });
+    const file = await t.app.inject({ url: `/api/db/connections/app/backups/${entry.backup}`, headers: AUTH });
+    expect(file.json().tables).toMatchObject([{ table: 'users', rows: [[2, 'bob', 'x']] }, { table: 'users', rows: [[1, 'ann', null]] }]);
+    expect((await t.app.inject({ url: '/api/db/connections/app/backups/..%2F..%2Flzvr.db', headers: AUTH })).statusCode).toBe(404);
+    const listed = (await t.app.inject({ url: '/api/db/connections/app/backups', headers: AUTH })).json();
+    expect(listed).toMatchObject([{ file: entry.backup, who: 'owner', rows: 2, tables: ['users'] }]);
+    // An insert changes nothing that was there: no backup.
+    expect(JSON.parse((await a.call('db_query', { connection: 'app', sql: "INSERT INTO users (name) VALUES ('cy')" })).text).backup).toBeUndefined();
+    expect(readdirSync(join(t.cfg.stateDir, 'db-backups', 'app')).filter((f) => f !== 'index.json')).toHaveLength(1);
+    // The backup's read fails (no such column), so the write does not run.
+    const bad = await a.call('db_query', { connection: 'app', sql: "UPDATE users SET note = 'q' WHERE nope = 1" });
+    expect(bad).toMatchObject({ isError: true });
+    expect(bad.text).toMatch(/backup of what this changes failed, so nothing ran/);
   });
 
   it('lets an agent write on a read-write connection', async () => {

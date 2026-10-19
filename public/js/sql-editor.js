@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-h
 import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
-import { api } from './api.js';
+import { api, downloadFile } from './api.js';
 import { AsyncButton, confirmDialog, ContextMenu, Empty, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
@@ -67,6 +67,8 @@ const sq = {
   editing: signal(null),
   /** the agent log dialog: a connection id */
   log: signal(null),
+  /** the backups dialog (what agents' writes changed, kept before they ran): a connection id */
+  backups: signal(null),
   /** the history dialog is open */
   history: signal(false),
   /** "Ask the agent": { context, suggestion } */
@@ -986,6 +988,7 @@ const connItems = (conn) => html`
     <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
     ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
     <${MenuItem} icon="history" onClick=${() => { sq.log.value = conn.id; }}>Agent queries<//>
+    <${MenuItem} icon="archive" title="The rows agents' writes changed, kept before they ran" onClick=${() => { sq.backups.value = conn.id; }}>Backups<//>
     <${MenuItem} icon="trash-2" danger onClick=${() => removeConn(conn)}>Remove<//>`}`;
 
 const dbItems = (conn, name) => html`
@@ -1457,9 +1460,35 @@ function AgentLog({ id }) {
             <span>${new Date(q.at).toLocaleString()}</span><span>· ${q.who || 'an agent'}</span>
             ${q.database && html`<span>· on <span class="mono">${q.database}</span></span>`}
             ${q.conv && html`<a href=${`/#c=${q.conv}`} target="_blank">· its chat</a>`}
-            <span>· ${q.ok ? `${q.rows} rows` : 'failed'} · ${q.ms} ms</span></div>
+            <span>· ${q.ok ? `${q.rows} rows` : 'failed'} · ${q.ms} ms</span>
+            ${q.backup && html`<a onClick=${guarded(() => downloadFile(`/api/db/connections/${id}/backups/${q.backup}`, `${id}-${q.backup}`))}
+              title="The rows it was about to change, kept before it ran">· backup (${q.backupRows} rows)</a>`}</div>
           <pre class="mono">${q.sql}</pre>
           ${q.error && html`<div class="small err">${q.error}</div>`}
+        </div>`)}</div>`}
+  </div>`;
+}
+
+/** The backups taken before agents' writes on a connection, newest first, each downloadable as JSON. */
+function Backups({ id }) {
+  const [list, setList] = useState(null);
+  useEffect(() => { api(`/api/db/connections/${id}/backups`).then(setList).catch((e) => { toast(e.message, 'err'); setList([]); }); }, [id]);
+  const close = () => { sq.backups.value = null; };
+  const get = (b) => guarded(() => downloadFile(`/api/db/connections/${id}/backups/${b.file}`, `${id}-${b.file}`));
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Backups: ${connOf(id)?.label ?? id}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    ${list == null ? html`<div class="pane-loading"><${Spinner} /></div>`
+      : !list.length ? html`<${Empty} icon="archive" title="No backups yet">Before an agent's UPDATE, DELETE, TRUNCATE or DROP TABLE runs here, the rows it changes are kept and listed (the newest 200).<//>`
+        : html`<div class="sql-log">${list.map((b) => html`<div key=${b.file} class="sql-log-item">
+          <div class="small dim row wrap"><${Icon} name="archive" class="tiny" />
+            <span>${new Date(b.at).toLocaleString()}</span><span>· ${b.who || 'an agent'}</span>
+            ${b.approval && html`<span>· approval #${b.approval}</span>`}
+            ${b.database && html`<span>· on <span class="mono">${b.database}</span></span>`}
+            ${b.conv && html`<a href=${`/#c=${b.conv}`} target="_blank">· its chat</a>`}
+            <span>· ${b.rows} rows of <span class="mono">${b.tables.join(', ')}</span></span>
+            ${b.notBackedUp && html`<span class="err">· ${b.notBackedUp} statement(s) not backed up</span>`}
+            <a onClick=${get(b)}>· download</a></div>
+          <pre class="mono">${b.sql}</pre>
         </div>`)}</div>`}
   </div>`;
 }
@@ -1736,6 +1765,8 @@ export function SqlEditor() {
       ${sq.editing.value && html`<${ConnectionForm} conn=${sq.editing.value.conn} />`}<//>
     <${Modal} open=${!!sq.log.value} label="Agent queries" class="dialog sql-dialog" onClose=${() => { sq.log.value = null; }}>
       ${sq.log.value && html`<${AgentLog} id=${sq.log.value} />`}<//>
+    <${Modal} open=${!!sq.backups.value} label="Backups" class="dialog sql-dialog" onClose=${() => { sq.backups.value = null; }}>
+      ${sq.backups.value && html`<${Backups} id=${sq.backups.value} />`}<//>
     <${Modal} open=${!!sq.wsDialog.value} label="Workspace" class="dialog sql-dialog" onClose=${() => { sq.wsDialog.value = null; }}>
       ${sq.wsDialog.value && html`<${WorkspaceDialog} key=${sq.wsDialog.value.mode} mode=${sq.wsDialog.value.mode} />`}<//>
     <${Modal} open=${!!sq.download.value} label="Download" class="dialog sql-dialog" onClose=${() => { sq.download.value = null; }}>
