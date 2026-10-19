@@ -8,6 +8,7 @@ import { Dispatcher } from './dispatcher.js';
 import { Logins } from './login.js';
 import { Push } from './push.js';
 import { Scheduler } from './schedules.js';
+import { SKILLS_DIR } from './skills.js';
 import { Store } from './store.js';
 
 const cfg = loadConfig();
@@ -17,7 +18,7 @@ const push = new Push(store, { subject: cfg.vapidSubject ?? (cfg.origin ? cfg.or
 const dispatcher = new Dispatcher(store, {
   homes: [], // no account exists until an admin adds one in the panel; they are loaded from the database just below
   command: cfg.codexCommand, claudeCommand: cfg.claudeCommand, blockMs: cfg.limitBlockMs, limitRe: cfg.limitRegex, mcpUrl: cfg.mcpUrl,
-  autoTitle: cfg.autoTitle,
+  autoTitle: cfg.autoTitle, skillsDir: SKILLS_DIR,
   onTurnEnd: (e) => push.notifyTurn(e),
 });
 

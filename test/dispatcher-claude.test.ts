@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +54,21 @@ describe('Dispatcher with the claude backend', () => {
     await until(() => turnsDone(store, conv.id, 1));
     const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
     expect(texts.some((t) => t.includes(`|settings:{"hooks":{}}|root:${project.path}`))).toBe(true);
+  });
+
+  it("offers Dalang's skills: listed in the system prompt, their folder readable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lzvr-claude-'));
+    const skillsDir = join(dir, 'skills');
+    mkdirSync(join(skillsDir, 'charts'), { recursive: true });
+    writeFileSync(join(skillsDir, 'charts', 'SKILL.md'), '---\nname: charts\ndescription: Draw charts\n---\nbody');
+    const store = new Store();
+    const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: [join(dir, 'a')], claudeCommand: FAKE_CLAUDE, skillsDir });
+    const conv = store.createConversation(store.createProject('p', dir).id, 'claude');
+    store.enqueue(conv.id, 'hello', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
+    expect(texts.some((t) => t.includes('Check them FIRST') && t.includes('- charts (') && t.includes(`|--add-dir=${skillsDir}`))).toBe(true);
   });
 
   it('moves the same turn to the next Claude account at a usage limit', async () => {
