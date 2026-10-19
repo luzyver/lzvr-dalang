@@ -52,15 +52,24 @@ const ago = (ms) => {
 function CodeGraphButton({ project }) {
   const [s, setS] = useState(null);
   const git = chat.git.value; // refreshed after each turn and git action: the code may have changed
-  const load = () => (project ? api(`/api/projects/${project.id}/code-memory`).then(setS, () => setS(null)) : undefined);
-  useEffect(() => { setS(null); load(); }, [project?.id]);
+  const shown = useRef(null); // the project whose state `s` is, so an answer for the one before is dropped
+  // A failed look (the network, a restart) keeps what was known: the next one corrects it.
+  const load = () => {
+    if (!project) return;
+    const id = project.id;
+    api(`/api/projects/${id}/code-memory`).then((r) => { if (shown.current === id) setS(r); }, () => {});
+  };
+  useEffect(() => { shown.current = project?.id ?? null; setS(null); load(); }, [project?.id]);
   useEffect(() => { if (git) load(); }, [git]);
   const indexing = s?.index?.status === 'indexing';
+  // Look again while an index runs (often), and while a request waits for an admin (now and then): nothing else says
+  // when an admin decided.
+  const every = indexing ? 3000 : s?.pending ? 15000 : 0;
   useEffect(() => {
-    if (!indexing) return undefined;
-    const t = setInterval(load, 3000);
+    if (!every) return undefined;
+    const t = setInterval(load, every);
     return () => clearInterval(t);
-  }, [indexing, project?.id]);
+  }, [every, project?.id]);
   const st = s?.index;
   // Only when there is something to index: code changed since the graph was built, or no graph yet; and while it is
   // being indexed or asked for, so the click shows.
