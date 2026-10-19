@@ -4,8 +4,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-h
 import { batch, signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { Icon } from './ui.js';
-import { approvals, dbApprovals, findConv, openCodeEditor, patchConv, route, toggleInspector, toggleSidebar, ui } from './store.js';
+import { confirmDialog, Icon } from './ui.js';
+import {
+  approvals, dbApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
+} from './store.js';
 import { startStream, ThreadModel } from './stream.js';
 import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
@@ -38,6 +40,62 @@ export async function refreshGit(id = chat.id.value) {
 
 const TURN_END = new Set(['turn.completed', 'turn.failed', 'turn.status', 'process.exit', 'user.prompt']);
 
+const ago = (ms) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
+
+/**
+ * The project's code graph (code memory): when it was indexed, and indexing it again. An admin starts it at once; anyone
+ * else asks, and it runs once an admin approves. Hidden while code memory is off.
+ */
+function CodeGraphButton({ project }) {
+  const [s, setS] = useState(null);
+  const git = chat.git.value; // refreshed after each turn and git action: the code may have changed
+  const shown = useRef(null); // the project whose state `s` is, so an answer for the one before is dropped
+  // A failed look (the network, a restart) keeps what was known: the next one corrects it.
+  const load = () => {
+    if (!project) return;
+    const id = project.id;
+    api(`/api/projects/${id}/code-memory`).then((r) => { if (shown.current === id) setS(r); }, () => {});
+  };
+  useEffect(() => { shown.current = project?.id ?? null; setS(null); load(); }, [project?.id]);
+  useEffect(() => { if (git) load(); }, [git]);
+  const indexing = s?.index?.status === 'indexing';
+  // Look again while an index runs (often), and while a request waits for an admin (now and then): nothing else says
+  // when an admin decided.
+  const every = indexing ? 3000 : s?.pending ? 15000 : 0;
+  useEffect(() => {
+    if (!every) return undefined;
+    const t = setInterval(load, every);
+    return () => clearInterval(t);
+  }, [every, project?.id]);
+  const st = s?.index;
+  // Only when there is something to index: code changed since the graph was built, or no graph yet; and while it is
+  // being indexed or asked for, so the click shows.
+  if (!s?.enabled || !(s.changed || !st?.graph || indexing || s.pending)) return null;
+  const state = !st?.graph ? (st?.status === 'failed' ? `Failed: ${st.error}` : 'Not indexed yet')
+    : indexing ? 'Indexing…' : `Indexed ${ago(st.indexedAt)}${s.changed ? ', files changed since' : ''}`;
+  const action = s.pending ? `Waiting for an admin to approve ${s.pending.who}'s request` : `Click to ${st?.graph ? 'index it again' : 'index it'}${s.direct ? '' : ' (an admin approves)'}`;
+  const click = guarded(async () => {
+    if (s.pending || indexing) return toast(s.pending ? 'Already asked: waiting for an admin in Approvals' : 'Already indexing');
+    const ok = await confirmDialog({
+      title: `${st?.graph ? 'Reindex' : 'Index'} the code graph of ${project.name}?`,
+      message: s.direct
+        ? 'It starts now and uses several cores for a while (seconds to minutes; again, it only reads what changed). Chats get the new graph from their next turn.'
+        : 'An admin or the owner approves it first in Approvals; it runs then. Chats get the new graph from their next turn.',
+      confirmText: s.direct ? 'Index now' : 'Ask for approval',
+    });
+    if (!ok) return;
+    const r = await api(`/api/projects/${project.id}/code-memory/index`, { method: 'POST' });
+    toast(r.status === 'indexing' ? 'Indexing started' : 'Asked: an admin approves it in Approvals');
+    await load();
+    if (isAdmin.value) refreshApprovals();
+  });
+  return html`<button class=${cx('icon-btn', (s.changed || !st?.graph) && 'on')} aria-label="Code graph" title=${`Code graph: ${state}. ${action}`} onClick=${click}>
+    <${Icon} name=${indexing ? 'loader-circle' : 'brain'} spin=${indexing} /></button>`;
+}
+
 function ChatHead({ project, conv }) {
   chat.version.value; // the running turn's start and account come from the thread model
   const c = chat.conv.value || conv;
@@ -57,6 +115,7 @@ function ChatHead({ project, conv }) {
       <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
     ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
     <div class="spacer"></div>
+    <${CodeGraphButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
     <button class="icon-btn" aria-label="Scheduled prompts" title="Scheduled prompts" onClick=${() => toggleInspector(true, 'schedules')}><${Icon} name="clock" /></button>
     ${git?.repo && html`<button class="branch-btn" title="Changes: review, commit, revert" onClick=${() => toggleInspector(true, 'changes')}>

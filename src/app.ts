@@ -8,7 +8,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import { clickupClient, clickupForAll, clickupRoutes } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
-import { codeMemoryRoutes } from './code-memory-routes.js';
+import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { git as gitCmd, gitContext, GitError } from './git.js';
@@ -193,6 +193,7 @@ export function buildApp(
   const codeMemory = deps.codeMemory ?? new CodeMemory(store, { cwd: cfg.stateDir });
   mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), codeMemory });
   codeMemoryRoutes(app, { store, codeMemory });
+  codeIndexRoutes(app, { store, codeMemory, push });
   dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });
