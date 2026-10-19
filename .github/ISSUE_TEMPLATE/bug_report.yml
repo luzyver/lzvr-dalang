@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in Dalang does not work as described
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add project ...
+        2. Start a chat ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Dalang commit
+      description: Output of `git rev-parse --short HEAD`
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent CLI
+      options: [Codex CLI, Claude Code, Both, Not agent related]
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: Ubuntu 24.04, Node 22.13, behind nginx / Windows 11, run.cmd
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server output or browser console. Remove tokens, emails and hostnames first.
+      render: text

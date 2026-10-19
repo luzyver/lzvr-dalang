@@ -3,7 +3,7 @@ import { basename, join } from 'node:path';
 
 // The texts the CLIs print at a limit (Codex: "You've hit your usage limit", "Your workspace is out of credits", "You hit
 // your spend cap"; Claude Code: "You've hit your session limit · resets 3pm"). Claude Code also marks its limit as such
-// (see `limit` below), so the text only has to catch what is not marked. Override with LIMIT_REGEX (see README). Bare
+// (see `limit` below), so the text only has to catch what is not marked. Override with LIMIT_REGEX (see docs/guide.md). Bare
 // "quota" and "429" are deliberately not matched: "Disk quota exceeded" or a line number must not take an account offline.
 export const DEFAULT_LIMIT_RE = /usage limit|rate.?limit|too many requests|insufficient_quota|exceeded your (current )?quota|limit (has been )?reached|hit your [\w ]*limit|out of credits|spend cap/i;
 

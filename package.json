@@ -1,7 +1,26 @@
 {
   "name": "lzvr-dalang",
   "version": "0.1.0",
+  "description": "Self-hosted control room for the Codex CLI and Claude Code: a web panel and an HTTP/MCP API that run agent sessions on your own machine",
+  "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luzyver/lzvr-dalang.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luzyver/lzvr-dalang/issues"
+  },
+  "homepage": "https://github.com/luzyver/lzvr-dalang#readme",
+  "keywords": [
+    "codex",
+    "claude-code",
+    "ai-agents",
+    "mcp",
+    "self-hosted",
+    "pwa",
+    "fastify"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -12,7 +31,8 @@
     "start": "node --env-file-if-exists=.env dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "vendor": "node scripts/vendor.mjs"
+    "vendor": "node scripts/vendor.mjs",
+    "check": "npm run typecheck && npm test"
   },
   "dependencies": {
     "@fastify/multipart": "^9.4.0",

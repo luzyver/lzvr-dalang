@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      panel-vendor:
+        # browser libraries copied into public/vendor: run `npm run vendor` after merging
+        patterns: ["preact", "htm", "@preact/*", "@highlightjs/*", "cronstrue", "geist", "codemirror", "@codemirror/*", "@xterm/*", "sql-formatter"]
+      dev:
+        dependency-type: development
+      prod:
+        dependency-type: production
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
