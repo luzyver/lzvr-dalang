@@ -40,7 +40,7 @@ export function DbApprovalCard({ a, showChat }) {
         ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
       ${a.unsafe?.map((u) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><span><strong>${u}</strong>: it changes every row of the table.</span></div>`)}
       <pre class="card-text mono">${a.sql}</pre>
-      <span class="dim small">Approve runs it now, as written, with writes allowed; the outcome goes back to the chat.</span>
+      <span class="dim small">Approve backs up the rows it changes, then runs it as written with writes allowed; the outcome goes back to the chat.</span>
       <div class="card-actions">
         <${AsyncButton} class="btn primary sm" icon="check" onClick=${decide('approve')}>Approve and run<//>
         <${AsyncButton} class="btn sm" icon="x" onClick=${decide('reject')}>Reject<//>

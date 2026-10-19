@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { type ClickUp, startOfDay } from './clickup.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
-import { createDbApproval, logDbQuery, readDbApprovals } from './database-routes.js';
+import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
 import {
   agentRefusal, describeUnsafe, findUnsafe, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
 } from './databases.js';
@@ -290,7 +290,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   if (cu) clickupTools(server, cu);
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
-  if (dbs.length) databaseTools(server, store, push, dbs, { who: onBehalf, conv: source });
+  if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
   if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
   return server;
 }
@@ -362,7 +362,7 @@ const AGENT_DB_TIMEOUT_MS = 30_000;
  * that way waits for an admin instead. Statements that reach past the tables are refused for agents in every mode.
  * Each query goes into the connection's log.
  */
-function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
+function databaseTools(server: McpServer, store: Store, push: Push, stateDir: string, dbs: DbConnection[], by: { who: string; conv: string | null }): void {
   const get = (id: string) => dbs.find((c) => c.id === id);
   const readOnly = (c: DbConnection) => c.readOnly || c.agent !== 'read-write';
   const mode = (c: DbConnection) => (c.readOnly || c.agent === 'read-only' ? 'read-only' : c.agent === 'approve' ? 'read, write after approval' : 'read-write');
@@ -417,7 +417,9 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
       + 'as db0..db15). Returns the columns and rows of each statement '
       + '(at most limit rows per statement). On a read-only connection anything that writes is refused by the database. On a '
       + '"write after approval" one, a script that writes is held for an admin instead (status pending_approval): the outcome '
-      + 'comes to this chat as a message, or ask db_approval.',
+      + 'comes to this chat as a message, or ask db_approval. Before a write runs, the rows its UPDATE, DELETE, TRUNCATE and DROP TABLE '
+      + `statements (MongoDB: updates, deletes, drops) are about to change are backed up (at most ${BACKUP_MAX_ROWS} rows); if that `
+      + 'backup fails, nothing runs.',
     inputSchema: {
       connection: z.string(), database: DATABASE, sql: z.string().min(1).max(100_000),
       limit: z.number().int().min(1).max(1000).optional().describe('max rows per statement, default 100'),
@@ -426,9 +428,9 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
     const c = get(connection);
     if (!c) return none(connection);
     const t0 = Date.now();
-    const log = (ok: boolean, rows: number, error?: string) =>
+    const log = (ok: boolean, rows: number, error?: string, extra: Partial<DbLogEntry> = {}) =>
       logDbQuery(store, c.id, {
-        at: t0, who: by.who, conv: by.conv, ...(database && { database }), sql: sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }),
+        at: t0, who: by.who, conv: by.conv, ...(database && { database }), sql: sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }), ...extra,
       });
     const refused = agentRefusal(sql, c.driver, readOnly(c));
     if (refused) { log(false, 0, refused); return fail(refused); }
@@ -440,10 +442,25 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
       log(false, 0, msg);
       return fail(msg);
     }
+    // Writing freely: what the script is about to change is kept first, and nothing runs if that fails.
+    let backup: DbBackup | null = null;
+    if (!readOnly(c)) {
+      try {
+        backup = await backupWrite(stateDir, onDatabase(c, database), { ...(database && { database }), sql, who: by.who, conv: by.conv });
+      } catch (e) {
+        const msg = `refused: the backup of what this changes failed, so nothing ran: ${(e as Error).message}. Narrow the write, or ask a human to run it in the SQL editor.`;
+        log(false, 0, msg);
+        return fail(msg);
+      }
+    }
+    const kept = backup?.file ? { backup: backup.file, backupRows: backup.rows } : {};
     try {
       const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
-      log(true, results.reduce((n, r) => n + r.rows.length, 0));
-      return text({ results: results.map((r) => ({ columns: r.columns.map((col) => col.name), rows: r.rows, affected: r.affected, truncated: r.truncated })) });
+      log(true, results.reduce((n, r) => n + r.rows.length, 0), undefined, kept);
+      return text({
+        results: results.map((r) => ({ columns: r.columns.map((col) => col.name), rows: r.rows, affected: r.affected, truncated: r.truncated })),
+        ...(backup && { backup: describeBackup(backup) }),
+      });
     } catch (e) {
       // A write on a "write after approval" connection: the whole script waits for an admin (it ran read-only, so
       // nothing of it was kept).
@@ -458,8 +475,8 @@ function databaseTools(server: McpServer, store: Store, push: Push, dbs: DbConne
         });
       }
       const done = e instanceof QueryError ? e.results.length : 0;
-      log(false, 0, (e as Error).message);
-      return fail(`${done ? `statement ${done + 1} failed (the ${done} before it ran): ` : ''}${(e as Error).message}`);
+      log(false, 0, (e as Error).message, kept);
+      return fail(`${done ? `statement ${done + 1} failed (the ${done} before it ran): ` : ''}${(e as Error).message}${backup ? `\n${describeBackup(backup)}` : ''}`);
     }
   });
 

@@ -4,12 +4,15 @@
  * through the gateway's MCP tools: read-only, writes after an admin's approval, or read-write). Passwords never go back
  * to the panel.
  */
+import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import {
   AGENT_MODES, agentRefusal, countRows, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, findUnsafe, listDatabases, loadConnections, onDatabase,
-  previewEdits, QueryError, type QueryResult, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES, testConnection,
+  planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
+  testConnection,
 } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { keyProblem, type SshConf } from './ssh-tunnel.js';
@@ -29,10 +32,56 @@ const view = ({ password, ssh, ...c }: DbConnection) => ({
     hasPassword: !!ssh.password, hasKey: !!ssh.privateKey, hasPassphrase: !!ssh.passphrase } }),
 });
 
-/** One agent query, for the connection's log (admins read it in the SQL editor). */
+/**
+ * One agent query, for the connection's log (admins read it in the SQL editor). `backup`: the file the rows it was about
+ * to change were kept in (`backupRows` of them).
+ */
 export interface DbLogEntry {
   at: number; who: string; conv: string | null; database?: string; sql: string; ok: boolean; rows: number; ms: number; error?: string;
+  backup?: string; backupRows?: number;
 }
+
+// ---------- backups of what an agent's write changes ----------
+
+/** At most this many rows (documents) are kept before one write; a bigger write is refused. */
+export const BACKUP_MAX_ROWS = 50_000;
+const BACKUP_KEEP = LOG_MAX;
+const BACKUP_FILE = /^[0-9TZ-]+-[0-9a-f]{6}\.json$/;
+export const backupDir = (stateDir: string, conn: string) => join(stateDir, 'db-backups', conn);
+
+/** A backup taken: its file (none when nothing could be read), how many rows, and the writes it could not cover. */
+export interface DbBackup { file?: string; rows: number; skipped: string[] }
+
+/**
+ * Before an agent's write runs: reads the rows its UPDATE / DELETE / TRUNCATE / DROP TABLE statements (MongoDB: its
+ * updates, deletes and drops) are about to change, and keeps them in a JSON file under the state folder (the newest
+ * 200 per connection). Null for a script that changes nothing already there. Throws when they cannot be read (the write
+ * must not run then).
+ */
+export async function backupWrite(stateDir: string, c: DbConnection, meta: { database?: string; sql: string; who: string; conv: string | null; approval?: number }): Promise<DbBackup | null> {
+  const plan = planBackup(meta.sql, c.driver);
+  if (!plan.reads.length && !plan.skipped.length) return null;
+  const tables = await readBackup(c, plan, BACKUP_MAX_ROWS, PANEL_TIMEOUT_MS);
+  const rows = tables.reduce((n, t) => n + (t.rows?.length ?? t.documents?.length ?? 0), 0);
+  if (!tables.length) return { rows, skipped: plan.skipped };
+  const dir = backupDir(stateDir, c.id);
+  await mkdir(dir, { recursive: true });
+  const file = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.json`;
+  await writeFile(join(dir, file), JSON.stringify({
+    connection: c.id, driver: c.driver, ...(meta.database && { database: meta.database }), at: Date.now(), who: meta.who, conv: meta.conv,
+    ...(meta.approval && { approval: meta.approval }), sql: meta.sql, rows, tables, ...(plan.skipped.length && { notBackedUp: plan.skipped }),
+  }, null, 1));
+  // Names start with the time, so sorting them sorts by age.
+  const old = (await readdir(dir)).filter((f) => BACKUP_FILE.test(f)).sort().slice(0, -BACKUP_KEEP);
+  await Promise.all(old.map((f) => rm(join(dir, f), { force: true })));
+  return { file, rows, skipped: plan.skipped };
+}
+
+/** For the agent and the chat: what was kept, and what was not. */
+export const describeBackup = (b: DbBackup | null) => (!b ? '' : [
+  b.file ? `Backed up ${b.rows} row(s) it changes first (${b.file}; admins download it from the connection's agent log in the SQL editor).` : '',
+  ...b.skipped.map((s) => `Not backed up: ${s}`),
+].filter(Boolean).join('\n'));
 const logKey = (id: string) => `db_log:${id}`;
 export function readDbLog(store: Store, id: string): DbLogEntry[] {
   try { return JSON.parse(store.getKv(logKey(id)) ?? '[]'); } catch { return []; }
@@ -49,6 +98,8 @@ export interface DbApproval {
   outcome?: string;
   /** Its statements that hit every row (UPDATE/DELETE without WHERE, TRUNCATE), described: the card warns about them. */
   unsafe?: string[];
+  /** The backup file taken before it ran. */
+  backup?: string;
 }
 const APPROVALS = 'db_approvals';
 export function readDbApprovals(store: Store): DbApproval[] {
@@ -368,6 +419,14 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     return readDbLog(store, req.params.id);
   });
 
+  // A backup taken before an agent's write (named in the log), as a JSON file.
+  app.get<{ Params: { id: string; file: string } }>('/api/db/connections/:id/backups/:file', { onRequest: requireAdmin }, async (req, reply) => {
+    if (!find(req.user!, req.params.id) || !BACKUP_FILE.test(req.params.file)) return reply.code(404).send({ error: 'not found' });
+    let body: Buffer;
+    try { body = await readFile(join(backupDir(d.stateDir, req.params.id), req.params.file)); } catch { return reply.code(404).send({ error: 'not found (only the newest 200 are kept)' }); }
+    return reply.type('application/json').header('content-disposition', `attachment; filename="${req.params.id}-${req.params.file}"`).send(body);
+  });
+
   // Writes agents asked for on 'approve' connections. Admins see those of connections they may open.
   const visibleApproval = (user: AuthUser, a: DbApproval) => !!find(user, a.conn);
   app.get<{ Querystring: { status?: string } }>('/api/db/approvals', { onRequest: requireAdmin }, (req) =>
@@ -404,23 +463,33 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     }
     running.add(a.id);
     const t0 = Date.now();
+    let backup: DbBackup | null = null;
+    // Whether the write itself started (a refusal or a failed backup runs none of it).
+    let started = false;
     const log = (ok: boolean, rows: number, error?: string) => logDbQuery(store, c.id, {
       at: t0, who: `${a.who || 'an agent'} (approved by ${req.user!.name})`, conv: a.conv, ...(a.database && { database: a.database }),
       sql: a.sql.slice(0, 4000), ok, rows, ms: Date.now() - t0, ...(error && { error }),
+      ...(backup?.file && { backup: backup.file, backupRows: backup.rows }),
     });
     try {
       const refused = agentRefusal(a.sql, c.driver, false);
       if (refused) throw new Error(refused);
-      const results = await runScript(onDatabase(c, a.database), a.sql, { readOnly: false, limit: 50, timeoutMs: PANEL_TIMEOUT_MS, maxCell: 2000 });
-      const outcome = describeResults(results);
+      const target = onDatabase(c, a.database);
+      try {
+        backup = await backupWrite(d.stateDir, target, { ...(a.database && { database: a.database }), sql: a.sql, who: a.who, conv: a.conv, approval: a.id });
+      } catch (e) { throw new Error(`the backup of what it changes failed, so it did not run: ${(e as Error).message}`); }
+      started = true;
+      const results = await runScript(target, a.sql, { readOnly: false, limit: 50, timeoutMs: PANEL_TIMEOUT_MS, maxCell: 2000 });
+      const outcome = [describeResults(results), describeBackup(backup)].filter(Boolean).join('\n');
       log(true, results.reduce((n, r) => n + r.rows.length, 0));
-      done({ status: 'approved', outcome });
+      done({ status: 'approved', outcome, ...(backup?.file && { backup: backup.file }) });
       tellChat(a, `[SQL editor] An admin approved your write on ${where(a)} and it ran.${sqlBlock(a)}\n\nResult:\n${outcome}`);
     } catch (e) {
       const msg = (e as Error).message;
       log(false, 0, msg);
-      done({ status: 'failed', outcome: msg });
-      tellChat(a, `[SQL editor] An admin approved your write on ${where(a)}, but it failed. Statements before the failing one did run.${sqlBlock(a)}\n\nError: ${msg}`);
+      const outcome = [msg, describeBackup(backup)].filter(Boolean).join('\n');
+      done({ status: 'failed', outcome, ...(backup?.file && { backup: backup.file }) });
+      tellChat(a, `[SQL editor] An admin approved your write on ${where(a)}, but it failed. ${started ? 'Statements before the failing one did run.' : 'None of it ran.'}${sqlBlock(a)}\n\nError: ${outcome}`);
     } finally {
       running.delete(a.id);
     }

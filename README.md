@@ -700,6 +700,13 @@ connections belong to the panel.
   not with `psql`, `mysql`, `mongosh`, `redis-cli`, a script or credentials from `.env`, unless the person asks for that
   explicitly, and to say so when a database is not listed or is read-only instead of working around it (Claude Code:
   `--append-system-prompt`, Codex: `developer_instructions`).
+- **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
+  it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
+  same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match) and keeps them as JSON in
+  `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection; **backup** in the agent log downloads one). If that read
+  fails, or the write would change more than 50 000 rows, nothing runs. Inserts change nothing that was there and
+  are not backed up. Upserts, `MERGE`, `REPLACE`, `ALTER ... DROP`, MongoDB `bulkWrite` / `$out` / `$merge` and Redis
+  writes cannot be read beforehand: they run, and the agent and the approval outcome say they were not backed up.
 - **How read-only holds**: the database enforces it, the SQL is never inspected. PostgreSQL runs each statement in a
   `READ ONLY` transaction that is rolled back, MySQL/MariaDB in a session set to `TRANSACTION READ ONLY` (DDL is
   refused there too), SQLite opens the file read-only; each statement gets a fresh connection, so one cannot loosen

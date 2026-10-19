@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-h
 import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
-import { api } from './api.js';
+import { api, downloadFile } from './api.js';
 import { AsyncButton, confirmDialog, ContextMenu, Empty, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
@@ -1457,7 +1457,9 @@ function AgentLog({ id }) {
             <span>${new Date(q.at).toLocaleString()}</span><span>· ${q.who || 'an agent'}</span>
             ${q.database && html`<span>· on <span class="mono">${q.database}</span></span>`}
             ${q.conv && html`<a href=${`/#c=${q.conv}`} target="_blank">· its chat</a>`}
-            <span>· ${q.ok ? `${q.rows} rows` : 'failed'} · ${q.ms} ms</span></div>
+            <span>· ${q.ok ? `${q.rows} rows` : 'failed'} · ${q.ms} ms</span>
+            ${q.backup && html`<a onClick=${guarded(() => downloadFile(`/api/db/connections/${id}/backups/${q.backup}`, `${id}-${q.backup}`))}
+              title="The rows it was about to change, kept before it ran">· backup (${q.backupRows} rows)</a>`}</div>
           <pre class="mono">${q.sql}</pre>
           ${q.error && html`<div class="small err">${q.error}</div>`}
         </div>`)}</div>`}

@@ -13,7 +13,8 @@ import mysql from 'mysql2';
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import {
-  mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlUnsafe, redisSchema, redisScript, redisTest, splitNoSql,
+  mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlUnsafe, redisSchema, redisScript,
+  redisTest, splitNoSql,
 } from './nosql.js';
 import { openTunnel, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
@@ -190,8 +191,10 @@ function cell(v: unknown, maxCell: number): unknown {
   if (typeof v === 'bigint') return v.toString();
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? String(v) : v.toISOString();
   if (v instanceof Uint8Array) {
-    const hex = Buffer.from(v.subarray(0, 256)).toString('hex');
-    return `\\x${hex}${v.length > 256 ? '…' : ''}`;
+    // An unbounded maxCell (a backup) keeps every byte.
+    const max = Number.isFinite(maxCell) ? 256 : Infinity;
+    const hex = Buffer.from(v.subarray(0, max)).toString('hex');
+    return `\\x${hex}${v.length > max ? '…' : ''}`;
   }
   if (typeof v === 'object') v = JSON.stringify(v);
   if (typeof v === 'string' && v.length > maxCell) return `${v.slice(0, maxCell)}…`;
@@ -908,3 +911,136 @@ export async function countRows(c: DbConnection, table: string): Promise<number 
 
 /** "DELETE FROM users without WHERE", for messages. */
 export const describeUnsafe = (u: UnsafeStatement) => (u.kind === 'truncate' ? `TRUNCATE ${u.table}` : `${u.kind.toUpperCase()} on ${u.table} without WHERE`);
+
+// ---------- what a write is about to change (backups) ----------
+
+/**
+ * A read of the rows one statement of a write is about to change or remove: `read` is a SELECT (MongoDB: the find, as
+ * text; `filter` is what runs). `optional`: it may fail without stopping the write (DROP TABLE IF EXISTS of a table
+ * that is not there).
+ */
+export interface BackupRead { index: number; statement: string; table: string; read: string; optional?: boolean; filter?: object }
+/** The reads a backup takes, and the statements that change data it cannot read beforehand (described). */
+export interface BackupPlan { reads: BackupRead[]; skipped: string[] }
+/** What one read kept: rows (SQL) or documents (MongoDB, as canonical Extended JSON). */
+export type BackupTable = Omit<BackupRead, 'filter' | 'optional'> & { columns?: string[]; rows?: unknown[][]; documents?: unknown[]; error?: string };
+
+const ALIAS = String.raw`(?:"(?:[^"]|"")+"|\x60[^\x60]+\x60|[\w$]+)`;
+/** A target of one table, with its alias if any: `[ONLY] name [*] [[AS] alias]`. */
+const SINGLE_TARGET = new RegExp(String.raw`^\s*(?:only\s+)?(${NAME})\s*\*?(?:\s+(?:as\s+)?(${ALIAS}))?\s*$`, 'i');
+const CUT_STATEMENT = /^\s*(?:with\s+(?:recursive\s+)?[\s\S]*?\b(?=update\b|delete\b|insert\b|select\b|merge\b|values\b))?(update|delete|truncate)\b/i;
+const DROP_TABLE = /^\s*drop\s+table\s+(if\s+exists\s+)?/i;
+/** Writes that change rows already there in ways no SELECT before them can single out. */
+const UNREADABLE = /^\s*(?:with\b[\s\S]*?)?\b(merge\b|replace\b|insert\b[\s\S]*\bon\s+(?:conflict\b[\s\S]*\bdo\s+update|duplicate\s+key\s+update)\b|alter\s+table\b[\s\S]*\bdrop\b)/i;
+
+/**
+ * The SELECTs that read what a script's UPDATE, DELETE, TRUNCATE and DROP TABLE statements are about to change (the
+ * same WHERE, joins and CTEs), and the writes it cannot read that way. Inserts change nothing that was there.
+ */
+export function planBackup(script: string, driver: Driver): BackupPlan {
+  if (isNoSql(driver)) return noSqlBackupPlan(statementsOf(script, driver), driver);
+  const my = isMy(driver);
+  const reads: BackupRead[] = [];
+  const skipped: string[] = [];
+  statementsOf(script, driver).forEach((full, index) => {
+    const sql = full.replace(/;\s*$/, '');
+    // Same length as `sql`, so a position in one is the same in the other.
+    const top = topLevel(sql, driver);
+    const at = (re: RegExp, from: number, to = top.length) => {
+      const g = new RegExp(re.source, 'gi');
+      g.lastIndex = from;
+      const m = g.exec(top);
+      return m && m.index < to ? m.index : -1;
+    };
+    const first = (...xs: number[]) => Math.min(...xs.filter((x) => x >= 0), top.length);
+    const add = (table: string, read: string, optional = false) => reads.push({ index, statement: full, table: table.trim(), read, ...(optional && { optional }) });
+    const skip = (why: string) => skipped.push(`statement ${index + 1} (${why}): ${sql.replace(/\s+/g, ' ').slice(0, 120)}`);
+    /** `alias.*` for one table (so a join's other columns stay out), else every column. */
+    const columns = (target: string) => {
+      const m = SINGLE_TARGET.exec(target);
+      return m ? `${m[2] ?? m[1]}.*` : '*';
+    };
+    const drop = DROP_TABLE.exec(top);
+    if (drop) {
+      const rest = top.slice(drop[0].length).replace(/\b(cascade|restrict)\b/gi, '');
+      for (const t of rest.split(',').map((x) => x.trim()).filter(Boolean)) add(t, `SELECT * FROM ${t}`, !!drop[1]);
+      return;
+    }
+    const m = CUT_STATEMENT.exec(top);
+    if (!m) {
+      if (UNREADABLE.test(top)) skip('an upsert, MERGE, REPLACE or ALTER ... DROP: what it changes cannot be read beforehand');
+      return;
+    }
+    const verb = m[1]!.toLowerCase();
+    const verbEnd = m[0].length;
+    // A WITH before it stays in front of the SELECT.
+    const prefix = sql.slice(0, verbEnd - m[1]!.length);
+    const end = first(at(/\breturning\b/, verbEnd));
+    if (verb === 'truncate') {
+      const optsAt = first(at(/\b(restart|continue|cascade|restrict)\b/, verbEnd));
+      const list = sql.slice(verbEnd, optsAt).replace(/^\s*table\b/i, '');
+      for (const t of list.split(',').map((x) => x.trim().replace(/^only\s+/i, '').replace(/\s*\*$/, '')).filter(Boolean)) add(t, `SELECT * FROM ${t}`);
+      if (/\bcascade\b/i.test(top.slice(optsAt))) skip('CASCADE also empties the tables that refer to it; those are not backed up');
+      return;
+    }
+    if (verb === 'update') {
+      const setAt = at(/\bset\b/, verbEnd);
+      if (setAt < 0) { skip('no SET found'); return; }
+      const target = sql.slice(verbEnd, setAt).replace(/^\s*(?:or\s+(?:rollback|abort|replace|fail|ignore)\s+)?(?:(?:low_priority|ignore)\s+)*/i, '').trim();
+      // PostgreSQL and SQLite: UPDATE ... SET ... FROM others.
+      const fromAt = my ? -1 : at(/\bfrom\b/, setAt, end);
+      const condAt = at(/\b(where|order\s+by|limit)\b/, Math.max(setAt, fromAt), end);
+      const from = fromAt >= 0 ? sql.slice(fromAt + 4, condAt >= 0 ? condAt : end).trim() : '';
+      const cond = condAt >= 0 ? sql.slice(condAt, end).trim() : '';
+      add(SINGLE_TARGET.exec(target)?.[1] ?? target, `${prefix}SELECT ${columns(target)} FROM ${target}${from ? `, ${from}` : ''}${cond ? ` ${cond}` : ''}`);
+      return;
+    }
+    const fromAt = at(/\bfrom\b/, verbEnd, end);
+    if (fromAt < 0) { skip('no FROM found'); return; }
+    const condAt = at(/\b(where|order\s+by|limit)\b/, fromAt, end);
+    const bodyEnd = condAt >= 0 ? condAt : end;
+    const usingAt = at(/\busing\b/, fromAt, bodyEnd);
+    const cond = condAt >= 0 ? sql.slice(condAt, end).trim() : '';
+    const named = sql.slice(verbEnd, fromAt).replace(/^\s*(?:(?:low_priority|quick|ignore)\s+)*/i, '').trim();
+    const target = sql.slice(fromAt + 4, usingAt >= 0 ? usingAt : bodyEnd).trim();
+    const using = usingAt >= 0 ? sql.slice(usingAt + 5, bodyEnd).trim() : '';
+    // MySQL's multi-table forms: DELETE t1, t2 FROM <joins> and DELETE FROM t1, t2 USING <joins>.
+    const listed = (list: string) => list.split(',').map((x) => `${x.trim().replace(/\.\*$/, '')}.*`).join(', ');
+    let read: string;
+    if (named) read = `SELECT ${listed(named)} FROM ${target}`;
+    else if (using && my) read = `SELECT ${listed(target)} FROM ${using}`;
+    else read = `SELECT ${columns(target)} FROM ${target}${using ? `, ${using}` : ''}`;
+    add(named || (SINGLE_TARGET.exec(target)?.[1] ?? target), `${prefix}${read}${cond ? ` ${cond}` : ''}`);
+  });
+  return { reads, skipped };
+}
+
+/**
+ * Runs a backup's reads and keeps every row (no value cut). More than `cap` rows in all fails: such a write is too big to
+ * back up here. A read that fails fails the backup, unless it is optional.
+ */
+export async function readBackup(c: DbConnection, plan: BackupPlan, cap: number, timeoutMs: number): Promise<BackupTable[]> {
+  if (!plan.reads.length) return [];
+  if (tunneled(c)) return withTunnel(c, (t) => readBackup(t, plan, cap, timeoutMs));
+  const strip = ({ filter: _f, optional: _o, ...r }: BackupRead) => r;
+  if (c.driver === 'mongodb') {
+    const docs = await mongoBackupRead(c, plan.reads, cap, timeoutMs);
+    return plan.reads.map((r, i) => ({ ...strip(r), documents: docs[i]! }));
+  }
+  const out: BackupTable[] = [];
+  let total = 0;
+  for (const r of plan.reads) {
+    let res: QueryResult;
+    try {
+      [res] = await runScript(c, r.read, { readOnly: true, limit: cap - total, timeoutMs, maxCell: Infinity }) as [QueryResult];
+    } catch (e) {
+      if (!r.optional) throw new Error(`reading ${r.table} failed: ${(e as Error).message}`);
+      out.push({ ...strip(r), error: (e as Error).message });
+      continue;
+    }
+    total += res.rows.length;
+    if (res.truncated) throw new Error(`it would change more than ${cap.toLocaleString('en')} rows`);
+    out.push({ ...strip(r), columns: res.columns.map((col) => col.name), rows: res.rows });
+  }
+  return out;
+}

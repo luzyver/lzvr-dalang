@@ -10,7 +10,7 @@
  */
 import { Binary, BSON, BSONRegExp, Decimal128, Double, Int32, Long, MinKey, MaxKey, MongoClient, ObjectId, Timestamp, UUID } from 'mongodb';
 import { Redis } from 'ioredis';
-import type { DbConnection, QueryResult, RunOpts, SchemaInfo, SchemaTable } from './databases.js';
+import type { BackupPlan, BackupRead, DbConnection, QueryResult, RunOpts, SchemaInfo, SchemaTable } from './databases.js';
 
 const { EJSON } = BSON;
 
@@ -793,3 +793,60 @@ export function noSqlUnsafe(statements: string[], driver: 'mongodb' | 'redis'): 
   return out;
 }
 
+
+// ---------- backups before an agent's write ----------
+
+/** Writes whose first argument is the filter of the documents they change or remove. */
+const MONGO_FILTERED = new Set(['updateOne', 'updateMany', 'update', 'replaceOne', 'deleteOne', 'deleteMany', 'remove',
+  'findOneAndUpdate', 'findOneAndReplace', 'findOneAndDelete']);
+
+/**
+ * What a script's writes are about to change: per MongoDB write, a find with its filter (every document a drop removes);
+ * writes that cannot be read that way (bulkWrite, $out/$merge, a rename over another) and Redis writes are listed as not
+ * backed up.
+ */
+export function noSqlBackupPlan(statements: string[], driver: 'mongodb' | 'redis'): BackupPlan {
+  const reads: BackupRead[] = [];
+  const skipped: string[] = [];
+  const short = (s: string) => s.replace(/\s+/g, ' ').slice(0, 120);
+  statements.forEach((sql, index) => {
+    if (driver === 'redis') {
+      const words = redisWords(sql);
+      if (words.length && !REDIS_READS.has(commandName(words))) skipped.push(`statement ${index + 1} (Redis commands are not backed up): ${short(sql)}`);
+      return;
+    }
+    let cmd: MongoCommand;
+    try { cmd = parseMongo(sql); } catch { return; }
+    if (cmd.kind !== 'collection') return;
+    const first = cmd.calls[0]!;
+    const coll = cmd.collection!;
+    const filter = first.name === 'drop' ? {} : MONGO_FILTERED.has(first.name) ? (first.args[0] ?? {}) as object : null;
+    if (filter) {
+      reads.push({ index, statement: sql, table: coll, filter,
+        read: `db.getCollection(${JSON.stringify(coll)}).find(${EJSON.stringify(filter, { relaxed: false })})` });
+    } else if (first.name === 'bulkWrite' || (first.name === 'aggregate' && pipelineWrites(aggregateArgs(first.args).pipeline))
+      || (first.name === 'renameCollection' && (first.args[1] as { dropTarget?: boolean } | undefined)?.dropTarget)) {
+      skipped.push(`statement ${index + 1} (${first.name}: what it changes cannot be read beforehand): ${short(sql)}`);
+    }
+  });
+  return { reads, skipped };
+}
+
+/** Every document each read's filter matches now, as canonical Extended JSON; more than `cap` in all fails. */
+export async function mongoBackupRead(c: DbConnection, reads: BackupRead[], cap: number, timeoutMs: number): Promise<unknown[][]> {
+  if (!c.database) throw new Error('no database picked');
+  const client = mongoClient(c, timeoutMs);
+  try {
+    await client.connect();
+    const db = client.db(c.database);
+    const out: unknown[][] = [];
+    let total = 0;
+    for (const r of reads) {
+      const docs = await db.collection(r.table).find(r.filter ?? {}, { maxTimeMS: timeoutMs }).limit(cap - total + 1).toArray();
+      total += docs.length;
+      if (total > cap) throw new Error(`it would change more than ${cap.toLocaleString('en')} documents`);
+      out.push(docs.map((d) => EJSON.serialize(d, { relaxed: false })));
+    }
+    return out;
+  } finally { await client.close().catch(() => {}); }
+}
