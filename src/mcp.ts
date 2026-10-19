@@ -13,6 +13,7 @@ import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
+import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
 import type { Conversation, Project, Store } from './store.js';
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
@@ -291,6 +292,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
+  const hosts = loadHosts(store).filter((h) => h.agent !== 'off' && canAccess(viewer, h.access));
+  if (hosts.length) sshTools(server, store, push, hosts, { who: onBehalf, conv: source });
   if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
   return server;
 }
@@ -488,6 +491,83 @@ function databaseTools(server: McpServer, store: Store, push: Push, stateDir: st
     const a = readDbApprovals(store).find((x) => x.id === approval_id && get(x.conn));
     if (!a) return fail(`no such approval: ${approval_id}`);
     return text({ id: a.id, connection: a.conn, database: a.database, status: a.status, outcome: a.outcome ?? null, decided_by: a.decidedBy ?? null });
+  });
+}
+
+const SSH_TIMEOUT_DEFAULT_S = 60;
+const SSH_TIMEOUT_MAX_S = 600;
+
+/**
+ * SSH hosts (the SSH Hosts page) open to agents: shell commands run with a login Dalang keeps. The agent sees each host's name,
+ * label and note only, never its address, user or secrets (which are also taken out of what a command prints). On an
+ * 'approve' host every command waits for an admin; on a 'run' one, those that read as dangerous. Each command goes into
+ * the host's log.
+ */
+function sshTools(server: McpServer, store: Store, push: Push, hosts: SshHost[], by: { who: string; conv: string | null }): void {
+  const get = (id: string) => hosts.find((h) => h.id === id);
+  server.registerTool('ssh_list_hosts', {
+    description: 'List the SSH hosts (servers, VMs) you may run shell commands on with ssh_exec: id, label, what it is, '
+      + "whether each command waits for an admin's approval, and whether sudo can be used. Dalang keeps the logins; you never get them.",
+  }, async () => text(hosts.map((h) => ({
+    id: h.id, label: h.label, ...(h.note && { note: h.note }), access: h.agent === 'approve' ? 'every command after approval' : 'run (dangerous commands after approval)',
+    sudo: h.sudoPassword || h.auth === 'password' ? 'yes (Dalang answers its password)' : 'only if sudo needs no password there',
+  }))));
+
+  server.registerTool('ssh_exec', {
+    description: 'Run a shell command on an SSH host (see ssh_list_hosts) in a fresh session, as the user Dalang logs in with. '
+      + 'No terminal and nothing on standard input: interactive programs (editors, prompts, pagers, password questions) hang '
+      + 'until the timeout, so pass flags like -y or --no-pager. Each call is a new session: cd and variables do not carry '
+      + 'over, chain with && instead. Returns the exit code, stdout and stderr (the start and end of long output). sudo: true '
+      + 'runs it as root through sudo, whose password Dalang gives. On a host that needs approval the command is held for an '
+      + 'admin (status pending_approval), and so is a dangerous one (deleting files, stopping services, rebooting, changing '
+      + 'users or the firewall, removing packages or containers, piping into a shell, ...) on any host: the outcome comes '
+      + 'to this chat as a message, or ask ssh_approval. Keep commands plain and to the point so they need no approval.',
+    inputSchema: {
+      host: z.string(), command: z.string().min(1).max(20_000),
+      sudo: z.boolean().optional().describe('run it as root through sudo'),
+      timeout_seconds: z.number().int().min(1).max(SSH_TIMEOUT_MAX_S).optional().describe(`default ${SSH_TIMEOUT_DEFAULT_S}`),
+    },
+  }, async ({ host, command, sudo, timeout_seconds }) => {
+    const h = get(host);
+    if (!h) return fail(`no such host: ${host} (see ssh_list_hosts)`);
+    const timeoutMs = (timeout_seconds ?? SSH_TIMEOUT_DEFAULT_S) * 1000;
+    const t0 = Date.now();
+    const entry = { at: t0, who: by.who, conv: by.conv, command: command.slice(0, 4000), ...(sudo && { sudo: true }) };
+    const dangerous = h.agent === 'run' ? findDangerous(command, h.holdPatterns) : [];
+    if (h.agent === 'approve' || dangerous.length) {
+      const a = createSshApproval(store, {
+        host: h.id, target: targetOf(h), command, sudo: !!sudo, timeoutMs, who: by.who, conv: by.conv, ...(dangerous.length && { dangerous }),
+      });
+      logSsh(store, h.id, { ...entry, ok: false, ms: 0, error: `held for approval #${a.id}` });
+      void push.notify({ title: 'SSH command needs approval', body: `${h.label}: ${command.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
+      return text({
+        status: 'pending_approval', approval_id: a.id,
+        ...(dangerous.length && { held_because: dangerous }),
+        note: `${dangerous.length ? 'This command looks dangerous, so it waits for an admin' : 'Commands on this host wait for an admin'}. Nothing ran yet. `
+          + 'The outcome will arrive in this chat as a message; do not send it again.',
+      });
+    }
+    try {
+      const r = await runCommand(h, command, { sudo, timeoutMs });
+      logSsh(store, h.id, { ...entry, ok: true, exitCode: r.exitCode, ms: r.ms });
+      return text({
+        exit_code: r.exitCode, ...(r.signal && { signal: r.signal }), ...(r.timedOut && { timed_out: true }), stdout: r.stdout, stderr: r.stderr,
+        ...(r.truncated && { truncated: true }),
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      logSsh(store, h.id, { ...entry, ok: false, ms: Date.now() - t0, error: msg });
+      return fail(msg);
+    }
+  });
+
+  server.registerTool('ssh_approval', {
+    description: 'Whether an SSH command held for approval (ssh_exec answered pending_approval) was approved, rejected or failed, and its outcome.',
+    inputSchema: { approval_id: z.number().int() },
+  }, async ({ approval_id }) => {
+    const a = readSshApprovals(store).find((x) => x.id === approval_id && get(x.host));
+    if (!a) return fail(`no such approval: ${approval_id}`);
+    return text({ id: a.id, host: a.host, status: a.status, outcome: a.outcome ?? null, decided_by: a.decidedBy ?? null });
   });
 }
 

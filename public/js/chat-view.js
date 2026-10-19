@@ -6,12 +6,12 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { confirmDialog, Icon } from './ui.js';
 import {
-  approvals, dbApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
+  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { startStream, ThreadModel } from './stream.js';
 import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
-import { ApprovalCard, DbApprovalCard } from './approvals.js';
+import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
 
 /** The open chat, shared with the inspector. `version` goes up whenever the thread model changed. */
 export const chat = {
@@ -206,6 +206,7 @@ export function ChatView({ id, focusEvent }) {
   const lastSteps = model.blocks.length && model.blocks[model.blocks.length - 1].type === 'steps' ? model.blocks[model.blocks.length - 1] : null;
   const waiting = approvals.value.filter((a) => a.to_conv === id);
   const writes = dbApprovals.value.filter((a) => a.conv === id);
+  const commands = sshApprovals.value.filter((a) => a.conv === id);
   const focus = route.value.focusEvent;
 
   return html`<main class="main">
@@ -220,6 +221,7 @@ export function ChatView({ id, focusEvent }) {
         ${model.blocks.map((b) => html`<${Block} key=${b.key} b=${b} v=${b.v} hit=${focus != null && b.eventId === focus} active=${running && b === lastSteps && !b.done} root=${conv?.worktree || found?.project?.path} conversationId=${conv?.id} />`)}
         ${waiting.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} />`)}
         ${writes.map((a) => html`<${DbApprovalCard} key=${`db${a.id}`} a=${a} />`)}
+        ${commands.map((a) => html`<${SshApprovalCard} key=${`ssh${a.id}`} a=${a} />`)}
         ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
       </div>
     </div>

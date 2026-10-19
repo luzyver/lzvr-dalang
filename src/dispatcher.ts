@@ -8,6 +8,7 @@ import { loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
+import { loadHosts } from './ssh-hosts.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
@@ -23,6 +24,11 @@ db_list_connections to find the connection, db_schema for its tables and columns
 way (psql, mysql, mongosh, redis-cli, a script, or credentials from .env or config files) unless the person asks for that
 explicitly. If the database is not in db_list_connections, or you may only read and need to write, say so instead of
 working around it. A write that answers pending_approval waits for an admin: do not send it again.`;
+const SSH_GUIDE = `Servers: when asked to run something on a server or VM, use the dalang MCP tools ssh_list_hosts and ssh_exec
+(in Claude Code they may need loading first: search your tools for "mcp__dalang"). Dalang keeps the logins: do not look
+for SSH keys, passwords or addresses yourself, and do not run ssh, scp or sshpass unless the person asks for that
+explicitly. If the server is not in ssh_list_hosts, say so. A command that answers pending_approval waits for an admin:
+do not send it again.`;
 /** How much of a sub-agent's last answer goes into its report to the parent. */
 const REPORT_MAX = 6000;
 
@@ -380,7 +386,7 @@ export class Dispatcher {
     // Claude Code reads outside its folder only from directories it was given.
     if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
     const guide = [
-      ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+      ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
       skillsGuide(skills),
       agentGitGuide(agentGit),
     ].filter(Boolean).join('\n\n');
@@ -493,6 +499,11 @@ export class Dispatcher {
    */
   databaseGuide(): string {
     return loadConnections(this.store).some((c) => c.agent !== 'off') ? DB_GUIDE : '';
+  }
+
+  /** While any SSH host is open to agents, a turn is told to run commands on servers through the gateway's ssh_* tools. */
+  sshGuide(): string {
+    return loadHosts(this.store).some((h) => h.agent !== 'off') ? SSH_GUIDE : '';
   }
 
   orchestratorGuide(conv: Conversation, projectId: string): string {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { Sealer } from './secrets.js';
 import { AGENT_GIT_DEFAULTS, type AgentGitPolicy } from './agent-git.js';
 import type { Backend, ProjectAccess } from './util.js';
 
@@ -244,8 +245,33 @@ export class Store {
   listApprovals(status: Approval['status']): Approval[] { return this.all('SELECT * FROM approvals WHERE status=? ORDER BY id', status); }
   setApprovalStatus(id: number, status: Approval['status']): void { this.run('UPDATE approvals SET status=? WHERE id=?', status, id); }
 
-  getKv(key: string): string | null { return this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null; }
-  setKv(key: string, value: string): void { this.run('INSERT OR REPLACE INTO kv (key,value) VALUES (?,?)', key, value); }
+  private sealer: Sealer | null = null;
+  private sealed = new Set<string>();
+
+  /**
+   * From now on the KV entries `keys` are stored encrypted with `sealer` (see secrets.ts). Those stored before in clear
+   * are encrypted now, and the file is compacted so their old text does not linger in free pages. Throws when a stored
+   * one was encrypted with another key (before anything is changed).
+   */
+  sealKv(sealer: Sealer, keys: string[]): { migrated: string[] } {
+    const rows = keys.map((key) => ({ key, value: this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null }));
+    for (const r of rows) if (r.value !== null) sealer.open(r.value);
+    this.sealer = sealer;
+    this.sealed = new Set(keys);
+    const migrated = rows.filter((r) => r.value !== null && !Sealer.isSealed(r.value)).map((r) => r.key);
+    for (const key of migrated) this.setKv(key, rows.find((r) => r.key === key)!.value!);
+    if (migrated.length) this.db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
+    return { migrated };
+  }
+
+  getKv(key: string): string | null {
+    const value = this.get<{ value: string }>('SELECT value FROM kv WHERE key=?', key)?.value ?? null;
+    return value !== null && this.sealer && this.sealed.has(key) ? this.sealer.open(value) : value;
+  }
+  setKv(key: string, value: string): void {
+    const stored = this.sealer && this.sealed.has(key) ? this.sealer.seal(value) : value;
+    this.run('INSERT OR REPLACE INTO kv (key,value) VALUES (?,?)', key, stored);
+  }
   deleteKv(key: string): void { this.run('DELETE FROM kv WHERE key=?', key); }
   // Global model/effort defaults are kept per backend: a Codex model name means nothing to Claude Code.
   private defaultKey(name: string, backend: Backend): string { return backend === 'claude' ? `${name}_claude` : name; }

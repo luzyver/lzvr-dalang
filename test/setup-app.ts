@@ -9,6 +9,7 @@ import type { GitAuth } from '../src/git-auth.js';
 import { Logins } from '../src/login.js';
 import { Push, type PushSend } from '../src/push.js';
 import type { SendMail } from '../src/otp.js';
+import { SEALED_KEYS, Sealer } from '../src/secrets.js';
 import { Store } from '../src/store.js';
 import type { Terminals } from '../src/terminals.js';
 import { FAKE, TOKEN } from './helpers.js';
@@ -51,6 +52,8 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
     ...extra.cfg,
   };
   const store = new Store();
+  // As in production: the secret entries are stored encrypted.
+  store.sealKv(new Sealer('test-secret-key'), SEALED_KEYS);
   const dispatcher = new Dispatcher(store, { homes: extra.homes ?? [join(base, 'home')], command: FAKE, env });
   const push = new Push(store, { send: extra.pushSend ?? (async () => {}) });
   const logins = new Logins({

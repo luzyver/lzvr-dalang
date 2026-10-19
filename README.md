@@ -404,6 +404,7 @@ Known limits:
 | `LZVR_TOKEN` | required | Access token, min 32 chars. Treat it like a root password. |
 | `WORKSPACE_ROOT` | required | Projects must live under this folder (`/` allows everything). |
 | `STATE_DIR` | `./state` | Database and uploads. |
+| `LZVR_SECRET_KEY` | `<STATE_DIR>/secret.key` | Encrypts the passwords, keys and tokens stored in the database (see "Security"). Any text; keep it, since without it they cannot be read. |
 | `HOST` / `PORT` | `127.0.0.1` / `9876` | Listen address. Keep loopback and put a TLS proxy in front. |
 | `TRUST_PROXY` | off | Set `1` when a reverse proxy **on this machine** (nginx/Caddy) fronts the gateway, or list its IPs/CIDRs (`10.0.0.5,10.0.1.0/24`). Rate limiting then uses the client address that proxy saw. Without it, every visitor looks like `127.0.0.1` and ten bad tokens from anyone lock everyone out. Never trust addresses that are not your proxy. |
 | `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset. |
@@ -427,6 +428,17 @@ panel off the public internet (Tailscale/WireGuard/IP allowlist, or TLS proxy), 
 Ten wrong tokens from one address in a minute are blocked with 429. Everything Codex reads is sent to OpenAI as
 context, so keep secrets (`.env`, keys) out of the folders you register, or use `"sandbox": "read-only"` and
 a narrower `WORKSPACE_ROOT` (for example `/var/www`).
+
+**Secrets in the database are encrypted.** SSH hosts, SQL editor connections (and their SSH tunnels), the ClickUp
+token, other MCP servers' tokens and environment, and the push key are stored with AES-256-GCM, so `lzvr.db` alone (a
+copy, a backup, an agent reading it) does not give them away. The key is `LZVR_SECRET_KEY`, which no agent, terminal
+or git process Dalang starts receives (no `LZVR_*` variable does). Without it, Dalang makes `<STATE_DIR>/secret.key`
+and warns at start: that file sits next to the database, so for agents that can read the state folder, put its content
+in `LZVR_SECRET_KEY` (the systemd unit's `Environment=` or `.env`) and delete the file. Values stored in clear by an
+earlier version are encrypted at the next start and the database is compacted; older copies and backups of it still
+hold them in clear. A wrong key stops the start instead of losing anything. This is not a wall against an agent
+running as the same OS user, which can still read Dalang's service file or process environment; only running agents
+as another OS user is.
 
 ### Failover: two things to confirm on your first run
 
@@ -763,6 +775,48 @@ The SSH server's key is trusted on first use: **Test connection** shows its fing
 trusts it. From then on a server with another key is refused until the connection is tested and saved again (for a
 reinstalled server); changing the SSH host or port forgets the trusted key. SSH passwords, keys and passphrases are
 stored like the database password and never sent back to the browser.
+
+### SSH hosts for agents
+
+The **SSH Hosts** page (in the sidebar, admins) keeps logins to servers and VMs that agents may run shell commands on without ever
+knowing the login. Each host has a name, label, address, port, user, a password or private key (and passphrase), an
+optional sudo password, and a note telling agents what it is ("staging web server, the app is in /opt/app"). Like a
+SQL connection it has **Who may use it** (everyone, owner and admins, owner only; it counts for the person an agent
+works for) and an agent mode:
+
+- **Off**: agents do not see it.
+- **Every command after approval**: each command waits in Approvals (and as a card in the chat) until an admin runs or
+  rejects it; the output goes back to the agent's chat as a message.
+- **Run**: commands run at once, except those that read as dangerous, with `sudo` or without: they wait for an admin
+  as above, and the card says why. That covers deleting files (`rm -r`/`-f`, `find -delete`, `xargs rm`), wiping or
+  formatting disks (`mkfs`, `dd of=`, `shred`, writes to `/dev/sd*`), emptying or overwriting system files, shutdown and
+  reboot, stopping or restarting services, `kill`, changing users, passwords, `sudoers`, `authorized_keys` or
+  `sshd_config`, recursive `chmod`/`chown`, firewall and network changes, removing packages, containers or Kubernetes
+  objects, mounting, piping into a shell or interpreter (`curl ... | sh`, `base64 -d`, `eval`), running a `.sh` file,
+  `crontab -r`, dropping database tables and `git reset --hard` or force pushes. **Also hold for approval** adds the
+  host's own regular expressions. This reads the command as text, so it is best effort: shell can hide a command (a
+  variable, a script written in one call and run in another). For a server that matters, the real limits are a login
+  user with only the rights it needs, and "Every command after approval".
+
+Agents get it through this gateway's MCP (`MCP_INJECT=1`): `ssh_list_hosts` gives each host's name, label, note and
+mode only, never its address, user or secrets; `ssh_exec` runs one command (`host`, `command`, optional `sudo` and
+`timeout_seconds`, 60 s by default, at most 600) in a fresh session without a terminal or input and answers with its
+exit code, stdout and stderr (the start and end of long output, 100 KB at most); `ssh_approval` tells what became of a
+held command. `sudo: true` first asks whether sudo needs a password there (`sudo -n`); if not (NOPASSWD, a cached
+login) the command runs through `sudo -n` and no password is sent at all. Otherwise it runs through `sudo -S -k` with
+the sudo password (or the login password) written to sudo's input, and the command's own input is `/dev/null`, so the
+password never reaches it; with a key login and no sudo password, sudo must not ask. When a host is removed or
+pointed at another address, port or user, the commands still waiting for approval on it are rejected and their chats
+told, so an Approve never runs one on a server it was not asked for. The password, passphrase, sudo password and every
+line of the private key are replaced by `[secret]` in whatever a command prints, so `cat` of a file holding them does
+not hand them over. While any host is open to agents, every turn is told to use these tools instead of `ssh`, `scp` or
+keys of its own. Each command goes into the host's log, shown under its form.
+
+The host's key is trusted on first use as for an SSH tunnel: **Test connection** logs in, shows the key's fingerprint
+and what the host is (`uname`, the user), and **Save** trusts it. Until then, or after the key changes, agents are
+refused. Changing a host's address, port or user drops its saved password, key, passphrase and sudo password (they
+must be given again), so a saved login is never sent to another server; secrets never go back to the browser. A login an agent cannot see still lets it do whatever that user may on the host: give it a user with only the
+rights it needs, and prefer "after approval" for servers that matter.
 
 ## Develop
 

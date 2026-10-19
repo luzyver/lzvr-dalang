@@ -5,7 +5,7 @@ import { render } from './vendor/preact.js';
 import { useEffect, useState } from './vendor/preact-hooks.js';
 import { html, cx } from './js/lib.js';
 import { ConfirmDialog, Toasts } from './js/ui.js';
-import { openChat, route, toast, ui } from './js/store.js';
+import { isAdmin, openChat, route, toast, ui } from './js/store.js';
 import './js/theme.js';
 import { bootSession, session } from './js/session.js';
 import { Login } from './js/login.js';
@@ -14,6 +14,7 @@ import { ChatView } from './js/chat-view.js';
 import { Inspector } from './js/inspector.js';
 import { SchedulesView } from './js/schedules.js';
 import { ApprovalsView } from './js/approvals.js';
+import { SshHostsView } from './js/ssh-hosts.js';
 import { Home } from './js/home.js';
 import { CommandPalette } from './js/palette.js';
 import { SettingsModal } from './js/settings.js';
@@ -28,6 +29,7 @@ function Shell() {
     ${inChat ? html`<${ChatView} key=${r.id} id=${r.id} focusEvent=${r.focusEvent} />`
       : r.view === 'schedules' ? html`<${SchedulesView} />`
         : r.view === 'approvals' ? html`<${ApprovalsView} />`
+        : r.view === 'ssh' && isAdmin.value ? html`<${SshHostsView} />`
           : html`<${Home} />`}
     ${inChat && html`<${Inspector} id=${r.id} />`}
     <div class="scrim" onClick=${close}></div>

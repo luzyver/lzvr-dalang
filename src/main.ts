@@ -8,12 +8,23 @@ import { Dispatcher } from './dispatcher.js';
 import { Logins } from './login.js';
 import { Push } from './push.js';
 import { Scheduler } from './schedules.js';
+import { loadSecretKey, SEALED_KEYS, Sealer } from './secrets.js';
 import { SKILLS_DIR } from './skills.js';
 import { Store } from './store.js';
 
 const cfg = loadConfig();
 mkdirSync(cfg.stateDir, { recursive: true });
 const store = new Store(join(cfg.stateDir, 'lzvr.db'));
+// Passwords, keys and tokens in the database are stored encrypted (secrets.ts), before anything reads them.
+{
+  const key = loadSecretKey(process.env, cfg.stateDir);
+  const { migrated } = store.sealKv(new Sealer(key.secret), SEALED_KEYS);
+  if (migrated.length) console.log(`encrypted the secrets stored in clear: ${migrated.join(', ')}`);
+  if (key.fromFile) {
+    console.warn(`secrets are encrypted with ${key.fromFile}; set LZVR_SECRET_KEY to its content (and delete the file) so agents `
+      + 'that can read the state folder cannot read it');
+  }
+}
 const push = new Push(store, { subject: cfg.vapidSubject ?? (cfg.origin ? cfg.origin : undefined) });
 const dispatcher = new Dispatcher(store, {
   homes: [], // no account exists until an admin adds one in the panel; they are loaded from the database just below
