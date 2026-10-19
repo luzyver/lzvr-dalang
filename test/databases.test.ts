@@ -419,9 +419,11 @@ describe('SQL editor connections for agents', () => {
     const file = await t.app.inject({ url: `/api/db/connections/app/backups/${entry.backup}`, headers: AUTH });
     expect(file.json().tables).toMatchObject([{ table: 'users', rows: [[2, 'bob', 'x']] }, { table: 'users', rows: [[1, 'ann', null]] }]);
     expect((await t.app.inject({ url: '/api/db/connections/app/backups/..%2F..%2Flzvr.db', headers: AUTH })).statusCode).toBe(404);
+    const listed = (await t.app.inject({ url: '/api/db/connections/app/backups', headers: AUTH })).json();
+    expect(listed).toMatchObject([{ file: entry.backup, who: 'owner', rows: 2, tables: ['users'] }]);
     // An insert changes nothing that was there: no backup.
     expect(JSON.parse((await a.call('db_query', { connection: 'app', sql: "INSERT INTO users (name) VALUES ('cy')" })).text).backup).toBeUndefined();
-    expect(readdirSync(join(t.cfg.stateDir, 'db-backups', 'app'))).toHaveLength(1);
+    expect(readdirSync(join(t.cfg.stateDir, 'db-backups', 'app')).filter((f) => f !== 'index.json')).toHaveLength(1);
     // The backup's read fails (no such column), so the write does not run.
     const bad = await a.call('db_query', { connection: 'app', sql: "UPDATE users SET note = 'q' WHERE nope = 1" });
     expect(bad).toMatchObject({ isError: true });

@@ -5,7 +5,7 @@
  * to the panel.
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -71,15 +71,37 @@ export async function backupWrite(stateDir: string, c: DbConnection, meta: { dat
     connection: c.id, driver: c.driver, ...(meta.database && { database: meta.database }), at: Date.now(), who: meta.who, conv: meta.conv,
     ...(meta.approval && { approval: meta.approval }), sql: meta.sql, rows, tables, ...(plan.skipped.length && { notBackedUp: plan.skipped }),
   }, null, 1));
+  // The list the panel shows, newest first, read and written in one go (two backups at once must not lose an entry).
+  const entry: DbBackupEntry = {
+    file, at: Date.now(), who: meta.who, conv: meta.conv, ...(meta.database && { database: meta.database }), ...(meta.approval && { approval: meta.approval }),
+    sql: meta.sql.slice(0, 4000), rows, tables: [...new Set(tables.map((t) => t.table))], ...(plan.skipped.length && { notBackedUp: plan.skipped.length }),
+  };
+  const list = [entry, ...readBackupIndex(dir)];
+  writeFileSync(join(dir, BACKUP_INDEX), JSON.stringify(list.slice(0, BACKUP_KEEP)));
   // Names start with the time, so sorting them sorts by age.
   const old = (await readdir(dir)).filter((f) => BACKUP_FILE.test(f)).sort().slice(0, -BACKUP_KEEP);
   await Promise.all(old.map((f) => rm(join(dir, f), { force: true })));
   return { file, rows, skipped: plan.skipped };
 }
 
+/** A backup as the panel lists it (the file holds the rows). */
+export interface DbBackupEntry {
+  file: string; at: number; who: string; conv: string | null; database?: string; approval?: number; sql: string; rows: number;
+  tables: string[]; notBackedUp?: number;
+}
+const BACKUP_INDEX = 'index.json';
+function readBackupIndex(dir: string): DbBackupEntry[] {
+  try { return JSON.parse(readFileSync(join(dir, BACKUP_INDEX), 'utf8')); } catch { return []; }
+}
+/** A connection's backups, newest first: those whose file is still there. */
+export function listBackups(stateDir: string, conn: string): DbBackupEntry[] {
+  const dir = backupDir(stateDir, conn);
+  return readBackupIndex(dir).filter((b) => BACKUP_FILE.test(b.file) && existsSync(join(dir, b.file)));
+}
+
 /** For the agent and the chat: what was kept, and what was not. */
 export const describeBackup = (b: DbBackup | null) => (!b ? '' : [
-  b.file ? `Backed up ${b.rows} row(s) it changes first (${b.file}; admins download it from the connection's agent log in the SQL editor).` : '',
+  b.file ? `Backed up ${b.rows} row(s) it changes first (${b.file}; admins find it under Backups in the connection's menu in the SQL editor).` : '',
   ...b.skipped.map((s) => `Not backed up: ${s}`),
 ].filter(Boolean).join('\n'));
 const logKey = (id: string) => `db_log:${id}`;
@@ -419,7 +441,13 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     return readDbLog(store, req.params.id);
   });
 
-  // A backup taken before an agent's write (named in the log), as a JSON file.
+  // The backups taken before agents' writes on this connection, newest first.
+  app.get<{ Params: { id: string } }>('/api/db/connections/:id/backups', { onRequest: requireAdmin }, (req, reply) => {
+    if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
+    return listBackups(d.stateDir, req.params.id);
+  });
+
+  // One of them (named in the list and the log), as a JSON file.
   app.get<{ Params: { id: string; file: string } }>('/api/db/connections/:id/backups/:file', { onRequest: requireAdmin }, async (req, reply) => {
     if (!find(req.user!, req.params.id) || !BACKUP_FILE.test(req.params.file)) return reply.code(404).send({ error: 'not found' });
     let body: Buffer;

@@ -703,7 +703,7 @@ connections belong to the panel.
 - **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
   it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
   same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match) and keeps them as JSON in
-  `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection; **backup** in the agent log downloads one). If that read
+  `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection). Admins find them under **Backups** in the connection's `⋯` menu (when, who, which chat, the SQL, how many rows of which tables; **download** gives the file), and an agent query that took one has a **backup** link in its log. If that read
   fails, or the write would change more than 50 000 rows, nothing runs. Inserts change nothing that was there and
   are not backed up. Upserts, `MERGE`, `REPLACE`, `ALTER ... DROP`, MongoDB `bulkWrite` / `$out` / `$merge` and Redis
   writes cannot be read beforehand: they run, and the agent and the approval outcome say they were not backed up.
