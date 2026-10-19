@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Updates Dalang on the server and restarts its systemd service (see "Install on the VM" in the README).
+# Updates Dalang on the server and restarts its systemd service (see "Install on the VM" in docs/guide.md).
 # Usage, from the checkout on the server: scripts/update.sh [--no-pull]
 #   git pull --ff-only, npm ci when the lockfile changed, build, systemctl restart, then wait for the port.
 #   A failed pull or build leaves the running service alone. SERVICE overrides the unit name (default lzvr-dalang).
@@ -13,7 +13,7 @@ fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m%s\033[0m\n' "$*"; }
 SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 
-systemctl cat "$service" >/dev/null 2>&1 || fail "No $service service: set it up first (README, \"Install on the VM\")."
+systemctl cat "$service" >/dev/null 2>&1 || fail "No $service service: set it up first (docs/guide.md, \"Install on the VM\")."
 
 # PORT from the unit's Environment=, then .env, then the default.
 port=$(systemctl show -p Environment --value "$service" | tr ' ' '\n' | sed -n 's/^PORT=//p' | tail -n1 || true)

@@ -1,4 +1,22 @@
+# dependencies and build output
 node_modules
 dist
+coverage
+
+# runtime state and secrets
 state
 .env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+
+# editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.swp
+.DS_Store
+Thumbs.db
