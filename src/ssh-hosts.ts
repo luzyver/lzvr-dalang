@@ -136,7 +136,7 @@ class Capture {
 }
 
 export interface RunOpts {
-  /** Run it through sudo (with the host's sudo password on its standard input). */
+  /** Run it through sudo (given the host's sudo password, when sudo asks for one). */
   sudo?: boolean;
   timeoutMs: number;
   /** At most this many bytes of stdout and of stderr each (the start and the end are kept). */
@@ -153,8 +153,12 @@ export async function runCommand(h: SshHost, command: string, o: RunOpts): Promi
   // A failed login names the address ("connect ECONNREFUSED 10.0.0.12:22"): agents get the host's name instead.
   const hide = (e: unknown) => new Error(redact((e as Error).message, h).split(h.host).join(`host "${h.id}"`));
   const { client } = await sshConnect(h, { edit: EDIT_HOST }).catch((e) => { throw hide(e); });
-  const secret = o.sudo ? sudoSecret(h) : '';
-  const line = o.sudo ? `sudo ${secret ? "-S -p ''" : '-n'} -- sh -c ${shQuote(command)}` : command;
+  // The password goes to sudo only when sudo will read it: one it does not ask for (NOPASSWD, a cached login) would be
+  // left on the command's standard input. When it is given, -k makes sudo read it even if a login was cached meanwhile,
+  // and the command's own input is /dev/null, so a line sudo left unread still never reaches it.
+  const secret = o.sudo && sudoSecret(h) && !(await sudoWithoutPassword(client)) ? sudoSecret(h) : '';
+  const line = !o.sudo ? command
+    : secret ? `sudo -S -k -p '' -- sh -c ${shQuote(`exec </dev/null\n${command}`)}` : `sudo -n -- sh -c ${shQuote(command)}`;
   const half = Math.floor((o.maxOutput ?? 100_000) / 2);
   const out = new Capture(half);
   const err = new Capture(half);
@@ -182,6 +186,22 @@ export async function runCommand(h: SshHost, command: string, o: RunOpts): Promi
       stream.on('exit', (code: number | null, signal?: string) => { exit = [typeof code === 'number' ? code : null, signal ?? null]; });
       stream.on('close', () => finish(...exit));
       if (secret) stream.write(`${secret}\n`);
+      stream.end();
+    });
+  });
+}
+
+/** Whether sudo runs a shell for the login user without asking for a password (NOPASSWD, or a login it cached). */
+function sudoWithoutPassword(client: Awaited<ReturnType<typeof sshConnect>>['client'], timeoutMs = 15_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    client.exec('sudo -n -- sh -c :', (e, stream) => {
+      if (e) { clearTimeout(timer); resolve(false); return; }
+      let code: number | null = null;
+      stream.on('exit', (c: number | null) => { code = c; });
+      stream.on('close', () => { clearTimeout(timer); resolve(code === 0); });
+      stream.resume();
+      stream.stderr.resume();
       stream.end();
     });
   });
@@ -230,7 +250,12 @@ export interface SshApproval {
   outcome?: string;
   /** On a 'run' host: why it was held (see findDangerous). */
   dangerous?: string[];
+  /** The server it was asked for (targetOf): an approval does not run on a host since pointed elsewhere. */
+  target?: string;
 }
+
+/** Which server a host reaches, as user@host:port. */
+export const targetOf = (h: Pick<SshHost, 'user' | 'host' | 'port'>) => `${h.user}@${h.host}:${h.port}`;
 const APPROVALS = 'ssh_approvals';
 export function readSshApprovals(store: Store): SshApproval[] {
   try { return JSON.parse(store.getKv(APPROVALS) ?? '[]'); } catch { return []; }

@@ -16,21 +16,30 @@ const hostFingerprint = fingerprint((utils.parseKey(hostKeys.public) as unknown 
 const PASSWORD = 'hunter2-secret';
 
 /**
- * An SSH server (user u, password PASSWORD) whose commands are: `leak` prints the password, `sudo -S ... -- sh -c
- * 'whoami'` answers root once it reads the password on stdin, `hang` never ends, anything else is echoed and exits 3.
+ * An SSH server (user u, password PASSWORD) whose commands are: `leak` prints the password, `sudo -S ...` answers root
+ * once it reads the password on stdin, `sudo -n ...` answers root without one only when `sudo.nopasswd`, `hang` never
+ * ends, anything else is echoed and exits 3. `inputs[i]`: what command i got on its standard input.
  */
-async function sshServer(): Promise<{ port: number; commands: string[] }> {
+async function sshServer(): Promise<{ port: number; commands: string[]; inputs: string[]; sudo: { nopasswd: boolean } }> {
   const commands: string[] = [];
+  const inputs: string[] = [];
+  const sudo = { nopasswd: false };
   const ssh = new Server({ hostKeys: [hostKeys.private] }, (client) => {
     client.on('authentication', (ctx) => (ctx.username === 'u' && ctx.method === 'password' && ctx.password === PASSWORD ? ctx.accept() : ctx.reject()))
       .on('ready', () => {
         client.on('session', (accept) => {
           accept().on('exec', (acceptExec, _reject, info) => {
             const stream = acceptExec();
-            commands.push(info.command);
+            const i = commands.push(info.command) - 1;
+            inputs[i] = '';
+            stream.on('data', (d: Buffer) => { inputs[i] += String(d); });
             const end = (code: number) => { stream.exit(code); stream.end(); };
             if (info.command === 'leak') { stream.write(`the password is ${PASSWORD}\n`); end(0); return; }
             if (info.command === 'hang') return;
+            if (info.command.startsWith('sudo -n')) {
+              if (sudo.nopasswd) { stream.write(info.command === 'sudo -n -- sh -c :' ? '' : 'root\n'); end(0); } else { stream.stderr.write('sudo: a password is required\n'); end(1); }
+              return;
+            }
             if (info.command.startsWith('sudo -S')) {
               let input = '';
               stream.on('data', (d: Buffer) => {
@@ -50,7 +59,7 @@ async function sshServer(): Promise<{ port: number; commands: string[] }> {
   });
   await new Promise<void>((r) => ssh.listen(0, '127.0.0.1', () => r()));
   closers.push(() => new Promise((r) => ssh.close(r)));
-  return { port: (ssh.address() as AddressInfo).port, commands };
+  return { port: (ssh.address() as AddressInfo).port, commands, inputs, sudo };
 }
 
 async function boot() {
@@ -121,12 +130,24 @@ describe('SSH hosts', () => {
     // Whatever the server prints, the password does not reach the agent.
     expect(JSON.parse((await a.call('ssh_exec', { host: 'vm', command: 'leak' })).text).stdout).toBe('the password is [secret]\n');
     expect(JSON.parse((await a.call('ssh_exec', { host: 'vm', command: 'whoami', sudo: true })).text)).toMatchObject({ exit_code: 0, stdout: 'root\n' });
-    expect(t.server.commands.at(-1)).toBe("sudo -S -p '' -- sh -c 'whoami'");
+    // sudo asks here: it gets the password, and the command gets nothing on its input.
+    expect(t.server.commands.slice(-2)).toEqual(['sudo -n -- sh -c :', "sudo -S -k -p '' -- sh -c 'exec </dev/null\nwhoami'"]);
+    expect(t.server.inputs.at(-1)).toBe(`${PASSWORD}\n`);
     expect(JSON.parse((await a.call('ssh_exec', { host: 'vm', command: 'hang', timeout_seconds: 1 })).text)).toMatchObject({ exit_code: null, timed_out: true });
     expect((await a.call('ssh_exec', { host: 'nope', command: 'ls' })).text).toMatch(/no such host/);
     const log = (await t.app.inject({ url: '/api/ssh/hosts/vm/log', headers: AUTH })).json();
     expect(log.map((e: { command: string }) => e.command)).toEqual(['hang', 'whoami', 'leak', 'ls /opt']);
     expect(log[1]).toMatchObject({ who: 'owner', ok: true, exitCode: 0, sudo: true });
+  });
+
+  it('gives sudo no password where it asks for none, so it never reaches the command', async () => {
+    const t = await boot();
+    t.server.sudo.nopasswd = true;
+    await t.put('vm');
+    const r = JSON.parse((await (await t.agent()).call('ssh_exec', { host: 'vm', command: 'od -c', sudo: true })).text);
+    expect(r).toMatchObject({ exit_code: 0, stdout: 'root\n' });
+    expect(t.server.commands).toEqual(['sudo -n -- sh -c :', "sudo -n -- sh -c 'od -c'"]);
+    expect(t.server.inputs).toEqual(['', '']);
   });
 
   it('refuses a host whose key is not trusted or changed', async () => {
@@ -156,6 +177,29 @@ describe('SSH hosts', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/ssh/approvals/1/reject', headers: AUTH })).statusCode).toBe(409);
   });
 
+  it('drops the commands waiting on a host that is pointed elsewhere or removed', async () => {
+    const t = await boot();
+    await t.put('vm', { agent: 'approve' });
+    await t.put('db', { agent: 'approve' });
+    const conv = t.store.createConversation(t.store.createProject('proj', t.root).id);
+    const a = await t.agent('owner', conv.id);
+    for (const host of ['vm', 'vm', 'db']) await a.call('ssh_exec', { host, command: 'uptime' });
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()[0]).toMatchObject({ target: `u@127.0.0.1:${t.server.port}` });
+    // Another label or mode keeps them; another address does not.
+    await t.put('vm', { agent: 'approve', label: 'renamed', password: undefined });
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()).toHaveLength(3);
+    await t.put('vm', { agent: 'approve', host: 'localhost' });
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json().map((x: { id: number }) => x.id)).toEqual([3]);
+    const dropped = (await t.app.inject({ url: '/api/ssh/approvals?status=rejected', headers: AUTH })).json();
+    expect(dropped).toMatchObject([{ id: 2, outcome: 'the host was pointed at another server before it was approved' }, { id: 1 }]);
+    expect((await t.app.inject({ method: 'POST', url: '/api/ssh/approvals/1/approve', headers: AUTH })).statusCode).toBe(409);
+    await t.app.inject({ method: 'DELETE', url: '/api/ssh/hosts/db', headers: AUTH });
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()).toEqual([]);
+    expect(JSON.parse((await a.call('ssh_approval', { approval_id: 2 })).text)).toMatchObject({ status: 'rejected' });
+    await until(() => [...t.store.listQueue(conv.id), ...t.store.listTurns(conv.id)].some((x) => x.prompt.includes('did not run: the host was removed')));
+    expect(t.server.commands).toEqual([]);
+  });
+
   it('gives agents only the hosts open to them and to whoever they work for', async () => {
     const t = await boot();
     await t.put('off', { agent: 'off' });
@@ -175,7 +219,7 @@ describe('SSH hosts', () => {
     const held = JSON.parse((await a.call('ssh_exec', { host: 'vm', command: 'rm -rf /var/www', sudo: true })).text);
     expect(held).toMatchObject({ status: 'pending_approval', held_because: ['rm -r / -f: deletes files'] });
     expect(JSON.parse((await a.call('ssh_exec', { host: 'vm', command: 'ls /OPT/app/data' })).text).held_because).toEqual(['matches this host\'s pattern /opt/app/data']);
-    expect(t.server.commands).toEqual(["sudo -S -p '' -- sh -c 'df -h'"]);
+    expect(t.server.commands).toEqual(['sudo -n -- sh -c :', "sudo -S -k -p '' -- sh -c 'exec </dev/null\ndf -h'"]);
     expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()[1]).toMatchObject({ command: 'rm -rf /var/www', sudo: true, dangerous: ['rm -r / -f: deletes files'] });
     expect(JSON.parse((await a.call('ssh_approval', { approval_id: 1 })).text)).toMatchObject({ status: 'pending' });
     expect((await t.put('bad', { holdPatterns: ['(unclosed'] })).json().error).toMatch(/^pattern \(unclosed: /);

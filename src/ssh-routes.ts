@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Dispatcher } from './dispatcher.js';
 import {
   clearSshLog, describeRun, loadHosts, logSsh, readSshApprovals, readSshLog, runCommand, saveHosts, SSH_AGENT_MODES, type SshApproval, type SshHost,
-  testHost, updateSshApproval,
+  targetOf, testHost, updateSshApproval,
 } from './ssh-hosts.js';
 import { keyProblem } from './ssh-tunnel.js';
 import type { Store } from './store.js';
@@ -97,6 +97,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const next = build(id, req.body, req.user!, old);
     if (typeof next === 'string') return reply.code(400).send({ error: next });
     saveHosts(store, old ? list.map((h) => (h === old ? next : h)) : [...list, next]);
+    if (old && targetOf(old) !== targetOf(next)) dropPending(id, 'the host was pointed at another server before it was approved', req.user!.name);
     return viewHost(next);
   });
 
@@ -104,6 +105,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     saveHosts(store, loadHosts(store).filter((h) => h.id !== req.params.id));
     clearSshLog(store, req.params.id);
+    dropPending(req.params.id, 'the host was removed before it was approved', req.user!.name);
     return reply.code(204).send();
   });
 
@@ -138,7 +140,18 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   const block = (a: SshApproval) => `\n\n${fence}sh\n${a.sudo ? 'sudo ' : ''}${a.command}\n${fence}`;
   // Approvals whose command is running now: another Approve or a Reject must wait for it.
   const running = new Set<number>();
-  const decide = (verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
+  /**
+   * Rejects the commands still waiting on host `id`, which was removed or now reaches another server: an admin's
+   * Approve must never run one on a server it was not asked for.
+   */
+  const dropPending = (id: string, why: string, by: string) => {
+    for (const a of readSshApprovals(store).filter((x) => x.host === id && x.status === 'pending' && !running.has(x.id))) {
+      const patch = { status: 'rejected' as const, decidedBy: by, decidedAt: Date.now(), outcome: why };
+      updateSshApproval(store, a.id, patch);
+      tellChat(a, `[SSH] Your command on host "${id}" did not run: ${why}. Ask again if it is still needed.${block(a)}`);
+    }
+  };
+  const decide =(verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
     const a = readSshApprovals(store).find((x) => x.id === Number(req.params.id));
     if (!a || !visible(req.user!, a)) return reply.code(404).send({ error: 'not found' });
     if (running.has(a.id)) return reply.code(409).send({ error: 'already being run' });
@@ -154,6 +167,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     }
     const h = find(req.user!, a.host);
     if (!h || h.agent === 'off') return reply.code(409).send({ error: 'this host is no longer open to agents; reject it instead' });
+    if (a.target && a.target !== targetOf(h)) return reply.code(409).send({ error: 'this host now reaches another server than it was asked for; reject it instead' });
     running.add(a.id);
     const t0 = Date.now();
     const who = `${a.who || 'an agent'} (approved by ${req.user!.name})`;

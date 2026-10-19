@@ -13,7 +13,7 @@ import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
-import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost } from './ssh-hosts.js';
+import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
 import type { Conversation, Project, Store } from './store.js';
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
@@ -536,7 +536,7 @@ function sshTools(server: McpServer, store: Store, push: Push, hosts: SshHost[],
     const dangerous = h.agent === 'run' ? findDangerous(command, h.holdPatterns) : [];
     if (h.agent === 'approve' || dangerous.length) {
       const a = createSshApproval(store, {
-        host: h.id, command, sudo: !!sudo, timeoutMs, who: by.who, conv: by.conv, ...(dangerous.length && { dangerous }),
+        host: h.id, target: targetOf(h), command, sudo: !!sudo, timeoutMs, who: by.who, conv: by.conv, ...(dangerous.length && { dangerous }),
       });
       logSsh(store, h.id, { ...entry, ok: false, ms: 0, error: `held for approval #${a.id}` });
       void push.notify({ title: 'SSH command needs approval', body: `${h.label}: ${command.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });

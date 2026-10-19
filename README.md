@@ -802,8 +802,12 @@ Agents get it through this gateway's MCP (`MCP_INJECT=1`): `ssh_list_hosts` give
 mode only, never its address, user or secrets; `ssh_exec` runs one command (`host`, `command`, optional `sudo` and
 `timeout_seconds`, 60 s by default, at most 600) in a fresh session without a terminal or input and answers with its
 exit code, stdout and stderr (the start and end of long output, 100 KB at most); `ssh_approval` tells what became of a
-held command. `sudo: true` runs it through `sudo -S` and Dalang writes the sudo password (or the login password) to
-its input; with a key login and no sudo password it uses `sudo -n`. The password, passphrase, sudo password and every
+held command. `sudo: true` first asks whether sudo needs a password there (`sudo -n`); if not (NOPASSWD, a cached
+login) the command runs through `sudo -n` and no password is sent at all. Otherwise it runs through `sudo -S -k` with
+the sudo password (or the login password) written to sudo's input, and the command's own input is `/dev/null`, so the
+password never reaches it; with a key login and no sudo password, sudo must not ask. When a host is removed or
+pointed at another address, port or user, the commands still waiting for approval on it are rejected and their chats
+told, so an Approve never runs one on a server it was not asked for. The password, passphrase, sudo password and every
 line of the private key are replaced by `[secret]` in whatever a command prints, so `cat` of a file holding them does
 not hand them over. While any host is open to agents, every turn is told to use these tools instead of `ssh`, `scp` or
 keys of its own. Each command goes into the host's log, shown under its form.
