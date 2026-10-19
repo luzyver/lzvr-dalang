@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, convs, dbApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
+  approvals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -191,7 +191,7 @@ function Project({ p }) {
 export function Sidebar() {
   const user = me.value;
   const view = route.value.view;
-  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length;
+  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length;
   useEffect(() => {
     refreshUsage();
     const t = setInterval(refreshUsage, 60000);
@@ -215,6 +215,8 @@ export function Sidebar() {
         <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
       <a class="nav-item" href="/sql" target="dalang-sql" title="Opens in its own tab" onClick=${(e) => { e.preventDefault(); openSqlEditor(); }}>
         <${Icon} name="database" />SQL Editor</a>
+      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'ssh' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('ssh'); }}>
+        <${Icon} name="terminal" />SSH Hosts</a>`}
     </nav>
     <div class="side-section">
       <div class="section-head"><span>Projects</span>

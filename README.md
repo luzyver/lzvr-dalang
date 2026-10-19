@@ -764,6 +764,44 @@ trusts it. From then on a server with another key is refused until the connectio
 reinstalled server); changing the SSH host or port forgets the trusted key. SSH passwords, keys and passphrases are
 stored like the database password and never sent back to the browser.
 
+### SSH hosts for agents
+
+The **SSH Hosts** page (in the sidebar, admins) keeps logins to servers and VMs that agents may run shell commands on without ever
+knowing the login. Each host has a name, label, address, port, user, a password or private key (and passphrase), an
+optional sudo password, and a note telling agents what it is ("staging web server, the app is in /opt/app"). Like a
+SQL connection it has **Who may use it** (everyone, owner and admins, owner only; it counts for the person an agent
+works for) and an agent mode:
+
+- **Off**: agents do not see it.
+- **Every command after approval**: each command waits in Approvals (and as a card in the chat) until an admin runs or
+  rejects it; the output goes back to the agent's chat as a message.
+- **Run**: commands run at once, except those that read as dangerous, with `sudo` or without: they wait for an admin
+  as above, and the card says why. That covers deleting files (`rm -r`/`-f`, `find -delete`, `xargs rm`), wiping or
+  formatting disks (`mkfs`, `dd of=`, `shred`, writes to `/dev/sd*`), emptying or overwriting system files, shutdown and
+  reboot, stopping or restarting services, `kill`, changing users, passwords, `sudoers`, `authorized_keys` or
+  `sshd_config`, recursive `chmod`/`chown`, firewall and network changes, removing packages, containers or Kubernetes
+  objects, mounting, piping into a shell or interpreter (`curl ... | sh`, `base64 -d`, `eval`), running a `.sh` file,
+  `crontab -r`, dropping database tables and `git reset --hard` or force pushes. **Also hold for approval** adds the
+  host's own regular expressions. This reads the command as text, so it is best effort: shell can hide a command (a
+  variable, a script written in one call and run in another). For a server that matters, the real limits are a login
+  user with only the rights it needs, and "Every command after approval".
+
+Agents get it through this gateway's MCP (`MCP_INJECT=1`): `ssh_list_hosts` gives each host's name, label, note and
+mode only, never its address, user or secrets; `ssh_exec` runs one command (`host`, `command`, optional `sudo` and
+`timeout_seconds`, 60 s by default, at most 600) in a fresh session without a terminal or input and answers with its
+exit code, stdout and stderr (the start and end of long output, 100 KB at most); `ssh_approval` tells what became of a
+held command. `sudo: true` runs it through `sudo -S` and Dalang writes the sudo password (or the login password) to
+its input; with a key login and no sudo password it uses `sudo -n`. The password, passphrase, sudo password and every
+line of the private key are replaced by `[secret]` in whatever a command prints, so `cat` of a file holding them does
+not hand them over. While any host is open to agents, every turn is told to use these tools instead of `ssh`, `scp` or
+keys of its own. Each command goes into the host's log, shown under its form.
+
+The host's key is trusted on first use as for an SSH tunnel: **Test connection** logs in, shows the key's fingerprint
+and what the host is (`uname`, the user), and **Save** trusts it. Until then, or after the key changes, agents are
+refused. Changing a host's address, port or user drops its saved password, key, passphrase and sudo password (they
+must be given again), so a saved login is never sent to another server; secrets never go back to the browser. A login an agent cannot see still lets it do whatever that user may on the host: give it a user with only the
+rights it needs, and prefer "after approval" for servers that matter.
+
 ## Develop
 
 `LZVR_TOKEN=<32+ chars> WORKSPACE_ROOT=. npm run dev`, `npm test`, `npm run typecheck`.

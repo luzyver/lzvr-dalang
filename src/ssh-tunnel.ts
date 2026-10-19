@@ -43,13 +43,17 @@ export interface Tunnel {
   close(): Promise<void>;
 }
 
+/** Who to log in as on an SSH server, and the key it is known by (see SshConf). */
+export type SshLogin = Pick<SshConf, 'host' | 'port' | 'user' | 'auth' | 'password' | 'privateKey' | 'passphrase' | 'hostKey'>;
+
 /**
- * Opens a tunnel to `target` (host and port as the SSH server sees them). `trustNew`: accept a server whose key was
- * not trusted yet (testing the connection), and report its key in `hostKey`.
+ * Logs in to an SSH server whose key is `ssh.hostKey`. `trustNew`: accept a server whose key was not trusted yet
+ * (testing the connection); its key is in `hostKey` either way. `edit`: where the person changes the trusted key.
  */
-export async function openTunnel(ssh: SshConf, target: { host: string; port: number }, opts: { trustNew?: boolean; timeoutMs?: number } = {}): Promise<Tunnel> {
+export async function sshConnect(ssh: SshLogin, opts: { trustNew?: boolean; timeoutMs?: number; edit?: string } = {}): Promise<{ client: InstanceType<typeof Client>; hostKey: string }> {
   const client = new Client();
   let seen = '';
+  const edit = opts.edit ?? 'open Edit connection, Test connection, then Save';
   try {
     await new Promise<void>((resolve, reject) => {
       client.once('ready', () => resolve()).once('error', reject);
@@ -68,9 +72,18 @@ export async function openTunnel(ssh: SshConf, target: { host: string; port: num
     if (seen && ssh.hostKey && seen !== ssh.hostKey) {
       throw new Error(`the SSH server's key changed: it is ${seen}, and ${ssh.hostKey} was trusted. If that is expected (the server was reinstalled), test the connection again and save it.`);
     }
-    if (seen && !ssh.hostKey && !opts.trustNew) throw new Error(`the SSH server's key (${seen}) is not trusted yet: open Edit connection, Test connection, then Save`);
+    if (seen && !ssh.hostKey && !opts.trustNew) throw new Error(`the SSH server's key (${seen}) is not trusted yet: ${edit}`);
     throw new Error(`SSH ${ssh.host}: ${(e as Error).message}`);
   }
+  return { client, hostKey: seen };
+}
+
+/**
+ * Opens a tunnel to `target` (host and port as the SSH server sees them). `trustNew`: accept a server whose key was
+ * not trusted yet (testing the connection), and report its key in `hostKey`.
+ */
+export async function openTunnel(ssh: SshConf, target: { host: string; port: number }, opts: { trustNew?: boolean; timeoutMs?: number } = {}): Promise<Tunnel> {
+  const { client, hostKey: seen } = await sshConnect(ssh, opts);
   // Each connection to the local port becomes a channel to the database through the SSH server.
   const sockets = new Set<Socket>();
   const server = createServer((sock) => {

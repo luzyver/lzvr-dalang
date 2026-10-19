@@ -691,6 +691,32 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .sw-check { color: var(--accent-text); }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .setting-row:last-child { border-bottom: 0; }
+
+/* SSH hosts page: the hosts on the left, the one picked on the right (stacked on a narrow screen). */
+.page.ssh-page { max-width: 1080px; }
+.ssh-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--s4); align-items: start; }
+.ssh-layout.single { grid-template-columns: minmax(0, 1fr); }
+.ssh-list { display: grid; gap: 2px; position: sticky; top: 0; }
+.ssh-item { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--text-dim); text-align: left; font: inherit; cursor: pointer; }
+.ssh-item:hover { background: var(--hover); color: var(--text); }
+.ssh-item.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); }
+.ssh-item.add { font-size: var(--fs-sm); }
+.ssh-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ssh-item-top > strong, .ssh-item > .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-detail { display: grid; gap: var(--s3); min-width: 0; }
+.ssh-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ssh-detail-title { min-width: 0; overflow-wrap: anywhere; }
+.ssh-addr { display: grid; grid-template-columns: minmax(0, 2fr) 90px minmax(0, 1fr); gap: 8px; }
+.ssh-log { display: grid; }
+.ssh-log-row { display: grid; gap: 3px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.ssh-log-row:last-child { border-bottom: 0; }
+.ssh-log-cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .ssh-layout { grid-template-columns: minmax(0, 1fr); }
+  .ssh-list { position: static; }
+  .ssh-addr { grid-template-columns: 80px minmax(0, 1fr); }
+  .ssh-addr > .field:first-child { grid-column: 1 / -1; }
+}
 .prompt-edit { font-size: 12.5px; line-height: 1.55; }
 .account { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); }
 .account-head { display: flex; align-items: center; gap: 10px; }

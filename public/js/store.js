@@ -10,7 +10,7 @@ export const projects = signal([]);
 /** project id -> its chats */
 export const convs = signal(new Map());
 /**
- * What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' },
+ * What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' } | { view: 'ssh' },
  * or, in a tab of its own, { view: 'code', id }: the code editor on a chat's folder, or { view: 'sql' }: the SQL editor.
  */
 export const route = signal({ view: 'home' });
@@ -19,6 +19,8 @@ export const approvals = signal([]);
 export const dbApprovals = signal([]);
 /** Users' requests to index a project's code graph, waiting for an admin. */
 export const indexRequests = signal([]);
+/** Commands agents asked to run on SSH hosts set to "every command after approval" (admins). */
+export const sshApprovals = signal([]);
 
 const wide = () => innerWidth > 1280;
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
@@ -148,8 +150,8 @@ export const newChat = (project, worktree = false) => guarded(async () => {
 export async function refreshApprovals() {
   if (!isAdmin.value) return;
   try {
-    const [chats, dbs, indexes] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests')]);
-    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; });
+    const [chats, dbs, indexes, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals')]);
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; });
   } catch { /* retried on the next tick */ }
 }
 

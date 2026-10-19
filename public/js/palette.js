@@ -29,6 +29,7 @@ function actions() {
   list.push({ id: 'sql', icon: 'database', label: 'Open SQL Editor', run: () => { ui.palette.value = false; openSqlEditor(); } });
   if (isAdmin.value) {
     list.push({ id: 'approvals', icon: 'shield-check', label: 'Approvals', run: () => openView('approvals') });
+    list.push({ id: 'ssh', icon: 'terminal', label: 'SSH hosts', run: () => openView('ssh') });
     list.push({ id: 'add-project', icon: 'folder-plus', label: 'Add project', run: () => { ui.addProject.value = true; } });
     list.push({ id: 'codex', icon: 'key-round', label: 'Settings: Codex accounts', run: () => openSettings('codex') });
     list.push({ id: 'claude', icon: 'key-round', label: 'Settings: Claude Code accounts', run: () => openSettings('claude') });
