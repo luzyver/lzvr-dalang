@@ -700,7 +700,12 @@ export function buildApp(
     void (async () => {
       for (const e of history) {
         if (res.destroyed) return;
-        if (!write(e)) await new Promise((done) => { res.once('drain', done); res.once('close', done); });
+        // Both listeners go once either fires: a long replay waits for drain many times, and a 'close' left behind
+        // each time piles up on the response.
+        if (!write(e)) await new Promise<void>((done) => {
+          const fin = () => { res.off('drain', fin); res.off('close', fin); done(); };
+          res.on('drain', fin); res.on('close', fin);
+        });
       }
       const last = history.length ? history[history.length - 1]!.id : after;
       replaying = false;
