@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
+import { loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -44,6 +45,8 @@ export interface DispatcherOpts {
   autoTitle?: boolean;
   /** Snapshot the agent's folder before and after each turn, so a turn's changes can be shown and undone (default on). */
   checkpoints?: boolean;
+  /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
+  skillsDir?: string;
   /** Called after every turn (completed, failed or cancelled), e.g. to send a push notification. */
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
@@ -373,8 +376,12 @@ export class Dispatcher {
     }
     // Whether the agent may commit and push itself (else the person does it from the panel): told, and blocked in its git.
     const agentGit = this.store.getAgentGit();
+    const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
+    // Claude Code reads outside its folder only from directories it was given.
+    if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
     const guide = [
       ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+      skillsGuide(skills),
       agentGitGuide(agentGit),
     ].filter(Boolean).join('\n\n');
     // A JSON string is also a valid TOML basic string, which is what `-c` reads.
