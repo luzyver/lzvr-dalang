@@ -70,6 +70,7 @@ export function ResultGrid({ r, table, readOnly, onQuery, onPreview, onSubmit })
   const [showSql, setShowSql] = useState(false);
   const [preview, setPreview] = useState({ list: null, error: null });
   const [confirming, setConfirming] = useState(false);
+  const [widths, setWidths] = useState({}); // column name -> px, or 'fit' (as wide as its values), set by dragging a header's edge
   useEffect(() => { setSel(null); setChanges(new Map()); setAdded([]); setDeleted(new Set()); setPages(1); setWhere(table?.where ?? ''); }, [r]);
 
   const editable = !!table && !readOnly;
@@ -151,8 +152,36 @@ export function ResultGrid({ r, table, readOnly, onQuery, onPreview, onSubmit })
     const changed = i < r.rows.length && changes.get(i)?.has(c);
     const pick = () => setSel({ row: i, col: c });
     const cls = cx(typeof v === 'number' && 'num', isSel && 'sel', changed && 'changed');
-    if (s === null) return html`<td class=${cx(cls, 'null')} onClick=${pick}>${v === UNSET ? 'default' : 'NULL'}</td>`;
-    return html`<td class=${cls} onClick=${pick} onDblClick=${pick}>${s.length > 300 ? `${s.slice(0, 300)}…` : s}</td>`;
+    if (s === null) return html`<td class=${cx(cls, 'null')} style=${widthOf(c)} onClick=${pick}>${v === UNSET ? 'default' : 'NULL'}</td>`;
+    return html`<td class=${cls} style=${widthOf(c)} onClick=${pick} onDblClick=${pick}>${s.length > 300 ? `${s.slice(0, 300)}…` : s}</td>`;
+  };
+
+  const widthOf = (c) => {
+    const w = widths[cols[c].name];
+    return w === 'fit' ? 'max-width: none' : w ? `width: ${w}px; min-width: ${w}px; max-width: ${w}px` : undefined;
+  };
+  // Drag a header's right edge to size its column; double-click it to fit the column's values (again: back to default).
+  const resize = (e, c) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget;
+    const x0 = e.clientX;
+    const w0 = el.parentElement.getBoundingClientRect().width;
+    el.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing-v');
+    const move = (m) => setWidths((ws) => ({ ...ws, [cols[c].name]: Math.max(40, Math.round(w0 + m.clientX - x0)) }));
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing-v');
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  };
+  const fit = (e, c) => {
+    e.stopPropagation();
+    const name = cols[c].name;
+    setWidths((ws) => { const next = { ...ws }; if (next[name] === 'fit') delete next[name]; else next[name] = 'fit'; return next; });
   };
 
   const selCol = sel && cols[sel.col];
@@ -196,9 +225,10 @@ export function ResultGrid({ r, table, readOnly, onQuery, onPreview, onSubmit })
         <table class="sql-grid">
           <thead><tr><th class="rownum">#</th>${cols.map((col, c) => {
             const o = sortOf(c);
-            return html`<th title=${`${col.type}${table ? ' · click to sort (on the server)' : ' · click to sort'}`} class="sortable" onClick=${() => sortBy(c)}>
+            return html`<th title=${`${col.type}${table ? ' · click to sort (on the server)' : ' · click to sort'}`} class="sortable" style=${widthOf(c)} onClick=${() => sortBy(c)}>
               <span>${col.name}</span>${table?.pk.includes(col.name) && html`<${Icon} name="key-round" class="tiny pk" />`}${col.type && html`<small>${col.type}</small>`}
-              ${o && html`<span class="sort">${o.desc ? '↓' : '↑'}</span>`}</th>`;
+              ${o && html`<span class="sort">${o.desc ? '↓' : '↑'}</span>`}
+              <span class="sql-col-resize" title="Drag to resize · double-click to fit" onPointerDown=${(e) => resize(e, c)} onClick=${(e) => e.stopPropagation()} onDblClick=${(e) => fit(e, c)}></span></th>`;
           })}</tr></thead>
           <tbody>
             ${shown.map(({ i, row }, n) => html`<tr key=${i} class=${cx(deleted.has(i) && 'deleted', sel?.row === i && 'sel-row')}><td class="rownum">${n + 1}</td>
