@@ -434,7 +434,63 @@ function applyLanguage() {
     cm.LanguageDescription.matchLanguageName(cm.languages, 'JavaScript')?.load().then(set, () => set([]));
     return;
   }
-  set(cm.sql({ dialect: DIALECTS[conn?.driver] || cm.StandardSQL, schema, defaultSchema, upperCaseKeywords: true }));
+  const support = cm.sql({ dialect: DIALECTS[conn?.driver] || cm.StandardSQL, schema, defaultSchema, upperCaseKeywords: true });
+  set([support, support.language.data.of({ autocomplete: completeSourceColumns })]);
+}
+
+/**
+ * Completes a bare name with the columns of the tables its statement reads (FROM, JOIN, UPDATE, INTO): the SQL
+ * language completes columns only after `table.` or `alias.`. Reads the columns of a big database's schema first.
+ */
+async function completeSourceColumns(context) {
+  const word = context.matchBefore(/[\w$]*/);
+  if (!word || (word.from === word.to && !context.explicit)) return null;
+  if (/[."`]/.test(context.state.sliceDoc(word.from - 1, word.from))) return null;
+  const c = activeConsole();
+  const conn = c && connOf(c.connId);
+  if (!conn) return null;
+  const db = c.database || '';
+  const doc = context.state.doc.toString();
+  const start = doc.lastIndexOf(';', word.from - 1) + 1;
+  const end = doc.indexOf(';', word.from);
+  const stmt = doc.slice(start, end < 0 ? doc.length : end);
+  const refs = [];
+  const ref = (m) => refs.push(m[2] ? { schema: m[1], table: m[2] } : { table: m[1] });
+  for (const m of stmt.matchAll(SOURCE_TABLE)) {
+    ref(m);
+    // `FROM a x, b AS y, c`: the tables listed after the first.
+    MORE_TABLE.lastIndex = m.index + m[0].length;
+    for (let n; (n = MORE_TABLE.exec(stmt));) ref(n);
+  }
+  if (!refs.length) return null;
+  const own = defaultSchemaOf(conn, db, c.schema);
+  const find = () => {
+    const schemas = sq.schemas.value.get(skey(conn.id, db))?.data?.schemas || [];
+    return refs.map((r) => {
+      const hits = [];
+      for (const sch of schemas) {
+        if (r.schema && !sameName(r.schema, sch.name)) continue;
+        for (const t of sch.tables) if (sameName(r.table, t.name)) hits.push({ sch, t });
+      }
+      return hits.find((h) => h.sch.name === own) || hits[0];
+    }).filter(Boolean);
+  };
+  let found = find();
+  const unread = [...new Set(found.filter((h) => h.sch.loaded === false).map((h) => h.sch.name))];
+  if (unread.length) {
+    await Promise.all(unread.map((name) => loadColumns(conn.id, db, name)));
+    found = find();
+  }
+  const seen = new Set();
+  const options = [];
+  for (const { t } of found) {
+    for (const col of t.columns) {
+      if (seen.has(col.name)) continue;
+      seen.add(col.name);
+      options.push({ label: col.name, detail: found.length > 1 ? `${t.name} · ${col.type}` : col.type, type: 'property', boost: 1 });
+    }
+  }
+  return options.length ? { from: word.from, options, validFor: /^[\w$]*$/ } : null;
 }
 
 // ---------- consoles ----------
@@ -551,6 +607,12 @@ const TABLE_SELECT = new RegExp(String.raw`^\s*select\s+\*\s+from\s+(${IDENT})(?
 const WHERE_PART = /^\s*where\s+([\s\S]*?)(?:\s+order\s+by\s+[\s\S]*?)?(?:\s+limit\s+\d+(?:\s+offset\s+\d+)?)?\s*$/i;
 const unquote = (x) => (/^"/.test(x) ? x.slice(1, -1).replace(/""/g, '"') : /^\x60/.test(x) ? x.slice(1, -1) : x);
 const sameName = (x, name) => (/^["\x60]/.test(x) ? unquote(x) === name : x.toLowerCase() === name.toLowerCase());
+
+/** A table a statement reads: `FROM|JOIN|UPDATE|INTO [schema.]table`. */
+const SOURCE_TABLE = new RegExp(String.raw`\b(?:from|join|update|into)\s+(${IDENT})(?:\s*\.\s*(${IDENT}))?`, 'gi');
+
+/** One more table of a comma list, after a table and its alias: `[[AS] alias], table`. */
+const MORE_TABLE = new RegExp(String.raw`(?:\s+(?:as\s+)?${IDENT})?\s*,\s*(${IDENT})(?:\s*\.\s*(${IDENT}))?`, 'iy');
 
 /**
  * The table a result shows, when its statement is `SELECT * FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT ...]` and the
