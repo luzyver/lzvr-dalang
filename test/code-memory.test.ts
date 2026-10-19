@@ -233,6 +233,50 @@ describe('code memory', () => {
     expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' });
     await until(() => t.store.getKv('code_memory_orphans') === null);
   });
+  it('lets admins index from the chat at once, and anyone else ask for it, which an admin approves or rejects', async () => {
+    const t = await boot();
+    mkdirSync(join(t.root, 'secret'));
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, undefined, 'owner');
+    const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
+    const admin = bearer((await mkUser(t, 'adi', 'admin')).token);
+    const ask = (id: string, headers: Record<string, string>) => t.app.inject({ method: 'POST', url: `/api/projects/${id}/code-memory/index`, headers });
+    const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
+    expect((await ask(p.id, dev)).statusCode).toBe(400); // code memory is off
+    await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    expect((await ask(secret.id, dev)).statusCode).toBe(404); // a project the dev may not open
+
+    // A dev asks: nothing runs until an admin approves; asking again gives the same request.
+    const first = await ask(p.id, dev);
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({ status: 'pending_approval', request: { project: p.id, who: 'budi', status: 'pending' } });
+    expect((await ask(p.id, dev)).json().request.id).toBe(first.json().request.id);
+    expect(indexes()).toBe(0);
+    expect((await t.app.inject({ url: `/api/projects/${p.id}/code-memory`, headers: dev })).json())
+      .toMatchObject({ enabled: true, index: null, pending: { who: 'budi' }, direct: false });
+    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: dev })).statusCode).toBe(403);
+    const pending = (await t.app.inject({ url: '/api/code-memory/requests', headers: admin })).json();
+    expect(pending).toMatchObject([{ projectName: 'proj', who: 'budi' }]);
+    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/approve`, headers: dev })).statusCode).toBe(403);
+    const approved = await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/approve`, headers: admin });
+    expect(approved.json()).toMatchObject({ status: 'approved', decidedBy: 'adi' });
+    await until(() => t.codeMemory.state(p.id)?.status === 'ready');
+    expect(indexes()).toBe(1);
+    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/reject`, headers: admin })).statusCode).toBe(409);
+
+    // Rejected: nothing runs.
+    const again = (await ask(p.id, dev)).json().request;
+    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${again.id}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(indexes()).toBe(1);
+    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: AUTH })).json()).toEqual([]);
+
+    // An admin (or the owner) indexes at once.
+    expect((await ask(p.id, admin)).json()).toEqual({ status: 'indexing' });
+    await until(() => indexes() === 2);
+    expect((await ask(secret.id, AUTH)).json()).toEqual({ status: 'indexing' });
+    await until(() => indexes() === 3);
+  });
 });
 
 describe('code memory hook script', () => {

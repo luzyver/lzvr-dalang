@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, convs, dbApprovals, goHome, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
+  approvals, convs, dbApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -191,7 +191,7 @@ function Project({ p }) {
 export function Sidebar() {
   const user = me.value;
   const view = route.value.view;
-  const waiting = approvals.value.length + dbApprovals.value.length;
+  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length;
   useEffect(() => {
     refreshUsage();
     const t = setInterval(refreshUsage, 60000);

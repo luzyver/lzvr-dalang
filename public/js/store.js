@@ -17,6 +17,8 @@ export const route = signal({ view: 'home' });
 export const approvals = signal([]);
 /** Database writes agents asked for on "write with approval" connections of the SQL editor (admins). */
 export const dbApprovals = signal([]);
+/** Users' requests to index a project's code graph, waiting for an admin. */
+export const indexRequests = signal([]);
 
 const wide = () => innerWidth > 1280;
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
@@ -146,8 +148,8 @@ export const newChat = (project, worktree = false) => guarded(async () => {
 export async function refreshApprovals() {
   if (!isAdmin.value) return;
   try {
-    const [chats, dbs] = await Promise.all([api('/api/approvals'), api('/api/db/approvals')]);
-    batch(() => { approvals.value = chats; dbApprovals.value = dbs; });
+    const [chats, dbs, indexes] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests')]);
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; });
   } catch { /* retried on the next tick */ }
 }
 
