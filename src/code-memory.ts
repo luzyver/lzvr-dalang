@@ -131,7 +131,7 @@ function zodOf(s: JsonSchema): ZodTypeAny {
   else if (type === 'boolean') t = z.boolean();
   else if (type === 'array') t = z.array(s.items ? zodOf(s.items) : z.any());
   else if (type === 'object' && s.properties) t = z.object(shapeOf(s)).passthrough();
-  else if (type === 'object') t = z.record(z.any());
+  else if (type === 'object') t = z.record(z.string(), z.any());
   else t = z.any();
   return s.description ? t.describe(s.description) : t;
 }
