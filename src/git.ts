@@ -64,7 +64,8 @@ export async function defaultBranch(cwd: string): Promise<{ name: string; ref: s
   const exists = (ref: string) => git(cwd, ['rev-parse', '--verify', '--quiet', ref]).then(() => true, () => false);
   if (remote) {
     const head = (await git(cwd, ['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]).catch(() => '')).trim();
-    if (head.startsWith(`${remote}/`)) return { name: head.slice(remote.length + 1), ref: head };
+    // origin/HEAD is not updated by fetch, so after a default-branch rename it can point at a branch that is gone.
+    if (head.startsWith(`${remote}/`) && (await exists(`refs/remotes/${head}`))) return { name: head.slice(remote.length + 1), ref: head };
   }
   for (const name of ['main', 'master']) {
     if (remote && (await exists(`refs/remotes/${remote}/${name}`))) return { name, ref: `${remote}/${name}` };
