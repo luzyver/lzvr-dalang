@@ -46,11 +46,12 @@ const ALL_TOOLS = [
   'list_projects', 'create_project', 'delete_project', 'list_conversations', 'create_conversation',
   'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
   'cancel_turn', 'set_draft', 'get_events', 'list_accounts', 'unblock_accounts', 'get_approval',
-  'list_models', 'set_model',
+  'list_models', 'set_model', 'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ];
 const AGENT_TOOLS = [
   'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
   'list_conversations', 'list_projects', 'list_queue', 'send_prompt', 'list_models', 'set_model',
+  'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ];
 
 describe('MCP gateway', () => {
@@ -125,6 +126,7 @@ describe('MCP gateway', () => {
 const DEV_TOOLS = [
   'cancel_turn', 'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
   'list_conversations', 'list_projects', 'list_queue', 'remove_queue_item', 'send_prompt', 'set_draft', 'list_models', 'set_model',
+  'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ];
 
 describe('MCP for users with a role', () => {

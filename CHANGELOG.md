@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Project memory: facts kept per project from its chats and shown to every later chat on Codex and Claude Code
+  alike. They stay when the chat they came from is deleted. After each finished turn a small read-only request picks
+  what is worth keeping (Settings → Project memory, `AUTO_MEMORY=0` turns it off); agents get `memory_search`,
+  `memory_save`, `memory_update` and `memory_forget`, and people a memory button in the chat header. Each person also
+  has a memory of their own preferences, shown to every turn they send in any project and seen by them alone
+
 ### Fixed
 
 - On Node 22 and 24, a panel user's git identity could carry over into the owner's later git requests, so the

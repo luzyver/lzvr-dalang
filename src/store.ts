@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS schedules (
   prompt TEXT NOT NULL, cron TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
   next_run_at INTEGER, last_run_at INTEGER, created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, user_key TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL, source_conv TEXT NOT NULL DEFAULT '', source_title TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK ((project_id IS NULL) <> (user_key = '')));
 `;
 
 export interface Approval {
@@ -117,6 +123,13 @@ How:
   End your turn after starting them; continue when the reports arrive.
 - Check each report before relying on it. If one fell short, send_prompt it a correction, or set_model it one step up.
 - At the end, sum up for the person what each sub-agent did and what you checked.`;
+/**
+ * Project and personal memory (see memory.ts). `auto`: after each finished turn of a person's chat, a small read-only
+ * request picks what is worth keeping from it; `user`: that request may also keep the preferences the person states for
+ * their own memory. `models`: what runs that request per backend ('' = the chat's own model); `effort` likewise.
+ */
+export interface MemoryPolicy { auto: boolean; user: boolean; models: Partial<Record<Backend, string>>; effort: string }
+export const MEMORY_DEFAULTS: MemoryPolicy = { auto: true, user: true, models: {}, effort: 'low' };
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
@@ -128,6 +141,20 @@ export interface Schedule {
 }
 /** A schedule with the names the overview shows. */
 export interface ScheduleSummary extends Schedule { project_id: string; project: string; title: string | null }
+
+/**
+ * A fact kept for later chats (see memory.ts): of a project (`project_id`), or a person's own (`user_key`, see userKeyOf),
+ * never both. It belongs to the project or the person, not to the chat it came from: `source_conv` and `source_title`
+ * only say where it came from, and stay when that chat is deleted.
+ * `created_by`: the panel user whose turn it came from, 'agent' when an agent saved it itself, or ''.
+ */
+export interface Memory {
+  id: number; project_id: string | null; user_key: string; text: string; source_conv: string; source_title: string; created_by: string;
+  created_at: string; updated_at: string;
+}
+/** Whose memories: a project's, or a person's own (their userKeyOf). */
+export type MemoryScope = { projectId: string } | { userKey: string };
+const scopeWhere = (s: MemoryScope): [string, string] => ('projectId' in s ? ['project_id=?', s.projectId] : ['user_key=?', s.userKey]);
 
 /** A search match: a chat's title, one of its prompts or one of the agent's answers (then `event_id` locates it). */
 export interface SearchHit {
@@ -179,6 +206,34 @@ export class Store {
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
+    this.fts = this.memoryIndex();
+  }
+
+  /** Whether memories have a full-text index (SQLite's FTS5), which matchMemories ranks with; without it, it counts words. */
+  private readonly fts: boolean;
+
+  /**
+   * The full-text index of the memories, kept in step by triggers (also when a project's go with it). Built from the
+   * table when it is new. False when this SQLite has no FTS5.
+   */
+  private memoryIndex(): boolean {
+    const had = this.get("SELECT 1 FROM sqlite_master WHERE name='memories_fts'") !== null;
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, content='memories', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+          INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text); END;
+        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text); END;
+        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF text ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+          INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text); END;`);
+      if (!had) this.db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')");
+      return true;
+    } catch (e) {
+      console.warn(`project memory: no full-text index (${(e as Error).message}); matching counts words instead`);
+      return false;
+    }
   }
 
   private ensureColumn(table: string, column: string, ddl: string): void {
@@ -220,7 +275,13 @@ export class Store {
     if (changed) this.run('DELETE FROM sessions WHERE user_id=?', id);
     return changed;
   }
-  deleteUser(id: string): boolean { return Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0; }
+  /** Their personal memory goes with them. */
+  deleteUser(id: string): boolean {
+    // Only once a user really went: 'owner' (whose memories are kept under that key) has no row and must not lose them.
+    const deleted = Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0;
+    if (deleted) this.run('DELETE FROM memories WHERE user_key=?', id);
+    return deleted;
+  }
 
   // --- login sessions, push subscriptions, small key/value settings ---
   /** `userId` null = a session of the owner (an owner email sign-in, not a panel user). */
@@ -296,6 +357,10 @@ export class Store {
     try { return { ...AGENT_GIT_DEFAULTS, ...(JSON.parse(this.getKv('agent_git') ?? '{}') as Partial<AgentGitPolicy>) }; } catch { return AGENT_GIT_DEFAULTS; }
   }
   setAgentGit(p: AgentGitPolicy): void { this.setKv('agent_git', JSON.stringify(p)); }
+  getMemoryPolicy(): MemoryPolicy {
+    try { return { ...MEMORY_DEFAULTS, ...(JSON.parse(this.getKv('memory') ?? '{}') as Partial<MemoryPolicy>) }; } catch { return MEMORY_DEFAULTS; }
+  }
+  setMemoryPolicy(p: MemoryPolicy): void { this.setKv('memory', JSON.stringify(p)); }
 
   createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
     const p = { id: randomUUID(), name, path, sandbox, backend, access };
@@ -379,6 +444,57 @@ export class Store {
       `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
        JOIN turns t ON t.id = e.turn_id
        WHERE t.conversation_id=? AND e.id>? ORDER BY e.id`, convId, afterId);
+  }
+
+  // --- project and personal memory (see memory.ts) ---
+  /**
+   * Whose personal memory a panel user's name stands for: their id, 'owner' for the owner, '' for nobody (an agent, an
+   * approval) or a name no user has.
+   */
+  userKeyOf(name: string): string {
+    if (name === 'owner') return 'owner';
+    return name ? this.get<{ id: string }>('SELECT id FROM users WHERE name=?', name)?.id ?? '' : '';
+  }
+  /** One scope's memories, most recently changed first. */
+  listMemories(scope: MemoryScope): Memory[] {
+    const [where, arg] = scopeWhere(scope);
+    return this.all(`SELECT * FROM memories WHERE ${where} ORDER BY updated_at DESC, id DESC`, arg);
+  }
+  /** Memories containing every term (case-insensitive for ASCII letters), most recently changed first. */
+  searchMemories(scope: MemoryScope, terms: string[]): Memory[] {
+    const [where, arg] = scopeWhere(scope);
+    const like = terms.map(() => "text LIKE ? ESCAPE '\\'").join(' AND ');
+    return this.all(`SELECT * FROM memories WHERE ${where}${terms.length ? ` AND ${like}` : ''} ORDER BY updated_at DESC, id DESC`,
+      arg, ...terms.map(likeTerm));
+  }
+  getMemory(id: number): Memory | null { return this.get('SELECT * FROM memories WHERE id=?', id); }
+  addMemory(scope: MemoryScope, text: string, from: { conv?: string; title?: string; by?: string } = {}): Memory {
+    const now = new Date().toISOString();
+    const r = this.run('INSERT INTO memories (project_id,user_key,text,source_conv,source_title,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+      'projectId' in scope ? scope.projectId : null, 'userKey' in scope ? scope.userKey : '', text, from.conv ?? '', from.title ?? '', from.by ?? '', now, now);
+    return this.getMemory(Number(r.lastInsertRowid))!;
+  }
+  updateMemory(id: number, text: string): boolean {
+    return Number(this.run('UPDATE memories SET text=?, updated_at=? WHERE id=?', text, new Date().toISOString(), id).changes) > 0;
+  }
+  deleteMemory(id: number): boolean { return Number(this.run('DELETE FROM memories WHERE id=?', id).changes) > 0; }
+  /**
+   * One scope's memories that contain any of `terms` (lowercased words; each also matches as the start of a longer
+   * one), best match first (BM25), at most `limit`.
+   */
+  matchMemories(scope: MemoryScope, terms: string[], limit = 50): Memory[] {
+    if (!terms.length) return [];
+    if (this.fts) {
+      const query = terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' OR ');
+      const [where, arg] = scopeWhere(scope);
+      return this.all(`SELECT m.* FROM memories_fts f JOIN memories m ON m.id = f.rowid
+        WHERE memories_fts MATCH ? AND m.${where} ORDER BY bm25(memories_fts) LIMIT ?`, query, arg, limit);
+    }
+    const scored = this.listMemories(scope).map((m) => {
+      const words = m.text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+      return { m, n: terms.filter((t) => words.some((w) => w.startsWith(t))).length };
+    });
+    return scored.filter((s) => s.n).sort((a, b) => b.n - a.n).slice(0, limit).map((s) => s.m);
   }
 
   // --- scheduled prompts ---
