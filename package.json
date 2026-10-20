@@ -65,7 +65,7 @@
     "codemirror": "^6.0.2",
     "cronstrue": "^3.32.0",
     "esbuild": "^0.28.2",
-    "geist": "^1.7.2",
+    "geist": "^1.8.1",
     "htm": "^3.1.1",
     "preact": "^11.0.1",
     "sql-formatter": "^15.9.0",
