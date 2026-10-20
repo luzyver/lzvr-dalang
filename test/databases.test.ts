@@ -291,7 +291,8 @@ describe('SQL editor connections', () => {
   it('lists every table of a big database without columns, and gives a schema\'s columns when asked', async () => {
     const t = await boot();
     const db = new DatabaseSync(t.file);
-    for (let i = 0; i < 450; i++) db.exec(`CREATE TABLE t${i} (id INTEGER PRIMARY KEY, v TEXT)`);
+    // one transaction: 450 separate ones each wait for the disk, which took a Windows CI runner over 15 s
+    db.exec(`BEGIN; ${Array.from({ length: 450 }, (_, i) => `CREATE TABLE t${i} (id INTEGER PRIMARY KEY, v TEXT);`).join(' ')} COMMIT;`);
     db.close();
     await t.put('app', {});
     const all = (await t.app.inject({ url: '/api/db/connections/app/schema', headers: AUTH })).json();
