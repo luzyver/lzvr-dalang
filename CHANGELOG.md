@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 - On Node 22 and 24, a panel user's git identity could carry over into the owner's later git requests, so the
   owner's commits failed with "empty ident name"; each request now gets only its own git context
+- Panel users other than the owner saw "Not a git repository" in the Changes tab of projects owned by another OS
+  account: their own git config dropped the server's `safe.directory`, which is now passed on to them
 
 ## [0.1.0] - unreleased
 

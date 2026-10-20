@@ -32,11 +32,14 @@ export interface GitUsersOpts {
   /** How to start ssh (tests: a fake). */
   sshCommand?: string[];
   gitCommand?: string[];
+  /** The server's `safe.directory` entries (tests); read from its global git config when omitted. */
+  safeDirectories?: string[];
 }
 
 export class GitUsers {
   readonly server: GitAuth;
   private auths = new Map<string, GitAuth>();
+  private safeDirs?: string[];
 
   constructor(private o: GitUsersOpts) {
     this.server = o.server ?? new GitAuth({ ghCommand: o.ghCommand, glabCommand: o.glabCommand, sshDir: join(homedir(), '.ssh') });
@@ -68,13 +71,35 @@ export class GitUsers {
       ...(keys.length ? keys.flatMap((k) => ['-i', k]) : ['-i', join(s, '.no-key')])];
   }
 
+  /**
+   * The repositories the server trusts though another account owns them (`safe.directory` in its global git config).
+   * A user's own global config replaces the server's, so without these git refuses those repositories for them
+   * ("dubious ownership") and the panel shows "Not a git repository". Read once.
+   */
+  safeDirectories(): string[] {
+    this.safeDirs ??= this.o.safeDirectories ?? (() => {
+      try {
+        return execFileSync((this.o.gitCommand ?? ['git'])[0]!, ['config', '--global', '--get-all', 'safe.directory'], { encoding: 'utf8', windowsHide: true })
+          .split(/\r?\n/).filter((l) => l.trim());
+      } catch { return []; } // none set
+    })();
+    return this.safeDirs;
+  }
+
   /** The environment that points git, gh, glab and ssh at the user's own setup (no author: see `context`). */
   baseEnv(userId: string): Record<string, string> {
     const d = this.dir(userId);
+    // Command-line config (GIT_CONFIG_COUNT), which git honours for safe.directory; after any the server already sets.
+    const from = Number(process.env.GIT_CONFIG_COUNT) || 0;
+    const safe = this.safeDirectories();
     return {
       GIT_CONFIG_GLOBAL: join(d, 'gitconfig'), GH_CONFIG_DIR: join(d, 'gh'), GLAB_CONFIG_DIR: join(d, 'glab'),
       // git runs this through a shell: forward slashes and quotes keep Windows paths with spaces intact
       GIT_SSH_COMMAND: this.sshArgs(userId).map((a) => `"${a.replace(/\\/g, '/').replace(/"/g, '\\"')}"`).join(' '),
+      ...(safe.length ? {
+        GIT_CONFIG_COUNT: String(from + safe.length),
+        ...Object.fromEntries(safe.flatMap((v, i) => [[`GIT_CONFIG_KEY_${from + i}`, 'safe.directory'], [`GIT_CONFIG_VALUE_${from + i}`, v]])),
+      } : {}),
     };
   }
 
