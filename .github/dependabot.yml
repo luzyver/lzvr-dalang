@@ -4,14 +4,23 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # the types follow the oldest Node in package.json engines (22), not the newest release
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    # Groups take minor and patch updates only: a major version comes as its own pull request, to be checked by itself.
     groups:
       panel-vendor:
         # browser libraries copied into public/vendor: run `npm run vendor` after merging
         patterns: ["preact", "htm", "@preact/*", "@highlightjs/*", "cronstrue", "geist", "codemirror", "@codemirror/*", "@xterm/*", "sql-formatter"]
+        update-types: ["minor", "patch"]
       dev:
         dependency-type: development
+        exclude-patterns: ["preact", "htm", "@preact/*", "@highlightjs/*", "cronstrue", "geist", "codemirror", "@codemirror/*", "@xterm/*", "sql-formatter"]
+        update-types: ["minor", "patch"]
       prod:
         dependency-type: production
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
