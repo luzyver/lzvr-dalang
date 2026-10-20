@@ -12,6 +12,7 @@ import { startStream, ThreadModel } from './stream.js';
 import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
 import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
+import { MemoryButton } from './memory.js';
 
 /** The open chat, shared with the inspector. `version` goes up whenever the thread model changed. */
 export const chat = {
@@ -116,6 +117,7 @@ function ChatHead({ project, conv }) {
     ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
     <div class="spacer"></div>
     <${CodeGraphButton} project=${project} />
+    <${MemoryButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
     <button class="icon-btn" aria-label="Scheduled prompts" title="Scheduled prompts" onClick=${() => toggleInspector(true, 'schedules')}><${Icon} name="clock" /></button>
     ${git?.repo && html`<button class="branch-btn" title="Changes: review, commit, revert" onClick=${() => toggleInspector(true, 'changes')}>

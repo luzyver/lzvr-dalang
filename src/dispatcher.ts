@@ -9,6 +9,7 @@ import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
 import { loadHosts } from './ssh-hosts.js';
+import { applyOps, extractionPrompt, memoryGuide, parseOps, pickFor } from './memory.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
@@ -49,6 +50,11 @@ export interface DispatcherOpts {
   mcpUrl?: string;
   /** Have the chat's agent give each new chat a short title from its first prompt (else the prompt itself is the title). */
   autoTitle?: boolean;
+  /**
+   * Project memory (see memory.ts): after each finished turn of a person's chat, keep what is worth keeping from it, when
+   * Settings has it on (else only agents and people add memories). Every turn is shown the project's memory either way.
+   */
+  autoMemory?: boolean;
   /** Snapshot the agent's folder before and after each turn, so a turn's changes can be shown and undone (default on). */
   checkpoints?: boolean;
   /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
@@ -113,6 +119,8 @@ export class Dispatcher {
     hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
   };
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
+  /** Per project, the memory extraction running last: they run one after another, each seeing what the one before kept. */
+  private remembering = new Map<string, Promise<void>>();
   private hookTrustFlag: Promise<boolean> | null = null;
 
   constructor(private store: Store, private opts: DispatcherOpts) {
@@ -301,6 +309,38 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * Keep what is worth keeping from one finished exchange in its project's memory, and the preferences `author` (the
+   * panel user who wrote the prompt; '' for none) gave in their own (see memory.ts). Runs after the turn, one at a time
+   * per project; a failure is only logged. Resolves when this one is done.
+   */
+  remember(conv: Conversation, project: Project, prompt: string, answer: string, author: string): Promise<void> {
+    const policy = this.store.getMemoryPolicy();
+    const userKey = policy.user ? this.store.userKeyOf(author) : '';
+    const job = async () => {
+      if (!this.store.getProject(project.id)) return; // deleted meanwhile
+      const picked = pickFor(this.store, project.id, userKey, `${prompt}\n${answer}`, true);
+      const shown = [...picked.project.shown, ...(picked.user?.shown ?? [])];
+      const ask = extractionPrompt(project.name, { project: picked.project.shown, user: picked.user?.shown ?? null }, prompt, answer);
+      try {
+        const reply = await this.ask(conv.backend, ask, {
+          cwd: project.path, model: policy.models[conv.backend] || conv.model, effort: policy.effort || conv.effort, timeoutMs: 180_000,
+        });
+        const ops = parseOps(reply, new Set(shown.map((m) => m.id)), !!userKey);
+        if (!ops) throw new Error(`no JSON in the answer: ${reply.slice(0, 200)}`);
+        if (!this.store.getProject(project.id)) return;
+        applyOps(this.store, ops, { projectId: project.id, userKey },
+          { conv: conv.id, title: this.store.getConversation(conv.id)?.title ?? conv.title ?? '', by: author });
+      } catch (e) {
+        console.warn(`could not update the memory of project ${project.name} from chat ${conv.id}: ${(e as Error).message}`);
+      }
+    };
+    const next = (this.remembering.get(project.id) ?? Promise.resolve()).then(job);
+    this.remembering.set(project.id, next);
+    void next.finally(() => { if (this.remembering.get(project.id) === next) this.remembering.delete(project.id); });
+    return next;
+  }
+
   private emit(convId: string, turnId: number, ev: CodexEvent | { type: 'turn.status'; status: 'idle' | 'failed' }): void {
     const payload = (ev as { [RAW]?: string })[RAW] ?? JSON.stringify(ev);
     const id = this.store.addEvent(turnId, ev.type, payload);
@@ -387,6 +427,8 @@ export class Dispatcher {
     if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
     const guide = [
       ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+      // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
+      memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
       skillsGuide(skills),
       agentGitGuide(agentGit),
     ].filter(Boolean).join('\n\n');
@@ -485,6 +527,10 @@ export class Dispatcher {
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
     if (interrupted) return; // shutting down: no notification
+    // A sub-agent's work comes back to its parent, whose turn reading the report is remembered instead.
+    if (this.opts.autoMemory && status === 'completed' && !conv.parent && lastMessage.trim() && this.store.getMemoryPolicy().auto) {
+      void this.remember(conv, project, item.prompt, lastMessage, item.author);
+    }
     try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
   }

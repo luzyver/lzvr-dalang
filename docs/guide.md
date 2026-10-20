@@ -147,6 +147,9 @@ Everything about running and using Dalang. The [README](../README.md) has the ov
   owner's only, unless one is marked for all users (see "Other MCP servers" below).
 - **Code memory** (optional): a graph of every project's code from codebase-memory-mcp, kept fresh by Dalang, that
   every user's chats query through `/mcp`, each on the projects its user may open (see "Code memory" below).
+- **Project memory**: facts kept per project from its chats (decisions, conventions, how things are built and run),
+  shown to every later chat of the project on either backend, and each person's own preferences, shown to every turn
+  they send; both kept when the chat they came from is deleted (see "Project memory" below).
 - **SQL editor**: **SQL Editor** in the sidebar opens `/sql` in its own tab, for the whole panel rather than one chat:
   PostgreSQL, MySQL, MariaDB, SQLite, MongoDB and Redis connections, their tables, query consoles and a result grid. Each connection
   says whether agents may use it, read-only or read-write (see "SQL editor" below).
@@ -428,6 +431,7 @@ Known limits:
 | `MCP_CROSS_SEND` | `approve` | `auto` lets one chat message another through MCP without approval. |
 | `MCP_INJECT` | off | `1` gives every Codex turn this gateway's `/mcp` (see "MCP" below). Off by default; turn it on only after checking it works with your Codex version. |
 | `MCP_URL` | `http://127.0.0.1:<PORT>/mcp` | Where Codex should reach `/mcp` when `MCP_INJECT=1`. |
+| `AUTO_MEMORY` | on | `0` stops keeping facts from each finished turn in the project memory (see "Project memory" below); what agents and people save is still kept and shown. |
 | `AUTO_TITLE` | on | `0` turns off generated chat titles: the chat's agent gives each new chat a short title from its first prompt (one small read-only request, counted against the account's usage), else the first prompt is the title. |
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
@@ -491,15 +495,16 @@ Design notes: `docs/superpowers/specs/2026-10-13-core-gateway-design.md`.
 Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HTTP, stateless). Tools: `list_projects`,
 `create_project`, `delete_project`, `list_conversations`, `create_conversation`, `get_conversation`,
 `send_prompt`, `list_queue`, `remove_queue_item`, `cancel_turn`, `set_draft`, `get_events`, `list_accounts`,
-`unblock_accounts`, `get_approval`, `list_models`, `set_model`.
+`unblock_accounts`, `get_approval`, `list_models`, `set_model`, and the project memory's `memory_search`, `memory_save`,
+`memory_update`, `memory_forget` (see "Project memory" below).
 
-**Two kinds of caller.** An outside client using the main token gets all 17 tools. An agent running inside a chat
+**Two kinds of caller.** An outside client using the main token gets all 21 tools. An agent running inside a chat
 (with `MCP_INJECT=1`, each turn gets its own short-lived token bound to that chat, set up through
 `-c mcp_servers.dalang.url=... -c mcp_servers.dalang.bearer_token_env_var=LZVR_MCP_TOKEN`, plus
 `default_tools_approval_mode="approve"` since `codex exec` cannot ask before an MCP call; Claude Code gets
 `--mcp-config` and `--allowedTools=mcp__dalang` for the same reason) gets only
 `list_projects`, `list_conversations`, `create_conversation`, `get_conversation`, `send_prompt`, `list_queue`,
-`get_events`, `list_accounts`, `get_approval`, `list_models`, `set_model`. Its token works only on `/mcp`, dies when the turn ends, and the chat
+`get_events`, `list_accounts`, `get_approval`, `list_models`, `set_model` and the four `memory_*` tools. Its token works only on `/mcp`, dies when the turn ends, and the chat
 it claims to be comes from the token, not from anything it sends. A `send_prompt` from an agent into a *different*
 chat is held until you approve it in the panel (or `POST /api/approvals/:id/approve`).
 
@@ -593,6 +598,49 @@ filled in; every field can be changed. In a server's tab a switch turns it off w
 writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then
 refuses every MCP call ("requires approval"). With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
 if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else keeps working).
+
+### Project memory
+
+Every project keeps a memory: short facts from its chats that later chats should know, such as decisions and
+preferences the person stated, corrections, conventions, how to build, run, test or deploy, and where hard-to-find
+things are. It belongs to the project, not to a chat: deleting a chat leaves its memories behind (each still names the
+chat it came from), and they go only with the project.
+
+Each person also has a memory of their own: preferences they gave about how agents should work with them ("answer in
+Indonesian", "never add a Co-Authored-By line"), shown to every turn they send in any project. Only they see and change
+it (the owner does not see other people's), and it goes when the user is deleted.
+
+- **Kept on their own.** After each finished turn of a person's chat, one small read-only request (the same CLI, with
+  no tools and no session kept) reads what was asked and the agent's final answer, next to what the project already
+  keeps, and answers which facts to add, which to rewrite and which are now wrong. It is told to skip what the code or
+  git history shows, the steps of the chat, guesses and secrets, so most turns add nothing. These requests run one at a
+  time per project and count against the account's usage. Sub-agents' turns are skipped: their report comes back to
+  the parent, whose turn reading it counts. A failed request is only logged. When a person typed the prompt, the same
+  request may also keep a preference for that person's own memory, but only one they stated themselves as a wish for
+  later work ("always...", "never...", "next time..."), never one guessed from how they write; a prompt an agent or an
+  approval queued keeps nothing for a person.
+- **Shown to every turn.** About 6000 characters of memories, each with its `[id]`, go into every turn's instructions
+  (the person's own first, up to about 1500 characters, then the project's in the room left; a turn queued for a person
+  by an agent or an approval gets theirs too)
+  through `--append-system-prompt` / `developer_instructions`, on Codex and Claude Code alike, with a note that what the
+  person says now and what the code shows win over them. Which ones, in each: first any the prompt names by `[id]`, then those that best
+  match the prompt's words (a full-text index, SQLite FTS5 with BM25; a word also matches as the start of a longer one,
+  so "deploy" finds "deployment"; common English and Indonesian words are ignored), up to two thirds of the room, then
+  the newest. So a memory the request is about is shown however old it is, and what changed last is shown too. It
+  matches words, not meaning: "rilis" does not find "release". The extraction request is given memories picked the same
+  way (about 16000 characters), so it sees near-duplicates. Where Node's SQLite lacks FTS5, matching counts the prompt's
+  words in each memory instead (a warning is logged at startup).
+- **Agents.** With `MCP_INJECT=1`, chats get `memory_search`, `memory_save`, `memory_update` and `memory_forget`: on their
+  own project, or any other project their user may open (`project_id`), or with `scope: "mine"` the own memory of the
+  person the turn runs for (none for a turn no person sent). They are told to save on purpose only what a later chat
+  must not miss.
+- **People.** The lightbulb button in a chat's header opens the memory, with a tab for the chat's project and one for
+  your own: search, add, edit or forget. Everyone who may open the project may change its memory (the same as with its
+  chats); your own is yours alone (`/api/me/memories`).
+- **Settings → Project memory** (admins): keeping facts from turns on or off (on by default), the model per backend
+  (default: the chat's own; a small one is enough), the reasoning effort (default `low`), and whether people's stated
+  preferences are kept for them too (on by default). `AUTO_MEMORY=0` on the
+  server turns the automatic part off whatever is set there; memories saved on purpose still work and are still shown.
 
 ### Agents and git
 

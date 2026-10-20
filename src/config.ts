@@ -31,6 +31,8 @@ export interface Config {
   mcpCrossSend: 'approve' | 'auto';
   /** Give new chats a short generated title (off: the first prompt is the title). */
   autoTitle?: boolean;
+  /** Keep what is worth keeping from each finished turn in its project's memory (see memory.ts; Settings can turn it off too). */
+  autoMemory?: boolean;
   /** When set, every Codex turn is given this MCP endpoint plus a token bound to its conversation. */
   mcpUrl?: string;
   /** Mailer service base URL (`POST <url>/mail/send`) that delivers the sign-in codes. */
@@ -89,6 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     vapidSubject: env.LZVR_VAPID_SUBJECT || undefined,
     mcpCrossSend: env.MCP_CROSS_SEND === 'auto' ? 'auto' : 'approve',
     autoTitle: env.AUTO_TITLE !== '0',
+    autoMemory: env.AUTO_MEMORY !== '0',
     mailerUrl: env.MAILER_URL?.replace(/\/+$/, '') || undefined,
     mailFrom: env.MAIL_FROM || undefined,
     ownerEmails: (env.LZVR_OWNER_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),

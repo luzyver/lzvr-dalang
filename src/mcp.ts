@@ -11,10 +11,11 @@ import {
 } from './databases.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
+import { cleanMemory, MEMORY_MAX, queryTerms, searchTerms } from './memory.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
-import type { Conversation, Project, Store } from './store.js';
+import type { Conversation, Memory, MemoryScope, Project, Store } from './store.js';
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
 type Deps = {
@@ -54,6 +55,7 @@ function refuseChoice(store: Store, agent: boolean, backend: Backend, model?: st
 const AGENT_TOOLS = new Set([
   'list_projects', 'list_conversations', 'create_conversation', 'get_conversation', 'send_prompt',
   'list_queue', 'get_events', 'list_accounts', 'get_approval', 'list_models', 'set_model',
+  'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ]);
 
 // A dev user connecting from outside gets the everyday tools only: no new projects, no unblocking
@@ -282,6 +284,76 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   }, async ({ approval_id }) => {
     const a = store.getApproval(approval_id);
     return a && conv(a.to_conv) ? text(a) : fail(`no such approval: ${approval_id}`);
+  });
+
+  // Memory (see memory.ts): facts kept for every later chat of a project, and the preferences of the person the caller
+  // works for (scope "mine"), apart from the chats themselves. A person's own are theirs alone.
+  const PROJECT = ownProject ? z.string().optional().describe("another project you may open (default: this chat's project)") : z.string().optional();
+  const SCOPE = z.enum(['project', 'mine']).optional()
+    .describe("project (default): the project's facts; mine: the preferences of the person you work for, in any project");
+  const me = store.userKeyOf(onBehalf);
+  /** The scope asked for, or why there is none. */
+  const memoryScope = (scope: 'project' | 'mine' | undefined, projectId: string | undefined): MemoryScope | string => {
+    if (scope === 'mine') return me ? { userKey: me } : 'no person to keep this for: this turn was not sent by one';
+    const p = getProject(projectId || ownProject || '');
+    return p ? { projectId: p.id } : `no such project: ${projectId ?? ''}`;
+  };
+  const memoryOf = (id: number) => {
+    const m = store.getMemory(id);
+    return m && (m.project_id ? getProject(m.project_id) : me && m.user_key === me) ? m : null;
+  };
+  const brief = (m: Memory) =>
+    ({ id: m.id, scope: m.project_id ? 'project' : 'mine', text: m.text, from_chat: m.source_title || null, updated_at: m.updated_at });
+
+  s.registerTool('memory_search', {
+    description: 'Search the memory: facts kept from earlier chats of a project (decisions, conventions, how things are built '
+      + 'and run), or with scope "mine" the preferences of the person you work for. Those with every word of query come '
+      + 'first; when none has them all, the best partial matches. Without query, the newest first.',
+    inputSchema: { project_id: PROJECT, scope: SCOPE, query: z.string().max(200).optional(), limit: z.number().int().min(1).max(200).optional() },
+  }, async ({ project_id, scope, query, limit }) => {
+    const sc = memoryScope(scope, project_id);
+    if (typeof sc === 'string') return fail(sc);
+    // Every word first; with none like that, those that match some of them, best first.
+    const all = store.searchMemories(sc, searchTerms(query));
+    const found = all.length || !query ? all : store.matchMemories(sc, queryTerms(query), limit ?? 50);
+    return text(found.slice(0, limit ?? 50).map(brief));
+  });
+
+  s.registerTool('memory_save', {
+    description: 'Keep a fact for later chats (it stays when this chat is deleted): by default in the project memory, for every '
+      + 'later chat of the project; with scope "mine", a preference the person you work for gave about how to work with '
+      + `them, for their turns in any project (only they see it). One self-contained sentence, at most ${MEMORY_MAX} `
+      + 'characters. Only what a later chat must not miss; never secrets.',
+    inputSchema: { project_id: PROJECT, scope: SCOPE, text: z.string().min(1).max(2000) },
+  }, async ({ project_id, scope, text: t }) => {
+    const sc = memoryScope(scope, project_id);
+    if (typeof sc === 'string') return fail(sc);
+    const clean = cleanMemory(t);
+    if (!clean) return fail('give the fact to keep');
+    const from = source ? store.getConversation(source) : null;
+    return text(brief(store.addMemory(sc, clean, { conv: source ?? '', title: from?.title ?? '', by: source ? 'agent' : onBehalf })));
+  });
+
+  s.registerTool('memory_update', {
+    description: 'Rewrite a memory (by its id) that is out of date or wrong.',
+    inputSchema: { id: z.number().int(), text: z.string().min(1).max(2000) },
+  }, async ({ id, text: t }) => {
+    const m = memoryOf(id);
+    if (!m) return fail(`no such memory: ${id}`);
+    const clean = cleanMemory(t);
+    if (!clean) return fail('give the new text');
+    store.updateMemory(m.id, clean);
+    return text(brief(store.getMemory(m.id)!));
+  });
+
+  s.registerTool('memory_forget', {
+    description: 'Remove a memory (by its id) that is wrong or no longer matters.',
+    inputSchema: { id: z.number().int() },
+  }, async ({ id }) => {
+    const m = memoryOf(id);
+    if (!m) return fail(`no such memory: ${id}`);
+    store.deleteMemory(m.id);
+    return text({ removed: true });
   });
 
   // An agent inside a conversation is restricted most; otherwise the caller's role decides.

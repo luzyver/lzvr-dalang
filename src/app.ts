@@ -9,6 +9,7 @@ import type { AgentGitPolicy } from './agent-git.js';
 import { clickupClient, clickupForAll, clickupRoutes } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
 import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
+import { memoryRoutes } from './memory.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { git as gitCmd, gitContext, GitError } from './git.js';
@@ -195,6 +196,7 @@ export function buildApp(
   mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), codeMemory });
   codeMemoryRoutes(app, { store, codeMemory });
   codeIndexRoutes(app, { store, codeMemory, push });
+  memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
   dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });

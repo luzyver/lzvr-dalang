@@ -1,4 +1,4 @@
-// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, accounts and users for admins;
+// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users for admins;
 // Git & forges for everyone (the owner: the server's setup) and MCP (ClickUp and other servers) for the owner.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
@@ -11,6 +11,7 @@ import { AccountsSection } from './accounts.js';
 import { UsersSection } from './users.js';
 import { GitSection } from './git-auth.js';
 import { McpSection } from './mcp-settings.js';
+import { MemorySection } from './memory.js';
 import { signOut } from './session.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -227,6 +228,7 @@ const SECTIONS = [
   ['device', 'This device', 'monitor', Device, false],
   ['defaults', 'Model & effort', 'sliders-horizontal', Defaults, true],
   ['prompts', 'Generate prompts', 'sparkles', Prompts, true],
+  ['memory', 'Project memory', 'lightbulb', MemorySection, true],
   ['codex', 'Codex accounts', 'key-round', () => html`<${AccountsSection} backend="codex" />`, true],
   ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
   ['users', 'Users', 'users', UsersSection, true],
