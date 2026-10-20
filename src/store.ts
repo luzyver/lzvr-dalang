@@ -277,8 +277,10 @@ export class Store {
   }
   /** Their personal memory goes with them. */
   deleteUser(id: string): boolean {
-    this.run('DELETE FROM memories WHERE user_key=?', id);
-    return Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0;
+    // Only once a user really went: 'owner' (whose memories are kept under that key) has no row and must not lose them.
+    const deleted = Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0;
+    if (deleted) this.run('DELETE FROM memories WHERE user_key=?', id);
+    return deleted;
   }
 
   // --- login sessions, push subscriptions, small key/value settings ---

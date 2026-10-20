@@ -227,6 +227,11 @@ describe('memory', () => {
     expect((await req('DELETE', `/api/me/memories/${mine.id}`, AUTH)).statusCode).toBe(404);
     expect((await req('PATCH', `/api/me/memories/${mine.id}`, dev, { text: 'Prefers very short answers' })).json().text).toBe('Prefers very short answers');
 
+    // deleting a user who does not exist, the owner included, leaves every memory alone
+    const admin = bearer((await mkUser(t, 'sari', 'admin')).token);
+    expect((await req('DELETE', '/api/users/owner', admin)).statusCode).toBe(404);
+    expect(t.store.listMemories({ userKey: 'owner' })).toHaveLength(1);
+
     // a person's memory goes with them
     t.store.deleteUser(budi.id);
     expect(t.store.listMemories({ userKey: budi.id })).toHaveLength(0);
