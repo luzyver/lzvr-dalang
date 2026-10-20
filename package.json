@@ -54,7 +54,7 @@
     "@codemirror/language-data": "^6.5.2",
     "@highlightjs/cdn-assets": "^11.12.0",
     "@preact/signals": "^2.11.3",
-    "@types/node": "^22.20.5",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/pg-cursor": "^2.7.2",
     "@types/ssh2": "^1.15.6",
@@ -65,12 +65,12 @@
     "codemirror": "^6.0.2",
     "cronstrue": "^3.32.0",
     "esbuild": "^0.28.2",
-    "geist": "^1.7.2",
+    "geist": "^1.8.1",
     "htm": "^3.1.1",
     "preact": "^11.0.1",
     "sql-formatter": "^15.9.0",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }
