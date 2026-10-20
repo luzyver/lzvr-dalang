@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { GitAuth, helperCommand, helperKind, parseAuthStatus, sshTarget } from '../src/git-auth.js';
+import { GitUsers } from '../src/git-users.js';
+import type { Store } from '../src/store.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -437,5 +439,41 @@ describe('working as a panel user in a chat', () => {
     expect(t.store.listQueue(t.conv.id).find((i) => i.id === q)?.on_behalf).toBe('dev');
     const q2 = t.store.enqueue(t.conv.id, 'from an agent', [], '', 'dev');
     expect(t.store.listQueue(t.conv.id).find((i) => i.id === q2)).toMatchObject({ author: '', on_behalf: 'dev' });
+  });
+  it('keeps trusting the repositories the server trusts though another account owns them', () => {
+    const t = setupApp();
+    const repo = join(t.base, 'owned-elsewhere');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    // git's own switch for "this repository belongs to someone else"
+    const inside = (env: Record<string, string>) => {
+      try {
+        return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+          cwd: repo, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_TEST_ASSUME_DIFFERENT_OWNER: '1', ...env },
+        }).trim();
+      } catch (e) { return String((e as { stderr?: string }).stderr); }
+    };
+    const users = (safeDirectories: string[]) =>
+      new GitUsers({ baseDir: join(t.base, 'users'), store: {} as Store, ghCommand: ['gh'], glabCommand: ['glab'], safeDirectories });
+    expect(inside(users([]).baseEnv('dev'))).toMatch(/dubious ownership/);
+    const env = users(['*']).baseEnv('dev');
+    expect(env).toMatchObject({ GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' });
+    expect(inside(env)).toBe('true');
+  });
+
+  it('reads the server\'s safe.directory from the files its global config includes too', () => {
+    const t = setupApp();
+    const dir = join(t.base, 'server-git').replace(/\\/g, '/');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'trusted'), '[safe]\n\tdirectory = /srv/own\n\tdirectory = /srv/included\n');
+    writeFileSync(join(dir, 'gitconfig'), `[safe]\n\tdirectory = /srv/main\n[include]\n\tpath = ${dir}/trusted\n`);
+    const before = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = join(dir, 'gitconfig');
+    try {
+      const users = new GitUsers({ baseDir: join(t.base, 'users'), store: {} as Store, ghCommand: ['gh'], glabCommand: ['glab'] });
+      expect(users.safeDirectories()).toEqual(['/srv/main', '/srv/own', '/srv/included']);
+    } finally {
+      if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = before;
+    }
   });
 });
