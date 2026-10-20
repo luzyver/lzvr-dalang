@@ -460,4 +460,20 @@ describe('working as a panel user in a chat', () => {
     expect(env).toMatchObject({ GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' });
     expect(inside(env)).toBe('true');
   });
+
+  it('reads the server\'s safe.directory from the files its global config includes too', () => {
+    const t = setupApp();
+    const dir = join(t.base, 'server-git').replace(/\\/g, '/');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'trusted'), '[safe]\n\tdirectory = /srv/own\n\tdirectory = /srv/included\n');
+    writeFileSync(join(dir, 'gitconfig'), `[safe]\n\tdirectory = /srv/main\n[include]\n\tpath = ${dir}/trusted\n`);
+    const before = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = join(dir, 'gitconfig');
+    try {
+      const users = new GitUsers({ baseDir: join(t.base, 'users'), store: {} as Store, ghCommand: ['gh'], glabCommand: ['glab'] });
+      expect(users.safeDirectories()).toEqual(['/srv/main', '/srv/own', '/srv/included']);
+    } finally {
+      if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = before;
+    }
+  });
 });

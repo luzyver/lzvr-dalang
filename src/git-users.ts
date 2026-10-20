@@ -74,12 +74,13 @@ export class GitUsers {
   /**
    * The repositories the server trusts though another account owns them (`safe.directory` in its global git config).
    * A user's own global config replaces the server's, so without these git refuses those repositories for them
-   * ("dubious ownership") and the panel shows "Not a git repository". Read once.
+   * ("dubious ownership") and the panel shows "Not a git repository". Read once, with the files that config includes
+   * (`--global` alone leaves them out, though git itself reads them).
    */
   safeDirectories(): string[] {
     this.safeDirs ??= this.o.safeDirectories ?? (() => {
       try {
-        return execFileSync((this.o.gitCommand ?? ['git'])[0]!, ['config', '--global', '--get-all', 'safe.directory'], { encoding: 'utf8', windowsHide: true })
+        return execFileSync((this.o.gitCommand ?? ['git'])[0]!, ['config', '--global', '--includes', '--get-all', 'safe.directory'], { encoding: 'utf8', windowsHide: true })
           .split(/\r?\n/).filter((l) => l.trim());
       } catch { return []; } // none set
     })();
