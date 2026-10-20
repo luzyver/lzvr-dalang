@@ -351,7 +351,7 @@ describe('code editor: terminals as another account (TERMINAL_USER)', () => {
     expect(cmd).toContain('--no-new-privs');
     expect(cmd.slice(cmd.indexOf('--'))).toEqual(['--', '/bin/bash', '-l']);
     if (process.getuid?.() !== 1001) expect(cmd).toEqual(expect.arrayContaining(['--reuid=1001', '--regid=1001', '--init-groups']));
-    expect(() => asUser(user, ['/bin/bash'], undefined)).toThrow(/setpriv/);
+    expect(() => asUser(user, ['/bin/bash'], null)).toThrow(/setpriv/); // undefined would look setpriv up on this machine
   });
 
   it('uses the account\'s login shell, and bash for one without (nologin)', () => {
@@ -362,7 +362,8 @@ describe('code editor: terminals as another account (TERMINAL_USER)', () => {
 
   it.skipIf(process.platform !== 'linux')('refuses to open a terminal for an account that may not be used', async () => {
     const t = await withChat({ terminals: new Terminals({ user: 'root' }) });
-    const r = await t.call('POST', '/terminals', {});
+    const dev = await mkUser(t, 'dev4', 'dev'); // the owner's terminals run as the server's account, never TERMINAL_USER
+    const r = await t.call('POST', '/terminals', {}, bearer(dev.token));
     expect(r.statusCode).toBe(409);
     expect(r.json().error).toMatch(/is root/);
   });

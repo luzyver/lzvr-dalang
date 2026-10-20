@@ -84,7 +84,7 @@ const SETPRIV = ['/usr/bin/setpriv', '/bin/setpriv'];
  * The command that starts a terminal's shell as `user`: setpriv (util-linux) switches to the account and sets
  * no_new_privs, so nothing started in that shell can ever gain rights again (sudo, su and other setuid programs fail).
  */
-export function asUser(user: ShellUser, shell: string[], setpriv = SETPRIV.find((p) => existsSync(p))): string[] {
+export function asUser(user: ShellUser, shell: string[], setpriv: string | null | undefined = SETPRIV.find((p) => existsSync(p))): string[] {
   if (!setpriv) throw new TerminalError('TERMINAL_USER needs setpriv (package util-linux) to drop rights safely');
   const switching = process.getuid?.() !== user.uid;
   return [setpriv, ...(switching ? [`--reuid=${user.uid}`, `--regid=${user.gid}`, '--init-groups'] : []), '--no-new-privs', '--', ...shell];

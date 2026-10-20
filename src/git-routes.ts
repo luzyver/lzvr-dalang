@@ -207,13 +207,14 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
 
   // Every git, gh, glab and ssh these routes run works as the caller: the owner with the server's setup, anyone else
   // with their own (see GitUsers). A callback hook, so the context carries into the handler (as @fastify/request-context does).
+  // `run` and `exit` scope it to this request: `enterWith` could leave a user's context on the caller's async context,
+  // where the next request (the owner's, say) would pick it up on Node versions before AsyncContextFrame.
   app.addHook('preHandler', (req, _reply, done) => {
     const id = /^\/api\/conversations\/([^/?]+)\/git(?:[/?]|$)/.exec(req.url)?.[1];
-    if (id && req.user && req.user.id !== null) {
-      const conv = store.getConversation(decodeURIComponent(id));
-      gitContext.enterWith(users.context(req.user.id, conv?.project_id));
-    }
-    done();
+    if (!id || !req.user) return done();
+    if (req.user.id === null) return gitContext.exit(done);
+    const conv = store.getConversation(decodeURIComponent(id));
+    gitContext.run(users.context(req.user.id, conv?.project_id), done);
   });
   const notFound = (reply: Reply) => reply.code(404).send({ error: 'not found' });
 
