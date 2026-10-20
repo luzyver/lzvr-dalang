@@ -385,7 +385,9 @@ async function mongoStatement(client: MongoClient, c: DbConnection, sql: string,
         : first.name === 'findOneAndReplace' ? await coll.findOneAndReplace(a[0] ?? {}, a[1], opts) : await coll.findOneAndDelete(a[0] ?? {}, opts);
       return documentsTable(sql, doc ? [doc as unknown as Record<string, unknown>] : [], o, ms(), false);
     }
-    case 'drop': await coll.drop(); return writeResult(sql, 0, ms(), `dropped ${coll.collectionName}`);
+    // Driver 7 answers false for a collection that is not there, where 6 threw; keep failing like before.
+    case 'drop': if (!(await coll.drop())) throw new Error(`collection ${coll.collectionName} does not exist`);
+      return writeResult(sql, 0, ms(), `dropped ${coll.collectionName}`);
     case 'createIndex': return writeResult(sql, 0, ms(), `index ${await coll.createIndex(a[0], a[1] ?? {})}`);
     case 'createIndexes': return writeResult(sql, 0, ms(), `indexes ${(await coll.createIndexes(a[0], a[1] ?? {})).join(', ')}`);
     case 'dropIndex': await coll.dropIndex(a[0]); return writeResult(sql, 0, ms(), 'index dropped');
@@ -538,6 +540,8 @@ function redisClient(c: DbConnection, timeoutMs: number, db: number): Redis {
   const opts = {
     lazyConnect: true, connectTimeout: CONNECT_TIMEOUT_MS, commandTimeout: timeoutMs, maxRetriesPerRequest: 0, enableOfflineQueue: false,
     retryStrategy: () => null, db, connectionName: 'dalang',
+    // ioredis 6 opens with HELLO 3 (RESP3); a proxy or a tight ACL user may refuse it where AUTH worked. Nothing here needs RESP3.
+    protocol: 2 as const,
     ...(c.user && { username: c.user }), ...(c.password && { password: c.password }),
     ...(c.ssl !== 'disable' && { tls: { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) } }),
   };
