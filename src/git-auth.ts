@@ -118,17 +118,21 @@ export function parseGlabHosts(text: string): GlabHost[] {
   if (start < 0) return [];
   const out: GlabHost[] = [];
   let indent = -1;
+  let cur: GlabHost | null = null;
   for (const line of lines.slice(start + 1)) {
     if (!line.trim() || line.trim().startsWith('#')) continue;
     const lead = /^\s*/.exec(line)![0].length;
     if (lead === 0) break; // the next top-level key
     if (indent < 0) indent = lead;
     if (lead === indent) {
-      const m = /^\s*"?([^\s"#:]+)"?:\s*$/.exec(line);
-      if (m) out.push({ host: m[1]!.toLowerCase(), user: '' });
-    } else if (lead > indent && out.length) {
+      // `gitlab.example.com:` or, with a port, `gitlab.example.com:8443:` (maybe quoted); the last colon ends the key
+      const m = /^\s*(["']?)([^\s"'#]+?)\1:\s*$/.exec(line);
+      cur = m && HOST_RE.test(m[2]!) ? { host: m[2]!.toLowerCase(), user: '' } : null;
+      if (cur) out.push(cur);
+    } else if (cur && lead === indent * 2) {
+      // a key not read as a host above keeps its `user:` to itself, never handing it to the host before
       const user = /^\s*user:\s*"?([^\s"#]+)"?\s*$/.exec(line);
-      if (user && lead === indent * 2) out[out.length - 1]!.user = user[1]!;
+      if (user) cur.user = user[1]!;
     }
   }
   return out;

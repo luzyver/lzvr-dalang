@@ -79,6 +79,22 @@ describe('parsing the CLIs', () => {
       { host: 'intranet.example.com', user: '' },
     ]);
     expect(parseGlabHosts('git_protocol: ssh\n')).toEqual([]);
+    // a port in the host, quoted or not; a key that is no host keeps its user to itself
+    expect(parseGlabHosts([
+      'hosts:',
+      '    git.example.com:',
+      '        user: alice',
+      '    gitlab.example.com:8443:',
+      '        user: bob',
+      '    "other.example.com:3443":',
+      '        user: carol',
+      '    not a host:',
+      '        user: mallory',
+    ].join('\n'))).toEqual([
+      { host: 'git.example.com', user: 'alice' },
+      { host: 'gitlab.example.com:8443', user: 'bob' },
+      { host: 'other.example.com:3443', user: 'carol' },
+    ]);
   });
 
   it('quotes a helper command with spaces for git', () => {
