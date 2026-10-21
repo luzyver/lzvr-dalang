@@ -13,6 +13,12 @@ export function Icon({ name, class: cls, spin }) {
  * The Dalang mark: a gunungan (the leaf-shaped wayang figure that opens and closes a play) with the tree of life inside,
  * branching like the agents one dalang drives. Coloured by the theme, so it follows the accent palette.
  */
+/** The database engines' names, by driver. */
+export const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis' };
+/** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (app.css). */
+export const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis' };
+export const EngineIcon = ({ driver, class: cls }) => html`<${Icon} name=${ENGINE_ICONS[driver] || 'database'} class=${cx('engine', `engine-${driver}`, cls)} />`;
+
 export const Logo = ({ size = 26 }) => html`<svg class="logo" width=${size} height=${size} viewBox="0 0 32 32" aria-hidden="true">
   <rect class="logo-tile" width="32" height="32" rx="7.5" />
   <g transform="translate(5.6 5.4) scale(.866)">

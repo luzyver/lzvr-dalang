@@ -87,6 +87,10 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   };
 
   app.get('/api/ssh/hosts', { onRequest: requireAdmin }, (req) => loadHosts(store).filter((h) => canAccess(req.user!, h.access)).map(viewHost));
+  // The hosts an agent in this user's chats may use, for the composer's @ssh list (anyone may ask): no more than
+  // ssh_list_hosts shows, so no address or login.
+  app.get('/api/ssh/agent-hosts', (req) => loadHosts(store).filter((h) => h.agent !== 'off' && canAccess(req.user!, h.access))
+    .map((h) => ({ id: h.id, label: h.label, ...(h.note && { note: h.note }) })));
 
   app.put<{ Params: { id: string }; Body: Body }>('/api/ssh/hosts/:id', { onRequest: requireAdmin, schema: { body: BODY } }, (req, reply) => {
     const { id } = req.params;

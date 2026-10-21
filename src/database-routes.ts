@@ -272,6 +272,9 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   };
 
   app.get('/api/db/connections', (req) => loadConnections(store).filter((c) => canAccess(req.user!, c.access)).map(view));
+  // The connections an agent in this user's chats may use, for the composer's @db list: no more than db_list_connections shows.
+  app.get('/api/db/agent-connections', (req) => loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(req.user!, c.access))
+    .map((c) => ({ id: c.id, label: c.label, engine: c.driver })));
 
   app.put<{ Params: { id: string }; Body: Body }>('/api/db/connections/:id', { onRequest: requireAdmin, schema: { body: BODY } }, (req, reply) => {
     const { id } = req.params;
