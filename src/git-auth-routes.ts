@@ -75,14 +75,14 @@ export function gitAuthRoutes(app: FastifyInstance, d: { users: GitUsers }): voi
     onRequest, schema: { body: { type: 'object', required: ['host'], additionalProperties: false, properties: { host } } },
   }, (req, reply) => handle(reply, () => authOf(req).testSsh(req.body.host.trim().toLowerCase())));
 
-  app.post<{ Body: { forge: 'github' | 'gitlab'; host: string; token: string; https: boolean } }>('/api/settings/git/login', {
+  app.post<{ Body: { forge: 'github' | 'gitlab'; host: string; token: string; https: boolean; apiHttp?: boolean } }>('/api/settings/git/login', {
     onRequest,
     schema: { body: { type: 'object', required: ['forge', 'host', 'token', 'https'], additionalProperties: false, properties: {
-      forge, host, token: { type: 'string', minLength: 1, maxLength: 500 }, https: { type: 'boolean' },
+      forge, host, token: { type: 'string', minLength: 1, maxLength: 500 }, https: { type: 'boolean' }, apiHttp: { type: 'boolean' },
     } } },
   }, (req, reply) => handle(reply, async () => {
     const b = req.body;
-    await authOf(req).login(b.forge, b.host.trim().toLowerCase(), b.token.trim(), b.https);
+    await authOf(req).login(b.forge, b.host.trim().toLowerCase(), b.token.trim(), b.https, b.apiHttp ?? false);
     return authOf(req).forgeStatus(b.forge);
   }));
 

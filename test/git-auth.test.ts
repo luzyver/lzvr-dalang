@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { GitAuth, helperCommand, helperKind, parseAuthStatus, sshTarget } from '../src/git-auth.js';
+import { GitAuth, helperCommand, helperKind, parseAuthStatus, parseGlabHosts, sshTarget } from '../src/git-auth.js';
 import { GitUsers } from '../src/git-users.js';
 import type { Store } from '../src/store.js';
 import { AUTH, until } from './helpers.js';
@@ -22,7 +22,8 @@ function setup(env: Record<string, string> = {}) {
   const auth = new GitAuth({
     ghCommand: [process.execPath, fakeForge, join(dir, 'gh')], glabCommand: [process.execPath, fakeForge, join(dir, 'glab')],
     sshDir: join(dir, 'ssh'), sshCommand: [process.execPath, fakeSsh, dir],
-    env: { GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', ...env },
+    // GLAB_CONFIG_DIR: never the real glab config.yml of whoever runs the tests
+    env: { GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GLAB_CONFIG_DIR: join(dir, 'glab'), ...env },
   });
   // Panel users' own setups run the same fakes (their gh/glab keep logins in their own config folder).
   const t = setupApp({}, {
@@ -55,6 +56,29 @@ describe('parsing the CLIs', () => {
     ]);
     expect(parseAuthStatus('gitlab.example.com\n  ✓ Logged in to gitlab.example.com as alice (/home/u/.config/glab-cli/config.yml)'))
       .toEqual([{ host: 'gitlab.example.com', user: 'alice', ok: true, active: true }]);
+  });
+
+  it('reads the hosts of a glab config', () => {
+    expect(parseGlabHosts([
+      'git_protocol: ssh',
+      'hosts:',
+      '    gitlab.com:',
+      '        # What protocol to use to access the API endpoint.',
+      '        api_protocol: https',
+      '        user:',
+      '    git.example.com:',
+      '        use_keyring: "true"',
+      '        user: alice',
+      '    intranet.example.com:',
+      '        git_protocol: https',
+      'no_prompt: true',
+      '    not-a-host:',
+    ].join('\n'))).toEqual([
+      { host: 'gitlab.com', user: '' },
+      { host: 'git.example.com', user: 'alice' },
+      { host: 'intranet.example.com', user: '' },
+    ]);
+    expect(parseGlabHosts('git_protocol: ssh\n')).toEqual([]);
   });
 
   it('quotes a helper command with spaces for git', () => {
@@ -194,6 +218,39 @@ describe('Settings → Git', () => {
     expect((await t.call('GET', '/api/settings/git')).json().helpers).toEqual([]);
   });
 
+  it('signs glab in to a GitLab served over plain HTTP', async () => {
+    const t = setup();
+    const r = await t.call('POST', '/api/settings/git/login', { forge: 'gitlab', host: 'gitlab.example.com', token: 'good-token', https: false, apiHttp: true });
+    expect(r.statusCode).toBe(200);
+    expect(t.calls('glab')[0].args).toEqual(['auth', 'login', '--hostname', 'gitlab.example.com', '--stdin', '--git-protocol', 'ssh', '--api-protocol', 'http']);
+    expect((await t.call('POST', '/api/settings/git/login', { forge: 'github', host: 'github.com', token: 'good-token', https: false, apiHttp: true })).statusCode).toBe(400);
+  });
+
+  it('asks glab about each host on its own, so one that never answers does not hold the rest', async () => {
+    const t = setup();
+    const cfg = join(t.dir, 'glab-config');
+    mkdirSync(cfg);
+    writeFileSync(join(cfg, 'config.yml'), [
+      'hosts:', '    git.example.com:', '        user: octo', '    dead.example.com:', '        user: bob', '    gone.example.com:', '        git_protocol: https',
+    ].join('\n'));
+    writeFileSync(join(cfg, 'logins.json'), JSON.stringify({ 'git.example.com': 'octo' }));
+    const auth = new GitAuth({
+      ghCommand: ['gh'], glabCommand: [process.execPath, fakeForge, join(t.dir, 'glab')], sshDir: join(t.dir, 'ssh'),
+      env: { GLAB_CONFIG_DIR: cfg, FAKE_HANG_HOST: 'dead.example.com' }, statusTimeoutMs: 1500,
+    });
+    const started = Date.now();
+    const s = await auth.forgeStatus('gitlab');
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(s.accounts).toEqual([
+      { host: 'git.example.com', user: 'octo', ok: true, active: true },
+      { host: 'dead.example.com', user: 'bob', ok: false, active: true },
+    ]);
+    expect(s.output).toMatch(/dead\.example\.com: no answer in 1\.5s/);
+    expect(t.calls('glab').map((c) => c.args.join(' ')).sort()).toEqual([
+      'auth status --hostname dead.example.com', 'auth status --hostname git.example.com', 'auth status --hostname gone.example.com',
+    ]);
+  });
+
   it('uploads a public key to the account on the right host', async () => {
     const t = setup();
     await t.call('POST', '/api/settings/git/ssh-keys', { name: 'id_ed25519', comment: 'c' });
@@ -254,7 +311,8 @@ describe('which credentials a commit and push use', () => {
     writeFileSync(join(t.dir, 'ssh', 'id_work'), 'private');
     const auth = new GitAuth({
       ghCommand: [process.execPath, fakeForge, join(t.dir, 'gh')], glabCommand: [process.execPath, fakeForge, join(t.dir, 'glab')],
-      sshDir: join(t.dir, 'ssh'), sshCommand: [process.execPath, fakeSsh, t.dir], env: { GIT_CONFIG_GLOBAL: t.gitConfig, GIT_CONFIG_NOSYSTEM: '1' },
+      sshDir: join(t.dir, 'ssh'), sshCommand: [process.execPath, fakeSsh, t.dir],
+      env: { GIT_CONFIG_GLOBAL: t.gitConfig, GIT_CONFIG_NOSYSTEM: '1', GLAB_CONFIG_DIR: join(t.dir, 'glab') },
     });
     return { ...t, cwd, auth };
   }

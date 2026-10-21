@@ -42,6 +42,8 @@ export interface GitAuthOpts {
   /** gh keeps its token in its config folder rather than the OS keyring (a panel user's own login must stay in their folder). */
   ghInsecureStorage?: boolean;
   timeoutMs?: number;
+  /** How long `glab auth status` may take for one host (default 15s). */
+  statusTimeoutMs?: number;
 }
 
 export interface ForgeAccount { host: string; user: string; ok: boolean; active: boolean }
@@ -105,6 +107,45 @@ export function parseAuthStatus(text: string): ForgeAccount[] {
     if (active && accounts.length) accounts[accounts.length - 1]!.active = active[1] === 'true';
   }
   return accounts;
+}
+
+export interface GlabHost { host: string; user: string }
+
+/** The `hosts:` of a glab config.yml, each with the `user:` it keeps (empty when none). */
+export function parseGlabHosts(text: string): GlabHost[] {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^hosts:\s*$/.test(l));
+  if (start < 0) return [];
+  const out: GlabHost[] = [];
+  let indent = -1;
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const lead = /^\s*/.exec(line)![0].length;
+    if (lead === 0) break; // the next top-level key
+    if (indent < 0) indent = lead;
+    if (lead === indent) {
+      const m = /^\s*"?([^\s"#:]+)"?:\s*$/.exec(line);
+      if (m) out.push({ host: m[1]!.toLowerCase(), user: '' });
+    } else if (lead > indent && out.length) {
+      const user = /^\s*user:\s*"?([^\s"#]+)"?\s*$/.exec(line);
+      if (user && lead === indent * 2) out[out.length - 1]!.user = user[1]!;
+    }
+  }
+  return out;
+}
+
+/** The hosts glab keeps, read from its config.yml where glab itself looks for it; [] when it is not found. */
+function glabHosts(env: Record<string, string>): GlabHost[] {
+  const home = homedir();
+  const dirs = env.GLAB_CONFIG_DIR ? [env.GLAB_CONFIG_DIR] : [
+    env.XDG_CONFIG_HOME && join(env.XDG_CONFIG_HOME, 'glab-cli'), join(home, '.config', 'glab-cli'),
+    env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'glab-cli'), env.APPDATA && join(env.APPDATA, 'glab-cli'),
+    join(home, 'Library', 'Application Support', 'glab-cli'),
+  ].filter((d): d is string => !!d);
+  for (const d of dirs) {
+    try { return parseGlabHosts(readFileSync(join(d, 'config.yml'), 'utf8')); } catch { /* not there: the next place */ }
+  }
+  return [];
 }
 
 /** A git credential helper value that runs a command: `!"C:/Program Files/glab/glab.exe" auth git-credential`. */
@@ -223,11 +264,35 @@ export class GitAuth {
 
   async forgeStatus(forge: Forge): Promise<ForgeStatus> {
     const { command } = this.cli(forge);
-    const r = await this.run(command, ['auth', 'status'], { timeoutMs: 30_000 });
-    if (r.missing) return { installed: false, accounts: [], output: '' };
-    const status = { installed: true, accounts: parseAuthStatus(r.out), output: r.out.trim() };
+    const hosts = forge === 'gitlab' ? glabHosts(this.env()) : [];
+    const status = hosts.length ? await this.glabStatusPerHost(hosts) : await (async () => {
+      const r = await this.run(command, ['auth', 'status'], { timeoutMs: 30_000 });
+      return r.missing ? null : { installed: true, accounts: parseAuthStatus(r.out), output: r.out.trim() };
+    })();
+    if (!status) return { installed: false, accounts: [], output: '' };
     this.knownHosts.set(forge, { hosts: new Set(status.accounts.map((a) => a.host)), at: Date.now() });
     return status;
+  }
+
+  /**
+   * `glab auth status` asks every host in turn and waits out each unreachable one (an intranet GitLab with the VPN off),
+   * so one dead host held the whole answer. Each host is asked on its own instead, side by side, with its own timeout.
+   */
+  private async glabStatusPerHost(hosts: GlabHost[]): Promise<ForgeStatus | null> {
+    const ms = this.opts.statusTimeoutMs ?? 15_000;
+    const results = await Promise.all(hosts.map(async (h) => ({ h, r: await this.run(this.opts.glabCommand, ['auth', 'status', '--hostname', h.host], { timeoutMs: ms }) })));
+    if (results.some(({ r }) => r.missing)) return null;
+    const accounts: ForgeAccount[] = [];
+    const output: string[] = [];
+    for (const { h, r } of results) {
+      const timedOut = r.code === null;
+      const found = parseAuthStatus(r.out).filter((a) => a.host === h.host);
+      // a host that did not answer in time still has its login: show it as broken rather than not at all
+      accounts.push(...(found.length || !timedOut || !h.user ? found : [{ host: h.host, user: h.user, ok: false, active: true }]));
+      const text = r.out.replace(/\n?timed out$/, '').trim() || h.host;
+      output.push(timedOut ? `${text}\n  x ${h.host}: no answer in ${ms / 1000}s (is the host reachable from the server? VPN?)` : text);
+    }
+    return { installed: true, accounts, output: output.join('\n') };
   }
 
   private knownHosts = new Map<Forge, { hosts: Set<string>; at: number }>();
@@ -249,14 +314,16 @@ export class GitAuth {
   }
 
   /** Sign the CLI in with a personal access token, passed on stdin so it never shows up in a process list. */
-  async login(forge: Forge, host: string, token: string, https: boolean): Promise<void> {
+  /** `apiHttp`: a GitLab served over plain HTTP only (glab's API calls default to https and would wait out the timeout). */
+  async login(forge: Forge, host: string, token: string, https: boolean, apiHttp = false): Promise<void> {
     checkHost(host);
     if (!token || /\s/.test(token)) throw new GitAuthError('bad-input', 'the token must not be empty or contain spaces');
+    if (apiHttp && forge !== 'gitlab') throw new GitAuthError('bad-input', 'only a GitLab login can use plain HTTP');
     const { command, name } = this.cli(forge);
     const protocol = https ? 'https' : 'ssh';
     const args = forge === 'github'
       ? ['auth', 'login', '--hostname', host, '--with-token', '--git-protocol', protocol, '--skip-ssh-key', ...(this.opts.ghInsecureStorage ? ['--insecure-storage'] : [])]
-      : ['auth', 'login', '--hostname', host, '--stdin', '--git-protocol', protocol];
+      : ['auth', 'login', '--hostname', host, '--stdin', '--git-protocol', protocol, ...(apiHttp ? ['--api-protocol', 'http'] : [])];
     await this.must(command, name, args, { input: `${token}\n` });
     this.knownHosts.delete(forge); // a host signed in just now must count for forgeForHost at once
     if (https) await this.setupHttps(forge, host);
