@@ -209,6 +209,10 @@ describe('SSH hosts', () => {
     expect(JSON.parse((await (await t.agent('owner')).call('ssh_list_hosts')).text).map((h: { id: string }) => h.id)).toEqual(['admins']);
     const dev = await mkUser(t, 'devi', 'dev');
     expect((await t.app.inject({ url: '/api/ssh/hosts', headers: bearer(dev.token) })).statusCode).toBe(403);
+    // The composer's @ssh list: what ssh_list_hosts would show the same user, without the address or login.
+    await t.put('vm', { note: 'staging' });
+    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: bearer(dev.token) })).json()).toEqual([{ id: 'vm', label: 'vm', note: 'staging' }]);
+    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: AUTH })).json().map((h: { id: string }) => h.id)).toEqual(['admins', 'vm']);
   });
 
   it('holds a dangerous command on a run host, sudo or not, and runs the rest at once', async () => {

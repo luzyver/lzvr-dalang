@@ -7,7 +7,7 @@ import { batch, signal } from '../vendor/signals.js';
 import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api, downloadFile } from './api.js';
-import { AsyncButton, confirmDialog, ContextMenu, Empty, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
+import { AsyncButton, confirmDialog, ContextMenu, DRIVERS, Empty, ENGINE_ICONS, EngineIcon, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
 import { guarded, isAdmin, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
@@ -20,12 +20,8 @@ const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == nu
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
 const mobile = () => innerWidth <= 760;
 
-const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis' };
 /** MongoDB (mongosh-style commands) and Redis (its commands, one per line): no SQL, so no SQL-only features. */
 const noSql = (conn) => conn?.driver === 'mongodb' || conn?.driver === 'redis';
-/** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (app.css). */
-const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis' };
-const EngineIcon = ({ driver, class: cls }) => html`<${Icon} name=${ENGINE_ICONS[driver] || 'database'} class=${cx('engine', `engine-${driver}`, cls)} />`;
 const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379 };
 const DIALECTS = { postgres: cm.PostgreSQL, mysql: cm.MySQL, mariadb: cm.MariaSQL, sqlite: cm.SQLite };
 const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };

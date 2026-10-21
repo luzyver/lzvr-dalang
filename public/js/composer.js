@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { Icon } from './ui.js';
+import { DRIVERS, EngineIcon, Icon } from './ui.js';
 import { guarded, toast } from './store.js';
 import { chat, refreshQueue } from './chat-view.js';
 
@@ -28,6 +28,75 @@ function useModelChoices(id) {
   return state;
 }
 
+// "@db", "@database" or "@ssh" right before the caret, with what follows it so far ("@db:pro").
+const MENTION = /(^|\s)@(database|db|ssh):?([\w.-]*)$/i;
+const MENTION_KINDS = {
+  db: { url: '/api/db/agent-connections', icon: 'database', label: 'Databases', none: 'No database connection agents may use' },
+  ssh: { url: '/api/ssh/agent-hosts', icon: 'terminal', label: 'SSH hosts', none: 'No SSH host agents may use' },
+};
+
+/** The @db / @ssh list above the box: the connections and hosts agents may use, inserted as "@db:<id>" / "@ssh:<id>". */
+function useMentions(box, setText) {
+  const [at, setAt] = useState(null);
+  const [lists, setLists] = useState({});
+  const [sel, setSel] = useState(0);
+  const loading = useRef({});
+
+  const update = (el) => {
+    const caret = el.selectionStart;
+    const m = el.selectionEnd === caret && el.value.slice(0, caret).match(MENTION);
+    if (!m) { setAt(null); return; }
+    const kind = m[2].toLowerCase() === 'ssh' ? 'ssh' : 'db';
+    setAt({ kind, start: caret - m[0].length + m[1].length, end: caret, filter: m[3].toLowerCase() });
+    setSel(0);
+    if (!loading.current[kind]) {
+      loading.current[kind] = true;
+      api(MENTION_KINDS[kind].url).then((l) => setLists((ls) => ({ ...ls, [kind]: l })))
+        .catch((e) => { loading.current[kind] = false; toast(e.message, 'err'); });
+    }
+  };
+
+  const list = at && lists[at.kind];
+  const items = (list || []).filter((x) => !at.filter || x.id.includes(at.filter) || x.label.toLowerCase().includes(at.filter));
+
+  const pick = (item) => {
+    const el = box.current;
+    const ref = `@${at.kind}:${item.id} `;
+    const next = el.value.slice(0, at.start) + ref + el.value.slice(at.end);
+    setText(next);
+    setAt(null);
+    const caret = at.start + ref.length;
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(caret, caret); });
+  };
+
+  /** True when the key moved through or picked from the list (the box must not handle it too). */
+  const onKey = (e) => {
+    if (!at) return false;
+    if (e.key === 'Escape') { setAt(null); return true; }
+    if (!items.length) return false;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      setSel((i) => (i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length);
+      return true;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { pick(items[Math.min(sel, items.length - 1)]); return true; }
+    return false;
+  };
+
+  const kind = at && MENTION_KINDS[at.kind];
+  const menu = at && html`<div class="mention-pop" role="listbox" aria-label=${kind.label}>
+    <div class="menu-label">${kind.label}</div>
+    ${!list ? html`<div class="mention-empty">Loading…</div>`
+      : !items.length ? html`<div class="mention-empty">${list.length ? 'No match' : kind.none}</div>`
+      : items.map((x, i) => html`<button key=${x.id} type="button" role="option" aria-selected=${i === sel}
+          class=${cx('menu-item', i === sel && 'active')} title=${x.note || x.label}
+          onMouseDown=${(e) => e.preventDefault()} onMouseEnter=${() => setSel(i)} onClick=${() => pick(x)}>
+          ${x.engine ? html`<${EngineIcon} driver=${x.engine} />` : html`<${Icon} name=${kind.icon} />`}<span class="mention-id">${x.id}</span>
+          <span class="mention-sub">${[x.label !== x.id && x.label, x.engine && DRIVERS[x.engine], x.note].filter(Boolean).join(' · ')}</span>
+        </button>`)}
+  </div>`;
+  return { update, onKey, menu, close: () => setAt(null) };
+}
+
 function ChipSelect({ icon, title, value, options, onChange }) {
   const current = options.find(([v]) => v === value) || options[0];
   return html`<label class="select-chip" title=${title}>
@@ -50,6 +119,7 @@ export function Composer({ id, project }) {
   const fileInput = useRef(null);
   const draftTimer = useRef(0);
   const draftLoaded = useRef(false);
+  const mention = useMentions(box, (value) => { setText(value); saveDraft(value); });
 
   useEffect(() => { setText(''); setFiles([]); draftLoaded.current = false; }, [id]);
   // The saved draft comes with the chat; it only fills an empty box, once.
@@ -101,6 +171,7 @@ export function Composer({ id, project }) {
 
   // Desktop: Enter sends, Shift+Enter is a new line. Touch keyboards keep Enter as a new line (the button sends).
   const onKeyDown = (e) => {
+    if (mention.onKey(e)) { e.preventDefault(); return; }
     if (e.key === 'Enter' && !e.isComposing && (e.ctrlKey || e.metaKey || (matchMedia('(pointer: fine)').matches && !e.shiftKey))) {
       e.preventDefault();
       send();
@@ -141,13 +212,17 @@ export function Composer({ id, project }) {
       </span>`)}
     </div>`}
     <div class=${cx('composer', sending && 'busy')}>
+      ${mention.menu}
       ${files.length > 0 && html`<div class="attachments">
         ${files.map((f, i) => html`<span class="chip" key=${i}><${Icon} name="paperclip" /><span class="chip-text">${f.name}</span>
           <button aria-label=${`Remove ${f.name}`} onClick=${() => setFiles(files.filter((_, j) => j !== i))}><${Icon} name="x" /></button></span>`)}
       </div>`}
       <textarea ref=${box} rows="1" value=${text} aria-label="Message"
         placeholder=${running ? 'Queue a follow-up…' : `Message ${backend}…`}
-        onInput=${(e) => { setText(e.currentTarget.value); saveDraft(e.currentTarget.value); }} onKeyDown=${onKeyDown} onPaste=${onPaste}></textarea>
+        onInput=${(e) => { setText(e.currentTarget.value); saveDraft(e.currentTarget.value); mention.update(e.currentTarget); }}
+        onKeyDown=${onKeyDown} onPaste=${onPaste} onBlur=${mention.close}
+        onClick=${(e) => mention.update(e.currentTarget)}
+        onKeyUp=${(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') mention.update(e.currentTarget); }}></textarea>
       <div class="composer-bar">
         <button class="icon-btn" aria-label="Attach files" title="Attach files" onClick=${() => fileInput.current.click()}><${Icon} name="paperclip" /></button>
         <input ref=${fileInput} type="file" multiple hidden onChange=${(e) => { setFiles([...files, ...e.currentTarget.files]); e.currentTarget.value = ''; }} />
