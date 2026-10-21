@@ -233,8 +233,9 @@ function SignIn({ forge, onDone, onCancel }) {
   const [host, setHost] = useState(f.host);
   const [token, setToken] = useState('');
   const [https, setHttps] = useState(true);
+  const [apiHttp, setApiHttp] = useState(false);
   const login = guarded(async () => {
-    const status = await api('/api/settings/git/login', { method: 'POST', body: { forge, host: host.trim(), token: token.trim(), https } });
+    const status = await api('/api/settings/git/login', { method: 'POST', body: { forge, host: host.trim(), token: token.trim(), https, ...(forge === 'gitlab' && { apiHttp }) } });
     toast(`${f.cli} signed in to ${host.trim()}`);
     await onDone(status);
   });
@@ -245,6 +246,7 @@ function SignIn({ forge, onDone, onCancel }) {
       <label><span>Token</span><input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)} placeholder="paste the token" /></label>
     </div>
     <label class="check small"><input type="checkbox" checked=${https} onChange=${(e) => setHttps(e.currentTarget.checked)} />Also use this login for git over HTTPS</label>
+    ${forge === 'gitlab' && html`<label class="check small" title="For a GitLab that answers on http:// only (port 443 closed): the token then travels unencrypted"><input type="checkbox" checked=${apiHttp} onChange=${(e) => setApiHttp(e.currentTarget.checked)} />This GitLab is served over plain HTTP (no HTTPS)</label>`}
     <div class="row"><div class="spacer"></div>
       ${onCancel && html`<button class="btn ghost sm" onClick=${onCancel}>Cancel</button>`}
       <${AsyncButton} class="btn primary sm" icon="key-round" onClick=${login} disabled=${!token.trim() || !host.trim()}>Sign in with token<//></div>

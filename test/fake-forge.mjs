@@ -2,10 +2,10 @@
 // folder (GH_CONFIG_DIR / GLAB_CONFIG_DIR, like the real ones; else <dir>) and appends every call (arguments, stdin,
 // GH_HOST/GITLAB_HOST, config folder) to <dir>/calls.log as a JSON line.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const [dir, ...args] = process.argv.slice(2);
-const configDir = process.env.GH_CONFIG_DIR || process.env.GLAB_CONFIG_DIR || dir;
+const configDir = (basename(dir) === 'glab' ? process.env.GLAB_CONFIG_DIR : process.env.GH_CONFIG_DIR) || dir;
 const file = join(configDir, 'logins.json');
 const logins = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
 const save = () => writeFileSync(file, JSON.stringify(logins));
@@ -19,9 +19,18 @@ appendFileSync(join(dir, 'calls.log'), `${JSON.stringify({
 
 const cmd = args.slice(0, 2).join(' ');
 if (cmd === 'auth status') {
-  const hosts = Object.entries(logins);
-  if (!hosts.length) { console.error('You are not logged into any GitHub hosts.'); process.exit(1); }
-  for (const [host, user] of hosts) console.log(`${host}\n  ✓ Logged in to ${host} account ${user} (keyring)\n  - Active account: true`);
+  const only = args.includes('--hostname') ? flag('--hostname') : null;
+  const hosts = Object.entries(logins).filter(([h]) => !only || h === only);
+  if (only && only === process.env.FAKE_HANG_HOST) {
+    // a host that never answers (an intranet GitLab with the VPN off)
+    console.log(only);
+    setInterval(() => {}, 1000);
+  } else if (!hosts.length) {
+    console.error('You are not logged into any GitHub hosts.');
+    process.exit(1);
+  } else {
+    for (const [host, user] of hosts) console.log(`${host}\n  ✓ Logged in to ${host} account ${user} (keyring)\n  - Active account: true`);
+  }
 } else if (cmd === 'auth login' && args.includes('--web')) {
   console.error('! One-time code (AB12-CD34) copied to clipboard');
   console.error('Open this URL to continue in your web browser: https://github.com/login/device');
