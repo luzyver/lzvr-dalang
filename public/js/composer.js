@@ -41,6 +41,9 @@ function useMentions(box, setText) {
   const [lists, setLists] = useState({});
   const [sel, setSel] = useState(0);
   const loading = useRef({});
+  const pop = useRef(null);
+  // Arrow keys move through a list taller than the popup: keep the chosen one in sight.
+  useEffect(() => { pop.current?.querySelector('.menu-item.active')?.scrollIntoView({ block: 'nearest' }); }, [sel, at]);
 
   const update = (el) => {
     const caret = el.selectionStart;
@@ -78,12 +81,13 @@ function useMentions(box, setText) {
       setSel((i) => (i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length);
       return true;
     }
-    if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { pick(items[Math.min(sel, items.length - 1)]); return true; }
+    // Plain Enter or Tab picks; Shift+Enter (new line), Ctrl/Cmd+Enter (send) and Shift+Tab keep their own meaning.
+    if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) { pick(items[Math.min(sel, items.length - 1)]); return true; }
     return false;
   };
 
   const kind = at && MENTION_KINDS[at.kind];
-  const menu = at && html`<div class="mention-pop" role="listbox" aria-label=${kind.label}>
+  const menu = at && html`<div class="mention-pop" ref=${pop} role="listbox" aria-label=${kind.label}>
     <div class="menu-label">${kind.label}</div>
     ${!list ? html`<div class="mention-empty">Loading…</div>`
       : !items.length ? html`<div class="mention-empty">${list.length ? 'No match' : kind.none}</div>`
@@ -121,7 +125,7 @@ export function Composer({ id, project }) {
   const draftLoaded = useRef(false);
   const mention = useMentions(box, (value) => { setText(value); saveDraft(value); });
 
-  useEffect(() => { setText(''); setFiles([]); draftLoaded.current = false; }, [id]);
+  useEffect(() => { setText(''); setFiles([]); mention.close(); draftLoaded.current = false; }, [id]);
   // The saved draft comes with the chat; it only fills an empty box, once.
   useEffect(() => {
     if (conv && conv.id === id && !draftLoaded.current) {
@@ -138,6 +142,7 @@ export function Composer({ id, project }) {
   const send = guarded(async () => {
     const prompt = text.trim();
     if (!prompt || sending) return;
+    mention.close();
     setSending(true);
     try {
       const attachments = [];
