@@ -451,6 +451,8 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       timeoutMs: EXPORT_TIMEOUT_MS, signal: ac.signal, ...(c.driver === 'postgres' && b.schema && { schema: b.schema }),
     }, {
       async columns(cols) {
+        // Cancelled already (the panel gave up while the statement started): an abort event would not come again.
+        if (ac.signal.aborted) throw new Error('cancelled');
         // Waits for the browser to fetch the file (the statement holds meanwhile).
         const raw = await new Promise<ServerResponse>((res, rej) => {
           const drop = (why: string) => { clearTimeout(timer); exportTickets.delete(ticket); rej(new Error(why)); };

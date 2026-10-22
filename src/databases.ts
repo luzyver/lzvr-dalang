@@ -534,8 +534,9 @@ export async function streamStatement(c: DbConnection, sql: string, o: Omit<RunO
       try {
         let batch = await read();
         if (!batch.fields.length) throw noRows();
-        const names = await pgTypeNames(open.client, [...new Set(batch.fields.map((f) => f.dataTypeID))]);
-        await sink.columns(batch.fields.map((f) => ({ name: f.name, type: names.get(f.dataTypeID) ?? String(f.dataTypeID) })));
+        // Types stay oids: their names would need another query, which waits behind a cursor with rows left (forever,
+        // as the cursor waits for us). A file needs only the column names.
+        await sink.columns(batch.fields.map((f) => ({ name: f.name, type: String(f.dataTypeID) })));
         while (batch.rows.length) {
           if (!await sink.rows(batch.rows.map((r) => cells(r, maxCell)))) break;
           checkAborted(ro);
