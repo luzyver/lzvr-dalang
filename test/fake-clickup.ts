@@ -29,10 +29,19 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
     '/api/v3/workspaces/901/chat/channels/d1/members': { data: [{ id: '11', email: 'luz@example.com' }, { id: '33', email: 'budi@example.com', name: 'Budi' }], next_cursor: '' },
     '/api/v3/workspaces/901/chat/channels/d1/messages': { data: [msg('d1m', '2026-10-09T23:00:00', ME, 'fixing the client site')], next_cursor: '' },
     '/api/v3/workspaces/900/chat/messages/m3/replies': { data: [msg('r1', '2026-10-08T22:15:00', ME, 'done, deployed')], next_cursor: '' },
+    '/api/v3/workspaces/900/chat/channels/c1': { data: { id: 'c1', name: 'dev-team', type: 'CHANNEL' } },
+    '/api/v3/workspaces/901/chat/channels/d1': { data: { id: 'd1', name: '', type: 'DM' } },
   };
   return (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if ((init?.headers as Record<string, string>).authorization !== 'pk_test') return new Response('{"err":"Token invalid","ECODE":"OAUTH_025"}', { status: 401 });
+    // A sent message: "POST <path> <body>"; it gets id `new1`, sent at 2026-10-22 09:30 WIB.
+    if (init?.method === 'POST') {
+      calls.push(`POST ${url.pathname} ${init.body}`);
+      return /\/(messages|replies)$/.test(url.pathname)
+        ? new Response(JSON.stringify({ id: 'new1', date: wib('2026-10-22T09:30:00'), type: 'message' }), { status: 201 })
+        : new Response('{"err":"nope"}', { status: 404 });
+    }
     calls.push(url.pathname + url.search);
     const cursor = url.searchParams.get('cursor');
     if (cursor === 'p3') throw new Error('read past the start of the range');

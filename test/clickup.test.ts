@@ -75,3 +75,32 @@ describe('ClickUp chat history', () => {
     });
   });
 });
+
+describe('ClickUp send', () => {
+  const posts = (calls: string[]) => calls.filter((c) => c.startsWith('POST '));
+
+  it('sends to a channel found in any workspace, as markdown', async () => {
+    const calls: string[] = [];
+    const r = await fakeClient(calls).send({ channelId: 'd1', content: '  **done**, deployed  ' });
+    expect(r).toEqual({ sent: true, id: 'new1', workspace: 'Side', channel: 'Direct message', channel_id: 'd1', date: '2026-10-22', time: '09:30' });
+    expect(posts(calls)).toEqual(['POST /api/v3/workspaces/901/chat/channels/d1/messages {"type":"message","content":"**done**, deployed","content_format":"text/md"}']);
+  });
+
+  it('replies in a thread', async () => {
+    const calls: string[] = [];
+    const r = await fakeClient(calls).send({ channelId: 'c1', content: 'on it', replyTo: 'm3', workspaceId: '900' });
+    expect(r).toMatchObject({ sent: true, channel: 'dev-team', reply_to: 'm3' });
+    expect(posts(calls)).toEqual(['POST /api/v3/workspaces/900/chat/messages/m3/replies {"type":"message","content":"on it","content_format":"text/md"}']);
+    expect(calls).not.toContain('/api/v3/workspaces/901/chat/channels/c1'); // the named workspace only
+  });
+
+  it('refuses an unknown channel or an empty or too long message, sending nothing', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    await expect(c.send({ channelId: 'nope', content: 'hi' })).rejects.toThrow(/channel nope not found/);
+    await expect(c.send({ channelId: 'd1', content: 'hi', workspaceId: '900' })).rejects.toThrow(/not found/);
+    await expect(c.send({ channelId: 'c1', content: '   ' })).rejects.toThrow(/empty/);
+    await expect(c.send({ channelId: 'c1', content: 'x'.repeat(4001) })).rejects.toThrow(/4000/);
+    expect(posts(calls)).toEqual([]);
+  });
+});

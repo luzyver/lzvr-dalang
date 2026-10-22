@@ -6,7 +6,7 @@ import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Seg, Spinner, Switch } from './ui.js';
 import { guarded, toast } from './store.js';
 
-/** The owner's ClickUp token, workspace and time zone, for the read-only ClickUp Chat tools on /mcp. */
+/** The owner's ClickUp token, workspace and time zone, for the ClickUp Chat tools on /mcp (read-only unless sending is allowed). */
 function ClickUpCard() {
   const [s, setS] = useState(null);
   const [token, setToken] = useState('');
@@ -14,7 +14,7 @@ function ClickUpCard() {
   const load = (v) => { setS(v); setToken(''); setResult(null); };
   useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
-  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers, ...extra });
+  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers, send: s.send, ...extra });
   // An empty token field keeps the saved token.
   const save = guarded(async () => {
     load(await api('/api/settings/clickup', { method: 'PUT', body: body(token.trim() ? { token } : {}) }));
@@ -33,7 +33,7 @@ function ClickUpCard() {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`<section class="form-card">
     <strong>ClickUp</strong>
-    <span class="dim small">Read-only ClickUp Chat tools on this gateway's own MCP, e.g. "what did I work on last week?".
+    <span class="dim small">ClickUp Chat tools on this gateway's own MCP, e.g. "what did I work on last week?". Read-only unless sending is allowed below.
       Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
     <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
       <input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)}
@@ -45,6 +45,8 @@ function ClickUpCard() {
     <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
     <label class="check small"><input type="checkbox" checked=${s.allUsers} onChange=${(e) => setS({ ...s, allUsers: e.currentTarget.checked })} />
       All users: admins' and devs' chats get it too, reading your ClickUp messages</label>
+    <label class="check small"><input type="checkbox" checked=${s.send} onChange=${(e) => setS({ ...s, send: e.currentTarget.checked })} />
+      Allow sending: chats that get these tools can also send ClickUp messages as you${s.allUsers ? ', including admins\' and devs\' chats' : ''}</label>
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
       <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.configured}>Test connection<//>

@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
-import { clickupClient, clickupForAll, clickupRoutes } from './clickup-routes.js';
+import { clickupClient, clickupForAll, clickupRoutes, clickupSend } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
 import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
 import { memoryRoutes } from './memory.js';
@@ -193,7 +193,7 @@ export function buildApp(
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   const clickup = clickupClient(store, deps.clickupFetch);
   const codeMemory = deps.codeMemory ?? new CodeMemory(store, { cwd: cfg.stateDir });
-  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), codeMemory });
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), clickupSend: () => clickupSend(store), codeMemory });
   codeMemoryRoutes(app, { store, codeMemory });
   codeIndexRoutes(app, { store, codeMemory, push });
   memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
