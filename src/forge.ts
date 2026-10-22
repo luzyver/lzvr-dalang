@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { type ForgeAccount, parseAuthStatus } from './git-auth.js';
 import { GitError, gitContext, gitEnv, withLoginHint } from './git.js';
 
 /** Where a repository is hosted, which decides the CLI that opens the Merge Request: `gh` or `glab`. */
@@ -69,12 +70,12 @@ export function pullRequestArgs(o: Omit<PullRequestOpts, 'command' | 'cwd'>): st
 }
 
 /** Run `gh` / `glab` like createPullRequest does (no secrets, no prompts, the caller's login) and return what it printed. */
-export function runForge(forge: Forge, command: string[], args: string[], cwd: string): Promise<string> {
+export function runForge(forge: Forge, command: string[], args: string[], cwd: string, env: Record<string, string> = {}): Promise<string> {
   const [cmd, ...pre] = command;
   const name = forge === 'github' ? 'gh' : 'glab';
   return new Promise((resolve, reject) => {
     execFile(cmd!, [...pre, ...args], {
-      cwd, timeout: 60_000, maxBuffer: 16e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1' },
+      cwd, timeout: 60_000, maxBuffer: 16e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1', ...env },
     }, (err, out, stderr) => {
       if (!err) return resolve(String(out));
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new GitError(`${name} is not installed on the server (or not on PATH)`));
@@ -82,6 +83,44 @@ export function runForge(forge: Forge, command: string[], args: string[], cwd: s
     });
   });
 }
+
+const ACCOUNT_TTL_MS = 10 * 60_000;
+const accountCache = new Map<string, { env: Record<string, string>; at: number }>();
+
+/**
+ * gh uses one active account per host, but a server can be signed in to several (a personal one and a work one). For a
+ * GitHub repository this picks the signed-in account that may push to it (the one named like the owner first, then the
+ * active one) and returns its token as GH_TOKEN for this one call; nothing when only one account is signed in, or none
+ * may push (gh then runs as usual and says why). Remembered for a while per login folder and repository.
+ */
+export async function githubAccountEnv(command: string[], cwd: string, host: string, repo: string): Promise<Record<string, string>> {
+  const key = `${gitEnv().GH_CONFIG_DIR ?? ''}\n${command.join(' ')}\n${host}/${repo}`.toLowerCase();
+  const hit = accountCache.get(key);
+  if (hit && Date.now() - hit.at < ACCOUNT_TTL_MS) return hit.env;
+  const quiet = (args: string[], env?: Record<string, string>) => runForge('github', command, args, cwd, env).catch(() => '');
+  const accounts = parseAuthStatus(await quiet(['auth', 'status', '--hostname', host])).filter((a) => a.ok && a.host === host);
+  let env: Record<string, string> = {};
+  if (accounts.length > 1) {
+    const owner = repo.split('/')[0]!.toLowerCase();
+    const rank = (a: ForgeAccount) => (a.user.toLowerCase() === owner ? 0 : a.active ? 1 : 2);
+    for (const a of [...accounts].sort((x, y) => rank(x) - rank(y))) {
+      const token = (await quiet(['auth', 'token', '--hostname', host, '--user', a.user])).trim();
+      if (!token) continue;
+      // GH_TOKEN covers github.com (and *.ghe.com), GH_ENTERPRISE_TOKEN a GitHub Enterprise Server host.
+      const withToken = { GH_TOKEN: token, GH_ENTERPRISE_TOKEN: token };
+      const push = (await quiet(['api', '--hostname', host, `repos/${repo}`, '--jq', '.permissions.push'], withToken)).trim();
+      if (push === 'true') { env = withToken; break; }
+    }
+  }
+  accountCache.set(key, { env, at: Date.now() });
+  return env;
+}
+
+/** The token env for `host/owner/repo` (see githubAccountEnv); nothing for GitLab or an unknown repository. */
+const accountEnvFor = (forge: Forge, command: string[], cwd: string, fullRepo: string | null | undefined) => {
+  const m = fullRepo ? /^([^/]+)\/(.+)$/.exec(fullRepo) : null;
+  return forge === 'github' && m ? githubAccountEnv(command, cwd, m[1]!, m[2]!) : Promise.resolve({});
+};
 
 /** The parts of a pull request (GitHub) or Merge Request (GitLab) address. */
 export function parsePrUrl(url: string): { forge: Forge | null; host: string; repo: string; number: number } | null {
@@ -123,10 +162,11 @@ export async function prStatus(forge: Forge, command: string[], cwd: string, url
   const p = parsePrUrl(url);
   if (!p) throw new GitError(`not a pull request or Merge Request address: ${url}`);
   if (forge === 'github') {
+    const env = await githubAccountEnv(command, cwd, p.host, p.repo);
     const fields = 'title,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,comments,reviews';
     const [view, inline] = await Promise.all([
-      runForge(forge, command, ['pr', 'view', url, '--json', fields], cwd).then(json),
-      runForge(forge, command, ['api', '--hostname', p.host, `repos/${p.repo}/pulls/${p.number}/comments?per_page=100`], cwd).then(json).catch(() => []),
+      runForge(forge, command, ['pr', 'view', url, '--json', fields], cwd, env).then(json),
+      runForge(forge, command, ['api', '--hostname', p.host, `repos/${p.repo}/pulls/${p.number}/comments?per_page=100`], cwd, env).then(json).catch(() => []),
     ]);
     const state = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : view.isDraft ? 'draft' : 'open';
     const review = ({ APPROVED: 'approved', CHANGES_REQUESTED: 'changes_requested', REVIEW_REQUIRED: 'review_required' } as const)[view.reviewDecision as string] ?? null;
@@ -177,7 +217,7 @@ export async function mergePr(forge: Forge, command: string[], cwd: string, url:
   const p = parsePrUrl(url);
   if (!p) throw new GitError(`not a pull request or Merge Request address: ${url}`);
   if (forge === 'github') {
-    await runForge(forge, command, ['pr', 'merge', url, `--${method}`], cwd);
+    await runForge(forge, command, ['pr', 'merge', url, `--${method}`], cwd, await githubAccountEnv(command, cwd, p.host, p.repo));
     return;
   }
   await runForge(forge, command, ['mr', 'merge', String(p.number), '--repo', `https://${p.host}/${p.repo}`, '--yes',
@@ -188,18 +228,19 @@ const URL_RE = /https?:\/\/[^\s"'<>]+/g;
 const lastUrl = (text: string) => [...text.matchAll(URL_RE)].map((m) => m[0]).pop() ?? null;
 
 /**
- * Open the Merge Request with the server's own `gh`/`glab` login. When one is already open for the branch, its address
- * is returned (`existed`) instead of an error.
+ * Open the Merge Request with the server's own `gh`/`glab` login (on GitHub, the signed-in account that may push to the
+ * repository). When one is already open for the branch, its address is returned (`existed`) instead of an error.
  */
-export function createPullRequest(o: PullRequestOpts): Promise<{ url: string; existed: boolean }> {
+export async function createPullRequest(o: PullRequestOpts): Promise<{ url: string; existed: boolean }> {
   const [cmd, ...pre] = o.command;
   // Like git: the CLI must not see the gateway's secrets, must never wait for an answer on a terminal, and signs in as
   // whoever asked (gitEnv: the panel user's own gh/glab login, or the server's for the owner).
   const name = o.forge === 'github' ? 'gh' : 'glab';
+  const account = await accountEnvFor(o.forge, o.command, o.cwd, o.repo);
   return new Promise((resolve, reject) => {
     execFile(cmd!, [...pre, ...pullRequestArgs(o)], {
       cwd: o.cwd, timeout: 120_000, maxBuffer: 8e6,
-      env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1' },
+      env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', ...account },
     }, (err, out, stderr) => {
       const text = `${out}\n${stderr}`;
       if (!err) {
