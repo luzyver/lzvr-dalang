@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { parsePrUrl } from '../src/forge.js';
+import { createPullRequest, forgetGithubAccounts, githubAccountEnv, parsePrUrl } from '../src/forge.js';
 import { diffFingerprint, saveCheckpoint, splitHunks } from '../src/git.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { setupApp } from './setup-app.js';
@@ -432,6 +433,47 @@ describe('pull request status', () => {
     expect(m.state).toBe('merged');
     const calls = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(calls[1].args).toEqual(['pr', 'merge', 'https://github.com/acme/app/pull/7', '--squash']);
+  });
+
+  it('opens it as the signed-in GitHub account that may push, not just the active one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gh-accounts-'));
+    const log = join(dir, 'gh.log');
+    const command = [process.execPath, fakeGh, log];
+    const calls = () => readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const old = { accounts: process.env.FAKE_GH_ACCOUNTS, writers: process.env.FAKE_GH_WRITERS };
+    try {
+      // the active account may only read; the other one owns the repository
+      process.env.FAKE_GH_ACCOUNTS = 'rezivaapra*,acme';
+      process.env.FAKE_GH_WRITERS = 'acme';
+      const opts = { forge: 'github' as const, command, cwd: dir, branch: 'x', base: 'main', title: 't', body: '' };
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' });
+      await createPullRequest({ ...opts, repo: 'github.com/acme/app' });
+      expect(calls()[0].token).toBe('tok-acme');
+
+      // nobody may push: gh runs as the active account and says why itself
+      process.env.FAKE_GH_WRITERS = '';
+      expect(await githubAccountEnv(command, dir, 'github.com', 'other/app')).toEqual({});
+      // one account only: never asks for tokens
+      process.env.FAKE_GH_ACCOUNTS = 'solo*';
+      expect(await githubAccountEnv([...command, 'solo'], dir, 'github.com', 'acme/app')).toEqual({});
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' }); // remembered
+      forgetGithubAccounts(); // a login or logout
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({});
+
+      // finding nobody is not remembered: once an account may push, it is picked at once
+      process.env.FAKE_GH_ACCOUNTS = 'rezivaapra*,acme';
+      process.env.FAKE_GH_WRITERS = 'acme';
+      expect(await githubAccountEnv(command, dir, 'github.com', 'other/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' });
+
+      // a third login whose token broke makes gh exit 1, but the good ones still count
+      forgetGithubAccounts();
+      process.env.FAKE_GH_ACCOUNTS = 'rezivaapra*,old!,acme';
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' });
+    } finally {
+      for (const [k, v] of [['FAKE_GH_ACCOUNTS', old.accounts], ['FAKE_GH_WRITERS', old.writers]] as const) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
   });
 
   it('reads the parts of a pull request or Merge Request address', () => {

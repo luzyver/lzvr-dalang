@@ -476,6 +476,28 @@ describe('ClickUp tools', () => {
       expect((await clickupNames(await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` }))).sort()).toEqual(CLICKUP);
     }
   });
+
+  it('send messages only once the owner allows it, to whoever gets the other tools', async () => {
+    const t = await withClickUp();
+    const setSend = (allUsers: boolean, send: boolean) =>
+      t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers, send } });
+    const dev = await mkUser(t, 'u-dev', 'dev');
+    const devNames = async () => clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }));
+    expect(await clickupNames(await t.connect())).not.toContain('clickup_send_message');
+
+    expect((await setSend(false, true)).json()).toMatchObject({ send: true, allUsers: false });
+    const owner = await t.connect();
+    expect((await clickupNames(owner)).sort()).toEqual([...CLICKUP, 'clickup_send_message'].sort());
+    const r = await call(owner, 'clickup_send_message', { channel_id: 'c1', content: 'deploy done' });
+    expect(r.json).toMatchObject({ sent: true, id: 'new1', channel: 'dev-team', workspace: 'Acme' });
+    expect((await call(owner, 'clickup_send_message', { channel_id: 'nope', content: 'hi' })).isError).toBe(true);
+    expect(await devNames()).toEqual([]);
+
+    await setSend(true, true);
+    expect(await devNames()).toContain('clickup_send_message');
+    await setSend(true, false);
+    expect((await devNames()).sort()).toEqual(CLICKUP);
+  });
 });
 
 describe('Settings → ClickUp', () => {
@@ -485,9 +507,9 @@ describe('Settings → ClickUp', () => {
   it('saves the settings and never sends the token back', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
-      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', allUsers: false });
+      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', allUsers: false, send: false });
     const saved = await put(t, { token: ' pk_test ', workspaceId: '900', timeZone: 'Asia/Jakarta' });
-    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', allUsers: false });
+    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', allUsers: false, send: false });
     expect(saved.body).not.toContain('pk_test');
     // leaving the token out keeps it
     expect((await put(t, { workspaceId: '', timeZone: '' })).json()).toMatchObject({ configured: true, tokenHint: '…test' });

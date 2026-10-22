@@ -1,7 +1,7 @@
 /**
- * Read-only ClickUp Chat client for the MCP gateway: lists chat channels and reads messages in a date range, each
- * stamped with its local date, time and weekday. Uses a personal API token (pk_...), so it sees what that ClickUp
- * user sees.
+ * ClickUp Chat client for the MCP gateway: lists chat channels, reads messages in a date range, each stamped with its
+ * local date, time and weekday, and sends a message or thread reply. Uses a personal API token (pk_...), so it sees
+ * what that ClickUp user sees and sends as them.
  */
 
 export interface ClickUpOpts {
@@ -28,6 +28,16 @@ export interface HistoryQuery {
   limit?: number;
 }
 
+export interface SendQuery {
+  channelId: string;
+  /** Markdown. */
+  content: string;
+  /** Reply in the thread of this message instead of posting to the channel. */
+  replyTo?: string;
+  /** The channel's workspace; looked for among the workspaces read by default when unset. */
+  workspaceId?: string;
+}
+
 interface Channel { id: string; name: string; type: string; workspace_id: string; workspace: string }
 interface Workspace { id: string; name: string; members: Map<string, string> }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; replies_count?: number; parent_message?: string }
@@ -36,6 +46,7 @@ const DAY_MS = 86_400_000;
 const MAX_DAYS = 93;
 const MAX_REQUESTS = 250; // per call, so one question cannot spend the whole ClickUp rate limit (100/min on most plans)
 const MAX_CONTENT = 1500;
+export const MAX_SEND = 4000;
 const REPLY_LOOKBACK_MS = 7 * DAY_MS; // threads started this long before `from` are still read for replies
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -83,14 +94,24 @@ export class ClickUp {
     this.fetch = o.fetch ?? fetch;
   }
 
-  /** One GET, counted against `budget`. A 429 is retried once after a short wait; a longer wait is reported instead. */
-  private async get(path: string, query: Record<string, string | number | boolean | undefined> = {}, budget?: { left: number }): Promise<any> {
+  /** One GET, counted against `budget`. */
+  private get(path: string, query: Record<string, string | number | boolean | undefined> = {}, budget?: { left: number }): Promise<any> {
+    return this.request('GET', path, query, undefined, budget);
+  }
+
+  /** One request. A 429 is retried once after a short wait (ClickUp did nothing then); a longer wait is reported instead. */
+  private async request(method: 'GET' | 'POST', path: string, query: Record<string, string | number | boolean | undefined>,
+    payload?: unknown, budget?: { left: number }): Promise<any> {
     if (budget && budget.left-- <= 0) throw new ClickUpError('request budget for this call used up');
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) if (v !== undefined) qs.set(k, String(v));
     const url = `${this.base}${path}${qs.size ? `?${qs}` : ''}`;
+    const headers: Record<string, string> = { authorization: this.o.token, accept: 'application/json' };
+    if (payload !== undefined) headers['content-type'] = 'application/json';
     for (let attempt = 0; ; attempt++) {
-      const res = await this.fetch(url, { headers: { authorization: this.o.token, accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+      const res = await this.fetch(url, {
+        method, headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: AbortSignal.timeout(20_000),
+      });
       if (res.status === 429 && attempt === 0) {
         const reset = Number(res.headers.get('x-ratelimit-reset')) * 1000;
         const wait = reset ? reset - Date.now() : 5_000;
@@ -266,6 +287,41 @@ export class ClickUp {
       workspaces: workspaces.map((w) => w.name), channels_read: channels.length,
       messages: rows.slice(-limit).map(({ ts: _ts, ...r }) => r),
       ...(warnings.length && { warnings }),
+    };
+  }
+
+  /** The channel `id` in the first of the given workspaces (default: see `workspaces`) that has it. */
+  private async findChannel(id: string, workspaceIds?: string[]): Promise<Channel> {
+    for (const ws of await this.workspaces(workspaceIds)) {
+      let c: any;
+      try {
+        const r = await this.get(`/api/v3/workspaces/${ws.id}/chat/channels/${encodeURIComponent(id)}`);
+        c = r?.data ?? r;
+      } catch (e) {
+        if ((e as Error).message.startsWith('ClickUp 404 ')) continue;
+        throw e;
+      }
+      return { id, name: this.dmNames.get(id) ?? channelName({ ...c, id }), type: String(c?.type ?? ''), workspace_id: ws.id, workspace: ws.name };
+    }
+    throw new ClickUpError(`channel ${id} not found (ids from clickup_list_channels)`);
+  }
+
+  /** Send `content` (markdown) as the token's user to a channel or DM, or as a reply in one of its message's threads. */
+  async send(q: SendQuery) {
+    const content = q.content.trim();
+    if (!content) throw new ClickUpError('the message is empty');
+    if (content.length > MAX_SEND) throw new ClickUpError(`at most ${MAX_SEND} characters per message`);
+    // Everything that can fail is read first: once the POST went through, a later failure would make a retry post twice.
+    const [c, tz] = await Promise.all([this.findChannel(q.channelId, q.workspaceId ? [q.workspaceId] : undefined), this.timeZone()]);
+    const path = q.replyTo
+      ? `/api/v3/workspaces/${c.workspace_id}/chat/messages/${encodeURIComponent(q.replyTo)}/replies`
+      : `/api/v3/workspaces/${c.workspace_id}/chat/channels/${encodeURIComponent(c.id)}/messages`;
+    const r = await this.request('POST', path, {}, { type: 'message', content, content_format: 'text/md' });
+    const m = r?.data ?? r ?? {};
+    const p = localParts(typeof m.date === 'number' ? m.date : Date.now(), tz);
+    return {
+      sent: true, id: m.id ? String(m.id) : null, workspace: c.workspace, channel: c.name, channel_id: c.id,
+      ...(q.replyTo && { reply_to: q.replyTo }), date: p.date, time: p.time,
     };
   }
 }
