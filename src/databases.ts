@@ -211,13 +211,16 @@ const pgTypes = {
 };
 
 function pgClient(c: DbConnection, timeoutMs: number): pg.Client {
-  return new pg.Client({
+  const client = new pg.Client({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT.postgres, user: c.user || undefined,
     password: c.password || undefined, database: c.database || (c.allDatabases ? 'postgres' : undefined), application_name: 'dalang',
     ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS, statement_timeout: timeoutMs, query_timeout: timeoutMs + 5000,
     types: pgTypes as never,
   });
+  // The connection dropping between queries is emitted here; the next query reports it.
+  client.on('error', () => {});
+  return client;
 }
 
 type PgRead = { rows: unknown[][]; fields: { name: string; dataTypeID: number }[]; affected: number | null };
@@ -298,13 +301,15 @@ async function pgScript(c: DbConnection, statements: string[], o: RunOpts): Prom
 // ---------- MySQL / MariaDB ----------
 
 function myConnection(c: DbConnection): mysql.Connection {
-  return mysql.createConnection({
+  const conn = mysql.createConnection({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver], user: c.user || undefined,
     password: c.password || undefined, database: c.database || undefined,
     ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectTimeout: CONNECT_TIMEOUT_MS, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true,
     multipleStatements: false,
   });
+  conn.on('error', () => {}); // as for PostgreSQL: a dropped connection fails the next query
+  return conn;
 }
 
 const myConnect = (conn: mysql.Connection) => new Promise<void>((res, rej) => conn.connect((e) => (e ? rej(e) : res())));

@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
@@ -14,6 +14,17 @@ import { Store } from './store.js';
 
 const cfg = loadConfig();
 mkdirSync(cfg.stateDir, { recursive: true });
+// An error nothing caught is written to crash.log (the autostart log is rewritten at every start) and the server keeps
+// running: an exit would stop every turn, and nothing restarts it until the next logon.
+const crashLog = join(cfg.stateDir, 'crash.log');
+for (const kind of ['uncaughtException', 'unhandledRejection'] as const) {
+  process.on(kind, (e: unknown) => {
+    const text = `${new Date().toISOString()} ${kind}: ${e instanceof Error ? e.stack ?? e.message : String(e)}
+`;
+    console.error(text.trimEnd());
+    try { appendFileSync(crashLog, text); } catch { /* the console line is all there is */ }
+  });
+}
 const store = new Store(join(cfg.stateDir, 'lzvr.db'));
 // Passwords, keys and tokens in the database are stored encrypted (secrets.ts), before anything reads them.
 {
