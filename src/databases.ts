@@ -495,6 +495,146 @@ export async function runScript(c: DbConnection, script: string, o: RunOpts): Pr
   return myScript(c, statements, o);
 }
 
+// ---------- every row, in batches ----------
+
+/**
+ * Where streamStatement hands what it reads: the columns once (with the first batch read, so a statement that fails on
+ * its first rows fails before them), then the rows a batch at a time. Each
+ * is awaited before more is read (so a slow reader slows the reading down); `rows` answering false stops the reading.
+ */
+export interface RowSink {
+  columns(cols: Column[]): Promise<void>;
+  rows(rows: unknown[][]): Promise<boolean>;
+}
+const STREAM_BATCH = 2000;
+/** MongoDB and Redis are read whole first (their columns come from the documents): at most this many. */
+export const NOSQL_STREAM_MAX = 1_000_000;
+
+/**
+ * Reads every row one statement returns (a download of all of them), read-only, a batch at a time: a table of millions
+ * of rows never sits in memory whole. Values are written in full (o.maxCell defaults to no cut here). Fails before
+ * `sink.columns` when the statement does not run, fails on its first batch, or returns no rows.
+ */
+export async function streamStatement(c: DbConnection, sql: string, o: Omit<RunOpts, 'readOnly' | 'limit'>, sink: RowSink): Promise<void> {
+  if (tunneled(c)) return withTunnel(c, (t) => streamStatement(t, sql, o, sink));
+  const statements = statementsOf(sql, c.driver);
+  if (statements.length !== 1) throw new Error(statements.length ? 'a download reads one statement at a time' : 'nothing to run');
+  const st = statements[0]!;
+  const ro: RunOpts = { ...o, readOnly: true, limit: Infinity, maxCell: o.maxCell ?? Infinity };
+  const noRows = () => new Error('this statement returns no rows to download');
+  const maxCell = ro.maxCell!;
+  if (c.driver === 'postgres') {
+    const open = await pgOpen(c, ro);
+    try {
+      await open.client.query('BEGIN TRANSACTION READ ONLY');
+      const cursor = open.client.query(new Cursor(st, [], { rowMode: 'array' }));
+      const read = () => new Promise<{ rows: unknown[][]; fields: { name: string; dataTypeID: number }[] }>((res, rej) => {
+        cursor.read(STREAM_BATCH, (err, rows, result: any) => (err ? rej(err) : res({ rows: rows as unknown[][], fields: result?.fields ?? [] })));
+      });
+      try {
+        let batch = await read();
+        if (!batch.fields.length) throw noRows();
+        // Types stay oids: their names would need another query, which waits behind a cursor with rows left (forever,
+        // as the cursor waits for us). A file needs only the column names.
+        await sink.columns(batch.fields.map((f) => ({ name: f.name, type: String(f.dataTypeID) })));
+        while (batch.rows.length) {
+          if (!await sink.rows(batch.rows.map((r) => cells(r, maxCell)))) break;
+          checkAborted(ro);
+          batch = await read();
+        }
+      } finally { await new Promise<void>((res) => cursor.close(() => res())); }
+    } catch (e) { throw ro.signal?.aborted ? new Error(CANCELLED) : e; } finally { await open.done(); }
+    return;
+  }
+  if (c.driver === 'sqlite') {
+    const db = sqliteOpen(c, true, ro.timeoutMs);
+    try {
+      const stmt = db.prepare(st);
+      const cols = stmt.columns();
+      if (!cols.length) throw noRows();
+      (stmt as any).setReturnArrays?.(true);
+      let started = false;
+      const start = async () => { if (!started) { started = true; await sink.columns(cols.map((col) => ({ name: col.name, type: col.type ?? '' }))); } };
+      let batch: unknown[][] = [];
+      for (const row of stmt.iterate() as Iterable<any>) {
+        batch.push(cells(Array.isArray(row) ? row : Object.values(row), maxCell));
+        if (batch.length >= STREAM_BATCH) {
+          await start();
+          const more = await sink.rows(batch);
+          batch = [];
+          if (!more) return;
+          checkAborted(ro);
+        }
+      }
+      await start();
+      if (batch.length) await sink.rows(batch);
+    } finally { db.close(); }
+    return;
+  }
+  if (isNoSql(c.driver)) {
+    const [r] = await runScript(c, st, { ...ro, limit: NOSQL_STREAM_MAX });
+    if (!r?.columns.length) throw noRows();
+    await sink.columns(r.columns);
+    for (let i = 0; i < r.rows.length; i += STREAM_BATCH) if (!await sink.rows(r.rows.slice(i, i + STREAM_BATCH))) break;
+    return;
+  }
+  // MySQL / MariaDB: the connection is paused while the sink takes a batch, so rows wait on the server meanwhile.
+  const conn = myConnection(c);
+  let stop = () => {};
+  try {
+    await myConnect(conn);
+    stop = onAbort(ro.signal, () => { void myKill(c, conn.threadId); });
+    await myQuery(conn, 'SET SESSION TRANSACTION READ ONLY');
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let cols: Column[] | null = null;
+      let started = false;
+      let batch: unknown[][] = [];
+      // Each step waits for the one before; the columns go out with the first batch.
+      let chain = Promise.resolve();
+      const start = async () => { if (!started) { started = true; await sink.columns(cols!); } };
+      const fail = (e: unknown) => { if (!settled) { settled = true; conn.off('error', fail); reject(e); } };
+      const step = (fn: () => Promise<void>) => {
+        conn.pause();
+        chain = chain.then(fn).then(() => { if (!settled) conn.resume(); }, (e) => { fail(e); conn.destroy(); });
+      };
+      const flush = () => {
+        const rows = batch;
+        batch = [];
+        step(async () => {
+          if (settled) return;
+          await start();
+          if (!await sink.rows(rows)) { settled = true; conn.off('error', fail); conn.destroy(); resolve(); }
+        });
+      };
+      conn.on('error', fail);
+      const q = conn.query({ sql: st, rowsAsArray: true, timeout: ro.timeoutMs });
+      let sets = 0;
+      q.on('fields', (f: any) => {
+        if (++sets > 1) return; // a second result set (a CALL): only the first is downloaded
+        cols = ((f ?? []) as { name: string; type?: number; columnType?: number }[]).map((x) => ({ name: x.name, type: MY_TYPES[x.columnType ?? x.type ?? -1] ?? '' }));
+      });
+      q.on('result', (row: any) => {
+        if (settled || sets > 1 || !Array.isArray(row)) return;
+        batch.push(cells(row, maxCell));
+        if (batch.length >= STREAM_BATCH) flush();
+      });
+      q.on('error', fail);
+      q.on('end', () => {
+        if (!cols) { fail(noRows()); return; }
+        if (batch.length) flush();
+        chain = chain.then(async () => {
+          if (settled) return;
+          await start();
+          settled = true;
+          conn.off('error', fail);
+          resolve();
+        }).catch(fail);
+      });
+    });
+  } catch (e) { throw ro.signal?.aborted ? new Error(CANCELLED) : e; } finally { stop(); conn.end(() => {}); conn.destroy(); }
+}
+
 /** Whether the connection opens databases other than its own. */
 export const multiDatabase = (c: DbConnection) => c.driver === 'postgres' && c.allDatabases === true;
 

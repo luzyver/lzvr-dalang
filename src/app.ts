@@ -151,6 +151,7 @@ export function buildApp(
 
     if (path.startsWith('/api/auth/')) return; // login endpoints; their handlers report failures via noteFailure
     if (path === '/api/terminals/socket') return; // a browser WebSocket cannot send the token: its route checks a ticket
+    if (path === '/api/db/export') return; // nor can a download link: its route checks a ticket too
 
     const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
     const user = m ? resolveUser(m[1]!, now) : null;
@@ -200,7 +201,7 @@ export function buildApp(
   dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup });
   mcpServerRoutes(app, { store });
-  databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher });
+  databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, noteFailure });
   sshRoutes(app, { store, dispatcher });
   dispatcher.mcpServersFor = (author) => mcpLaunch(mcpServersFor(store, author));
   const ghCommand = cfg.ghCommand ?? ['gh'];

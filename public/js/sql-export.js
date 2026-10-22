@@ -1,6 +1,6 @@
 // The SQL editor's result formats, to download or copy: CSV, TSV, JSON, JSON Lines, Excel (a real .xlsx, written here
-// with a small store-only zip), SQL INSERT statements, Markdown and HTML. Only the rows the result holds (up to the row
-// limit) are written.
+// with a small store-only zip), SQL INSERT statements, Markdown and HTML, of the rows a result holds. A result cut at
+// the row limit downloads from the server instead, every row (src/db-export.ts writes the same files).
 
 const csvCell = (v) => (v === null ? '' : /[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
 const tsvCell = (v) => (v === null ? '' : String(v).replace(/[\t\r\n]+/g, ' '));
