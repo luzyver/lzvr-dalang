@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
+import { crc32, inflateRawSync } from 'node:zlib';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -46,7 +47,7 @@ async function boot() {
     const id = convId ?? t.store.createConversation(t.store.createProject('proj', t.root).id).id;
     return mcp(t.dispatcher.issueMcpToken(id, author));
   };
-  return { ...t, file, put, query, agent };
+  return { ...t, file, port, put, query, agent };
 }
 
 describe('backup reads', () => {
@@ -194,6 +195,95 @@ describe('SQL editor connections', () => {
     expect(ro.statusCode).toBe(400);
     expect(ro.json()).toMatchObject({ index: 1, results: [{ rows: [[1]] }] });
     expect(ro.json().error).toMatch(/readonly/i);
+  });
+
+  it('reads up to 100 000 rows of a statement (the row limit All)', async () => {
+    const t = await boot();
+    await t.put('app', {});
+    const run = (payload: object) => t.app.inject({ method: 'POST', url: '/api/db/connections/app/query', headers: AUTH, payload });
+    expect((await run({ sql: 'SELECT id FROM users ORDER BY id', limit: 1 })).json().results[0]).toMatchObject({ rows: [[1]], truncated: true });
+    expect((await run({ sql: 'SELECT id FROM users', limit: 100_000 })).json().results[0]).toMatchObject({ truncated: false });
+    expect((await run({ sql: 'SELECT 1', limit: 100_001 })).statusCode).toBe(400);
+  });
+
+  describe('downloads of every row', () => {
+    /** The file a download writes: a ticket from /export, then the file through it (as the browser fetches it). */
+    const download = async (t: Awaited<ReturnType<typeof boot>>, body: object) => {
+      const r = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/export', headers: AUTH, payload: body });
+      if (r.statusCode !== 200) return { status: r.statusCode, error: r.json().error as string };
+      const res = await fetch(`http://127.0.0.1:${t.port}/api/db/export?ticket=${r.json().ticket}&name=${encodeURIComponent('ünïcode file')}`);
+      return { status: res.status, type: res.headers.get('content-type'), disposition: res.headers.get('content-disposition'), body: Buffer.from(await res.arrayBuffer()) };
+    };
+    const many = (file: string, n: number) => {
+      const db = new DatabaseSync(file);
+      db.exec(`WITH RECURSIVE s(i) AS (SELECT 3 UNION ALL SELECT i + 1 FROM s WHERE i < ${n}) INSERT INTO users (id, name, note) SELECT i, 'u' || i, CASE WHEN i % 2 THEN 'a,"b"' END FROM s`);
+      db.close();
+    };
+
+    it('writes all rows past any row limit, as CSV, JSON and SQL', async () => {
+      const t = await boot();
+      await t.put('app', {});
+      many(t.file, 5000);
+      const csv = await download(t, { sql: 'SELECT id, name, note FROM users ORDER BY id', format: 'csv' });
+      expect(csv).toMatchObject({ status: 200, type: 'text/csv; charset=utf-8' });
+      expect(csv.disposition).toContain("filename*=UTF-8''%C3%BCn%C3%AFcode%20file.csv");
+      const lines = csv.body!.toString('utf8').split('\r\n');
+      expect(lines[0]).toBe('﻿id,name,note');
+      expect(lines).toHaveLength(5001);
+      expect(lines.slice(1, 4)).toEqual(['1,ann,', '2,bob,x', '3,u3,"a,""b"""']);
+      const json = await download(t, { sql: 'SELECT id, name FROM users WHERE id < 3 ORDER BY id', format: 'json' });
+      expect(json.body!.toString()).toBe(JSON.stringify([{ id: 1, name: 'ann' }, { id: 2, name: 'bob' }], null, 2));
+      expect((await download(t, { sql: 'SELECT id FROM users WHERE id > 99999', format: 'json' })).body!.toString()).toBe('[]');
+      const sql = await download(t, { sql: 'SELECT id, note FROM users WHERE id IN (1, 2)', format: 'sql', table: { schema: 'main', table: 'users' } });
+      expect(sql.body!.toString()).toBe('INSERT INTO "users" ("id", "note") VALUES (1, NULL);\nINSERT INTO "users" ("id", "note") VALUES (2, \'x\');');
+    });
+
+    it('writes a real .xlsx as it reads', async () => {
+      const t = await boot();
+      await t.put('app', {});
+      many(t.file, 3000);
+      const x = await download(t, { sql: 'SELECT id, name FROM users ORDER BY id', format: 'xlsx', sheet: 'users' });
+      expect(x.status).toBe(200);
+      // The central directory names every part; each part's data matches its CRC.
+      const buf = x.body!;
+      const end = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+      const count = buf.readUInt16LE(end + 10);
+      let at = buf.readUInt32LE(end + 16);
+      const parts: Record<string, string> = {};
+      for (let i = 0; i < count; i++) {
+        const method = buf.readUInt16LE(at + 10);
+        const crc = buf.readUInt32LE(at + 16);
+        const csize = buf.readUInt32LE(at + 20);
+        const nameLen = buf.readUInt16LE(at + 28);
+        const offset = buf.readUInt32LE(at + 42);
+        const name = buf.subarray(at + 46, at + 46 + nameLen).toString();
+        const start = offset + 30 + buf.readUInt16LE(offset + 26) + buf.readUInt16LE(offset + 28);
+        const raw = buf.subarray(start, start + csize);
+        const data = method === 8 ? inflateRawSync(raw) : raw;
+        expect(crc32(data) >>> 0).toBe(crc);
+        parts[name] = data.toString();
+        at += 46 + nameLen;
+      }
+      expect(Object.keys(parts)).toContain('xl/worksheets/sheet1.xml');
+      const sheet = parts['xl/worksheets/sheet1.xml']!;
+      expect(sheet.match(/<row /g)).toHaveLength(3001);
+      expect(sheet).toContain('<row r="3001"><c r="A3001"><v>3000</v></c>');
+      expect(parts['xl/workbook.xml']).toContain('name="users"');
+    });
+
+    it('runs read-only, answers its errors, and lets a ticket be used once', async () => {
+      const t = await boot();
+      await t.put('app', {});
+      const del = await download(t, { sql: 'DELETE FROM users RETURNING id', format: 'csv' });
+      expect(del.status).toBe(400);
+      expect((await t.query('app', 'SELECT count(*) FROM users')).json().results[0].rows).toEqual([[2]]);
+      expect(await download(t, { sql: 'SELECT nope FROM users', format: 'csv' })).toMatchObject({ status: 400, error: expect.stringMatching(/nope/) });
+      expect(await download(t, { sql: 'SELECT 1; SELECT 2', format: 'csv' })).toMatchObject({ status: 400, error: expect.stringMatching(/one statement/) });
+      const r = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/export', headers: AUTH, payload: { sql: 'SELECT 1', format: 'tsv' } });
+      const url = `http://127.0.0.1:${t.port}/api/db/export?ticket=${r.json().ticket}`;
+      expect((await fetch(url)).status).toBe(200);
+      expect((await fetch(url)).status).toBe(401);
+    });
   });
 
   it('shows a connection only to whom its access allows', async () => {

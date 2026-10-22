@@ -7,13 +7,15 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import type { ServerResponse } from 'node:http';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import {
   AGENT_MODES, agentRefusal, countRows, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, findUnsafe, listDatabases, loadConnections, onDatabase,
   planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
-  testConnection,
+  streamStatement, testConnection,
 } from './databases.js';
+import { EXPORT_FORMATS, EXPORT_TYPES, type ExportFormat, exportSink } from './db-export.js';
 import type { Dispatcher } from './dispatcher.js';
 import { keyProblem, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
@@ -22,7 +24,13 @@ import { type AuthUser, canAccess, PROJECT_ACCESS } from './util.js';
 const ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const LOG_MAX = 200;
 export const PANEL_LIMIT = 500;
+/** The most rows the panel reads of one statement: its "All" row limit (a download reads every row: /export). */
+export const PANEL_MAX_ROWS = 100_000;
 const PANEL_TIMEOUT_MS = 120_000;
+/** A download of every row a statement returns stops after this. */
+const EXPORT_TIMEOUT_MS = 30 * 60_000;
+/** How long a download that is ready waits for the browser to ask for its file (with the ticket). */
+const EXPORT_TICKET_MS = 60_000;
 
 /** What the panel sees of a connection: everything but the password. */
 const view = ({ password, ssh, ...c }: DbConnection) => ({
@@ -216,8 +224,10 @@ const EDIT = {
   properties: { kind: { enum: ['update', 'insert', 'delete'] }, key: STRINGS, set: STRINGS, values: STRINGS },
 };
 
-export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher }): void {
+export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher; noteFailure?: (ip: string) => void }): void {
   const { store } = d;
+  /** Downloads whose statement runs, waiting for the browser to fetch the file: ticket -> who takes the response. */
+  const exportTickets = new Map<string, { format: ExportFormat; take: (raw: ServerResponse) => void }>();
   const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
     if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
   };
@@ -380,7 +390,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   // then it answers 409 with those statements and how many rows their tables have, and runs nothing.
   app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; database?: string; schema?: string; confirmed?: boolean } }>('/api/db/connections/:id/query', {
     schema: { body: { type: 'object', required: ['sql'], additionalProperties: false, properties: {
-      sql: { type: 'string', minLength: 1, maxLength: 1_000_000 }, limit: { type: 'integer', minimum: 1, maximum: 10_000 },
+      sql: { type: 'string', minLength: 1, maxLength: 1_000_000 }, limit: { type: 'integer', minimum: 1, maximum: PANEL_MAX_ROWS },
       database: DATABASE, confirmed: { type: 'boolean' },
       // PostgreSQL: the schema unqualified names are looked up in first (the console's schema picker).
       schema: { type: 'string', minLength: 1, maxLength: 128 },
@@ -410,6 +420,84 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       const q = e instanceof QueryError ? e : null;
       return reply.code(400).send({ error: (e as Error).message, index: q?.index ?? 0, results: q?.results ?? [] });
     } finally { reply.raw.off('close', gone); }
+  });
+
+  // A download of every row one statement returns, written as it is read (never held in memory whole). The statement
+  // runs read-only; once it gives its columns, this answers a ticket, single use, for the file (a link cannot send the
+  // token). Failing before that (an error, a write) answers 400. The browser cancelling the download cancels the statement.
+  app.post<{ Params: { id: string }; Body: { sql: string; format: ExportFormat; database?: string; schema?: string;
+    table?: { schema: string; table: string }; sheet?: string } }>('/api/db/connections/:id/export', {
+    schema: { body: { type: 'object', required: ['sql', 'format'], additionalProperties: false, properties: {
+      sql: { type: 'string', minLength: 1, maxLength: 1_000_000 }, format: { type: 'string', enum: [...EXPORT_FORMATS] },
+      database: DATABASE, schema: { type: 'string', minLength: 1, maxLength: 128 },
+      table: { type: 'object', required: ['schema', 'table'], additionalProperties: false, properties: {
+        schema: { type: 'string', maxLength: 128 }, table: { type: 'string', minLength: 1, maxLength: 128 } } },
+      sheet: { type: 'string', maxLength: 200 },
+    } } },
+  }, async (req, reply) => {
+    const c = find(req.user!, req.params.id);
+    if (!c) return reply.code(404).send({ error: 'not found' });
+    const b = req.body;
+    if (b.format === 'sql' && (c.driver === 'mongodb' || c.driver === 'redis')) return reply.code(400).send({ error: 'SQL INSERT statements are for SQL databases' });
+    let target: DbConnection;
+    try { target = onDatabase(c, b.database); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    const ac = new AbortController();
+    const ticket = randomBytes(24).toString('base64url');
+    let opened!: () => void;
+    const ready = new Promise<void>((res) => { opened = res; });
+    let out: ServerResponse | null = null;
+    let sink: ReturnType<typeof exportSink> | null = null;
+    const run = streamStatement(target, b.sql, {
+      timeoutMs: EXPORT_TIMEOUT_MS, signal: ac.signal, ...(c.driver === 'postgres' && b.schema && { schema: b.schema }),
+    }, {
+      async columns(cols) {
+        // Waits for the browser to fetch the file (the statement holds meanwhile).
+        const raw = await new Promise<ServerResponse>((res, rej) => {
+          const drop = (why: string) => { clearTimeout(timer); exportTickets.delete(ticket); rej(new Error(why)); };
+          const timer = setTimeout(() => drop('the download was not fetched in time'), EXPORT_TICKET_MS);
+          ac.signal.addEventListener('abort', () => drop('cancelled'), { once: true });
+          exportTickets.set(ticket, { format: b.format, take: (r) => { clearTimeout(timer); res(r); } });
+          opened();
+        });
+        out = raw;
+        raw.on('close', () => { if (!raw.writableFinished) ac.abort(); });
+        sink = exportSink(b.format, { driver: c.driver, table: b.table ?? null, sheet: b.sheet }, raw);
+        await sink.columns(cols);
+      },
+      rows: (rows) => sink!.rows(rows),
+    }).then(async () => {
+      await sink!.end();
+      out!.end();
+    });
+    // The panel giving up before the file is ready (the dialog closed) cancels the statement.
+    const gone = () => { if (!reply.raw.writableEnded) ac.abort(); };
+    reply.raw.on('close', gone);
+    try {
+      await Promise.race([ready, run]);
+    } catch (e) {
+      return reply.code(400).send({ error: ac.signal.aborted ? 'cancelled' : (e as Error).message });
+    } finally { reply.raw.off('close', gone); }
+    // Failing once the file is being written breaks the download off (the browser shows it failed).
+    run.catch(() => { (out as ServerResponse | null)?.destroy(); });
+    return { ticket };
+  });
+
+  // The file of a download made ready above. The app's auth hook lets this path through: the ticket stands for the token.
+  app.get<{ Querystring: { ticket?: string; name?: string } }>('/api/db/export', (req, reply) => {
+    const t = exportTickets.get(req.query.ticket ?? '');
+    exportTickets.delete(req.query.ticket ?? '');
+    if (!t) {
+      d.noteFailure?.(req.ip);
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const { format, take } = t;
+    const name = `${(req.query.name ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').trim().slice(0, 150) || 'result'}.${format}`;
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'content-type': EXPORT_TYPES[format], 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+      'content-disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    });
+    take(reply.raw);
   });
 
   // Saves the result grid's changes to one table: every one or none (one transaction). With `preview`, only answers the

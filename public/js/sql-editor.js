@@ -35,7 +35,10 @@ const AGENT_HINT = {
 /** sql-formatter's names for the dialects. */
 const FORMAT_LANG = { postgres: 'postgresql', mysql: 'mysql', mariadb: 'mariadb', sqlite: 'sqlite' };
 const HISTORY = 'dalang-sql-history';
-const LIMITS = [100, 500, 1000, 5000, 10000];
+/** The row limits to pick from; 0 is All (as many as the server reads of one statement, MAX_ROWS). */
+const LIMITS = [100, 500, 1000, 0];
+/** PANEL_MAX_ROWS in src/database-routes.ts. */
+const MAX_ROWS = 100_000;
 
 /**
  * A console: { id, connId, database ('' = the connection's own; MySQL: the database it starts in), schema (PostgreSQL: the
@@ -56,7 +59,8 @@ const sq = {
   runs: signal(new Map()),
   /** tree nodes that are open: 'c:<conn>', 'd:<conn>:<db>', 's:<conn>:<db>:<schema>', 't:<conn>:<db>:<schema>:<table>' */
   open: signal(new Set(pref('dalang-sql-open', []))),
-  limit: signal(pref('dalang-sql-limit', 500)),
+  // A limit no longer offered (5000, 10000) becomes All.
+  limit: signal(((n) => (LIMITS.includes(n) ? n : n > 1000 ? 0 : 500))(pref('dalang-sql-limit', 500))),
   /** phones: which pane shows ('files' = Database, 'editor' = Query, 'terminal' = Results) */
   pane: signal('editor'),
   /** the connection dialog: { conn } to edit one, { conn: null } to add one */
@@ -681,7 +685,7 @@ async function run(all, script, confirmed = false) {
   if (mobile()) sq.pane.value = 'terminal';
   const note = (ok, rows) => remember({ sql: sql.trim(), connId: conn.id, database: db, ws: sq.ws.value, at: t0, ms: Date.now() - t0, ok, rows });
   try {
-    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value, ...(db && { database: db }), ...(conn.driver === 'postgres' && c.schema && { schema: c.schema }), ...(confirmed && { confirmed }) } });
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', signal: ac.signal, body: { sql, limit: sq.limit.value || MAX_ROWS, ...(db && { database: db }), ...(conn.driver === 'postgres' && c.schema && { schema: c.schema }), ...(confirmed && { confirmed }) } });
     // A table's rows need its primary key: the table list (and on a big database its schema's columns) must be there.
     await loadSchema(conn.id, db);
     await columnsFor(conn, db, r.results, c.schema);
@@ -754,7 +758,7 @@ async function requery(c, key, meta, { where, order }) {
   const ref = conn.driver === 'sqlite' ? qi(conn, meta.table) : `${qi(conn, meta.schema)}.${qi(conn, meta.table)}`;
   const sql = `SELECT * FROM ${ref}${where.trim() ? ` WHERE ${where.trim()}` : ''}${order ? ` ORDER BY ${qi(conn, order.col)} ${order.desc ? 'DESC' : 'ASC'}` : ''}`;
   try {
-    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', body: { sql, limit: sq.limit.value, ...(c.database && { database: c.database }) } });
+    const r = await api(`/api/db/connections/${conn.id}/query`, { method: 'POST', body: { sql, limit: sq.limit.value || MAX_ROWS, ...(c.database && { database: c.database }) } });
     const cur = sq.runs.value.get(c.id);
     setRun(c.id, { tabs: cur.tabs.map((t) => (t.key === key ? { ...t, result: r.results[0], meta: { ...meta, where, order }, at: Date.now() } : t)) });
   } catch (e) { toast(e.message, 'err'); }
@@ -813,8 +817,26 @@ function askAboutRun() {
 
 // ---------- results ----------
 
-/** Copy and Download, each a menu of the formats in sql-export.js. */
-function ExportMenus({ result, tab, conn }) {
+/**
+ * Downloads every row `result`'s statement returns, as DataGrip's export does: the server runs it again, read-only,
+ * and writes the file as it reads (no row limit), and the browser saves it as it comes. Resolves once the download starts.
+ */
+async function downloadAll(c, conn, result, format, ctx, name, signal) {
+  const { ticket } = await api(`/api/db/connections/${conn.id}/export`, { method: 'POST', signal, body: {
+    sql: result.sql, format: format.id, sheet: (ctx.sheet || '').slice(0, 200),
+    ...(ctx.table && { table: { schema: ctx.table.schema ?? '', table: ctx.table.table } }),
+    ...(c.database && { database: c.database }), ...(conn.driver === 'postgres' && c.schema && { schema: c.schema }),
+  } });
+  const q = new URLSearchParams({ ticket, name: safeFileName(name) || 'result' });
+  // `download`: even an error answer is saved, never opened in place of the panel.
+  const a = Object.assign(document.createElement('a'), { href: `/api/db/export?${q}`, download: `${safeFileName(name) || 'result'}.${format.ext}`, hidden: true });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+/** Copy and Download, each a menu of the formats in sql-export.js. Download writes every row, not only those shown. */
+function ExportMenus({ result, tab, conn, c }) {
   const ctx = { driver: conn?.driver, table: tab.meta ? { schema: tab.meta.schema, table: tab.meta.table } : null, sheet: tabLabel(tab) };
   // The suggested name: the tab's, and when (the dialog lets one change it).
   const d = new Date();
@@ -827,19 +849,44 @@ function ExportMenus({ result, tab, conn }) {
       ${FORMATS.filter((f) => f.copy).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => copyText(f.build(result, ctx), `copied as ${f.label.replace(/ \(.*/, '')}`)}>${f.label}<//>`)}
     <//>
     <${Menu} icon="arrow-down-to-line" label="Download as…" buttonClass="xs">
-      <div class="menu-label">Download ${rows} as</div>
-      ${FORMATS.filter((f) => !(f.id === 'sql' && noSql(conn))).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
+      <div class="menu-label">Download ${result.truncated ? 'all rows' : rows} as</div>
+      ${FORMATS.filter((f) => !(f.id === 'sql' && noSql(conn))).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name, all: result.truncated ? (file, signal) => downloadAll(c, conn, result, f, ctx, file, signal) : null }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
     <//>`;
 }
 
-/** The file name of a download, suggested and changeable, then Download. */
-function DownloadDialog({ format, result, ctx, name }) {
+/**
+ * The file name of a download, suggested and changeable, then Download. `all`: the result was cut at the row limit, so
+ * the server writes the file of all its rows (the statement runs again, read-only); the dialog waits until it starts.
+ */
+function DownloadDialog({ format, result, ctx, name, all }) {
   const [file, setFile] = useState(name);
+  const [busy, setBusy] = useState(false);
+  const ctrl = useRef(null);
+  // Closing the dialog before the file starts cancels the statement.
+  useEffect(() => () => ctrl.current?.abort(), []);
   const close = () => { sq.download.value = null; };
-  const go = () => { download(format, result, ctx, file); close(); };
+  const go = async () => {
+    if (busy || !safeFileName(file)) return;
+    if (!all) { download(format, result, ctx, file); close(); return; }
+    setBusy(true);
+    ctrl.current = new AbortController();
+    try {
+      await all(file, ctrl.current.signal);
+      ctrl.current = null;
+      toast('downloading every row: the browser shows how far it is');
+      close();
+    } catch (e) {
+      ctrl.current = null;
+      if (e.name !== 'AbortError') toast(`cannot download: ${e.message}`, 'err');
+      setBusy(false);
+    }
+  };
+  const hint = all
+    ? `All rows: the statement runs again (read-only, up to 30 minutes) and the browser saves the file as it comes.${format.id === 'xlsx' ? ' Excel holds at most 1 048 575 rows; CSV has no limit.' : ''}`
+    : `${result.rows.length} row${result.rows.length === 1 ? '' : 's'}.`;
   return html`<div class="dialog-body">
     <div class="dialog-head"><h2>Download ${format.label.replace(/ \(.*/, '')}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
-    <${Field} label="File name" hint=${`${result.rows.length}${result.truncated ? ' (the row limit)' : ''} row${result.rows.length === 1 ? '' : 's'}. Characters a file name cannot hold become _.`}>
+    <${Field} label="File name" hint=${`${hint} Characters a file name cannot hold become _.`}>
       <div class="sql-file-name">
         <input class="mono" value=${file} autofocus onFocus=${(e) => e.currentTarget.select()} onInput=${(e) => setFile(e.currentTarget.value)}
           onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } }} />
@@ -847,7 +894,7 @@ function DownloadDialog({ format, result, ctx, name }) {
       </div><//>
     <div class="row end">
       <button class="btn" onClick=${close}>Cancel</button>
-      <button class="btn primary" disabled=${!safeFileName(file)} onClick=${go}><${Icon} name="arrow-down-to-line" />Download</button>
+      <button class="btn primary" disabled=${!safeFileName(file) || busy} onClick=${go}>${busy ? html`<${Spinner} />Running the query…` : html`<${Icon} name="arrow-down-to-line" />Download`}</button>
     </div>
   </div>`;
 }
@@ -916,7 +963,7 @@ function Results() {
       ${r.running && html`<span class="dim small row"><${Spinner} /> Running…</span>
         <button class="btn sm" onClick=${cancelRun}><${Icon} name="square" />Cancel</button>`}
       ${!r.running && (tab || onError) && html`<button class="btn ghost sm" title="Send this query and its error or result to an agent" onClick=${askAboutRun}><${Icon} name="bot" />Ask the agent</button>`}
-      ${shown && !r.running && html`<${ExportMenus} result=${shown} tab=${tab} conn=${conn} />`}
+      ${shown && !r.running && html`<${ExportMenus} result=${shown} tab=${tab} conn=${conn} c=${c} />`}
     </div>
     ${onError && html`<div class="sql-error" role="alert"><${Icon} name="circle-alert" /><div>
       ${r.error.done > 0 && html`<div class="small dim">Statement ${r.error.index + 1} failed; the ${r.error.done} before it ran.</div>`}
@@ -1724,7 +1771,7 @@ function Toolbar() {
     ${conn?.readOnly && html`<span class="ide-chip" title="The database refuses writes on this connection"><${Icon} name="eye" />read-only</span>`}
     <label class="small dim sql-limit">Rows
       <select value=${sq.limit.value} onChange=${(e) => { sq.limit.value = Number(e.currentTarget.value); keep('dalang-sql-limit', sq.limit.value); }}>
-        ${LIMITS.map((n) => html`<option value=${n}>${n}</option>`)}</select></label>
+        ${LIMITS.map((n) => html`<option value=${n}>${n || 'All'}</option>`)}</select></label>
   </div>`;
 }
 

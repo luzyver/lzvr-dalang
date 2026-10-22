@@ -732,17 +732,21 @@ connections belong to the panel.
   database of the server (what `USE` picks; "No database" means writing `db.table`), on PostgreSQL a schema, put first
   in `search_path`. That picker is typed in to find one (↑ ↓ and Enter pick, Esc closes). `Ctrl Enter` runs the
   selection or the statement at the cursor, `Ctrl Shift Enter` the whole console, statement by statement, stopping at
-  the first error (the results before it stay). A statement returns at most the row limit (100 to 10 000; the rest is
-  never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
+  the first error (the results before it stay). A statement returns at most the row limit (100, 500, 1000 or All, which is at most
+  100 000; the rest is never fetched) and stops after two minutes; **Cancel** stops it sooner (PostgreSQL `pg_cancel_backend`, MySQL/MariaDB
   `KILL QUERY`; SQLite runs to the end). `Shift Alt F` formats the selection or the console (sql-formatter). **History**
   lists the last 300 runs of this browser, to insert or run again. Results stay in tabs below the console: a query
   on another table adds a tab, one on the same table (or the same query again) refreshes its tab, and statements
   that return no rows share an **Output** tab (at most 12 tabs; the oldest go). The maximize button (or
   `Ctrl Shift '`) shows only the results, full screen (the browser's own full screen where it allows it); `Esc`
-  brings the rest back. A result's rows (those it holds, up to the row limit) copy or download as CSV (with a BOM, so
+  brings the rest back. A result's rows copy (those it holds) or download (all of them) as CSV (with a BOM, so
   Excel reads UTF-8), TSV, Excel (`.xlsx`, header bold and frozen), JSON, JSON Lines, SQL `INSERT` statements (for the
   result's table, in the connection's dialect), a Markdown or an HTML table; the download asks for a file name
-  (the tab's and the time, to change). Consoles are kept in the browser. Every run opens its own connection, so a
+  (the tab's and the time, to change). A result cut at the row limit downloads as DataGrip's export does: the server
+  runs its statement again, read-only, and writes the file as it reads (a batch at a time, never the whole result in
+  memory), with no row limit and for up to 30 minutes; the browser saves it as it comes, and cancelling the download
+  there cancels the statement. Excel stops at its last row (1 048 576); MongoDB and Redis results are read whole
+  first, up to 1 000 000 rows. Consoles are kept in the browser. Every run opens its own connection, so a
   transaction lasts one run: `BEGIN; ...; COMMIT;` in one go.
 - **Every row at once**: an `UPDATE` or `DELETE` without a `WHERE` of its own (one in a string, a comment or a
   subquery does not count), and `TRUNCATE`, does not run straight away. The server holds the whole script and the
