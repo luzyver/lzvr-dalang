@@ -311,13 +311,14 @@ export class ClickUp {
     const content = q.content.trim();
     if (!content) throw new ClickUpError('the message is empty');
     if (content.length > MAX_SEND) throw new ClickUpError(`at most ${MAX_SEND} characters per message`);
-    const c = await this.findChannel(q.channelId, q.workspaceId ? [q.workspaceId] : undefined);
+    // Everything that can fail is read first: once the POST went through, a later failure would make a retry post twice.
+    const [c, tz] = await Promise.all([this.findChannel(q.channelId, q.workspaceId ? [q.workspaceId] : undefined), this.timeZone()]);
     const path = q.replyTo
       ? `/api/v3/workspaces/${c.workspace_id}/chat/messages/${encodeURIComponent(q.replyTo)}/replies`
       : `/api/v3/workspaces/${c.workspace_id}/chat/channels/${encodeURIComponent(c.id)}/messages`;
     const r = await this.request('POST', path, {}, { type: 'message', content, content_format: 'text/md' });
     const m = r?.data ?? r ?? {};
-    const p = localParts(typeof m.date === 'number' ? m.date : Date.now(), await this.timeZone());
+    const p = localParts(typeof m.date === 'number' ? m.date : Date.now(), tz);
     return {
       sent: true, id: m.id ? String(m.id) : null, workspace: c.workspace, channel: c.name, channel_id: c.id,
       ...(q.replyTo && { reply_to: q.replyTo }), date: p.date, time: p.time,

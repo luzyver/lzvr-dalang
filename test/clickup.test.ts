@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { localParts, startOfDay } from '../src/clickup.js';
-import { fakeClient, wib } from './fake-clickup.js';
+import { ClickUp, localParts, startOfDay } from '../src/clickup.js';
+import { fakeClickUp, fakeClient, wib } from './fake-clickup.js';
 
 describe('time helpers', () => {
   it('finds local midnight and wall-clock time in a zone', () => {
@@ -101,6 +101,17 @@ describe('ClickUp send', () => {
     await expect(c.send({ channelId: 'd1', content: 'hi', workspaceId: '900' })).rejects.toThrow(/not found/);
     await expect(c.send({ channelId: 'c1', content: '   ' })).rejects.toThrow(/empty/);
     await expect(c.send({ channelId: 'c1', content: 'x'.repeat(4001) })).rejects.toThrow(/4000/);
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it('reads everything it needs before posting, so a failure never leaves a sent message behind', async () => {
+    const calls: string[] = [];
+    const inner = fakeClickUp(calls);
+    // the ClickUp user (time zone) cannot be read just now
+    const flaky = (async (input: string | URL, init?: RequestInit) => (new URL(String(input)).pathname === '/api/v2/user'
+      ? new Response('{"err":"busy"}', { status: 503 }) : inner(input, init))) as typeof fetch;
+    const c = new ClickUp({ token: 'pk_test', fetch: flaky });
+    await expect(c.send({ channelId: 'c1', content: 'hi' })).rejects.toThrow(/503/);
     expect(posts(calls)).toEqual([]);
   });
 });

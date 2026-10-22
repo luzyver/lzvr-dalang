@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { forgeOf, type Forge } from './forge.js';
+import { forgeOf, forgetGithubAccounts, type Forge } from './forge.js';
 import { pushTarget } from './git.js';
 import { killTree } from './runner.js';
 
@@ -330,6 +330,7 @@ export class GitAuth {
       : ['auth', 'login', '--hostname', host, '--stdin', '--git-protocol', protocol, ...(apiHttp ? ['--api-protocol', 'http'] : [])];
     await this.must(command, name, args, { input: `${token}\n` });
     this.knownHosts.delete(forge); // a host signed in just now must count for forgeForHost at once
+    if (forge === 'github') forgetGithubAccounts(); // and may be the one that can push now
     if (https) await this.setupHttps(forge, host);
   }
 
@@ -339,6 +340,7 @@ export class GitAuth {
     const args = ['auth', 'logout', '--hostname', host];
     if (forge === 'github' && user) args.push('--user', user);
     await this.must(command, name, args);
+    if (forge === 'github') forgetGithubAccounts(); // a picked account may be the one just signed out
     const left = (await this.forgeStatus(forge)).accounts.filter((a) => a.host === host);
     if (!left.length) await this.dropHttps(host); // a helper with no login behind it would only fail
   }
@@ -393,6 +395,7 @@ export class GitAuth {
       if (st.status !== 'pending') return;
       if (code !== 0) return settle('failed', st.output.trim().split('\n').pop() || `gh exited with code ${code}`);
       this.knownHosts.delete('github');
+      forgetGithubAccounts();
       if (!https) return settle('success');
       this.setupHttps('github', host).then(() => settle('success'), (e: Error) => settle('failed', e.message));
     });

@@ -91,14 +91,15 @@ const accountCache = new Map<string, { env: Record<string, string>; at: number }
  * gh uses one active account per host, but a server can be signed in to several (a personal one and a work one). For a
  * GitHub repository this picks the signed-in account that may push to it (the one named like the owner first, then the
  * active one) and returns its token as GH_TOKEN for this one call; nothing when only one account is signed in, or none
- * may push (gh then runs as usual and says why). Remembered for a while per login folder and repository.
+ * may push (gh then runs as usual and says why). An account picked is remembered for a while per login folder and
+ * repository (until a GitHub login or logout); finding none is not, so a fix to the logins counts at once.
  */
 export async function githubAccountEnv(command: string[], cwd: string, host: string, repo: string): Promise<Record<string, string>> {
   const key = `${gitEnv().GH_CONFIG_DIR ?? ''}\n${command.join(' ')}\n${host}/${repo}`.toLowerCase();
   const hit = accountCache.get(key);
   if (hit && Date.now() - hit.at < ACCOUNT_TTL_MS) return hit.env;
   const quiet = (args: string[], env?: Record<string, string>) => runForge('github', command, args, cwd, env).catch(() => '');
-  const accounts = parseAuthStatus(await quiet(['auth', 'status', '--hostname', host])).filter((a) => a.ok && a.host === host);
+  const accounts = parseAuthStatus(await authStatus(command, cwd, host)).filter((a) => a.ok && a.host === host);
   let env: Record<string, string> = {};
   if (accounts.length > 1) {
     const owner = repo.split('/')[0]!.toLowerCase();
@@ -112,8 +113,24 @@ export async function githubAccountEnv(command: string[], cwd: string, host: str
       if (push === 'true') { env = withToken; break; }
     }
   }
-  accountCache.set(key, { env, at: Date.now() });
+  if (env.GH_TOKEN) accountCache.set(key, { env, at: Date.now() });
   return env;
+}
+
+/** Forget the accounts githubAccountEnv picked, after a GitHub login or logout. */
+export const forgetGithubAccounts = (): void => accountCache.clear();
+
+/**
+ * What `gh auth status --hostname` printed, whatever it exited with: it exits non-zero as soon as one account on the host
+ * has a bad token, while still listing the good ones.
+ */
+function authStatus(command: string[], cwd: string, host: string): Promise<string> {
+  const [cmd, ...pre] = command;
+  return new Promise((resolve) => {
+    execFile(cmd!, [...pre, 'auth', 'status', '--hostname', host], {
+      cwd, timeout: 30_000, maxBuffer: 1e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1' },
+    }, (_err, out, stderr) => resolve(`${out ?? ''}\n${stderr ?? ''}`));
+  });
 }
 
 /** The token env for `host/owner/repo` (see githubAccountEnv); nothing for GitLab or an unknown repository. */

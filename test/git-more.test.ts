@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { createPullRequest, githubAccountEnv, parsePrUrl } from '../src/forge.js';
+import { createPullRequest, forgetGithubAccounts, githubAccountEnv, parsePrUrl } from '../src/forge.js';
 import { diffFingerprint, saveCheckpoint, splitHunks } from '../src/git.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { setupApp } from './setup-app.js';
@@ -457,6 +457,18 @@ describe('pull request status', () => {
       process.env.FAKE_GH_ACCOUNTS = 'solo*';
       expect(await githubAccountEnv([...command, 'solo'], dir, 'github.com', 'acme/app')).toEqual({});
       expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' }); // remembered
+      forgetGithubAccounts(); // a login or logout
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({});
+
+      // finding nobody is not remembered: once an account may push, it is picked at once
+      process.env.FAKE_GH_ACCOUNTS = 'rezivaapra*,acme';
+      process.env.FAKE_GH_WRITERS = 'acme';
+      expect(await githubAccountEnv(command, dir, 'github.com', 'other/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' });
+
+      // a third login whose token broke makes gh exit 1, but the good ones still count
+      forgetGithubAccounts();
+      process.env.FAKE_GH_ACCOUNTS = 'rezivaapra*,old!,acme';
+      expect(await githubAccountEnv(command, dir, 'github.com', 'acme/app')).toEqual({ GH_TOKEN: 'tok-acme', GH_ENTERPRISE_TOKEN: 'tok-acme' });
     } finally {
       for (const [k, v] of [['FAKE_GH_ACCOUNTS', old.accounts], ['FAKE_GH_WRITERS', old.writers]] as const) {
         if (v === undefined) delete process.env[k]; else process.env[k] = v;

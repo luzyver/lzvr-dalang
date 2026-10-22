@@ -3,8 +3,8 @@
 // `pr view` and `api` answer with a pull request that has checks, a review and comments (merged once `pr merge` ran);
 // `pr merge` is logged too.
 // Accounts: FAKE_GH_ACCOUNTS="ann,bob*" signs in ann and bob on github.com (* = active; none set = not signed in), each
-// with token `tok-<user>`; FAKE_GH_WRITERS="bob" are the ones that may push to the repository. Every logged call
-// records the GH_TOKEN it ran with.
+// with token `tok-<user>` (`old!` = a login whose token stopped working, which makes `auth status` exit 1 like gh);
+// FAKE_GH_WRITERS="bob" are the ones that may push to the repository. Every logged call records the GH_TOKEN it ran with.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 const [log, ...args] = process.argv.slice(2);
@@ -12,17 +12,21 @@ const url = 'https://github.com/acme/app/pull/7';
 const merged = () => existsSync(log) && readFileSync(log, 'utf8').includes('"merge"');
 const token = process.env.GH_TOKEN ?? null;
 const accounts = (process.env.FAKE_GH_ACCOUNTS ?? '').split(',').filter(Boolean)
-  .map((a) => ({ user: a.replace('*', ''), active: a.endsWith('*') }));
+  .map((a) => ({ user: a.replace(/[*!]/g, ''), active: a.includes('*'), failed: a.includes('!') }));
 
 if (args[0] === 'auth' && args[1] === 'status') {
   if (!accounts.length) { console.error('You are not logged into any GitHub hosts.'); process.exit(1); }
   console.log('github.com');
-  for (const a of accounts) console.log(`  ✓ Logged in to github.com account ${a.user} (keyring)\n  - Active account: ${a.active}`);
-  process.exit(0);
+  for (const a of accounts) {
+    console.log(a.failed
+      ? `  X Failed to log in to github.com account ${a.user} (keyring)\n  - Active account: ${a.active}\n  - The token in keyring is invalid.`
+      : `  ✓ Logged in to github.com account ${a.user} (keyring)\n  - Active account: ${a.active}`);
+  }
+  process.exit(accounts.some((a) => a.failed) ? 1 : 0);
 }
 if (args[0] === 'auth' && args[1] === 'token') {
   const user = args[args.indexOf('--user') + 1];
-  if (!accounts.some((a) => a.user === user)) { console.error(`no account found for ${user}`); process.exit(1); }
+  if (!accounts.some((a) => a.user === user && !a.failed)) { console.error(`no account found for ${user}`); process.exit(1); }
   console.log(`tok-${user}`);
   process.exit(0);
 }
