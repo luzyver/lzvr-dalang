@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
@@ -14,6 +14,19 @@ import { Store } from './store.js';
 
 const cfg = loadConfig();
 mkdirSync(cfg.stateDir, { recursive: true });
+// An error nothing caught is written to crash.log (the autostart log is rewritten at every start). Once the server is up
+// it keeps running: an exit would stop every turn, and nothing restarts it until the next logon. Before that (a port in
+// use, a broken database) it exits 1 as Node would, so a service manager sees the failure.
+const crashLog = join(cfg.stateDir, 'crash.log');
+let started = false;
+for (const kind of ['uncaughtException', 'unhandledRejection'] as const) {
+  process.on(kind, (e: unknown) => {
+    const text = `${new Date().toISOString()} ${kind}${started ? '' : ' (starting)'}: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`;
+    console.error(text.trimEnd());
+    try { appendFileSync(crashLog, text); } catch { /* the console line is all there is */ }
+    if (!started) process.exit(1);
+  });
+}
 const store = new Store(join(cfg.stateDir, 'lzvr.db'));
 // Passwords, keys and tokens in the database are stored encrypted (secrets.ts), before anything reads them.
 {
@@ -58,6 +71,7 @@ await app.listen({ host: cfg.host, port: cfg.port });
 codeMemory.start();
 const scheduler = new Scheduler(store, dispatcher);
 scheduler.start();
+started = true;
 
 // systemd sends SIGTERM on stop/restart: kill running turns cleanly.
 let closing = false;

@@ -249,6 +249,7 @@ export class Dispatcher {
         done(list);
       });
       // Claude answers `initialize` and exits at end of input; Codex reads nothing, so it must not wait on stdin either.
+      child.stdin?.on('error', () => {}); // EPIPE when the CLI is missing or exits early
       if (claude) child.stdin?.write(`${JSON.stringify({ type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } })}\n`);
       child.stdin?.end();
     });

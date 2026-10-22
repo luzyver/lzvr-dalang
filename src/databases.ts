@@ -211,13 +211,16 @@ const pgTypes = {
 };
 
 function pgClient(c: DbConnection, timeoutMs: number): pg.Client {
-  return new pg.Client({
+  const client = new pg.Client({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT.postgres, user: c.user || undefined,
     password: c.password || undefined, database: c.database || (c.allDatabases ? 'postgres' : undefined), application_name: 'dalang',
     ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS, statement_timeout: timeoutMs, query_timeout: timeoutMs + 5000,
     types: pgTypes as never,
   });
+  // The connection dropping between queries is emitted here; the next query reports it.
+  client.on('error', () => {});
+  return client;
 }
 
 type PgRead = { rows: unknown[][]; fields: { name: string; dataTypeID: number }[]; affected: number | null };
@@ -298,13 +301,17 @@ async function pgScript(c: DbConnection, statements: string[], o: RunOpts): Prom
 // ---------- MySQL / MariaDB ----------
 
 function myConnection(c: DbConnection): mysql.Connection {
-  return mysql.createConnection({
+  const conn = mysql.createConnection({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver], user: c.user || undefined,
     password: c.password || undefined, database: c.database || undefined,
     ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
     connectTimeout: CONNECT_TIMEOUT_MS, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true,
     multipleStatements: false,
   });
+  // A connection that drops while idle (between statements, or after the run) must not be fatal. One that drops during
+  // a statement is reported to that statement by myStatement: mysql2 emits it here only, as the query has no callback.
+  conn.on('error', () => {});
+  return conn;
 }
 
 const myConnect = (conn: mysql.Connection) => new Promise<void>((res, rej) => conn.connect((e) => (e ? rej(e) : res())));
@@ -328,15 +335,23 @@ function myStatement(conn: mysql.Connection, sql: string, o: RunOpts): Promise<Q
     const rows: unknown[][] = [];
     let affected: number | null = null;
     let settled = false;
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      conn.off('error', fail);
+      reject(e);
+    };
     const finish = (dropped: boolean) => {
       if (settled) return;
       settled = true;
+      conn.off('error', fail);
       resolve({
         sql, columns: fields.map((f) => ({ name: f.name, type: MY_TYPES[f.columnType ?? f.type ?? -1] ?? '' })),
         rows: rows.slice(0, o.limit).map((r) => cells(r, o.maxCell ?? 20_000)), affected, truncated: rows.length > o.limit,
         ms: Date.now() - t0, dropped,
       });
     };
+    conn.on('error', fail);
     const q = conn.query({ sql, rowsAsArray: true, timeout: o.timeoutMs });
     q.on('fields', (f: any) => { fields = f ?? []; rows.length = 0; });
     q.on('result', (row: any) => {
@@ -346,7 +361,7 @@ function myStatement(conn: mysql.Connection, sql: string, o: RunOpts): Promise<Q
         if (rows.length > o.limit) { conn.destroy(); finish(true); }
       } else if (row && typeof row.affectedRows === 'number') affected = row.affectedRows;
     });
-    q.on('error', (e: Error) => { if (!settled) { settled = true; reject(e); } });
+    q.on('error', fail);
     q.on('end', () => finish(false));
   });
 }

@@ -75,6 +75,8 @@ export async function sshConnect(ssh: SshLogin, opts: { trustNew?: boolean; time
     if (seen && !ssh.hostKey && !opts.trustNew) throw new Error(`the SSH server's key (${seen}) is not trusted yet: ${edit}`);
     throw new Error(`SSH ${ssh.host}: ${(e as Error).message}`);
   }
+  // A connection that drops later (a keepalive timeout after sleep) emits 'error' again; with no listener that is fatal.
+  client.on('error', () => {});
   return { client, hostKey: seen };
 }
 
