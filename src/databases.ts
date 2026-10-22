@@ -308,7 +308,9 @@ function myConnection(c: DbConnection): mysql.Connection {
     connectTimeout: CONNECT_TIMEOUT_MS, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true,
     multipleStatements: false,
   });
-  conn.on('error', () => {}); // as for PostgreSQL: a dropped connection fails the next query
+  // A connection that drops while idle (between statements, or after the run) must not be fatal. One that drops during
+  // a statement is reported to that statement by myStatement: mysql2 emits it here only, as the query has no callback.
+  conn.on('error', () => {});
   return conn;
 }
 
@@ -333,15 +335,23 @@ function myStatement(conn: mysql.Connection, sql: string, o: RunOpts): Promise<Q
     const rows: unknown[][] = [];
     let affected: number | null = null;
     let settled = false;
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      conn.off('error', fail);
+      reject(e);
+    };
     const finish = (dropped: boolean) => {
       if (settled) return;
       settled = true;
+      conn.off('error', fail);
       resolve({
         sql, columns: fields.map((f) => ({ name: f.name, type: MY_TYPES[f.columnType ?? f.type ?? -1] ?? '' })),
         rows: rows.slice(0, o.limit).map((r) => cells(r, o.maxCell ?? 20_000)), affected, truncated: rows.length > o.limit,
         ms: Date.now() - t0, dropped,
       });
     };
+    conn.on('error', fail);
     const q = conn.query({ sql, rowsAsArray: true, timeout: o.timeoutMs });
     q.on('fields', (f: any) => { fields = f ?? []; rows.length = 0; });
     q.on('result', (row: any) => {
@@ -351,7 +361,7 @@ function myStatement(conn: mysql.Connection, sql: string, o: RunOpts): Promise<Q
         if (rows.length > o.limit) { conn.destroy(); finish(true); }
       } else if (row && typeof row.affectedRows === 'number') affected = row.affectedRows;
     });
-    q.on('error', (e: Error) => { if (!settled) { settled = true; reject(e); } });
+    q.on('error', fail);
     q.on('end', () => finish(false));
   });
 }
