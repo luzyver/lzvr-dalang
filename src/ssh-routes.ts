@@ -6,8 +6,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { Dispatcher } from './dispatcher.js';
 import {
-  clearSshLog, describeRun, loadHosts, logSsh, readSshApprovals, readSshLog, runCommand, saveHosts, SSH_AGENT_MODES, type SshApproval, type SshHost,
-  targetOf, testHost, updateSshApproval,
+  clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, runCommand, saveHosts, saveKeys,
+  SSH_AGENT_MODES, type SshApproval, type SshHost, type SshKey, targetOf, testHost, updateSshApproval,
 } from './ssh-hosts.js';
 import { keyProblem } from './ssh-tunnel.js';
 import type { Store } from './store.js';
@@ -20,6 +20,22 @@ export const viewHost = ({ password, privateKey, passphrase, sudoPassword, ...h 
   ...h, hasPassword: !!password, hasKey: !!privateKey, hasPassphrase: !!passphrase, hasSudoPassword: !!sudoPassword,
 });
 
+/** What the panel sees of a saved key: its public half, never the private one or the passphrase. */
+const viewKey = ({ privateKey: _p, passphrase, ...k }: SshKey, usedBy: string[]) => ({ ...k, hasPassphrase: !!passphrase, usedBy });
+
+interface KeyBody {
+  label: string; access: SshKey['access'];
+  /** Omitted keeps the saved one; on a new key, omitted with generate: true makes one. */
+  privateKey?: string; passphrase?: string; generate?: boolean;
+}
+const KEY_BODY = {
+  type: 'object', required: ['label', 'access'], additionalProperties: false,
+  properties: {
+    label: { type: 'string', minLength: 1, maxLength: 80 }, access: { enum: [...PROJECT_ACCESS] },
+    privateKey: { type: 'string', maxLength: 20_000 }, passphrase: { type: 'string', maxLength: 1000 }, generate: { type: 'boolean' },
+  },
+};
+
 interface Body {
   label: string; host: string; port?: number; user: string; auth: 'password' | 'key'; note?: string;
   access: SshHost['access']; agent: SshHost['agent'];
@@ -29,6 +45,8 @@ interface Body {
   hostKey?: string;
   /** More commands a 'run' host holds for approval: regular expressions. */
   holdPatterns?: string[];
+  /** Key login with a saved key (Keys); '' or omitted: the host's own privateKey. */
+  keyId?: string;
 }
 const BODY = {
   type: 'object', required: ['label', 'host', 'user', 'auth', 'access', 'agent'], additionalProperties: false,
@@ -39,7 +57,7 @@ const BODY = {
     access: { enum: [...PROJECT_ACCESS] }, agent: { enum: [...SSH_AGENT_MODES] },
     password: { type: 'string', maxLength: 1000 }, privateKey: { type: 'string', maxLength: 20_000 },
     passphrase: { type: 'string', maxLength: 1000 }, sudoPassword: { type: 'string', maxLength: 1000 },
-    hostKey: { type: 'string', maxLength: 200 },
+    hostKey: { type: 'string', maxLength: 200 }, keyId: { type: 'string', maxLength: 32 },
     holdPatterns: { type: 'array', maxItems: 100, items: { type: 'string', minLength: 1, maxLength: 500 } },
   },
 };
@@ -54,24 +72,39 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   /** The host, if this admin may open it (one they may not does not exist for them). */
   const find = (user: AuthUser, id: string) => loadHosts(store).find((h) => h.id === id && canAccess(user, h.access));
 
+  /** The saved key, if this admin may see it. */
+  const findKey = (user: AuthUser, id: string) => loadKeys(store).find((k) => k.id === id && canAccess(user, k.access));
+
   /** A host from the form, or an error message. `old` gives the saved secrets when none are sent. */
   const build = (id: string, b: Body, user: AuthUser, old?: SshHost): SshHost | string => {
     if (b.access === 'owner' && user.id !== null) return 'only the owner can make a host owner-only';
+    const keyId = b.auth === 'key' ? b.keyId || '' : '';
+    if (keyId) {
+      // A key this admin may not see stays only on the host and server it was put on by someone who could.
+      const k = findKey(user, keyId);
+      const kept = old?.keyId === keyId && old.host === b.host.trim() && old.port === (b.port || 22) && old.user === b.user.trim();
+      const key = k ?? (kept ? loadKeys(store).find((x) => x.id === keyId) : undefined);
+      if (!key) return `there is no saved key ${keyId}`;
+      b = { ...b, privateKey: key.privateKey, passphrase: key.passphrase };
+    }
     const host = b.host.trim();
     const port = b.port || 22;
     // The saved secrets go only to the server they were saved for: another address or user must be given them again
     // (an admin could otherwise point a host at a server of their own and read its password there).
     const same = !!old && old.host === host && old.port === port && old.user === b.user.trim();
     const keep = (sent: string | undefined, was: string | undefined) => (sent === undefined ? (same ? was ?? '' : '') : sent);
-    const privateKey = b.privateKey === undefined ? keep(undefined, old?.privateKey) : b.privateKey.trim() ? `${b.privateKey.trim()}\n` : '';
+    // A host on a saved key was loaded with that key's secrets: they are the key's, never kept as the host's own.
+    const own = old?.keyId ? { privateKey: '', passphrase: '' } : old;
+    const privateKey = b.privateKey === undefined ? keep(undefined, own?.privateKey) : b.privateKey.trim() ? `${b.privateKey.trim()}\n` : '';
     const h: SshHost = {
       id, label: b.label.trim(), host, port, user: b.user.trim(), auth: b.auth, note: b.note?.trim() ?? '',
-      password: keep(b.password, old?.password), privateKey, passphrase: keep(b.passphrase, old?.passphrase),
+      password: keep(b.password, old?.password), privateKey, passphrase: keep(b.passphrase, own?.passphrase),
       sudoPassword: keep(b.sudoPassword, old?.sudoPassword),
       // A key trusted for one server says nothing about another: a new address starts untrusted.
       hostKey: b.hostKey ?? (old && old.host === host && old.port === port ? old.hostKey : ''),
       access: b.access, agent: b.agent,
       holdPatterns: (b.holdPatterns ?? old?.holdPatterns ?? []).map((p) => p.trim()).filter(Boolean),
+      ...(keyId && { keyId }),
     };
     for (const p of h.holdPatterns!) {
       try { new RegExp(p, 'i'); } catch (e) { return `pattern ${p}: ${(e as Error).message}`; }
@@ -122,6 +155,45 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const h = build(id || 'test', { ...b, hostKey: '' }, req.user!, old);
     if (typeof h === 'string') return reply.code(400).send({ error: h });
     try { return await testHost(h); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+  });
+
+  // Saved keys (Keys): a private key given once and picked by many hosts. The private half never goes back.
+  app.get('/api/ssh/keys', { onRequest: requireAdmin }, (req) => {
+    const hosts = loadHosts(store).filter((h) => canAccess(req.user!, h.access));
+    return loadKeys(store).filter((k) => canAccess(req.user!, k.access)).map((k) => viewKey(k, hosts.filter((h) => h.keyId === k.id).map((h) => h.id)));
+  });
+  app.put<{ Params: { id: string }; Body: KeyBody }>('/api/ssh/keys/:id', { onRequest: requireAdmin, schema: { body: KEY_BODY } }, (req, reply) => {
+    const { id } = req.params;
+    if (!ID.test(id)) return reply.code(400).send({ error: 'name: lowercase letters, digits, - and _ (at most 32)' });
+    const b = req.body;
+    if (b.access === 'owner' && req.user!.id !== null) return reply.code(400).send({ error: 'only the owner can make a key owner-only' });
+    const list = loadKeys(store);
+    const old = list.find((k) => k.id === id);
+    if (old && !canAccess(req.user!, old.access)) return reply.code(409).send({ error: `${id} is taken` });
+    const sent = b.privateKey?.trim();
+    // A new key pasted, one generated here (no passphrase), or the saved one kept.
+    const [privateKey, passphrase] = sent ? [`${sent}\n`, b.passphrase ?? '']
+      : b.generate ? [generateKey(`dalang-${id}`), '']
+      : old ? [old.privateKey, b.passphrase ?? old.passphrase] : ['', ''];
+    if (!privateKey) return reply.code(400).send({ error: 'a private key is needed (paste one, load a file, or generate one)' });
+    const pub = publicOf(privateKey, passphrase);
+    if (typeof pub === 'string') return reply.code(400).send({ error: `the private key cannot be read: ${pub}` });
+    const next: SshKey = { id, label: b.label.trim(), privateKey, passphrase, ...pub, access: b.access };
+    saveKeys(store, old ? list.map((k) => (k === old ? next : k)) : [...list, next]);
+    const hosts = loadHosts(store).filter((h) => canAccess(req.user!, h.access));
+    return viewKey(next, hosts.filter((h) => h.keyId === id).map((h) => h.id));
+  });
+  app.delete<{ Params: { id: string } }>('/api/ssh/keys/:id', { onRequest: requireAdmin }, (req, reply) => {
+    if (!findKey(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
+    const users = loadHosts(store).filter((h) => h.keyId === req.params.id);
+    if (users.length) {
+      const named = users.filter((h) => canAccess(req.user!, h.access)).map((h) => h.id);
+      const others = users.length - named.length;
+      const who = [...named, ...(others ? [`${others} host(s) you cannot open`] : [])].join(', ');
+      return reply.code(409).send({ error: `hosts still log in with it: ${who}. Give them another login first.` });
+    }
+    saveKeys(store, loadKeys(store).filter((k) => k.id !== req.params.id));
+    return reply.code(204).send();
   });
 
   app.get<{ Params: { id: string } }>('/api/ssh/hosts/:id/log', { onRequest: requireAdmin }, (req, reply) => {

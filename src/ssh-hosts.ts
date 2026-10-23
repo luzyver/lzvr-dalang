@@ -7,9 +7,12 @@
  *
  * A host is known by its key, as for an SSH tunnel (trust on first use when the host is tested, refused when it changes).
  */
-import { sshConnect, type SshLogin } from './ssh-tunnel.js';
+import ssh2 from 'ssh2';
+import { fingerprint, sshConnect, type SshLogin } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import type { ProjectAccess } from './util.js';
+
+const { utils } = ssh2;
 
 export const SSH_AGENT_MODES = ['off', 'approve', 'run'] as const;
 export type SshAgentMode = (typeof SSH_AGENT_MODES)[number];
@@ -26,6 +29,22 @@ export interface SshHost extends SshLogin {
   agent: SshAgentMode;
   /** On a 'run' host: more commands to hold for approval, as case-insensitive regular expressions (besides DANGER). */
   holdPatterns?: string[];
+  /** Logs in with this saved key (see SshKey) instead of a key of its own; its privateKey and passphrase come from it. */
+  keyId?: string;
+}
+
+/** A private key saved once on the SSH Hosts page (Keys) and picked by many hosts, like a keychain. */
+export interface SshKey {
+  /** Lowercase letters, digits, - and _, as a host's. */
+  id: string;
+  label: string;
+  privateKey: string;
+  passphrase: string;
+  /** Its public half as an authorized_keys line ("ssh-ed25519 AAAA... comment"), and that one's fingerprint. */
+  publicKey: string;
+  fingerprint: string;
+  /** Who may see and pick it, as a host's access. */
+  access: ProjectAccess;
 }
 
 /** What one command gave: its exit code (null when it was killed or timed out), and what it printed. */
@@ -37,13 +56,49 @@ const KEY = 'ssh_hosts';
 const LOG_MAX = 200;
 export const EDIT_HOST = 'open the host on the SSH Hosts page, Test connection, then Save';
 
+/** The hosts, a host on a saved key given that key's privateKey and passphrase (empty when the key is gone). */
 export function loadHosts(store: Store): SshHost[] {
+  let list: SshHost[];
   try {
-    const list = JSON.parse(store.getKv(KEY) ?? '[]');
+    const raw = JSON.parse(store.getKv(KEY) ?? '[]');
+    list = Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+  if (!list.some((h) => h.keyId)) return list;
+  const keys = new Map(loadKeys(store).map((k) => [k.id, k]));
+  return list.map((h) => {
+    if (!h.keyId) return h;
+    const k = keys.get(h.keyId);
+    return { ...h, privateKey: k?.privateKey ?? '', passphrase: k?.passphrase ?? '' };
+  });
+}
+/** Saves the hosts; a host on a saved key keeps only the key's id, not a copy of it. */
+export const saveHosts = (store: Store, list: SshHost[]) =>
+  store.setKv(KEY, JSON.stringify(list.map((h) => (h.keyId ? { ...h, privateKey: '', passphrase: '' } : h))));
+
+// ---------- saved keys ----------
+
+const KEYS = 'ssh_keys';
+export function loadKeys(store: Store): SshKey[] {
+  try {
+    const list = JSON.parse(store.getKv(KEYS) ?? '[]');
     return Array.isArray(list) ? list : [];
   } catch { return []; }
 }
-export const saveHosts = (store: Store, list: SshHost[]) => store.setKv(KEY, JSON.stringify(list));
+export const saveKeys = (store: Store, list: SshKey[]) => store.setKv(KEYS, JSON.stringify(list));
+
+/** The public half of a private key as an authorized_keys line, and its fingerprint; or why the key cannot be read. */
+export function publicOf(privateKey: string, passphrase: string, comment = ''): { publicKey: string; fingerprint: string } | string {
+  const parsed = utils.parseKey(privateKey, passphrase || undefined);
+  const k = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!k || k instanceof Error) return (k as Error | undefined)?.message ?? 'not a private key';
+  if (!k.isPrivateKey()) return 'this is a public key: give the private one (not the .pub file)';
+  const wire = k.getPublicSSH();
+  const note = (comment || k.comment || '').replace(/\s+/g, ' ').trim();
+  return { publicKey: `${k.type} ${wire.toString('base64')}${note ? ` ${note}` : ''}`, fingerprint: fingerprint(wire) };
+}
+
+/** A new ed25519 key pair in OpenSSH form, commented `comment`. */
+export const generateKey = (comment: string) => utils.generateKeyPairSync('ed25519', { comment }).private;
 
 // ---------- commands a 'run' host still holds for approval ----------
 

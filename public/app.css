@@ -702,7 +702,18 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .page.ssh-page { max-width: 1080px; }
 .ssh-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--s4); align-items: start; }
 .ssh-layout.single { grid-template-columns: minmax(0, 1fr); }
-.ssh-list { display: grid; gap: 2px; position: sticky; top: 0; }
+/* The left column stays in view while the host on the right scrolls: the search on top, the list scrolls itself. */
+.ssh-side { display: flex; flex-direction: column; gap: 8px; position: sticky; top: 0; max-height: calc(100dvh - var(--head-h) - 2 * var(--s5)); min-width: 0; }
+.ssh-find { position: relative; display: block; }
+.ssh-find > .i { position: absolute; left: 9px; top: 50%; translate: 0 -50%; color: var(--text-dim); pointer-events: none; }
+.ssh-find > input { width: 100%; padding-left: 30px; }
+.ssh-list { display: grid; align-content: start; gap: 2px; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 1px; }
+.ssh-none { padding: 8px 10px; }
+.ssh-search { width: 180px; min-height: 30px; padding: 4px 9px; }
+.ssh-more { justify-self: center; margin-top: 6px; }
+.ssh-keys { display: grid; gap: var(--s3); }
+.ssh-pub { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-3); }
+.ssh-pub > code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ssh-item { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--text-dim); text-align: left; font: inherit; cursor: pointer; }
 .ssh-item:hover { background: var(--hover); color: var(--text); }
 .ssh-item.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); }
@@ -719,7 +730,8 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .ssh-log-cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .ssh-layout { grid-template-columns: minmax(0, 1fr); }
-  .ssh-list { position: static; }
+  .ssh-side { position: static; max-height: none; }
+  .ssh-list { max-height: 40vh; }
   .ssh-addr { grid-template-columns: 80px minmax(0, 1fr); }
   .ssh-addr > .field:first-child { grid-column: 1 / -1; }
 }

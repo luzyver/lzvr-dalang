@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Server, utils } from 'ssh2';
+import { type ParsedKey, Server, utils } from 'ssh2';
 import { afterEach, describe, expect, it } from 'vitest';
 import { findDangerous, redact } from '../src/ssh-hosts.js';
 import { fingerprint } from '../src/ssh-tunnel.js';
@@ -20,12 +20,20 @@ const PASSWORD = 'hunter2-secret';
  * once it reads the password on stdin, `sudo -n ...` answers root without one only when `sudo.nopasswd`, `hang` never
  * ends, anything else is echoed and exits 3. `inputs[i]`: what command i got on its standard input.
  */
-async function sshServer(): Promise<{ port: number; commands: string[]; inputs: string[]; sudo: { nopasswd: boolean } }> {
+async function sshServer(): Promise<{ port: number; commands: string[]; inputs: string[]; sudo: { nopasswd: boolean }; authorized: ParsedKey[] }> {
   const commands: string[] = [];
+  const authorized: ParsedKey[] = [];
   const inputs: string[] = [];
   const sudo = { nopasswd: false };
   const ssh = new Server({ hostKeys: [hostKeys.private] }, (client) => {
-    client.on('authentication', (ctx) => (ctx.username === 'u' && ctx.method === 'password' && ctx.password === PASSWORD ? ctx.accept() : ctx.reject()))
+    client.on('authentication', (ctx) => {
+      if (ctx.username !== 'u') return ctx.reject();
+      if (ctx.method === 'password') return ctx.password === PASSWORD ? ctx.accept() : ctx.reject();
+      if (ctx.method !== 'publickey') return ctx.reject();
+      const k = authorized.find((x) => x.getPublicSSH().equals(ctx.key.data));
+      if (!k || (ctx.signature && !k.verify(ctx.blob!, ctx.signature, ctx.hashAlgo))) return ctx.reject();
+      ctx.accept();
+    })
       .on('ready', () => {
         client.on('session', (accept) => {
           accept().on('exec', (acceptExec, _reject, info) => {
@@ -59,7 +67,7 @@ async function sshServer(): Promise<{ port: number; commands: string[]; inputs: 
   });
   await new Promise<void>((r) => ssh.listen(0, '127.0.0.1', () => r()));
   closers.push(() => new Promise((r) => ssh.close(r)));
-  return { port: (ssh.address() as AddressInfo).port, commands, inputs, sudo };
+  return { port: (ssh.address() as AddressInfo).port, commands, inputs, sudo, authorized };
 }
 
 async function boot() {
@@ -105,6 +113,34 @@ describe('SSH hosts', () => {
     // Pointed somewhere else, the saved password is not sent there.
     expect((await t.put('vm', { password: undefined, host: 'elsewhere.example' })).json().error).toMatch(/password is needed \(the address or user changed/);
     expect((await t.put('vm', { password: undefined, user: 'other' })).statusCode).toBe(400);
+  });
+
+  it('logs hosts in with a saved key, never showing its private half', async () => {
+    const t = await boot();
+    const key = (id: string, body: object) => t.app.inject({ method: 'PUT', url: `/api/ssh/keys/${id}`, headers: AUTH, payload: { label: id, access: 'all', ...body } });
+    expect((await key('none', {})).json().error).toMatch(/private key is needed/);
+    expect((await key('bad', { privateKey: 'not a key' })).json().error).toMatch(/cannot be read/);
+    const made = await key('deploy', { generate: true });
+    expect(made.statusCode).toBe(200);
+    expect(made.json()).toMatchObject({ id: 'deploy', publicKey: expect.stringMatching(/^ssh-ed25519 \S+ dalang-deploy$/), fingerprint: expect.stringMatching(/^SHA256:/), usedBy: [] });
+    expect(made.body).not.toContain('PRIVATE KEY');
+    t.server.authorized.push(utils.parseKey(made.json().publicKey) as ParsedKey);
+
+    const r = await t.put('kv', { auth: 'key', keyId: 'deploy', password: undefined });
+    expect(r.json()).toMatchObject({ id: 'kv', keyId: 'deploy', hasKey: true });
+    expect(t.store.getKv('ssh_hosts')).not.toContain('PRIVATE KEY');
+    const keys = await t.app.inject({ url: '/api/ssh/keys', headers: AUTH });
+    expect(keys.json()).toMatchObject([{ id: 'deploy', usedBy: ['kv'] }]);
+    expect(keys.body).not.toContain('PRIVATE KEY');
+    expect((await (await t.agent()).call('ssh_exec', { host: 'kv', command: 'whoami' })).text).toContain('ran: whoami');
+
+    expect((await t.put('kv2', { auth: 'key', keyId: 'missing', password: undefined })).json().error).toMatch(/no saved key missing/);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/ssh/keys/deploy', headers: AUTH })).statusCode).toBe(409);
+    // Off the saved key, the host keeps no copy of it: its own key must be given.
+    expect((await t.put('kv', { auth: 'key', keyId: '', password: undefined })).json().error).toMatch(/private key is needed/);
+    expect((await t.put('kv', { auth: 'password' })).json()).toMatchObject({ hasKey: false, hasPassphrase: false });
+    expect(t.store.getKv('ssh_hosts')).not.toContain('PRIVATE KEY');
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/ssh/keys/deploy', headers: AUTH })).statusCode).toBe(204);
   });
 
   it('keeps the address out of an agent\'s error', async () => {
