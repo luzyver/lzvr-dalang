@@ -824,7 +824,9 @@ connections belong to the panel.
 - **Approval target and recovery**: a database approval records its original connection target. If that target changes,
   or an old approval has no target record, reject it and request a fresh approval. Before dispatch, its status is saved
   as `executing`. After an interrupted execution it becomes `unknown`, remains visible, and cannot run again. Check
-  the database and any backup to establish what happened before asking for another write.
+  the database and any backup to establish what happened before asking for another write. An admin can **Dismiss**
+  an `unknown` request to remove it from the active list. Its status becomes `dismissed`, with the original outcome
+  retained in the recent approval history; dismissal neither runs the write nor confirms success or failure.
 - **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
   it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
   same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match, only the one picked for
@@ -927,6 +929,9 @@ keys of its own. Each command goes into the host's log, shown under its form.
 
 SSH approvals also save `executing` before dispatch. After a restart interrupts execution, their status is `unknown`
 and the original approval cannot run again. Check the server's actual state before requesting another command.
+An admin can **Dismiss** an `unknown` request to remove it from the active list. Its status becomes `dismissed`,
+with the original outcome retained in the recent approval history; dismissal neither runs the command nor confirms
+success or failure.
 
 The host's key is trusted on first use as for an SSH tunnel: **Test connection** logs in, shows the key's fingerprint
 and what the host is (`uname`, the user), and **Save** trusts it. Until then, or after the key changes, agents are

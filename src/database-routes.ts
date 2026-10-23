@@ -123,7 +123,7 @@ export function logDbQuery(store: Store, id: string, entry: DbLogEntry): void {
 /** A script an agent wanted to write with, on an 'approve' connection, waiting for an admin (or decided). */
 export interface DbApproval {
   id: number; conn: string; database?: string; sql: string; who: string; conv: string | null; at: number;
-  status: 'pending' | 'executing' | 'unknown' | 'approved' | 'rejected' | 'failed'; decidedBy?: string; decidedAt?: number;
+  status: 'pending' | 'executing' | 'unknown' | 'approved' | 'rejected' | 'failed' | 'dismissed'; decidedBy?: string; decidedAt?: number;
   /** Fingerprint of the effective target when requested; absent on legacy requests, which cannot run. */
   target?: string;
   /** What running it gave (or why it failed). */
@@ -137,7 +137,7 @@ const APPROVALS = 'db_approvals';
 export function readDbApprovals(store: Store): DbApproval[] {
   try { return JSON.parse(store.getKv(APPROVALS) ?? '[]'); } catch { return []; }
 }
-/** Keeps every pending one and the last 200 decided. */
+/** Keeps every unresolved one and the last 200 decided, including dismissed requests. */
 function saveDbApprovals(store: Store, list: DbApproval[]): void {
   const unresolved = (a: DbApproval) => ['pending', 'executing', 'unknown'].includes(a.status);
   const decided = list.filter((a) => !unresolved(a)).slice(-LOG_MAX);
@@ -587,15 +587,20 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   const sqlBlock = (a: DbApproval) => `\n\n${fence}sql\n${a.sql}\n${fence}`;
   // Approvals whose write is running now: another Approve (a second admin, a double click) or a Reject must wait for it.
   const running = new Set<number>();
-  const decide = (verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
+  const decide = (verb: 'approve' | 'reject' | 'dismiss') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
     const a = readDbApprovals(store).find((x) => x.id === Number(req.params.id));
     if (!a || !visibleApproval(req.user!, a)) return reply.code(404).send({ error: 'not found' });
     if (running.has(a.id)) return reply.code(409).send({ error: 'already being run' });
-    if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
+    if (a.status !== (verb === 'dismiss' ? 'unknown' : 'pending')) return reply.code(409).send({ error: `already ${a.status}` });
     const done = (patch: Partial<DbApproval>) => {
       Object.assign(a, { decidedBy: req.user!.name, decidedAt: Date.now(), ...patch });
       updateDbApproval(store, a.id, a);
     };
+    if (verb === 'dismiss') {
+      done({ status: 'dismissed' }); // Close the request without claiming the interrupted write failed or succeeded.
+      tellChat(a, `[SQL editor] An admin dismissed your interrupted write on ${where(a)}. Its outcome remains unknown; dismissal does not run it again. Check the database and backup before requesting any further write.${sqlBlock(a)}`);
+      return a;
+    }
     if (verb === 'reject') {
       done({ status: 'rejected' });
       tellChat(a, `[SQL editor] An admin rejected your write on ${where(a)}; it did not run. Do not run it again unless you are asked to.${sqlBlock(a)}`);
@@ -647,4 +652,5 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   };
   app.post<{ Params: { id: string } }>('/api/db/approvals/:id/approve', { onRequest: requireAdmin }, decide('approve'));
   app.post<{ Params: { id: string } }>('/api/db/approvals/:id/reject', { onRequest: requireAdmin }, decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/dismiss', { onRequest: requireAdmin }, decide('dismiss'));
 }

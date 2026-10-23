@@ -120,6 +120,46 @@ describe('SSH hosts', () => {
     expect(t.server.commands).toEqual(['once']);
   });
 
+  it('dismisses an unknown SSH approval without replaying it or losing its outcome', async () => {
+    const t = await boot();
+    await t.put('srv', { agent: 'approve' });
+    const a = createSshApproval(t.store, { host: 'srv', command: 'once', sudo: false, timeoutMs: 5000, who: 'owner', conv: null });
+    t.store.setKv('ssh_approvals', JSON.stringify([{ ...a, status: 'executing' }]));
+    recoverSshApprovals(t.store);
+    const unknown = readSshApprovals(t.store)[0]!;
+    await t.put('srv', { agent: 'off' });
+    const r = await t.app.inject({ method: 'POST', url: `/api/ssh/approvals/${a.id}/dismiss`, headers: AUTH });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ ...unknown, status: 'dismissed', decidedBy: 'owner', decidedAt: expect.any(Number) });
+    recoverSshApprovals(t.store);
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()).toEqual([]);
+    expect((await t.app.inject({ url: '/api/ssh/approvals?status=dismissed', headers: AUTH })).json()).toEqual([r.json()]);
+    for (const verb of ['approve', 'reject', 'dismiss']) {
+      expect((await t.app.inject({ method: 'POST', url: `/api/ssh/approvals/${a.id}/${verb}`, headers: AUTH })).statusCode).toBe(409);
+    }
+    expect(t.server.commands).toEqual([]);
+  });
+
+  it('allows only an authorized admin to dismiss an unknown SSH approval', async () => {
+    const t = await boot();
+    await t.put('srv', { agent: 'approve', access: 'owner' });
+    const a = createSshApproval(t.store, { host: 'srv', command: 'once', sudo: false, timeoutMs: 5000, who: 'owner', conv: null });
+    const dismiss = (headers = AUTH) => t.app.inject({ method: 'POST', url: `/api/ssh/approvals/${a.id}/dismiss`, headers });
+    for (const status of ['pending', 'executing', 'approved', 'rejected', 'failed']) {
+      t.store.setKv('ssh_approvals', JSON.stringify([{ ...a, status }]));
+      expect((await dismiss()).statusCode).toBe(409);
+      expect(readSshApprovals(t.store)[0]!.status).toBe(status);
+    }
+    t.store.setKv('ssh_approvals', JSON.stringify([{ ...a, status: 'unknown' }]));
+    const dev = await mkUser(t, 'devi', 'dev');
+    const admin = await mkUser(t, 'admin', 'admin');
+    expect((await dismiss(bearer(dev.token))).statusCode).toBe(403);
+    expect((await dismiss(bearer(admin.token))).statusCode).toBe(404);
+    expect(readSshApprovals(t.store)[0]!.status).toBe('unknown');
+    expect((await dismiss()).statusCode).toBe(200);
+    expect(t.server.commands).toEqual([]);
+  });
+
   it('keeps the secrets from the panel and trusts the host key on Test connection', async () => {
     const t = await boot();
     const r = await t.put('vm', { hostKey: undefined, note: 'staging' });

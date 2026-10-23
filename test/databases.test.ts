@@ -557,6 +557,47 @@ describe('SQL editor connections for agents', () => {
     for (const verb of ['approve', 'reject']) expect((await t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/${verb}`, headers: AUTH })).statusCode).toBe(409);
   });
 
+  it('dismisses an unknown database approval without replaying it or losing its outcome', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const a = createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: 'DELETE FROM users', who: 'owner', conv: null, backup: 'interrupted.json' });
+    t.store.setKv('db_approvals', JSON.stringify([{ ...a, status: 'executing' }]));
+    recoverDbApprovals(t.store);
+    const unknown = readDbApprovals(t.store)[0]!;
+    // Closing an uncertain request must still work when agent execution has since been disabled.
+    await t.put('app', { agent: 'off' });
+    const r = await t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/dismiss`, headers: AUTH });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ ...unknown, status: 'dismissed', decidedBy: 'owner', decidedAt: expect.any(Number) });
+    recoverDbApprovals(t.store);
+    expect((await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json()).toEqual([]);
+    expect((await t.app.inject({ url: '/api/db/approvals?status=dismissed', headers: AUTH })).json()).toEqual([r.json()]);
+    for (const verb of ['approve', 'reject', 'dismiss']) {
+      expect((await t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/${verb}`, headers: AUTH })).statusCode).toBe(409);
+    }
+    const db = new DatabaseSync(t.file, { readOnly: true });
+    try { expect(db.prepare('SELECT count(*) AS n FROM users').get()!.n).toBe(2); } finally { db.close(); }
+  });
+
+  it('allows only an authorized admin to dismiss an unknown database approval', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve', access: 'owner' });
+    const a = createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: 'DELETE FROM users', who: 'owner', conv: null });
+    const dismiss = (headers = AUTH) => t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/dismiss`, headers });
+    for (const status of ['pending', 'executing', 'approved', 'rejected', 'failed']) {
+      t.store.setKv('db_approvals', JSON.stringify([{ ...a, status }]));
+      expect((await dismiss()).statusCode).toBe(409);
+      expect(readDbApprovals(t.store)[0]!.status).toBe(status);
+    }
+    t.store.setKv('db_approvals', JSON.stringify([{ ...a, status: 'unknown' }]));
+    const dev = await mkUser(t, 'devi', 'dev');
+    const admin = await mkUser(t, 'admin', 'admin');
+    expect((await dismiss(bearer(dev.token))).statusCode).toBe(403);
+    expect((await dismiss(bearer(admin.token))).statusCode).toBe(404);
+    expect(readDbApprovals(t.store)[0]!.status).toBe('unknown');
+    expect((await dismiss()).statusCode).toBe(200);
+  });
+
   it('requires a new approval for legacy requests without a recorded target', async () => {
     const t = await boot();
     await t.put('app', { agent: 'approve' });

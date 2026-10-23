@@ -620,7 +620,7 @@ function databaseTools(server: McpServer, store: Store, push: Push, stateDir: st
 
   if (!dbs.some((c) => c.agent === 'approve')) return;
   server.registerTool('db_approval', {
-    description: 'The status and outcome of a database write held for approval: pending, executing, approved, rejected, failed or unknown after an interrupted execution. Never retry an executing or unknown request; an admin must check its effects first.',
+    description: 'The status and outcome of a database write held for approval: pending, executing, approved, rejected, failed, unknown after an interrupted execution, or dismissed by an admin. Dismissal closes an unknown request without confirming its outcome. Never retry an executing, unknown or dismissed request; an admin must check its effects first.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     const a = readDbApprovals(store).find((x) => x.id === approval_id && get(x.conn));
@@ -697,7 +697,7 @@ function sshTools(server: McpServer, store: Store, push: Push, hosts: SshHost[],
   });
 
   server.registerTool('ssh_approval', {
-    description: 'The status and outcome of an SSH command held for approval: pending, executing, approved, rejected, failed or unknown after an interrupted execution. Never retry an executing or unknown request; an admin must check its effects first.',
+    description: 'The status and outcome of an SSH command held for approval: pending, executing, approved, rejected, failed, unknown after an interrupted execution, or dismissed by an admin. Dismissal closes an unknown request without confirming its outcome. Never retry an executing, unknown or dismissed request; an admin must check its effects first.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     const a = readSshApprovals(store).find((x) => x.id === approval_id && get(x.host));

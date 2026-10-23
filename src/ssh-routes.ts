@@ -228,15 +228,20 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
       tellChat(a, `[SSH] Your command on host "${id}" did not run: ${why}. Ask again if it is still needed.${block(a)}`);
     }
   };
-  const decide =(verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
+  const decide = (verb: 'approve' | 'reject' | 'dismiss') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
     const a = readSshApprovals(store).find((x) => x.id === Number(req.params.id));
     if (!a || !visible(req.user!, a)) return reply.code(404).send({ error: 'not found' });
     if (running.has(a.id)) return reply.code(409).send({ error: 'already being run' });
-    if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
+    if (a.status !== (verb === 'dismiss' ? 'unknown' : 'pending')) return reply.code(409).send({ error: `already ${a.status}` });
     const done = (patch: Partial<SshApproval>) => {
       Object.assign(a, { decidedBy: req.user!.name, decidedAt: Date.now(), ...patch });
       updateSshApproval(store, a.id, a);
     };
+    if (verb === 'dismiss') {
+      done({ status: 'dismissed' }); // Close the request while preserving the uncertain execution outcome.
+      tellChat(a, `[SSH] An admin dismissed your interrupted command on host "${a.host}". Its outcome remains unknown; dismissal does not run it again. Check the server before requesting any further command.${block(a)}`);
+      return a;
+    }
     if (verb === 'reject') {
       done({ status: 'rejected' });
       tellChat(a, `[SSH] An admin rejected your command on host "${a.host}"; it did not run. Do not run it again unless you are asked to.${block(a)}`);
@@ -267,4 +272,5 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   };
   app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/approve', { onRequest: requireAdmin }, decide('approve'));
   app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/reject', { onRequest: requireAdmin }, decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/dismiss', { onRequest: requireAdmin }, decide('dismiss'));
 }
