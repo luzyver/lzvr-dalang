@@ -262,7 +262,7 @@ export function Composer({ id, project }) {
   const setBackend = guarded(async (value) => {
     if (value === conv?.backend) return;
     await api(`/api/conversations/${id}/backend`, { method: 'PUT', body: { backend: value } });
-    chat.conv.value = { ...chat.conv.value, backend: value, thread_id: null, model: '', effort: '' };
+    chat.conv.value = { ...chat.conv.value, backend: value, thread_id: null, model: '', effort: '', context_usage: null };
     toast(`Next turn runs on ${value === 'claude' ? 'Claude Code' : 'Codex'}, in a new session told this chat so far`);
   });
   const setEffort = guarded(async (value) => {
