@@ -2,6 +2,7 @@
 import { batch, signal } from '../vendor/signals.js';
 import { api, currentToken, publicApi, setUnauthorizedHandler, tokenStore, Unauthorized } from './api.js';
 import { loadProjects, me, openChat, openSettings, refreshApprovals, route, toast } from './store.js';
+import { disableNotifications, restoreNotifications } from './notifications.js';
 import { refreshScheduleCount } from './schedules.js';
 
 /** 'checking' (a stored token is being tried, or whether one is needed at all), 'out' or 'in'. */
@@ -22,6 +23,7 @@ export function showLogin(message = '') {
 
 /** Revoke the session on the server (sessions last 30 days), then forget the token here. */
 export async function signOut() {
+  try { await disableNotifications(); } catch { /* still revoke the session */ }
   try { await fetch('/api/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${currentToken()}` } }); } catch { /* offline: still sign out locally */ }
   showLogin();
 }
@@ -40,6 +42,7 @@ export async function startSession() {
     session.value = 'in';
   });
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, 'err'); return; }
+  void restoreNotifications().catch(() => {});
   refreshScheduleCount();
   if (user.role === 'admin') {
     refreshApprovals();

@@ -268,13 +268,14 @@ export function buildApp(
       } },
     } },
   }, (req, reply) => {
-    store.addPushSub(req.body.subscription.endpoint, JSON.stringify(req.body.subscription));
+    store.addPushSub(req.body.subscription.endpoint, JSON.stringify(req.body.subscription), req.user!.id ?? 'owner',
+      sessionHash((req.headers.authorization ?? '').replace(/^Bearer /, '')));
     return reply.code(204).send();
   });
   app.post<{ Body: { endpoint: string } }>('/api/push/unsubscribe', {
     schema: { body: { type: 'object', required: ['endpoint'], properties: { endpoint: { type: 'string' } } } },
   }, (req, reply) => {
-    store.removePushSub(req.body.endpoint);
+    store.removePushSub(req.body.endpoint, req.user!.id ?? 'owner');
     return reply.code(204).send();
   });
 
@@ -623,6 +624,17 @@ export function buildApp(
       .send(createReadStream(real));
   });
 
+  /** Attached files follow their projects' current permissions; a pending upload is private to its uploader. */
+  const mayUseUpload = (path: string, user: AuthUser): boolean => {
+    if (user.id === null) return true;
+    const projects = store.uploadProjects(path);
+    if (projects.length) return projects.some((id) => {
+      const p = store.getProject(id);
+      return p && canAccess(user, p.access);
+    });
+    return store.uploadOwner(path) === user.id;
+  };
+
   app.post<{ Params: { id: string }; Body: { prompt: string; attachments?: string[] } }>('/api/conversations/:id/prompts', {
     schema: { body: {
       type: 'object', required: ['prompt'], additionalProperties: false,
@@ -638,8 +650,10 @@ export function buildApp(
     for (const a of req.body.attachments ?? []) {
       const real = insideRoot(uploads, a);
       if (!real || !statSync(real).isFile()) return reply.code(400).send({ error: `attachment must be an uploaded file: ${a}` });
+      if (!mayUseUpload(real, req.user!)) return notFound(reply);
       files.push(real);
     }
+    for (const file of files) store.attachUpload(file, conv.project_id);
     const queueId = store.enqueue(conv.id, req.body.prompt, files, req.user!.name);
     store.setDraft(conv.id, ''); // sent now, so the saved draft must not come back into the composer
     dispatcher.kick(conv.id);
@@ -674,6 +688,7 @@ export function buildApp(
       rmSync(dir, { recursive: true, force: true });
       return reply.code(413).send({ error: `file exceeds ${maxUpload} bytes` });
     }
+    store.recordUpload(realpathSync(dest), req.user!.id ?? 'owner');
     return reply.code(201).send({ path: dest });
   });
 
@@ -681,7 +696,7 @@ export function buildApp(
   // left out of that list since it can carry script.
   app.get<{ Params: { dir: string; name: string } }>('/api/uploads/:dir/:name', (req, reply) => {
     const real = insideRoot(uploads, join(req.params.dir, req.params.name));
-    if (!real) return notFound(reply);
+    if (!real || !mayUseUpload(real, req.user!)) return notFound(reply);
     let stat;
     try { stat = statSync(real); } catch { return notFound(reply); }
     if (!stat.isFile()) return notFound(reply);
@@ -689,7 +704,7 @@ export function buildApp(
       .header('content-type', UPLOAD_IMAGE_TYPES[extname(real).toLowerCase()] ?? 'application/octet-stream')
       .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName(real))}`)
       .header('content-length', stat.size)
-      .header('cache-control', 'private, max-age=86400')
+      .header('cache-control', 'private, no-store')
       .header('x-content-type-options', 'nosniff')
       .send(createReadStream(real));
   });

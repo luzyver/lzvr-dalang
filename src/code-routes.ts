@@ -9,6 +9,8 @@ import { agentBusy } from './git-routes.js';
 import { insideRoot } from './paths.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
+import { SearchWorker, type SearchMatch, type SearchQuery } from './code-search.js';
+export { searchRegExp, globList, findMatches } from './code-search.js';
 
 type Reply = FastifyReply;
 
@@ -32,51 +34,6 @@ export function badName(name: string): string | null {
 
 const MAX_MATCHES = 2000;
 const MAX_SEARCH_BYTES = 1024 * 1024;
-
-export interface SearchQuery { query: string; regex?: boolean; matchCase?: boolean; word?: boolean; include?: string; exclude?: string }
-export interface SearchMatch { line: number; col: number; len: number; preview: string; at: number }
-
-/** The search as a global regular expression (throws on an invalid regex). */
-export function searchRegExp(q: SearchQuery): RegExp {
-  let src = q.regex ? q.query : q.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (q.word) src = `\\b(?:${src})\\b`;
-  return new RegExp(src, `g${q.matchCase ? '' : 'i'}m`);
-}
-
-/** `src/**`, `*.ts, docs/` and the like: comma-separated globs; one without a slash matches any part of the path. */
-export function globList(list: string | undefined): RegExp[] {
-  return (list ?? '').split(',').map((g) => g.trim()).filter(Boolean).map((g) => {
-    const body = g.replace(/\/+$/, '/**').split(/(\*\*\/?|\*|\?)/).map((part) => {
-      if (part === '**/') return '(?:.*/)?';
-      if (part === '**') return '.*';
-      if (part === '*') return '[^/]*';
-      if (part === '?') return '[^/]';
-      return part.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    }).join('');
-    return new RegExp(g.includes('/') ? `^${body}$` : `(^|/)${body}(/|$)`, 'i');
-  });
-}
-
-/** Every match of `re` in `text` (up to `limit`), with 1-based line and column and a short preview of its line. */
-export function findMatches(text: string, re: RegExp, limit: number): SearchMatch[] {
-  const out: SearchMatch[] = [];
-  const starts = [0];
-  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1);
-  re.lastIndex = 0;
-  let line = 0;
-  for (let m = re.exec(text); m && out.length < limit; m = re.exec(text)) {
-    if (!m[0].length) { re.lastIndex++; continue; } // an empty match (a regex like `x*`) has nothing to show
-    while (line + 1 < starts.length && starts[line + 1]! <= m.index) line++;
-    const from = starts[line]!;
-    const end = line + 1 < starts.length ? starts[line + 1]! - 1 : text.length;
-    const lineText = text.slice(from, end).replace(/\r$/, '');
-    const col = m.index - from;
-    const cut = Math.max(0, col - 60);
-    out.push({ line: line + 1, col: col + 1, len: Math.max(1, Math.min(m[0].length, lineText.length - col)), preview: lineText.slice(cut, col + 200), at: col - cut });
-  }
-  re.lastIndex = 0;
-  return out;
-}
 
 /** The file has a NUL byte near its start: not text the editor should show. */
 const looksBinary = (buf: Buffer) => buf.subarray(0, 8000).includes(0);
@@ -207,15 +164,15 @@ export function codeRoutes(app: FastifyInstance, deps: {
     query: { type: 'string', minLength: 1, maxLength: 1000 }, regex: { type: 'boolean' }, matchCase: { type: 'boolean' },
     word: { type: 'boolean' }, include: { type: 'string', maxLength: 1000 }, exclude: { type: 'string', maxLength: 1000 },
   };
-  /** The files a search looks in (filtered by the include/exclude globs) and its regex, or null after a 400. */
-  const searchable = async (c: Loaded, q: SearchQuery, reply: Reply) => {
-    let re: RegExp;
-    try { re = searchRegExp(q); } catch (e) { reply.code(400).send({ error: `invalid regular expression: ${(e as Error).message}` }); return null; }
-    const include = globList(q.include);
-    const exclude = globList(q.exclude);
-    const { files } = await listFiles(c);
-    return { re, files: files.filter((f) => (!include.length || include.some((g) => g.test(f))) && !exclude.some((g) => g.test(f))) };
+  const workers = new Set<SearchWorker>();
+  app.addHook('onClose', async () => { await Promise.all([...workers].map((w) => w.close())); });
+  const searchWorker = (reply: Reply) => {
+    if (workers.size >= 4) { reply.code(429).send({ error: 'too many searches; try again shortly' }); return null; }
+    const worker = new SearchWorker();
+    workers.add(worker);
+    return worker;
   };
+  const finishSearch = async (worker: SearchWorker) => { await worker.close(); workers.delete(worker); };
   /** A text file up to 1 MB inside the folder, or null. */
   const readText = async (c: Loaded, path: string) => {
     const real = existing(c, path);
@@ -234,23 +191,30 @@ export function codeRoutes(app: FastifyInstance, deps: {
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c) return;
-    const s = await searchable(c, req.body, reply);
-    if (!s) return;
-    const results: { path: string; matches: SearchMatch[] }[] = [];
-    let count = 0;
-    let truncated = false;
-    for (let i = 0; i < s.files.length && !truncated; i += 32) {
-      const batch = await Promise.all(s.files.slice(i, i + 32).map(async (path) => ({ path, file: await readText(c, path) })));
-      for (const { path, file } of batch) {
-        if (!file) continue;
-        const matches = findMatches(file.text, s.re, MAX_MATCHES - count);
-        if (!matches.length) continue;
-        results.push({ path, matches });
-        count += matches.length;
-        if (count >= MAX_MATCHES) { truncated = true; break; }
+    const worker = searchWorker(reply);
+    if (!worker) return;
+    const cancel = () => { void worker.close(); };
+    req.raw.on('aborted', cancel);
+    try {
+      const { files } = await worker.run({ query: req.body, files: (await listFiles(c)).files });
+      const results: { path: string; matches: SearchMatch[] }[] = [];
+      let count = 0;
+      let truncated = false;
+      for (let i = 0; i < files!.length && !truncated; i += 32) {
+        const batch = await Promise.all(files!.slice(i, i + 32).map(async (path) => ({ path, file: await readText(c, path) })));
+        for (const { path, file } of batch) {
+          if (!file) continue;
+          const { matches } = await worker.run({ query: req.body, text: file.text, limit: MAX_MATCHES - count });
+          if (!matches!.length) continue;
+          results.push({ path, matches: matches! });
+          count += matches!.length;
+          if (count >= MAX_MATCHES) { truncated = true; break; }
+        }
       }
-    }
-    return { results, count, truncated };
+      return { results, count, truncated };
+    } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    finally { req.raw.off('aborted', cancel); await finishSearch(worker); }
+
   });
 
   // Replace in files: the same search, in the files named (the ones the panel showed), each written once. With a
@@ -262,25 +226,39 @@ export function codeRoutes(app: FastifyInstance, deps: {
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c || !mayWrite(c, reply)) return;
-    const s = await searchable(c, req.body, reply);
-    if (!s) return;
-    const allowed = new Set(s.files);
-    const by = req.body.regex ? req.body.replace : () => req.body.replace;
-    let files = 0;
-    let replacements = 0;
-    for (const path of new Set(req.body.paths)) {
-      if (!allowed.has(path) || inGit(path)) continue;
-      const file = await readText(c, path);
-      if (!file) continue;
-      const n = findMatches(file.text, s.re, Infinity).length;
-      if (!n) continue;
-      const next = file.text.replace(s.re, by as string);
-      if (next === file.text) continue;
-      await writeFile(file.real, next);
-      files++;
-      replacements += n;
-    }
-    return { files, replacements };
+    const worker = searchWorker(reply);
+    if (!worker) return;
+    const cancel = () => { void worker.close(); };
+    req.raw.on('aborted', cancel);
+    try {
+      const { files } = await worker.run({ query: req.body, files: (await listFiles(c)).files });
+      const allowed = new Set(files);
+      const changes: { path: string; real: string; before: string; text: string }[] = [];
+      let replacements = 0;
+      let bytes = 0;
+      // Prepare the entire batch before writing: an invalid/slow regex must not leave a partial replacement.
+      for (const path of new Set(req.body.paths)) {
+        if (!allowed.has(path) || inGit(path)) continue;
+        const file = await readText(c, path);
+        if (!file) continue;
+        const result = await worker.run({ query: req.body, text: file.text, replace: req.body.replace });
+        if (!result.replacements || result.text === file.text) continue;
+        bytes += Buffer.byteLength(file.text) + Buffer.byteLength(result.text!);
+        if (bytes > 32 * 1024 * 1024) throw new Error('replacement batch is too large; select fewer files');
+        changes.push({ path, real: file.real, before: file.text, text: result.text! });
+        replacements += result.replacements;
+      }
+      if (req.raw.aborted) throw new Error('search cancelled');
+      if (!mayWrite(c, reply)) return;
+      for (const change of changes) {
+        const current = await readText(c, change.path);
+        if (current?.real !== change.real || current.text !== change.before) throw new Error('a file changed during replacement; search again');
+      }
+      for (const change of changes) await writeFile(change.real, change.text);
+      return { files: changes.length, replacements };
+    } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    finally { req.raw.off('aborted', cancel); await finishSearch(worker); }
+
   });
 
   app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/fs/file', {

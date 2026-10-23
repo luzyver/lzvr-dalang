@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { type ClickUp, MAX_SEND, startOfDay } from './clickup.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
-import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
+import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, dbTarget, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
 import {
   agentRefusal, describeUnsafe, findUnsafe, type DbConnection, listDatabases, loadConnections, multiDatabase, onDatabase, QueryError, readSchema, runScript,
 } from './databases.js';
@@ -98,7 +98,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     const own = source !== null && c.parent === source && c.project_id === ownProject && store.getSubagentPolicy().autoSend;
     if (source && source !== c.id && !own && cfg.mcpCrossSend === 'approve') {
       const approvalId = store.createApproval(source, c.id, prompt, onBehalf);
-      void push.notify({ title: 'Approval needed', body: `A chat wants to message another one: ${prompt.slice(0, 80)}`, convId: source });
+      void push.notify({ title: 'Approval needed', body: `A chat wants to message another one: ${prompt.slice(0, 80)}`, convId: source, audience: { admin: true, conversation: c.id } });
       return { status: 'pending_approval' as const, approval_id: approvalId };
     }
     const queueId = store.enqueue(c.id, prompt, [], '', onBehalf, source && source !== c.id ? source : '');
@@ -589,7 +589,10 @@ function databaseTools(server: McpServer, store: Store, push: Push, stateDir: st
       }
     }
     const kept = backup?.file ? { backup: backup.file, backupRows: backup.rows } : {};
+    let requestedTarget: string | undefined;
     try {
+      // Keep the target used by the probe even if its saved connection changes while it runs.
+      requestedTarget = dbTarget(c, database);
       const results = await runScript(onDatabase(c, database), sql, { readOnly: readOnly(c), limit: limit ?? 100, timeoutMs: AGENT_DB_TIMEOUT_MS, maxCell: 2000 });
       log(true, results.reduce((n, r) => n + r.rows.length, 0), undefined, kept);
       return text({
@@ -599,11 +602,11 @@ function databaseTools(server: McpServer, store: Store, push: Push, stateDir: st
     } catch (e) {
       // A write on a "write after approval" connection: the whole script waits for an admin (it ran read-only, so
       // nothing of it was kept).
-      if (e instanceof QueryError && e.readOnlyRefusal && c.agent === 'approve' && !c.readOnly) {
+      if (requestedTarget && e instanceof QueryError && e.readOnlyRefusal && c.agent === 'approve' && !c.readOnly) {
         const flagged = findUnsafe(sql, c.driver).map(describeUnsafe);
-        const a = createDbApproval(store, { conn: c.id, ...(database && { database }), sql, who: by.who, conv: by.conv, ...(flagged.length && { unsafe: flagged }) });
+        const a = createDbApproval(store, { conn: c.id, target: requestedTarget, ...(database && { database }), sql, who: by.who, conv: by.conv, ...(flagged.length && { unsafe: flagged }) });
         log(false, 0, `held for approval #${a.id}`);
-        void push.notify({ title: 'Database write needs approval', body: `${c.label}: ${sql.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
+        void push.notify({ title: 'Database write needs approval', body: `${c.label}: ${sql.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { admin: true, database: c.id } });
         return text({
           status: 'pending_approval', approval_id: a.id,
           note: 'This script writes, so it waits for an admin. Nothing of it ran. The outcome will arrive in this chat as a message; do not send it again.',
@@ -617,7 +620,7 @@ function databaseTools(server: McpServer, store: Store, push: Push, stateDir: st
 
   if (!dbs.some((c) => c.agent === 'approve')) return;
   server.registerTool('db_approval', {
-    description: 'Whether a database write held for approval (db_query answered pending_approval) was approved, rejected or failed, and its outcome.',
+    description: 'The status and outcome of a database write held for approval: pending, executing, approved, rejected, failed, unknown after an interrupted execution, or dismissed by an admin. Dismissal closes an unknown request without confirming its outcome. Never retry an executing, unknown or dismissed request; an admin must check its effects first.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     const a = readDbApprovals(store).find((x) => x.id === approval_id && get(x.conn));
@@ -671,7 +674,7 @@ function sshTools(server: McpServer, store: Store, push: Push, hosts: SshHost[],
         host: h.id, target: targetOf(h), command, sudo: !!sudo, timeoutMs, who: by.who, conv: by.conv, ...(dangerous.length && { dangerous }),
       });
       logSsh(store, h.id, { ...entry, ok: false, ms: 0, error: `held for approval #${a.id}` });
-      void push.notify({ title: 'SSH command needs approval', body: `${h.label}: ${command.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '' });
+      void push.notify({ title: 'SSH command needs approval', body: `${h.label}: ${command.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { admin: true, host: h.id } });
       return text({
         status: 'pending_approval', approval_id: a.id,
         ...(dangerous.length && { held_because: dangerous }),
@@ -694,7 +697,7 @@ function sshTools(server: McpServer, store: Store, push: Push, hosts: SshHost[],
   });
 
   server.registerTool('ssh_approval', {
-    description: 'Whether an SSH command held for approval (ssh_exec answered pending_approval) was approved, rejected or failed, and its outcome.',
+    description: 'The status and outcome of an SSH command held for approval: pending, executing, approved, rejected, failed, unknown after an interrupted execution, or dismissed by an admin. Dismissal closes an unknown request without confirming its outcome. Never retry an executing, unknown or dismissed request; an admin must check its effects first.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     const a = readSshApprovals(store).find((x) => x.id === approval_id && get(x.host));

@@ -300,7 +300,7 @@ export const clearSshLog = (store: Store, id: string) => store.setKv(logKey(id),
 /** A command an agent wants to run on an 'approve' host, waiting for an admin (or decided). */
 export interface SshApproval {
   id: number; host: string; command: string; sudo: boolean; timeoutMs: number; who: string; conv: string | null; at: number;
-  status: 'pending' | 'approved' | 'rejected' | 'failed'; decidedBy?: string; decidedAt?: number;
+  status: 'pending' | 'executing' | 'unknown' | 'approved' | 'rejected' | 'failed' | 'dismissed'; decidedBy?: string; decidedAt?: number;
   /** What running it gave (or why it failed). */
   outcome?: string;
   /** On a 'run' host: why it was held (see findDangerous). */
@@ -315,11 +315,22 @@ const APPROVALS = 'ssh_approvals';
 export function readSshApprovals(store: Store): SshApproval[] {
   try { return JSON.parse(store.getKv(APPROVALS) ?? '[]'); } catch { return []; }
 }
-/** Keeps every pending one and the last 200 decided. */
+/** Keeps every unresolved one and the last 200 decided, including dismissed requests. */
 function saveSshApprovals(store: Store, list: SshApproval[]): void {
-  const decided = list.filter((a) => a.status !== 'pending').slice(-LOG_MAX);
-  store.setKv(APPROVALS, JSON.stringify(list.filter((a) => a.status === 'pending' || decided.includes(a))));
+  const unresolved = (a: SshApproval) => ['pending', 'executing', 'unknown'].includes(a.status);
+  const decided = list.filter((a) => !unresolved(a)).slice(-LOG_MAX);
+  store.setKv(APPROVALS, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
+/** A lost SSH connection/process does not prove whether the remote command finished. */
+export function recoverSshApprovals(store: Store): void {
+  const list = readSshApprovals(store);
+  for (const a of list) if (a.status === 'executing') {
+    a.status = 'unknown';
+    a.outcome = 'Execution was interrupted. Check the server before requesting any further command; this approval cannot run again.';
+  }
+  saveSshApprovals(store, list);
+}
+
 export function createSshApproval(store: Store, a: Omit<SshApproval, 'id' | 'at' | 'status'>): SshApproval {
   const list = readSshApprovals(store);
   const next: SshApproval = { ...a, id: Math.max(0, ...list.map((x) => x.id)) + 1, at: Date.now(), status: 'pending' };

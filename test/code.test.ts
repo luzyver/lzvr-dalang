@@ -159,6 +159,7 @@ describe('code editor: files', () => {
     const t = await withChat();
     const dev = await mkUser(t, 'dev1', 'dev');
     expect((await t.call('PUT', '/fs/file', { path: 'README.md', content: 'dev\n' }, bearer(dev.token))).statusCode).toBe(200);
+    expect((await t.call('GET', '/files/download?path=README.md', undefined, bearer(dev.token))).body).toBe('dev\n');
     expect((await t.call('GET', '/code', undefined, bearer(dev.token))).json().terminal).toBe(false);
   });
 
@@ -195,6 +196,27 @@ describe('code editor: search and replace in files', () => {
     expect(await count({ query: 'foo', exclude: '*.md' })).toBe(3);
     expect(await count({ query: 'a.b' })).toBe(0); // literal unless regex
     expect((await call('POST', '/fs/search', { query: '(', regex: true })).statusCode).toBe(400);
+  });
+
+  it.each(['search', 'replace'])('terminates pathological regex in %s without blocking requests or changing files', async (operation) => {
+    const t = await withChat();
+    writeFileSync(join(t.dir, 'first.txt'), 'aaa');
+    writeFileSync(join(t.dir, 'slow.txt'), 'a'.repeat(35) + '!');
+    let finished = false;
+    const result = t.call('POST', `/fs/${operation}`, {
+      query: '(a+)+$', regex: true, include: '*.txt',
+      ...(operation === 'replace' && { replace: 'x', paths: ['first.txt', 'slow.txt'] }),
+    }).then((r) => { finished = true; return r; });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const me = await t.app.inject({ url: '/api/me', headers: AUTH });
+    expect(me.statusCode).toBe(200);
+    expect(finished).toBe(false);
+    const timedOut = await result;
+    expect(timedOut.statusCode).toBe(400);
+    expect(timedOut.json().error).toMatch(/time limit/);
+    expect(readFileSync(join(t.dir, 'first.txt'), 'utf8')).toBe('aaa');
+    expect((await t.call('POST', '/fs/search', { query: 'aaa' })).statusCode).toBe(200);
+    await t.app.close();
   });
 
   it('replaces in the files named, literally or with regex groups', async () => {

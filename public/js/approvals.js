@@ -40,11 +40,18 @@ export function DbApprovalCard({ a, showChat }) {
         ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
       ${a.unsafe?.map((u) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><span><strong>${u}</strong>: it changes every row of the table.</span></div>`)}
       <pre class="card-text mono">${a.sql}</pre>
-      <span class="dim small">Approve backs up the rows it changes, then runs it as written with writes allowed; the outcome goes back to the chat.</span>
+      ${a.status !== 'pending' ? html`<p class="sql-warning">${a.status === 'executing'
+        ? 'Execution in progress. This request cannot run twice.'
+        : a.outcome}</p>
+      ${a.status === 'unknown' && html`<span class="dim small">Dismiss closes this request without running it again. Its outcome remains uncertain.</span>
+      <div class="card-actions">
+        <${AsyncButton} class="btn sm" icon="x" onClick=${decide('dismiss')}>Dismiss<//>
+      </div>`}` : html`<span class="dim small">Approve backs up the rows it changes, then runs it as written with writes allowed; the outcome goes back to the chat.</span>
       <div class="card-actions">
         <${AsyncButton} class="btn primary sm" icon="check" onClick=${decide('approve')}>Approve and run<//>
         <${AsyncButton} class="btn sm" icon="x" onClick=${decide('reject')}>Reject<//>
-      </div>
+      </div>`}
+
     </div>
   </div>`;
 }
@@ -63,11 +70,18 @@ export function SshApprovalCard({ a, showChat }) {
         ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
       ${a.dangerous?.map((d) => html`<div class="sql-warning small"><${Icon} name="triangle-alert" /><span>Held: <strong>${d}</strong></span></div>`)}
       <pre class="card-text mono">${a.command}</pre>
-      <span class="dim small">Approve runs it now, as written (timeout ${Math.round(a.timeoutMs / 1000)} s); its output goes back to the chat.</span>
+      ${a.status !== 'pending' ? html`<p class="sql-warning">${a.status === 'executing'
+        ? 'Execution in progress. This request cannot run twice.'
+        : a.outcome}</p>
+      ${a.status === 'unknown' && html`<span class="dim small">Dismiss closes this request without running it again. Its outcome remains uncertain.</span>
+      <div class="card-actions">
+        <${AsyncButton} class="btn sm" icon="x" onClick=${decide('dismiss')}>Dismiss<//>
+      </div>`}` : html`<span class="dim small">Approve runs it now, as written (timeout ${Math.round(a.timeoutMs / 1000)} s); its output goes back to the chat.</span>
       <div class="card-actions">
         <${AsyncButton} class="btn primary sm" icon="check" onClick=${decide('approve')}>Approve and run<//>
         <${AsyncButton} class="btn sm" icon="x" onClick=${decide('reject')}>Reject<//>
-      </div>
+      </div>`}
+
     </div>
   </div>`;
 }

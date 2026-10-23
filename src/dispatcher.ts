@@ -418,80 +418,82 @@ export class Dispatcher {
       : item.prompt;
 
     const turnId = this.store.startTurn(convId, item.prompt);
-    this.store.setStatus(convId, 'running');
-    const model = conv.model || this.store.getDefaultModel(conv.backend);
-    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
-    const current = { backend: conv.backend, model };
-    const previous = this.store.lastTurnSelection(convId);
-    const changed = previous && (previous.backend !== current.backend || previous.model !== current.model);
-    this.emit(convId, turnId, { type: 'turn.selection', current, ...(changed && { previous }) });
-    this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
-      ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
-    if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
-      void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
-    }
-    const checkpoints = this.opts.checkpoints !== false && project.sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
-    if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
     let failed = false;
     let usage: unknown = null;
     let lastMessage = '';
-    // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
-    let workDone = !!item.resume;
-    let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
-    // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
-    const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
-    // The agent's own git commands (commit, push) work as the user this turn runs for, never as someone else.
-    const gitEnv = this.gitEnvFor?.(item.on_behalf || item.author, project.id) ?? {};
-    // `codex exec` cannot ask before an MCP call (it fails with "requires approval, but approval policy is never"), so
-    // the gateway's tools are approved up front; the per-turn token already limits them to what this chat may do.
-    const extraArgs = this.opts.mcpUrl && !claude
-      ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"',
-        '-c', 'mcp_servers.dalang.default_tools_approval_mode="approve"']
-      : [];
-    const servers = this.mcpServersFor?.(item.author);
-    const compactTokens = this.opts.contextCompactTokens ?? DEFAULT_COMPACT_TOKENS;
-    if (servers && !claude) extraArgs.push(...servers.codexArgs);
-    if (!claude) {
-      if (compactTokens > 0) extraArgs.push('-c', `model_auto_compact_token_limit=${compactTokens}`);
-      if (model) extraArgs.push('-m', model);
-      if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
-    }
-    // Whether the agent may commit and push itself (else the person does it from the panel): told, and blocked in its git.
-    const agentGit = this.store.getAgentGit();
-    const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
-    // Claude Code reads outside its folder only from directories it was given.
-    if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
-    // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
-    // first, and the turn waits for it (a cancel stops the wait, not the index).
-    if (this.codeMemory?.refresh) {
-      const cancelled = new Promise<'cancelled'>((r) => {
-        if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
-      });
-      const refreshed = await Promise.race([
-        // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
-        this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
-          .catch(() => 'failed' as const),
-        cancelled,
-      ]);
-      if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });
-      if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
-    }
-    const guide = [
-      ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
-      // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
-      memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
-      skillsGuide(skills),
-      agentGitGuide(agentGit),
-      ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
-    ].filter(Boolean).join('\n\n');
-    // A JSON string is also a valid TOML basic string, which is what `-c` reads.
-    if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
-    // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
-    // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
-    const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
-    const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
-    if (hooks) extraArgs.push(...hooks.args);
+    let checkpoints = false;
+    let mcpToken: string | null = null;
     try {
+      this.store.setStatus(convId, 'running');
+      const model = conv.model || this.store.getDefaultModel(conv.backend);
+      const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
+      const current = { backend: conv.backend, model };
+      const previous = this.store.lastTurnSelection(convId);
+      const changed = previous && (previous.backend !== current.backend || previous.model !== current.model);
+      this.emit(convId, turnId, { type: 'turn.selection', current, ...(changed && { previous }) });
+      this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
+        ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
+      if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
+        void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
+      }
+      checkpoints = this.opts.checkpoints !== false && project.sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
+      if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
+      // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
+      let workDone = !!item.resume;
+      let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
+      // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
+      mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
+      // The agent's own git commands (commit, push) work as the user this turn runs for, never as someone else.
+      const gitEnv = this.gitEnvFor?.(item.on_behalf || item.author, project.id) ?? {};
+      // `codex exec` cannot ask before an MCP call (it fails with "requires approval, but approval policy is never"), so
+      // the gateway's tools are approved up front; the per-turn token already limits them to what this chat may do.
+      const extraArgs = this.opts.mcpUrl && !claude
+        ? ['-c', `mcp_servers.dalang.url="${this.opts.mcpUrl}"`, '-c', 'mcp_servers.dalang.bearer_token_env_var="LZVR_MCP_TOKEN"',
+          '-c', 'mcp_servers.dalang.default_tools_approval_mode="approve"']
+        : [];
+      const servers = this.mcpServersFor?.(item.author);
+      const compactTokens = this.opts.contextCompactTokens ?? DEFAULT_COMPACT_TOKENS;
+      if (servers && !claude) extraArgs.push(...servers.codexArgs);
+      if (!claude) {
+        if (compactTokens > 0) extraArgs.push('-c', `model_auto_compact_token_limit=${compactTokens}`);
+        if (model) extraArgs.push('-m', model);
+        if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
+      }
+      // Whether the agent may commit and push itself (else the person does it from the panel): told, and blocked in its git.
+      const agentGit = this.store.getAgentGit();
+      const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
+      // Claude Code reads outside its folder only from directories it was given.
+      if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
+      // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
+      // first, and the turn waits for it (a cancel stops the wait, not the index).
+      if (this.codeMemory?.refresh) {
+        const cancelled = new Promise<'cancelled'>((r) => {
+          if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
+        });
+        const refreshed = await Promise.race([
+          // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
+          this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
+            .catch(() => 'failed' as const),
+          cancelled,
+        ]);
+        if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });
+        if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
+      }
+      const guide = [
+        ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+        // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
+        memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
+        skillsGuide(skills),
+        agentGitGuide(agentGit),
+        ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
+      ].filter(Boolean).join('\n\n');
+      // A JSON string is also a valid TOML basic string, which is what `-c` reads.
+      if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
+      // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
+      // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
+      const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
+      const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
+      if (hooks) extraArgs.push(...hooks.args);
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread. A turn
       // cancelled before it started (while its code graph was reindexed) runs none.
       while (!ac.signal.aborted) {

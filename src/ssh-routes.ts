@@ -6,7 +6,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Dispatcher } from './dispatcher.js';
 import {
-  clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, runCommand, saveHosts, saveKeys,
+  clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, recoverSshApprovals, runCommand, saveHosts, saveKeys,
   SSH_AGENT_MODES, type SshApproval, type SshHost, type SshKey, targetOf, testHost, updateSshApproval,
 } from './ssh-hosts.js';
 import { keyProblem } from './ssh-tunnel.js';
@@ -66,6 +66,7 @@ const PANEL_TIMEOUT_MAX_MS = 600_000;
 
 export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: Dispatcher }): void {
   const { store } = d;
+  recoverSshApprovals(store);
   const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
     if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
   };
@@ -204,7 +205,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   // Commands agents asked for on 'approve' hosts. Admins see those of hosts they may open.
   const visible = (user: AuthUser, a: SshApproval) => !!find(user, a.host);
   app.get<{ Querystring: { status?: string } }>('/api/ssh/approvals', { onRequest: requireAdmin }, (req) =>
-    readSshApprovals(store).filter((a) => a.status === (req.query.status || 'pending') && visible(req.user!, a)).reverse());
+    readSshApprovals(store).filter((a) => (req.query.status ? a.status === req.query.status : ['pending', 'executing', 'unknown'].includes(a.status)) && visible(req.user!, a)).reverse());
 
   /** Tells the chat the agent asked from what became of its command, so it can go on. */
   const tellChat = (a: SshApproval, text: string) => {
@@ -227,15 +228,20 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
       tellChat(a, `[SSH] Your command on host "${id}" did not run: ${why}. Ask again if it is still needed.${block(a)}`);
     }
   };
-  const decide =(verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
+  const decide = (verb: 'approve' | 'reject' | 'dismiss') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
     const a = readSshApprovals(store).find((x) => x.id === Number(req.params.id));
     if (!a || !visible(req.user!, a)) return reply.code(404).send({ error: 'not found' });
     if (running.has(a.id)) return reply.code(409).send({ error: 'already being run' });
-    if (a.status !== 'pending') return reply.code(409).send({ error: `already ${a.status}` });
+    if (a.status !== (verb === 'dismiss' ? 'unknown' : 'pending')) return reply.code(409).send({ error: `already ${a.status}` });
     const done = (patch: Partial<SshApproval>) => {
       Object.assign(a, { decidedBy: req.user!.name, decidedAt: Date.now(), ...patch });
       updateSshApproval(store, a.id, a);
     };
+    if (verb === 'dismiss') {
+      done({ status: 'dismissed' }); // Close the request while preserving the uncertain execution outcome.
+      tellChat(a, `[SSH] An admin dismissed your interrupted command on host "${a.host}". Its outcome remains unknown; dismissal does not run it again. Check the server before requesting any further command.${block(a)}`);
+      return a;
+    }
     if (verb === 'reject') {
       done({ status: 'rejected' });
       tellChat(a, `[SSH] An admin rejected your command on host "${a.host}"; it did not run. Do not run it again unless you are asked to.${block(a)}`);
@@ -244,6 +250,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const h = find(req.user!, a.host);
     if (!h || h.agent === 'off') return reply.code(409).send({ error: 'this host is no longer open to agents; reject it instead' });
     if (a.target && a.target !== targetOf(h)) return reply.code(409).send({ error: 'this host now reaches another server than it was asked for; reject it instead' });
+    done({ status: 'executing' }); // persisted before dispatching the remote command
     running.add(a.id);
     const t0 = Date.now();
     const who = `${a.who || 'an agent'} (approved by ${req.user!.name})`;
@@ -265,4 +272,5 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   };
   app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/approve', { onRequest: requireAdmin }, decide('approve'));
   app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/reject', { onRequest: requireAdmin }, decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/dismiss', { onRequest: requireAdmin }, decide('dismiss'));
 }

@@ -61,26 +61,23 @@ export function otpRoutes(
       return reply.code(429).header('retry-after', wait).send({ error: `wait ${wait}s before asking for another code`, cooldown: wait });
     }
     const cooldown = COOLDOWN_MS / 1000;
-    if (!whoIs(email)) { noteFailure(req.ip); return { cooldown }; }
 
     for (const [k, v] of pending) if (v.expires <= now) pending.delete(k);
     while (pending.size >= MAX_CHALLENGES) pending.delete(pending.keys().next().value as string);
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     pending.set(email, { hash: hash(email, code), expires: now + CODE_TTL_MS, sentAt: now, attempts: 0 });
-    try {
-      await send({
-        to: email,
-        from: cfg.mailFrom,
-        subject: `Dalang sign-in code: ${code}`,
-        text: `Your Dalang sign-in code is ${code}. It is valid for 5 minutes.\n\nIf you did not ask for it, ignore this email.`,
-        html: `<p>Your Dalang sign-in code is</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p>`
-          + '<p>It is valid for 5 minutes. If you did not ask for it, ignore this email.</p>',
-      });
-    } catch (e) {
-      pending.delete(email);
+    // Keep the same cooldown and response timing for every address, including mailer failures.
+    // Delivery runs in the background; awaiting SMTP here would disclose which addresses exist.
+    if (whoIs(email)) void Promise.resolve().then(() => send({
+      to: email,
+      from: cfg.mailFrom,
+      subject: `Dalang sign-in code: ${code}`,
+      text: `Your Dalang sign-in code is ${code}. It is valid for 5 minutes.\n\nIf you did not ask for it, ignore this email.`,
+      html: `<p>Your Dalang sign-in code is</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p>`
+        + '<p>It is valid for 5 minutes. If you did not ask for it, ignore this email.</p>',
+    })).catch((e: unknown) => {
       req.log.error({ err: e }, 'sending the sign-in code failed');
-      return reply.code(502).send({ error: 'could not send the code, try again later' });
-    }
+    });
     return { cooldown };
   });
 

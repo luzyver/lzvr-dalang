@@ -273,6 +273,9 @@ anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw 
 
 Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), sign in by email (see below), then turn on
 **Notifications** in Settings → This device. Push and "install app" only work over HTTPS (or localhost).
+Subscriptions belong to the signed-in user; each notification checks their current project, database or host access.
+Approval notifications go only to eligible admins. Signing out removes the device's subscription. Old subscriptions
+without a recorded user are discarded on upgrade and rebound when that browser next signs in.
 
 ### Signing in
 
@@ -280,6 +283,8 @@ The sign-in screen asks for an email and **Send code**: Dalang mails a 6-digit c
 (`POST $MAILER_URL/mail/send`; the mailer's nginx must allow the VM's address). The code is valid for 5 minutes, can be
 asked for again after 60 seconds, and dies after 5 wrong tries. The emails in `LZVR_OWNER_EMAILS` (comma-separated) sign
 in as the owner; a panel user signs in with the email set on their user. Unknown emails get the same answer and no mail.
+The cooldown also applies to unknown addresses. Delivery runs in the background: a mailer failure is logged on the
+server and does not change the public response.
 `MAIL_FROM` sets the sender (default: the mailer's). Without `MAILER_URL` the screen falls back to the access token.
 
 **Local development:** `AUTH_BYPASS=true` skips sign-in entirely: every request is the owner. It is refused at start
@@ -317,6 +322,11 @@ the projects of the user who sent its turn's prompt (plus its own); one with no 
 own). An admin may set anything but `owner`, so they cannot lock themselves out; `owner` is set by the owner. Note that a dev chatting in a project whose sandbox is
 `danger-full-access` is effectively running commands as root, so keep such projects for admins you trust (access `admin`)
 or give devs only `workspace-write`/`read-only` projects.
+
+An upload waiting to be attached is private to its uploader and the owner. Once attached, downloading or reusing it
+requires access to at least one project it was attached to; current project permissions apply even to the original
+uploader. Upgrades recover these links from chat history and queued prompts. Legacy files with no such record remain
+owner-only; upload them again if another user needs them.
 
 ### Adding Codex accounts
 
@@ -811,6 +821,12 @@ connections belong to the panel.
   not with `psql`, `mysql`, `mongosh`, `redis-cli`, a script or credentials from `.env`, unless the person asks for that
   explicitly, and to say so when a database is not listed or is read-only instead of working around it (Claude Code:
   `--append-system-prompt`, Codex: `developer_instructions`).
+- **Approval target and recovery**: a database approval records its original connection target. If that target changes,
+  or an old approval has no target record, reject it and request a fresh approval. Before dispatch, its status is saved
+  as `executing`. After an interrupted execution it becomes `unknown`, remains visible, and cannot run again. Check
+  the database and any backup to establish what happened before asking for another write. An admin can **Dismiss**
+  an `unknown` request to remove it from the active list. Its status becomes `dismissed`, with the original outcome
+  retained in the recent approval history; dismissal neither runs the write nor confirms success or failure.
 - **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
   it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
   same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match, only the one picked for
@@ -910,6 +926,12 @@ told, so an Approve never runs one on a server it was not asked for. The passwor
 line of the private key are replaced by `[secret]` in whatever a command prints, so `cat` of a file holding them does
 not hand them over. While any host is open to agents, every turn is told to use these tools instead of `ssh`, `scp` or
 keys of its own. Each command goes into the host's log, shown under its form.
+
+SSH approvals also save `executing` before dispatch. After a restart interrupts execution, their status is `unknown`
+and the original approval cannot run again. Check the server's actual state before requesting another command.
+An admin can **Dismiss** an `unknown` request to remove it from the active list. Its status becomes `dismissed`,
+with the original outcome retained in the recent approval history; dismissal neither runs the command nor confirms
+success or failure.
 
 The host's key is trusted on first use as for an SSH tunnel: **Test connection** logs in, shows the key's fingerprint
 and what the host is (`uname`, the user), and **Save** trusts it. Until then, or after the key changes, agents are
