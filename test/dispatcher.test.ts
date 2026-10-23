@@ -1,11 +1,34 @@
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { saveConnections } from '../src/databases.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import { FAKE, turnsDone, until } from './helpers.js';
 import { setupDispatcher } from './setup.js';
 
 describe('Dispatcher', () => {
+  it.each(['gitEnvFor', 'mcpServersFor', 'hooks'] as const)('finishes a turn and revokes its token when %s preparation fails', async (stage) => {
+    const { store, conv, dir } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://localhost/mcp', checkpoints: false });
+    const issued = vi.spyOn(d, 'issueMcpToken');
+    const broken = () => { throw new Error('preparation failed'); };
+    if (stage === 'hooks') d.codeMemory = { guide: () => '', hooks: broken };
+    else d[stage] = broken;
+    store.enqueue(conv.id, 'first', []);
+    d.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.listTurns(conv.id)[0]!.status).toBe('failed');
+    expect(store.getConversation(conv.id)!.status).toBe('failed');
+    expect(issued).toHaveBeenCalledOnce();
+    expect(d.mcpConversation(issued.mock.results[0]!.value as string)).toBeNull();
+    expect(store.eventsAfter(conv.id, 0).some((e) => e.payload.includes('preparation failed'))).toBe(true);
+    if (stage === 'hooks') d.codeMemory = undefined;
+    else d[stage] = undefined;
+    store.enqueue(conv.id, 'second', []);
+    d.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 2));
+    expect(store.listTurns(conv.id)[1]!.status).toBe('completed');
+  });
+
   it('configures native compaction on resumed Codex turns and records actual context after a native checkpoint', async () => {
     const env = { FAKE_CONTEXT: JSON.stringify({ tokens: 90_000, window: 200_000 }),
       FAKE_USAGE: JSON.stringify({ input_tokens: 1_000_000, cached_input_tokens: 900_000, output_tokens: 100 }) };

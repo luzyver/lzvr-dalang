@@ -4,7 +4,7 @@
  * through the gateway's MCP tools: read-only, writes after an admin's approval, or read-write). Passwords never go back
  * to the panel.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
@@ -123,7 +123,9 @@ export function logDbQuery(store: Store, id: string, entry: DbLogEntry): void {
 /** A script an agent wanted to write with, on an 'approve' connection, waiting for an admin (or decided). */
 export interface DbApproval {
   id: number; conn: string; database?: string; sql: string; who: string; conv: string | null; at: number;
-  status: 'pending' | 'approved' | 'rejected' | 'failed'; decidedBy?: string; decidedAt?: number;
+  status: 'pending' | 'executing' | 'unknown' | 'approved' | 'rejected' | 'failed'; decidedBy?: string; decidedAt?: number;
+  /** Fingerprint of the effective target when requested; absent on legacy requests, which cannot run. */
+  target?: string;
   /** What running it gave (or why it failed). */
   outcome?: string;
   /** Its statements that hit every row (UPDATE/DELETE without WHERE, TRUNCATE), described: the card warns about them. */
@@ -137,10 +139,30 @@ export function readDbApprovals(store: Store): DbApproval[] {
 }
 /** Keeps every pending one and the last 200 decided. */
 function saveDbApprovals(store: Store, list: DbApproval[]): void {
-  const decided = list.filter((a) => a.status !== 'pending').slice(-LOG_MAX);
-  store.setKv(APPROVALS, JSON.stringify(list.filter((a) => a.status === 'pending' || decided.includes(a))));
+  const unresolved = (a: DbApproval) => ['pending', 'executing', 'unknown'].includes(a.status);
+  const decided = list.filter((a) => !unresolved(a)).slice(-LOG_MAX);
+  store.setKv(APPROVALS, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
-export function createDbApproval(store: Store, a: Omit<DbApproval, 'id' | 'at' | 'status'>): DbApproval {
+/** Binds the effective database, login and tunnel endpoint without storing credentials in approval records. */
+export function dbTarget(connection: DbConnection, database?: string): string {
+  const c = onDatabase(connection, database);
+  const ssh = c.ssh;
+  const file = c.driver === 'sqlite' ? (existsSync(c.file) ? realpathSync(c.file) : resolve(c.file)) : '';
+  return createHash('sha256').update(JSON.stringify([c.driver, c.host, c.port, c.user, c.database, c.ssl, file,
+    ssh?.enabled ? [ssh.host, ssh.port, ssh.user, ssh.hostKey] : null])).digest('hex');
+}
+
+/** A process restart cannot tell whether a dispatched write committed. Never replay that approval. */
+export function recoverDbApprovals(store: Store): void {
+  const list = readDbApprovals(store);
+  for (const a of list) if (a.status === 'executing') {
+    a.status = 'unknown';
+    a.outcome = 'Execution was interrupted. Check the database and backup before requesting any further write; this approval cannot run again.';
+  }
+  saveDbApprovals(store, list);
+}
+
+export function createDbApproval(store: Store, a: Omit<DbApproval, 'id' | 'at' | 'status' | 'target'> & { target: string }): DbApproval {
   const list = readDbApprovals(store);
   const next: DbApproval = { ...a, id: Math.max(0, ...list.map((x) => x.id)) + 1, at: Date.now(), status: 'pending' };
   saveDbApprovals(store, [...list, next]);
@@ -226,6 +248,7 @@ const EDIT = {
 
 export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher; noteFailure?: (ip: string) => void }): void {
   const { store } = d;
+  recoverDbApprovals(store);
   /** Downloads whose statement runs, waiting for the browser to fetch the file: ticket -> who takes the response. */
   const exportTickets = new Map<string, { format: ExportFormat; take: (raw: ServerResponse) => void }>();
   const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
@@ -551,7 +574,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   // Writes agents asked for on 'approve' connections. Admins see those of connections they may open.
   const visibleApproval = (user: AuthUser, a: DbApproval) => !!find(user, a.conn);
   app.get<{ Querystring: { status?: string } }>('/api/db/approvals', { onRequest: requireAdmin }, (req) =>
-    readDbApprovals(store).filter((a) => a.status === (req.query.status || 'pending') && visibleApproval(req.user!, a)).reverse());
+    readDbApprovals(store).filter((a) => (req.query.status ? a.status === req.query.status : ['pending', 'executing', 'unknown'].includes(a.status)) && visibleApproval(req.user!, a)).reverse());
 
   /** Tells the chat the agent asked from what became of its write, so it can go on. */
   const tellChat = (a: DbApproval, text: string) => {
@@ -582,6 +605,12 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     if (!c || c.readOnly || (c.agent !== 'approve' && c.agent !== 'read-write')) {
       return reply.code(409).send({ error: 'this connection no longer lets agents write; reject it instead' });
     }
+    let target: string | undefined;
+    try { target = dbTarget(c, a.database); } catch { /* the original target is no longer available */ }
+    if (!a.target || a.target !== target) {
+      return reply.code(409).send({ error: 'the database target changed or was not recorded; reject this request and ask for a new approval' });
+    }
+    done({ status: 'executing' }); // durable before any remote work, including the backup
     running.add(a.id);
     const t0 = Date.now();
     let backup: DbBackup | null = null;

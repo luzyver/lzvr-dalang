@@ -111,7 +111,7 @@ export function codeIndexRoutes(app: FastifyInstance, d: { store: Store; codeMem
     const list = readIndexRequests(store);
     const r: IndexRequest = { id: Math.max(0, ...list.map((x) => x.id)) + 1, project: p.id, who: u.name, at: Date.now(), status: 'pending' };
     saveIndexRequests(store, [...list, r]);
-    void push.notify({ title: 'Approval needed', body: `${u.name} asks to index the code graph of ${p.name}`, convId: '' });
+    void push.notify({ title: 'Approval needed', body: `${u.name} asks to index the code graph of ${p.name}`, convId: '', audience: { admin: true, project: p.id } });
     return reply.code(202).send({ status: 'pending_approval', request: r });
   });
 

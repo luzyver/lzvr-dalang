@@ -67,14 +67,24 @@ describe('email sign-in (OTP)', () => {
     expect((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: right })).statusCode).toBe(401);
   });
 
-  it('reports a mailer failure and lets the user ask again straight away', async () => {
-    let fail = true;
-    const sent: Mail[] = [];
-    const t = withMail({}, async (m) => { if (fail) throw new Error('down'); sent.push(m); });
-    expect((await t.post('/api/auth/otp/request', { email: 'boss@example.com' })).statusCode).toBe(502);
-    fail = false;
-    expect((await t.post('/api/auth/otp/request', { email: 'boss@example.com' })).statusCode).toBe(200);
-    expect(sent).toHaveLength(1);
+  it('does not expose delivery failure or latency, and keeps its cooldown', async () => {
+    const t = withMail({}, async () => { throw new Error('down'); });
+    expect((await t.post('/api/auth/otp/request', { email: 'boss@example.com' })).json()).toEqual({ cooldown: 60 });
+    expect((await t.post('/api/auth/otp/request', { email: 'boss@example.com' })).statusCode).toBe(429);
+    const slow = withMail({}, () => new Promise(() => {}));
+    expect((await slow.post('/api/auth/otp/request', { email: 'boss@example.com' })).statusCode).toBe(200);
+  });
+
+  it('gives known and unknown addresses the same cooldown without an unknown-only IP penalty', async () => {
+    const t = withMail();
+    for (const email of ['boss@example.com', ...Array.from({ length: 12 }, (_, i) => `unknown${i}@example.com`)]) {
+      expect((await t.post('/api/auth/otp/request', { email })).json()).toEqual({ cooldown: 60 });
+      const again = await t.post('/api/auth/otp/request', { email });
+      expect(again.statusCode).toBe(429);
+      expect(again.json().cooldown).toBeGreaterThan(0);
+      expect(again.headers['retry-after']).toBeDefined();
+    }
+    expect(t.sent).toHaveLength(1);
   });
 
   it('is off without MAILER_URL', async () => {

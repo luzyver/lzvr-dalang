@@ -15,3 +15,21 @@ export async function enableNotifications() {
   const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(publicKey) });
   await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
 }
+
+/** Also unsubscribe in the browser so an offline sign-out cannot leave notifications for the next person. */
+export async function disableNotifications() {
+  if (!('serviceWorker' in navigator)) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager?.getSubscription();
+  if (!sub) return;
+  try { await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }); }
+  finally { await sub.unsubscribe(); }
+}
+
+/** Rebind an existing browser subscription after sign-in (including subscriptions made before ownership was stored). */
+export async function restoreNotifications() {
+  if (!('serviceWorker' in navigator)) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager?.getSubscription();
+  if (sub) await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+}

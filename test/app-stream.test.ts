@@ -1,9 +1,9 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { insideRoot } from '../src/paths.js';
 import { AUTH, turnsDone, until } from './helpers.js';
-import { setupApp } from './setup-app.js';
+import { bearer, mkUser, setupApp } from './setup-app.js';
 
 const B = '----lzvrtest';
 function multipart(filename: string, content: string) {
@@ -12,6 +12,36 @@ function multipart(filename: string, content: string) {
 }
 
 describe('uploads', () => {
+  it('keeps pending files private and enforces current project access on downloads and reuse', async () => {
+    const t = setupApp();
+    vi.spyOn(t.dispatcher, 'kick').mockImplementation(() => {});
+    const dev = await mkUser(t, 'dev', 'dev');
+    const second = await mkUser(t, 'second', 'dev');
+    const upload = multipart('secret.txt', 'private data');
+    const up = await t.app.inject({ method: 'POST', url: '/api/uploads', ...upload, headers: { ...upload.headers, ...bearer(dev.token) } });
+    const path = up.json().path as string;
+    const url = '/api/uploads/' + path.split(/[\\/]/).slice(-2).map(encodeURIComponent).join('/');
+    const download = (token: string) => t.app.inject({ url, headers: bearer(token) });
+    expect((await download(dev.token)).statusCode).toBe(200);
+    expect((await download(second.token)).statusCode).toBe(404);
+    const project = t.store.createProject('shared', t.root);
+    const conv = t.store.createConversation(project.id);
+    const attach = (token: string) => t.app.inject({ method: 'POST', url: `/api/conversations/${conv.id}/prompts`, headers: bearer(token), payload: { prompt: 'read', attachments: [path] } });
+    expect((await attach(second.token)).statusCode).toBe(404);
+    expect((await attach(dev.token)).statusCode).toBe(202);
+    expect((await download(second.token)).statusCode).toBe(200);
+    expect((await download(dev.token)).headers['cache-control']).toBe('private, no-store');
+    t.store.db.prepare("UPDATE projects SET access='owner' WHERE id=?").run(project.id);
+    expect((await download(dev.token)).statusCode).toBe(404);
+    expect((await download(second.token)).statusCode).toBe(404);
+    const other = t.store.createConversation(t.store.createProject('other', t.root).id);
+    expect((await t.app.inject({ method: 'POST', url: `/api/conversations/${other.id}/prompts`, headers: bearer(dev.token), payload: { prompt: 'steal', attachments: [path] } })).statusCode).toBe(404);
+    expect((await t.app.inject({ url, headers: AUTH })).body).toBe('private data');
+    t.store.db.prepare('DELETE FROM projects WHERE id=?').run(project.id);
+    expect((await download(dev.token)).statusCode).toBe(404);
+    await t.app.close();
+  });
+
   it('stores a file under the uploads dir even with a hostile filename', async () => {
     const t = setupApp();
     const uploads = join(t.cfg.stateDir, 'uploads');

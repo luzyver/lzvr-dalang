@@ -2,8 +2,8 @@ import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { type ParsedKey, Server, utils } from 'ssh2';
-import { afterEach, describe, expect, it } from 'vitest';
-import { findDangerous, redact } from '../src/ssh-hosts.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSshApproval, findDangerous, readSshApprovals, recoverSshApprovals, redact } from '../src/ssh-hosts.js';
 import { fingerprint } from '../src/ssh-tunnel.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -97,6 +97,29 @@ async function boot() {
 }
 
 describe('SSH hosts', () => {
+  it('persists execution before SSH dispatch and refuses replay after interrupted recovery', async () => {
+    const t = await boot();
+    await t.put('srv', { agent: 'approve' });
+    createSshApproval(t.store, { host: 'srv', command: 'once', sudo: false, timeoutMs: 5000, who: 'owner', conv: null });
+    const set = t.store.setKv.bind(t.store);
+    let durableBeforeDispatch = false;
+    const spy = vi.spyOn(t.store, 'setKv').mockImplementation((key, value) => {
+      set(key, value);
+      if (key === 'ssh_approvals' && readSshApprovals(t.store)[0]?.status === 'executing') durableBeforeDispatch = t.server.commands.length === 0;
+    });
+    const r = await t.app.inject({ method: 'POST', url: '/api/ssh/approvals/1/approve', headers: AUTH });
+    expect(r.json().status).toBe('approved');
+    expect(durableBeforeDispatch).toBe(true);
+    spy.mockRestore();
+    const list = readSshApprovals(t.store);
+    list[0]!.status = 'executing';
+    t.store.setKv('ssh_approvals', JSON.stringify(list));
+    recoverSshApprovals(t.store);
+    expect((await t.app.inject({ url: '/api/ssh/approvals', headers: AUTH })).json()[0].status).toBe('unknown');
+    for (const verb of ['approve', 'reject']) expect((await t.app.inject({ method: 'POST', url: `/api/ssh/approvals/1/${verb}`, headers: AUTH })).statusCode).toBe(409);
+    expect(t.server.commands).toEqual(['once']);
+  });
+
   it('keeps the secrets from the panel and trusts the host key on Test connection', async () => {
     const t = await boot();
     const r = await t.put('vm', { hostKey: undefined, note: 'staging' });

@@ -5,8 +5,10 @@ import { crc32, inflateRawSync } from 'node:zlib';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it } from 'vitest';
-import { agentRefusal, type DbConnection, findUnsafe, onDatabase, planBackup, previewEdits, readBackup, statementsOf } from '../src/databases.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as databases from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, loadConnections, onDatabase, planBackup, previewEdits, QueryError, readBackup, statementsOf } from '../src/databases.js';
+import { createDbApproval, dbTarget, readDbApprovals, recoverDbApprovals } from '../src/database-routes.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -488,6 +490,91 @@ describe('SQL editor connections for agents', () => {
     expect(JSON.parse((await a.call('db_approval', { approval_id: 1 })).text)).toMatchObject({ status: 'approved' });
     await until(() => [...t.store.listQueue(conv.id), ...t.store.listTurns(conv.id)].some((x) => x.prompt.includes('approved your write')));
     expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/reject', headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it.each(['edit', 'recreate'])('refuses an approval after a connection target changes via %s', async (change) => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: "UPDATE users SET note='wrong target'", who: 'owner', conv: null });
+    if (change === 'recreate') await t.app.inject({ method: 'DELETE', url: '/api/db/connections/app', headers: AUTH });
+    const other = sampleDb();
+    await t.put('app', { agent: 'approve', file: other });
+    const r = await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH });
+    expect(r.statusCode).toBe(409);
+    expect(r.json().error).toMatch(/target/);
+    for (const file of [t.file, other]) {
+      const db = new DatabaseSync(file, { readOnly: true });
+      expect(db.prepare("SELECT count(*) AS n FROM users WHERE note='wrong target'").get()!.n).toBe(0);
+      db.close();
+    }
+  });
+
+  it('keeps the requested target when the connection changes while the read-only probe runs', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const target = dbTarget(loadConnections(t.store)[0]!);
+    const other = sampleDb();
+    const a = await t.agent();
+    const probe = vi.spyOn(databases, 'runScript').mockImplementationOnce(async () => {
+      await t.put('app', { agent: 'approve', file: other });
+      throw new QueryError('attempt to write a readonly database', [], 0, true);
+    });
+    try {
+      expect(JSON.parse((await a.call('db_query', { connection: 'app', sql: 'DELETE FROM users' })).text))
+        .toMatchObject({ status: 'pending_approval' });
+      expect(readDbApprovals(t.store)[0]!.target).toBe(target);
+      expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH })).statusCode).toBe(409);
+      for (const file of [t.file, other]) {
+        const db = new DatabaseSync(file, { readOnly: true });
+        expect(db.prepare('SELECT count(*) AS n FROM users').get()!.n).toBe(2);
+        db.close();
+      }
+    } finally { probe.mockRestore(); }
+  });
+
+  it('persists executing before writes, recovers an interrupted approval and refuses its replay', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const a = createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: "UPDATE users SET note='done'", who: 'owner', conv: null });
+    const set = t.store.setKv.bind(t.store);
+    let durableBeforeWrite = false;
+    const spy = vi.spyOn(t.store, 'setKv').mockImplementation((key, value) => {
+      set(key, value);
+      if (key === 'db_approvals' && readDbApprovals(t.store)[0]?.status === 'executing') {
+        const db = new DatabaseSync(t.file, { readOnly: true });
+        durableBeforeWrite = db.prepare("SELECT count(*) AS n FROM users WHERE note='done'").get()!.n === 0;
+        db.close();
+      }
+    });
+    expect((await t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/approve`, headers: AUTH })).json().status).toBe('approved');
+    expect(durableBeforeWrite).toBe(true);
+    spy.mockRestore();
+    const interrupted = readDbApprovals(t.store);
+    interrupted[0]!.status = 'executing';
+    t.store.setKv('db_approvals', JSON.stringify(interrupted));
+    recoverDbApprovals(t.store);
+    expect((await t.app.inject({ url: '/api/db/approvals', headers: AUTH })).json()[0]).toMatchObject({ status: 'unknown', outcome: expect.stringContaining('Check the database') });
+    for (const verb of ['approve', 'reject']) expect((await t.app.inject({ method: 'POST', url: `/api/db/approvals/${a.id}/${verb}`, headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it('requires a new approval for legacy requests without a recorded target', async () => {
+    const t = await boot();
+    await t.put('app', { agent: 'approve' });
+    const a = createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: 'DELETE FROM users', who: 'owner', conv: null });
+    delete a.target;
+    t.store.setKv('db_approvals', JSON.stringify([a]));
+    expect((await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH })).statusCode).toBe(409);
+  });
+
+  it('refuses a database override whose connection no longer allows it', async () => {
+    const t = await boot();
+    const connection = { driver: 'postgres', host: 'db.invalid', port: 5432, database: 'main', agent: 'approve', allDatabases: true };
+    expect((await t.put('app', connection)).statusCode).toBe(200);
+    createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!, 'other'), database: 'other', sql: 'DELETE FROM users', who: 'owner', conv: null });
+    expect((await t.put('app', { ...connection, allDatabases: false })).statusCode).toBe(200);
+    const result = await t.app.inject({ method: 'POST', url: '/api/db/approvals/1/approve', headers: AUTH });
+    expect(result.statusCode).toBe(409);
+    expect(result.json().error).toMatch(/target/);
   });
 
   it('runs an approved write once when approved twice at the same time, and keeps the approvals that wait', async () => {

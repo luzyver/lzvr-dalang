@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS uploads (path TEXT PRIMARY KEY, user_key TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS upload_projects (path TEXT NOT NULL, project_id TEXT NOT NULL, PRIMARY KEY(path, project_id));
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approvals (
@@ -189,6 +191,20 @@ export class Store {
     this.db.exec(SCHEMA);
     // Databases made by earlier versions lack these columns; CREATE TABLE IF NOT EXISTS does not add them.
     this.ensureColumn('sessions', 'user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
+    this.ensureColumn('push_subs', 'user_key', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('push_subs', 'auth_hash', "TEXT NOT NULL DEFAULT ''");
+    this.run("DELETE FROM push_subs WHERE user_key=''"); // old subscriptions have no provable recipient
+    if (!this.getKv('upload_acl_migrated')) {
+      // Preserve historical attachments' project access. Unattached legacy files remain owner-only.
+      this.db.exec(`INSERT OR IGNORE INTO upload_projects(path,project_id)
+        SELECT j.value,c.project_id FROM events e JOIN turns t ON t.id=e.turn_id
+        JOIN conversations c ON c.id=t.conversation_id, json_each(e.payload,'$.attachments') j
+        WHERE e.type='user.prompt' AND j.type='text';
+        INSERT OR IGNORE INTO upload_projects(path,project_id)
+        SELECT j.value,c.project_id FROM queue q JOIN conversations c ON c.id=q.conversation_id,
+        json_each(q.attachments) j WHERE j.type='text';`);
+      this.setKv('upload_acl_migrated', '1');
+    }
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
@@ -280,14 +296,14 @@ export class Store {
   /** New token for a user; their old token and every open session stop working. */
   setUserToken(id: string, tokenHash: string): boolean {
     const changed = Number(this.run('UPDATE users SET token_hash=? WHERE id=?', tokenHash, id).changes) > 0;
-    if (changed) this.run('DELETE FROM sessions WHERE user_id=?', id);
+    if (changed) { this.run('DELETE FROM sessions WHERE user_id=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id); }
     return changed;
   }
   /** Their personal memory goes with them. */
   deleteUser(id: string): boolean {
     // Only once a user really went: 'owner' (whose memories are kept under that key) has no row and must not lose them.
     const deleted = Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0;
-    if (deleted) this.run('DELETE FROM memories WHERE user_key=?', id);
+    if (deleted) { this.run('DELETE FROM memories WHERE user_key=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id); }
     return deleted;
   }
 
@@ -297,15 +313,25 @@ export class Store {
     this.run('DELETE FROM sessions WHERE expires_at<=?', Date.now()); // opportunistic cleanup
     this.run('INSERT OR REPLACE INTO sessions (token_hash,expires_at,user_id) VALUES (?,?,?)', tokenHash, expiresAt, userId);
   }
-  deleteSession(tokenHash: string): void { this.run('DELETE FROM sessions WHERE token_hash=?', tokenHash); }
+  deleteSession(tokenHash: string): void {
+    this.run('DELETE FROM sessions WHERE token_hash=?', tokenHash);
+    this.run('DELETE FROM push_subs WHERE auth_hash=?', tokenHash);
+  }
   getSession(tokenHash: string, now: number): { user_id: string | null } | null {
     return this.get('SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?', tokenHash, now);
   }
   hasSession(tokenHash: string, now: number): boolean { return this.getSession(tokenHash, now) !== null; }
 
-  addPushSub(endpoint: string, sub: string): void { this.run('INSERT OR REPLACE INTO push_subs (endpoint,sub) VALUES (?,?)', endpoint, sub); }
-  removePushSub(endpoint: string): void { this.run('DELETE FROM push_subs WHERE endpoint=?', endpoint); }
-  listPushSubs(): { endpoint: string; sub: string }[] { return this.all('SELECT endpoint, sub FROM push_subs ORDER BY rowid'); }
+  addPushSub(endpoint: string, sub: string, userKey: string, authHash: string): void {
+    this.run('INSERT OR REPLACE INTO push_subs (endpoint,sub,user_key,auth_hash) VALUES (?,?,?,?)', endpoint, sub, userKey, authHash);
+  }
+  removePushSub(endpoint: string, userKey: string): void { this.run('DELETE FROM push_subs WHERE endpoint=? AND user_key=?', endpoint, userKey); }
+  listPushSubs(): { endpoint: string; sub: string; user_key: string; auth_hash: string }[] { return this.all('SELECT * FROM push_subs ORDER BY rowid'); }
+
+  recordUpload(path: string, userKey: string): void { this.run('INSERT OR IGNORE INTO uploads(path,user_key) VALUES (?,?)', path, userKey); }
+  uploadOwner(path: string): string | null { return this.get<{ user_key: string }>('SELECT user_key FROM uploads WHERE path=?', path)?.user_key ?? null; }
+  uploadProjects(path: string): string[] { return this.all<{ project_id: string }>('SELECT project_id FROM upload_projects WHERE path=?', path).map((p) => p.project_id); }
+  attachUpload(path: string, projectId: string): void { this.run('INSERT OR IGNORE INTO upload_projects(path,project_id) VALUES (?,?)', path, projectId); }
 
   createApproval(fromConv: string, toConv: string, prompt: string, onBehalf = ''): number {
     return Number(this.run('INSERT INTO approvals (from_conv,to_conv,prompt,on_behalf) VALUES (?,?,?,?)', fromConv, toConv, prompt, onBehalf).lastInsertRowid);

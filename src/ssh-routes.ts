@@ -6,7 +6,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Dispatcher } from './dispatcher.js';
 import {
-  clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, runCommand, saveHosts, saveKeys,
+  clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, recoverSshApprovals, runCommand, saveHosts, saveKeys,
   SSH_AGENT_MODES, type SshApproval, type SshHost, type SshKey, targetOf, testHost, updateSshApproval,
 } from './ssh-hosts.js';
 import { keyProblem } from './ssh-tunnel.js';
@@ -66,6 +66,7 @@ const PANEL_TIMEOUT_MAX_MS = 600_000;
 
 export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: Dispatcher }): void {
   const { store } = d;
+  recoverSshApprovals(store);
   const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
     if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
   };
@@ -204,7 +205,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   // Commands agents asked for on 'approve' hosts. Admins see those of hosts they may open.
   const visible = (user: AuthUser, a: SshApproval) => !!find(user, a.host);
   app.get<{ Querystring: { status?: string } }>('/api/ssh/approvals', { onRequest: requireAdmin }, (req) =>
-    readSshApprovals(store).filter((a) => a.status === (req.query.status || 'pending') && visible(req.user!, a)).reverse());
+    readSshApprovals(store).filter((a) => (req.query.status ? a.status === req.query.status : ['pending', 'executing', 'unknown'].includes(a.status)) && visible(req.user!, a)).reverse());
 
   /** Tells the chat the agent asked from what became of its command, so it can go on. */
   const tellChat = (a: SshApproval, text: string) => {
@@ -244,6 +245,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const h = find(req.user!, a.host);
     if (!h || h.agent === 'off') return reply.code(409).send({ error: 'this host is no longer open to agents; reject it instead' });
     if (a.target && a.target !== targetOf(h)) return reply.code(409).send({ error: 'this host now reaches another server than it was asked for; reject it instead' });
+    done({ status: 'executing' }); // persisted before dispatching the remote command
     running.add(a.id);
     const t0 = Date.now();
     const who = `${a.who || 'an agent'} (approved by ${req.user!.name})`;
