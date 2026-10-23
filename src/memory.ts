@@ -100,22 +100,17 @@ export function memoryGuide(picked: PickedFor, tools: boolean, auto = false): st
   };
   const parts: string[] = [];
   if (user?.shown.length) {
-    parts.push(`About the person who sent this request: preferences they gave in earlier chats (in any project). Follow
-them unless they say otherwise now.
+    parts.push(`About the person: preferences from their earlier chats across projects. Follow them unless they say otherwise now.
 ${user.shown.map(line).join('\n')}${more(user)}`);
   }
   if (project.shown.length) {
-    parts.push(`Project memory: facts kept from earlier chats in this project, those that match this request first, then the
-newest. They may be out of date: what the person says now and what the code shows win over them; say so when you
-notice one is wrong.
+    parts.push(`Project memory: relevant facts first, then newest. These may be outdated; current user instructions and code take precedence. Point out wrong facts.
 ${project.shown.map(line).join('\n')}${more(project)}`);
   }
   if (tools) {
-    parts.push(`To keep something on purpose, use the dalang MCP tool memory_save: a fact about this project (a decision, a
-convention), or with scope "mine" a preference the person gave about how to work with them in any project. Fix or
-drop one that is wrong or out of date with memory_update or memory_forget (by its [id]); memory_search finds others
-(in Claude Code they may need loading first: search your tools for "mcp__dalang").${auto ? `
-Facts from each finished turn are also kept on their own, so do not save everything: only what a later chat must not miss.` : ''}
+    parts.push(`Dalang MCP memory tools (discover with "mcp__dalang"): memory_search finds more; memory_save keeps project facts
+(decisions/conventions), or scope "mine" for this person's cross-project preferences. Correct/remove facts by [id]
+with memory_update/memory_forget.${auto ? '\nFinished turns are saved automatically; save explicitly only facts a later chat must not miss.' : ''}
 Never save secrets.`);
   }
   return parts.join('\n\n');

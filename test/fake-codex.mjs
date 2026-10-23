@@ -75,6 +75,6 @@ process.stdin.on('end', async () => {
   });
   out({
     type: 'turn.completed',
-    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
+    usage: process.env.FAKE_USAGE ? JSON.parse(process.env.FAKE_USAGE) : { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
   });
 });

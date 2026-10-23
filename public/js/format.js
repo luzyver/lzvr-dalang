@@ -33,6 +33,14 @@ export function duration(ms) {
 /** Time until an epoch-seconds or ms moment, e.g. "in 3h 12m". */
 export const until = (ms) => (ms ? duration(Math.max(0, ms - Date.now())).replace(/\.\ds$/, 's') : '');
 
-export const tokens = (n) => (n == null ? '?' : n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(n));
+export const tokens = (n) => (n == null ? '?' : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(n));
+
+export const usageText = (u) => `${tokens(u.input_tokens)} in${u.cached_input_tokens > 0 ? ` (${tokens(u.cached_input_tokens)} cached)` : ''} · ${tokens(u.output_tokens)} out`;
+
+/** Exact counts on hover; cached input is a subset of input, not an extra charge added to it. */
+export const usageTitle = (u) => [`Input: ${u.input_tokens.toLocaleString()} tokens`,
+  ...(u.cached_input_tokens == null ? [] : [`Cached input (included): ${u.cached_input_tokens.toLocaleString()} tokens`]),
+  ...(u.cache_write_input_tokens == null ? [] : [`Cache write (included): ${u.cache_write_input_tokens.toLocaleString()} tokens`]),
+  `Output: ${u.output_tokens.toLocaleString()} tokens`].join('\n');
 
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;

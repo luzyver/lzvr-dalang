@@ -6,6 +6,41 @@ import { FAKE, turnsDone, until } from './helpers.js';
 import { setupDispatcher } from './setup.js';
 
 describe('Dispatcher', () => {
+  it('persists changes to the effective agent/model with the turn that starts using them', async () => {
+    const { store, dispatcher, conv, dir } = setupDispatcher();
+    store.setDefaultModel('gpt-small');
+    const run = async (worker: Dispatcher, n: number) => {
+      store.enqueue(conv.id, `question ${n}`, []);
+      worker.kick(conv.id);
+      await until(() => turnsDone(store, conv.id, n));
+    };
+    await run(dispatcher, 1);
+    store.setModel(conv.id, 'gpt-big');
+    await run(dispatcher, 2);
+    await run(dispatcher, 3); // the same selection is not another change
+    store.setModel(conv.id, '');
+    store.setDefaultModel('gpt-new-default');
+    // A fresh dispatcher still compares against the selection stored in history.
+    const restarted = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE });
+    await run(restarted, 4);
+    store.setBackend(conv.id, 'claude');
+    store.setDefaultModel('sonnet', 'claude');
+    await run(restarted, 5); // even an unavailable backend records the selection of its attempted turn
+
+    const selections = store.eventsAfter(conv.id, 0).filter((e) => e.type === 'turn.selection').map((e) => JSON.parse(e.payload));
+    expect(selections).toEqual([
+      { type: 'turn.selection', current: { backend: 'codex', model: 'gpt-small' } },
+      { type: 'turn.selection', current: { backend: 'codex', model: 'gpt-big' }, previous: { backend: 'codex', model: 'gpt-small' } },
+      { type: 'turn.selection', current: { backend: 'codex', model: 'gpt-big' } },
+      { type: 'turn.selection', current: { backend: 'codex', model: 'gpt-new-default' }, previous: { backend: 'codex', model: 'gpt-big' } },
+      { type: 'turn.selection', current: { backend: 'claude', model: 'sonnet' }, previous: { backend: 'codex', model: 'gpt-new-default' } },
+    ]);
+    const latest = store.historyPage(conv.id, { turns: 1 }).events;
+    expect(latest[0]?.type).toBe('turn.selection');
+    expect(JSON.parse(latest[0]!.payload).previous).toEqual({ backend: 'codex', model: 'gpt-new-default' });
+    expect(latest[1]?.type).toBe('user.prompt');
+  });
+
   it('runs a queued prompt and records thread, usage and events', async () => {
     const { store, dispatcher, conv } = setupDispatcher();
     store.enqueue(conv.id, 'hello', []);
@@ -137,6 +172,50 @@ describe('Dispatcher', () => {
     expect(msgs[0]!.item.text).toMatch(/^Continue where you left off/);
     expect(msgs[0]!.item.text).toContain('deploy the thing');
     expect(msgs[0]!.item.text).toMatch(/do not repeat/i);
+  });
+
+  it('after a move to another CLI, starts a new session told the chat so far', async () => {
+    const { store, dispatcher, conv } = setupDispatcher();
+    store.enqueue(conv.id, 'first question', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const before = store.getConversation(conv.id)!.thread_id;
+    store.setModel(conv.id, 'gpt-5-codex');
+    store.setBackend(conv.id, 'claude');
+    expect(store.getConversation(conv.id)).toMatchObject({ backend: 'claude', thread_id: null, model: '', effort: '' });
+    store.setBackend(conv.id, 'codex'); // back again: still a new session (the fake only plays Codex)
+    store.enqueue(conv.id, 'second question', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 2));
+    const msgs = store.eventsAfter(conv.id, 0).map((e) => JSON.parse(e.payload) as Record<string, any>)
+      .filter((e) => e.type === 'item.completed' && e.item.type === 'agent_message').map((e) => e.item.text as string);
+    expect(msgs[0]).toBe('first question'); // a chat's first turn gets no history
+    expect(msgs[1]).toContain('<earlier_turns>');
+    expect(msgs[1]).toContain('Asked:\nfirst question\n\nAnswered:\nfirst question');
+    expect(msgs[1]).toMatch(/New request:\nsecond question$/);
+    expect(store.getConversation(conv.id)!.thread_id).not.toBe(before);
+  });
+
+  it('uses compact recoverable history only when starting a new session with MCP available', async () => {
+    const { store, conv, dispatcher: original } = setupDispatcher();
+    const dispatcher = new Dispatcher(store, { homes: original.accounts.homes, command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
+    const run = async (prompt: string, count: number) => {
+      store.enqueue(conv.id, prompt, []);
+      dispatcher.kick(conv.id);
+      await until(() => turnsDone(store, conv.id, count));
+    };
+    await run('first task', 1);
+    store.setBackend(conv.id, 'claude');
+    store.setBackend(conv.id, 'codex');
+    await run('continue task', 2);
+    await run('ordinary follow-up', 3);
+    const answers = store.eventsAfter(conv.id, 0).map((e) => JSON.parse(e.payload))
+      .filter((e) => e.item?.type === 'agent_message').map((e) => e.item.text);
+    expect(answers[1]).toContain('Asked:\nfirst task\n\nAnswered:\nfirst task');
+    expect(answers[1]).toContain('messages_only=true');
+    expect(answers[1]).toContain(`conversation_id="${conv.id}"`);
+    expect(answers[1]).toContain(`before_turn=${store.listTurns(conv.id)[1]!.id}`);
+    expect(answers[2]).toBe('ordinary follow-up'); // resumed sessions already carry their context
   });
 
   it('re-sends the original prompt unchanged when the limit hit before any work happened', async () => {

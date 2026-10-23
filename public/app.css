@@ -371,6 +371,8 @@ pre.card-text { margin: 0; font-size: 12px; color: var(--text); }
 .live .dim { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* composer */
+.chat-usage { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 8px; width: 100%; max-width: 828px; margin: 0 auto; padding: 6px var(--s5) 8px; color: var(--text-faint); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.chat-usage > span:first-child { color: var(--text-dim); }
 .composer-wrap { flex: none; width: 100%; max-width: 828px; margin: 0 auto; padding: 0 var(--s5) max(var(--s4), env(safe-area-inset-bottom)); }
 .queue, .attachments { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 0 4px 8px; }
 .attachments { padding: 10px 12px 0; }
@@ -391,14 +393,24 @@ pre.card-text { margin: 0; font-size: 12px; color: var(--text); }
 .mention-id { font-family: var(--mono); font-size: 12.5px; flex: none; }
 .mention-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: var(--fs-xs); }
 .mention-empty { padding: 6px 10px 8px; font-size: var(--fs-sm); color: var(--text-faint); }
-.composer-bar { display: flex; align-items: center; gap: 2px; padding: 4px 8px 8px; min-width: 0; }
-.select-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 28px; max-width: 200px; padding: 0 8px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-dim); cursor: pointer; min-width: 0; }
+.composer-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px 8px 8px; min-width: 0; }
+.select-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 28px; max-width: 200px; padding: 0 8px; border: 0; background: none; border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-dim); cursor: pointer; min-width: 0; }
 .select-chip:hover { background: var(--hover); color: var(--text); }
 .select-chip > span:not(.i) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-chip > .i { width: 14px; height: 14px; }
 .select-chip > .i.tiny { width: 11px; height: 11px; }
-.select-chip select { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; min-height: 0; padding: 0; cursor: pointer; }
+.select-chip.open { background: var(--accent-soft); color: var(--accent-text); }
+.select-chip.open > .i.tiny { rotate: 180deg; }
+.chip-picker { display: flex; min-width: 0; }
+.chip-picker-menu { min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+.chip-picker-menu .menu-item { min-height: 38px; padding: 7px 10px; flex-shrink: 0; }
+.chip-picker-menu .menu-item.selected { color: var(--accent-text); background: var(--accent-soft); }
+.chip-picker-menu .menu-item.selected .i { color: var(--accent-text); }
+.chip-picker-menu .menu-item:focus-visible { outline-offset: -2px; background: var(--hover); }
+.picker-option-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.picker-default { font-size: 10px; color: var(--text-dim); background: var(--surface-3); border-radius: 4px; padding: 1px 5px; }
 .select-chip.static { cursor: default; } .select-chip.static:hover { background: none; color: var(--text-dim); }
+.select-chip:disabled { cursor: not-allowed; } .select-chip:disabled:hover { background: none; color: var(--text-dim); }
 .stop .i { width: 11px; height: 11px; }
 .send { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-fg); margin-left: 6px; flex: none; transition: background .12s, opacity .12s; }
 .send:hover:not(:disabled) { background: var(--accent-hover); }

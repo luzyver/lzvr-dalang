@@ -99,8 +99,11 @@ export class ClaudeEvents {
           const message = String(ev.result || ev.terminal_reason || ev.subtype || 'Claude Code failed');
           return [{ type: 'turn.failed', error: { message }, ...(this.limit && { limit: this.limit }) }];
         }
-        const u = (ev.usage ?? {}) as { input_tokens?: number; output_tokens?: number };
-        return [{ type: 'turn.completed', usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens } }];
+        const u = (ev.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+        return [{ type: 'turn.completed', usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens,
+          ...(u.cache_read_input_tokens !== undefined && { cache_read_input_tokens: u.cache_read_input_tokens }),
+          ...(u.cache_creation_input_tokens !== undefined && { cache_creation_input_tokens: u.cache_creation_input_tokens }),
+        } }];
       }
       case 'rate_limit_event': return this.limits(ev);
       default: return []; // stream_event, ...

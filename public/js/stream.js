@@ -123,6 +123,19 @@ export class ThreadModel {
     const d = e.data || {};
     const at = ms(e.timestamp);
     switch (e.type) {
+      case 'turn.selection': {
+        if (!d.previous || !d.current) break;
+        const label = (backend) => backend === 'claude' ? 'Claude Code' : 'Codex';
+        const model = (selection) => selection.model || `${label(selection.backend)} default`;
+        const changes = [];
+        if (d.previous.backend !== d.current.backend) changes.push(`Agent changed: ${label(d.previous.backend)} → ${label(d.current.backend)}`);
+        if (d.previous.model !== d.current.model) changes.push(`Model changed: ${model(d.previous)} → ${model(d.current)}`);
+        if (changes.length) {
+          this.#closeSteps();
+          this.#note(changes.join(' · '), 'dim', e.id);
+        }
+        break;
+      }
       case 'user.prompt':
         this.#closeSteps();
         this.#turnAgent = null;
@@ -165,7 +178,7 @@ export class ThreadModel {
         break;
       }
       case 'turn.completed':
-        if (this.#turnAgent) { this.#turnAgent.usage = d.usage || {}; this.#turnAgent.v++; }
+        if (this.#turnAgent) { this.#turnAgent.usage = 'turn_usage' in d ? d.turn_usage : d.usage || null; this.#turnAgent.v++; }
         else this.#note('Turn finished without an answer', 'dim', e.id);
         this.#endTurn();
         break;

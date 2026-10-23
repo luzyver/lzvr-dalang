@@ -1,5 +1,5 @@
 // The composer: prompt box with its draft, attachments, the queue, model and effort, Stop and Send.
-import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
+import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { DRIVERS, EngineIcon, Icon } from './ui.js';
@@ -7,24 +7,24 @@ import { guarded, toast } from './store.js';
 import { chat, refreshQueue } from './chat-view.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const BACKEND_OPTIONS = [['claude', 'Claude Code'], ['codex', 'Codex']];
 
-/** Model and effort for one chat: '' follows the global default, shown as the first option. */
-function useModelChoices(id) {
+/** Model and effort for one chat on its agent CLI (`backend`): '' follows the global default, shown as the first option. */
+function useModelChoices(id, backend) {
   const [state, setState] = useState({ list: [], globalModel: '', globalEffort: '', backend: 'Codex' });
   useEffect(() => {
+    if (!backend) return undefined;
     let live = true;
-    api(`/api/conversations/${id}`).then((c) => {
-      const q = c.backend === 'claude' ? '?backend=claude' : '';
-      return Promise.all([
-        api(`/api/models${q}`),
-        api(`/api/settings/default-model${q}`).catch(() => ({ model: '' })),
-        api(`/api/settings/default-effort${q}`).catch(() => ({ effort: '' })),
-      ]).then(([list, m, e]) => {
-        if (live) setState({ list, globalModel: m.model, globalEffort: e.effort, backend: c.backend === 'claude' ? 'Claude Code' : 'Codex' });
-      });
+    const q = backend === 'claude' ? '?backend=claude' : '';
+    Promise.all([
+      api(`/api/models${q}`),
+      api(`/api/settings/default-model${q}`).catch(() => ({ model: '' })),
+      api(`/api/settings/default-effort${q}`).catch(() => ({ effort: '' })),
+    ]).then(([list, m, e]) => {
+      if (live) setState({ list, globalModel: m.model, globalEffort: e.effort, backend: backend === 'claude' ? 'Claude Code' : 'Codex' });
     }).catch(() => {});
     return () => { live = false; };
-  }, [id]);
+  }, [id, backend]);
   return state;
 }
 
@@ -101,21 +101,76 @@ function useMentions(box, setText) {
   return { update, onKey, menu, close: () => setAt(null) };
 }
 
-function ChipSelect({ icon, title, value, options, onChange }) {
+function ChipSelect({ icon, title, value, options, onChange, disabled = false }) {
+  const [pos, setPos] = useState(null);
+  const wrap = useRef(null);
+  const trigger = useRef(null);
+  const menu = useRef(null);
   const current = options.find(([v]) => v === value) || options[0];
-  return html`<label class="select-chip" title=${title}>
-    <${Icon} name=${icon} /><span>${current?.[1]}</span><${Icon} name="chevron-down" class="tiny" />
-    <select aria-label=${title} value=${value} onChange=${(e) => onChange(e.currentTarget.value)}>
-      ${options.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
-    </select>
-  </label>`;
+  const close = (restore = false) => { setPos(null); if (restore) trigger.current?.focus(); };
+  useLayoutEffect(() => {
+    if (pos) (menu.current?.querySelector('[aria-checked="true"]') || menu.current?.querySelector('button'))?.focus();
+  }, [pos]);
+  useEffect(() => { if (disabled) setPos(null); }, [disabled]);
+  useEffect(() => {
+    if (!pos) return undefined;
+    const outside = (e) => { if (!wrap.current?.contains(e.target)) close(); };
+    const scroll = (e) => { if (!menu.current?.contains(e.target)) close(); };
+    const resize = () => close();
+    document.addEventListener('pointerdown', outside);
+    addEventListener('scroll', scroll, true);
+    addEventListener('resize', resize);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      removeEventListener('scroll', scroll, true);
+      removeEventListener('resize', resize);
+    };
+  }, [pos]);
+  const open = () => {
+    if (disabled) return;
+    const r = trigger.current.getBoundingClientRect();
+    const width = Math.min(300, innerWidth - 16);
+    // Preact 11 leaves numeric style values unitless; these lengths need explicit px.
+    setPos({ left: `${Math.max(8, Math.min(r.left, innerWidth - width - 8))}px`, width: `${width}px`,
+      maxHeight: `${Math.max(0, Math.min(360, r.top - 16))}px`,
+      bottom: `${innerHeight - r.top + 6}px` });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); return; }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const items = [...menu.current.querySelectorAll('[role="menuitemradio"]')];
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+      : (i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    items[next]?.focus();
+  };
+  return html`<div class="chip-picker" ref=${wrap}
+    onBlur=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) close(); }}>
+    <button type="button" ref=${trigger} class=${cx('select-chip', pos && 'open')} title=${title}
+      aria-label=${`${title}: ${current?.[1] || ''}`} aria-haspopup="menu" aria-expanded=${!!pos} disabled=${disabled}
+      onClick=${() => pos ? close() : open()}
+      onKeyDown=${(e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(); } }}>
+      <${Icon} name=${icon} /><span>${current?.[1]}</span><${Icon} name="chevron-down" class="tiny" />
+    </button>
+    ${pos && html`<div ref=${menu} class="menu-pop chip-picker-menu" role="menu" aria-label=${title} style=${pos} onKeyDown=${onKey}>
+      <div class="menu-label">${title}</div>
+      ${options.map(([v, label]) => html`<button key=${v} type="button" role="menuitemradio" aria-checked=${v === current?.[0]}
+        tabIndex="-1" class=${cx('menu-item', v === current?.[0] && 'selected')}
+        onClick=${() => { close(true); if (v !== value) onChange(v); }}>
+        <span class="picker-option-label">${label}</span>
+        ${v === '' && html`<span class="picker-default">Default</span>`}
+        <${Icon} name="check" class=${v !== current?.[0] && 'invisible'} />
+      </button>`)}
+    </div>`}
+  </div>`;
 }
 
 export function Composer({ id, project }) {
   const conv = chat.conv.value;
   const running = conv?.status === 'running';
   const queue = chat.queue.value;
-  const { list, globalModel, globalEffort, backend } = useModelChoices(id);
+  const { list, globalModel, globalEffort, backend } = useModelChoices(id, conv?.id === id ? conv.backend : null);
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
   const [sending, setSending] = useState(false);
@@ -203,6 +258,13 @@ export function Composer({ id, project }) {
     await api(`/api/conversations/${id}/model`, { method: 'PUT', body: { model: value } });
     chat.conv.value = { ...chat.conv.value, model: value };
   });
+  // Another CLI: a new session there, told the chat so far; model and effort go back to its defaults.
+  const setBackend = guarded(async (value) => {
+    if (value === conv?.backend) return;
+    await api(`/api/conversations/${id}/backend`, { method: 'PUT', body: { backend: value } });
+    chat.conv.value = { ...chat.conv.value, backend: value, thread_id: null, model: '', effort: '' };
+    toast(`Next turn runs on ${value === 'claude' ? 'Claude Code' : 'Codex'}, in a new session told this chat so far`);
+  });
   const setEffort = guarded(async (value) => {
     await api(`/api/conversations/${id}/effort`, { method: 'PUT', body: { effort: value } });
     chat.conv.value = { ...chat.conv.value, effort: value };
@@ -231,8 +293,10 @@ export function Composer({ id, project }) {
       <div class="composer-bar">
         <button class="icon-btn" aria-label="Attach files" title="Attach files" onClick=${() => fileInput.current.click()}><${Icon} name="paperclip" /></button>
         <input ref=${fileInput} type="file" multiple hidden onChange=${(e) => { setFiles([...files, ...e.currentTarget.files]); e.currentTarget.value = ''; }} />
-        <${ChipSelect} icon="cpu" title="Model" value=${currentModel === globalModel ? '' : currentModel} options=${modelOptions} onChange=${setModel} />
-        <${ChipSelect} icon="brain" title="Reasoning effort" value=${effortValue} options=${effortOptions} onChange=${setEffort} />
+        <${ChipSelect} key=${`${id}-agent`} icon=${conv?.backend === 'claude' ? 'asterisk' : 'code-xml'} title=${running ? 'Agent (change it once this turn is done)' : 'Agent'}
+          value=${conv?.backend || 'codex'} options=${BACKEND_OPTIONS} disabled=${running} onChange=${setBackend} />
+        <${ChipSelect} key=${`${id}-${conv?.backend}-model`} icon="cpu" title="Model" value=${currentModel === globalModel ? '' : currentModel} options=${modelOptions} onChange=${setModel} />
+        <${ChipSelect} key=${`${id}-${conv?.backend}-effort`} icon="brain" title="Reasoning effort" value=${effortValue} options=${effortOptions} onChange=${setEffort} />
         ${project && html`<span class="select-chip static" title="Sandbox of this project"><${Icon} name="shield-check" /><span>${project.sandbox}</span></span>`}
         <div class="spacer"></div>
         ${running && html`<button class="btn sm stop" onClick=${stop} title="Stop the running turn"><${Icon} name="square" />Stop</button>`}

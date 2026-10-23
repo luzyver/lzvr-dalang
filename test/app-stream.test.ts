@@ -102,6 +102,64 @@ describe('SSE', () => {
     expect(replayed).not.toContain('event: thread.started');
   });
 
+  it('returns one-turn counts for paged history and SSE, and a chat-wide total across agents', async () => {
+    const t = setupApp();
+    close = () => t.app.close();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const base = `http://127.0.0.1:${(t.app.server.address() as { port: number }).port}`;
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const add = (prompt: string, session: string, usage: Record<string, number>) => {
+      const turn = t.store.startTurn(conv.id, prompt);
+      t.store.addEvent(turn, 'user.prompt', JSON.stringify({ type: 'user.prompt', text: prompt }));
+      t.store.addEvent(turn, 'thread.started', JSON.stringify({ type: 'thread.started', thread_id: session }));
+      const answer = t.store.addEvent(turn, 'item.completed', JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: prompt } }));
+      const completed = t.store.addEvent(turn, 'turn.completed', JSON.stringify({ type: 'turn.completed', usage }));
+      t.store.endTurn(turn, 'completed', usage);
+      return { turn, answer, completed };
+    };
+    add('first', 'codex-a', { input_tokens: 7684476, cached_input_tokens: 7366528, output_tokens: 36917 });
+    const second = add('second', 'codex-a', { input_tokens: 7871037, cached_input_tokens: 7526784, output_tokens: 37019 });
+    const third = add('claude', 'claude-b', { input_tokens: 8, output_tokens: 2 });
+    add('codex again', 'codex-c', { input_tokens: 100, cached_input_tokens: 20, output_tokens: 5 });
+    const expected = { input_tokens: 186561, cached_input_tokens: 160256, output_tokens: 102 };
+    const page = (await t.app.inject({ url: `/api/conversations/${conv.id}/history?turns=1&before=${third.turn}`, headers: AUTH })).json();
+    expect(page.more).toBe(true);
+    expect(page.events.find((e: { id: number }) => e.id === second.completed).data.turn_usage).toEqual(expected);
+    const details = (await t.app.inject({ url: `/api/conversations/${conv.id}`, headers: AUTH })).json();
+    expect(details.token_usage).toEqual({ input_tokens: 7871145, output_tokens: 37026, cached_input_tokens: 7526804 });
+    const raw = t.store.eventOf(conv.id, second.completed)!;
+    expect(JSON.parse(raw.payload).usage.input_tokens).toBe(7871037); // no database rewrite
+    const streamed = await readUntil(await fetch(`${base}/api/conversations/${conv.id}/events?compact=1&after=${second.answer}`, { headers: AUTH }), (s) => s.includes('event: turn.completed'));
+    const payload = JSON.parse(streamed.split('\n').find((line) => line.startsWith('data:'))!.slice(5));
+    expect(payload.turn_usage).toEqual(expected);
+  });
+
+  it('updates turn counts and chat totals on a new live completion, including after reconnect', async () => {
+    const env = { FAKE_USAGE: JSON.stringify({ input_tokens: 100, cached_input_tokens: 80, output_tokens: 10 }) };
+    const t = setupApp(env);
+    close = () => t.app.close();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const base = `http://127.0.0.1:${(t.app.server.address() as { port: number }).port}`;
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    t.store.enqueue(conv.id, 'first', []);
+    t.dispatcher.kick(conv.id);
+    await until(() => turnsDone(t.store, conv.id, 1));
+    const after = t.store.eventsAfter(conv.id, 0).at(-1)!.id;
+    const live = await fetch(`${base}/api/conversations/${conv.id}/events?compact=1&after=${after}`, { headers: AUTH });
+    env.FAKE_USAGE = JSON.stringify({ input_tokens: 150, cached_input_tokens: 120, output_tokens: 13 });
+    t.store.enqueue(conv.id, 'second', []);
+    t.dispatcher.kick(conv.id);
+    const text = await readUntil(live, (s) => s.includes('event: turn.completed'));
+    const completed = text.split('\n\n').find((frame) => frame.includes('event: turn.completed'))!;
+    expect(JSON.parse(completed.split('\n').find((line) => line.startsWith('data:'))!.slice(5)).turn_usage)
+      .toEqual({ input_tokens: 50, output_tokens: 3, cached_input_tokens: 40 });
+    await until(() => turnsDone(t.store, conv.id, 2));
+    const get = async () => (await t.app.inject({ url: `/api/conversations/${conv.id}`, headers: AUTH })).json();
+    expect((await get()).token_usage).toEqual({ input_tokens: 150, output_tokens: 13, cached_input_tokens: 120 });
+    await readUntil(await fetch(`${base}/api/conversations/${conv.id}/events?compact=1&after=${after}`, { headers: AUTH }), (s) => s.includes('event: turn.completed'));
+    expect((await get()).token_usage).toEqual({ input_tokens: 150, output_tokens: 13, cached_input_tokens: 120 });
+  });
+
   it('cannot be split into extra frames by a hostile event type', async () => {
     const t = setupApp();
     close = () => t.app.close();

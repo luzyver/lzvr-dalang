@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
+import { withHistory } from './chat-context.js';
 import { loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
@@ -17,6 +18,8 @@ import { RAW, type CodexEvent } from './runner.js';
 import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
 import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
+
+export { withHistory } from './chat-context.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
@@ -413,6 +416,12 @@ export class Dispatcher {
 
     const turnId = this.store.startTurn(convId, item.prompt);
     this.store.setStatus(convId, 'running');
+    const model = conv.model || this.store.getDefaultModel(conv.backend);
+    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
+    const current = { backend: conv.backend, model };
+    const previous = this.store.lastTurnSelection(convId);
+    const changed = previous && (previous.backend !== current.backend || previous.model !== current.model);
+    this.emit(convId, turnId, { type: 'turn.selection', current, ...(changed && { previous }) });
     this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
       ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
     if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
@@ -438,8 +447,6 @@ export class Dispatcher {
       : [];
     const servers = this.mcpServersFor?.(item.author);
     if (servers && !claude) extraArgs.push(...servers.codexArgs);
-    const model = conv.model || this.store.getDefaultModel(conv.backend);
-    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
     if (!claude) {
       if (model) extraArgs.push('-m', model);
       if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
@@ -504,10 +511,14 @@ export class Dispatcher {
         const attemptStart = Date.now() - 1000;
         const usedDiffs = new Set<string>();
         // After work has already happened, resending the bare request makes the agent redo it (commits, deploys...).
-        const attemptPrompt = workDone
+        const asked = workDone
           ? `Continue where you left off. An earlier attempt of this request was interrupted when ${cutBy}. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
+        // No session yet in a chat that already has turns (it moved to this CLI, or its first ones never got one): the
+        // new session is told the chat so far, else it starts knowing nothing of it.
+        const attemptPrompt = threadId ? asked : withHistory(this.store.priorTurns(convId, turnId), asked,
+          mcpToken ? { conversationId: convId, beforeTurn: turnId } : undefined);
         const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };
         const events = claude

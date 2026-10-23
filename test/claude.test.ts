@@ -24,6 +24,11 @@ const run = (events: Record<string, unknown>[]) => {
 const assistant = (...content: unknown[]) => ({ type: 'assistant', message: { model: 'claude-x', content } });
 
 describe('ClaudeEvents', () => {
+  it('preserves cache usage so the panel can include it in reported input', () => {
+    const events = run([{ type: 'result', is_error: false, usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 } }]);
+    expect(events[0]).toMatchObject({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 } });
+  });
+
   it('maps a command turn to Codex-shaped events', () => {
     const ev = run([
       { type: 'system', subtype: 'init', session_id: 's1' },

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Sealer } from './secrets.js';
 import { AGENT_GIT_DEFAULTS, type AgentGitPolicy } from './agent-git.js';
+import { summarizeUsage, type ChatUsage } from './token-usage.js';
 import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
@@ -66,6 +67,7 @@ export interface UserSummary { id: string; name: string; role: Role; email: stri
 
 /** `backend` is the agent CLI every chat in the project runs on; `access` who may open it (see canAccess). */
 export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend; access: ProjectAccess }
+export interface TurnSelection { backend: Backend; model: string }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
   /** For display: the title the agent gave the chat, or else the start of its first prompt (null before any). */
@@ -412,6 +414,13 @@ export class Store {
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
+  /**
+   * Move a chat to another agent CLI. Its session (thread) belongs to the old one and its model/effort names mean nothing
+   * to the new one, so all three are cleared: the next turn starts a new session, told the chat so far (see priorTurns).
+   */
+  setBackend(id: string, backend: Backend): void {
+    this.run("UPDATE conversations SET backend=?, thread_id=NULL, model='', effort='' WHERE id=? AND backend<>?", backend, id, backend);
+  }
   enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = ''): number {
     const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv) VALUES (?,?,?,?,?,?)',
       convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv);
@@ -444,11 +453,33 @@ export class Store {
     this.run('UPDATE turns SET status=?, usage=?, ended_at=CURRENT_TIMESTAMP WHERE id=?', status, usage == null ? null : JSON.stringify(usage), turnId);
   }
   listTurns(convId: string): Turn[] { return this.all('SELECT * FROM turns WHERE conversation_id=? ORDER BY id', convId); }
+  /** A chat's turns before turn `before`, oldest first: what was asked and the agent's last answer in it ('' when none). */
+  priorTurns(convId: string, before: number): { id: number; prompt: string; answer: string }[] {
+    return this.all<{ id: number; prompt: string; answer: string | null }>(
+      `SELECT t.id, t.prompt, (SELECT json_extract(e.payload, '$.item.text') FROM events e
+          WHERE e.turn_id = t.id AND e.type = 'item.completed' AND e.payload LIKE '%"agent_message"%' AND json_valid(e.payload)
+            AND json_extract(e.payload, '$.item.type') = 'agent_message' ORDER BY e.id DESC LIMIT 1) AS answer
+       FROM turns t WHERE t.conversation_id=? AND t.id<? ORDER BY t.id`, convId, before)
+      .map((r) => ({ id: r.id, prompt: r.prompt, answer: typeof r.answer === 'string' ? r.answer : '' }));
+  }
 
   addEvent(turnId: number, type: string, payload: string): number {
     return Number(this.run('INSERT INTO events (turn_id,type,payload,created_at) VALUES (?,?,?,?)', turnId, type, payload, new Date().toISOString()).lastInsertRowid);
   }
+  /** The selection used by the previous turn, including the resolved panel default model. */
+  lastTurnSelection(convId: string): TurnSelection | null {
+    const row = this.get<{ payload: string }>(
+      `SELECT e.payload FROM events e JOIN turns t ON t.id=e.turn_id
+       WHERE t.conversation_id=? AND e.type='turn.selection' ORDER BY e.id DESC LIMIT 1`, convId);
+    return row ? (JSON.parse(row.payload) as { current: TurnSelection }).current : null;
+  }
   eventCreatedAt(id: number): string | null { return this.get<{ created_at: string }>('SELECT created_at FROM events WHERE id=?', id)?.created_at ?? null; }
+  /** Only the small accounting events, so totals never require loading the chat's tool output or history pages. */
+  tokenUsage(convId: string): ChatUsage {
+    return summarizeUsage(this.all<{ id: number; type: string; payload: string }>(
+      `SELECT e.id,e.type,e.payload FROM events e JOIN turns t ON t.id=e.turn_id
+       WHERE t.conversation_id=? AND e.type IN ('thread.started','turn.completed') ORDER BY e.id`, convId));
+  }
   /** `limit`: at most that many (all when not given). */
   eventsAfter(convId: string, afterId: number, limit?: number): StoredEvent[] {
     return this.all(

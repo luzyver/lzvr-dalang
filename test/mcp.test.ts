@@ -115,6 +115,36 @@ describe('MCP gateway', () => {
     expect(oddCut.events[0].data.item).toEqual({ id: 'w', type: 'web_search', cut: true }); // an item of another kind says it was cut too
   });
 
+  it('reads full messages without tool output and keeps both paging modes usable', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { a } = await twoConvs(c);
+    const turns: number[] = [];
+    let lastId = 0;
+    for (let i = 0; i < 3; i++) {
+      const turn = t.store.startTurn(a.id, `p${i}`);
+      turns.push(turn);
+      t.store.addEvent(turn, 'user.prompt', JSON.stringify({ type: 'user.prompt', text: `p${i}` }));
+      for (let j = 0; j < 5; j++) t.store.addEvent(turn, 'item.completed', JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', aggregated_output: 'large output '.repeat(1000) } }));
+      t.store.addEvent(turn, 'item.completed', JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `answer${i}${'x'.repeat(5000)}` } }));
+      lastId = t.store.addEvent(turn, 'turn.completed', '{"type":"turn.completed"}');
+    }
+    const first = (await call(c, 'get_events', { conversation_id: a.id, messages_only: true, limit: 2 })).json;
+    expect(first.events).toHaveLength(2);
+    expect(first.events[0].data.text).toBe('p0');
+    expect(first.events[1].data.item.text).toBe(`answer0${'x'.repeat(5000)}`);
+    expect(first.events[1].id).toBe(first.next_after_id);
+    const rest = (await call(c, 'get_events', { conversation_id: a.id, messages_only: true, after_id: first.next_after_id, limit: 10 })).json;
+    expect(rest.events.map((e: { type: string }) => e.type)).toEqual(['user.prompt', 'item.completed', 'user.prompt', 'item.completed']);
+    expect(rest.next_after_id).toBe(lastId); // ignored events still advance the cursor
+    const one = (await call(c, 'get_events', { conversation_id: a.id, messages_only: true, last_turns: 1, before_turn: turns[1]! + 1 })).json;
+    expect(one.events.map((e: { data: { text?: string; item?: { text: string } } }) => e.data.text || e.data.item?.text)).toEqual(['p1', `answer1${'x'.repeat(5000)}`]);
+    expect(one.earlier_before_turn).toBe(turns[1]);
+    expect(one.more_earlier).toBe(true);
+    expect(JSON.stringify(one)).not.toContain('large output');
+    expect((await call(c, 'get_events', { conversation_id: a.id, messages_only: true, after_id: lastId })).json.events).toEqual([]);
+  });
+
   it('reports tool errors as results, not crashes', async () => {
     const t = await boot();
     const c = await t.connect();

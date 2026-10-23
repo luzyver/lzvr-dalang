@@ -37,7 +37,7 @@ const grantable = () => Object.keys(ACCESS).filter((k) => isOwner.value || k !==
 const repoName = (url) => url.trim().replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() || '';
 
 function AddProject() {
-  const [form, setForm] = useState({ name: '', path: '', backend: 'codex', sandbox: 'workspace-write', access: 'all', clone: '' });
+  const [form, setForm] = useState({ name: '', path: '', sandbox: 'workspace-write', access: 'all', clone: '' });
   const [source, setSource] = useState('folder'); // or 'clone': the folder is made by cloning a repository
   const [error, setError] = useState('');
   const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
@@ -66,8 +66,6 @@ function AddProject() {
     <${Field} label="Folder" hint=${source === 'clone' ? 'A new folder, relative to the projects root on the server.' : 'Absolute, or relative to the projects root on the server.'}>
       <input class="mono" value=${form.path} onInput=${set('path')} placeholder=${source === 'clone' ? 'my-app' : '/srv/code/my-app'} /><//>
     <div class="row wrap">
-      <${Field} label="Agent (every chat in this project)"><select value=${form.backend} onChange=${set('backend')}>
-        <option value="codex">Codex</option><option value="claude">Claude Code</option></select><//>
       <${Field} label="Sandbox"><select value=${form.sandbox} onChange=${set('sandbox')}>
         ${['workspace-write', 'read-only', 'danger-full-access'].map((v) => html`<option value=${v}>${v}</option>`)}</select><//>
       <${Field} label="Access"><select value=${form.access} onChange=${set('access')}>
@@ -165,7 +163,6 @@ function Project({ p }) {
       <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
         <${Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} class="caret" />
         <span class="project-meta">
-          <${Tag} name=${p.backend === 'claude' ? 'asterisk' : 'code-xml'} label=${p.backend === 'claude' ? 'Claude Code' : 'Codex'} />
           <${Tag} ...${SANDBOX_TAGS[p.sandbox]} />
           ${p.access && p.access !== 'all' && html`<${Tag} name=${p.access === 'owner' ? 'user' : 'users'} label=${`Access: ${ACCESS[p.access]}`} />`}
         </span>
