@@ -44,7 +44,7 @@ function compactItem(item: Item): Item {
     case 'tool_call':
       return long(item.text) ? { ...item, text: `${item.text.slice(0, CUT)}…`, cut: true } : item;
     default:
-      return { id: item.id, type: item.type }; // the thread shows only its kind
+      return { id: item.id, type: item.type, cut: true }; // the thread shows only its kind; the rest is in the full event
   }
 }
 
