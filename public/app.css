@@ -834,8 +834,10 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
   .composer-wrap { padding: 0 var(--s2) max(var(--s2), env(safe-area-inset-bottom)); }
   .composer { box-shadow: var(--shadow-sm); }
   .composer textarea { font-size: 16px; } /* no zoom-in on iOS */
-  .select-chip.static { display: none; }
-  .select-chip { max-width: 130px; }
+  /* No room for labels: agent, model, effort and sandbox show their icon only (the menu shows the current choice). */
+  .select-chip { padding: 0; width: 32px; justify-content: center; }
+  .select-chip > span:not(.i), .select-chip > .i.tiny { display: none; }
+  .select-chip > .i { width: 16px; height: 16px; }
   .inspector { top: auto; left: 0; width: 100vw; height: 88dvh; border-radius: var(--r-xl) var(--r-xl) 0 0; border: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
   .app.no-insp .inspector { translate: 0 100%; }
   .settings { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
