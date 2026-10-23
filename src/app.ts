@@ -19,6 +19,7 @@ import { gitAuthRoutes } from './git-auth-routes.js';
 import { databaseRoutes } from './database-routes.js';
 import { sshRoutes } from './ssh-routes.js';
 import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
+import { compactPayload } from './event-view.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
 import { authRoutes, sessionHash } from './auth.js';
@@ -677,16 +678,45 @@ export function buildApp(
       .send(createReadStream(real));
   });
 
-  app.get<{ Params: { id: string }; Querystring: { after?: string } }>('/api/conversations/:id/events', (req, reply) => {
+  // The panel opens a chat with its last turns from here, then follows /events from the last one; older turns come a
+  // page at a time. Long tool output is cut (see event-view.ts); /events/:eventId gives one event in full.
+  app.get<{ Params: { id: string }; Querystring: { turns?: string; before?: string; focus?: string } }>('/api/conversations/:id/history', (req, reply) => {
+    const id = req.params.id;
+    if (!store.getConversation(id)) return notFound(reply);
+    const num = (v: string | undefined) => (Number(v) > 0 ? Math.floor(Number(v)) : undefined);
+    const page = store.historyPage(id, { turns: Math.min(num(req.query.turns) ?? 10, 200), before: num(req.query.before), focus: num(req.query.focus) });
+    const events = [];
+    for (const e of page.events) {
+      const payload = compactPayload(e.type, e.payload);
+      if (payload === null) continue;
+      try { events.push({ id: e.id, type: e.type, data: JSON.parse(payload) as unknown, timestamp: e.created_at }); } catch { /* not JSON: the stream drops it too */ }
+    }
+    const last = page.events.length ? page.events[page.events.length - 1]!.id : 0;
+    return { events, before: page.first, more: page.more, last };
+  });
+
+  app.get<{ Params: { id: string; eventId: string } }>('/api/conversations/:id/events/:eventId', (req, reply) => {
+    const e = store.eventOf(req.params.id, Number(req.params.eventId) || 0);
+    if (!e) return notFound(reply);
+    try { return { id: e.id, type: e.type, data: JSON.parse(e.payload) as unknown, timestamp: e.created_at }; } catch { return notFound(reply); }
+  });
+
+  /** `compact=1`: as the panel's thread takes it, long tool output cut (see event-view.ts). */
+  app.get<{ Params: { id: string }; Querystring: { after?: string; compact?: string } }>('/api/conversations/:id/events', (req, reply) => {
     const id = req.params.id;
     if (!store.getConversation(id)) return notFound(reply);
     const after = Number(req.headers['last-event-id'] ?? req.query.after ?? 0) || 0;
+    const compact = req.query.compact === '1';
     reply.hijack();
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.flushHeaders(); // otherwise headers wait for the first event and an idle stream looks hung
     type Ev = { id: number; type: string; payload: string; created_at: string };
-    const write = (e: Ev) => res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${e.payload}\ntimestamp: ${e.created_at}\n\n`);
+    const write = (e: Ev) => {
+      const payload = compact ? compactPayload(e.type, e.payload) : e.payload;
+      if (payload === null) return true; // nothing written, so nothing to wait for
+      return res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${payload}\ntimestamp: ${e.created_at}\n\n`);
+    };
     // The history is replayed at the pace the reader takes it (a long chat is megabytes); live events that come
     // meanwhile wait behind it. Only after that does a full buffer mean a reader that stopped reading: it is dropped,
     // and reconnects with Last-Event-ID.

@@ -8,7 +8,7 @@ import { confirmDialog, Icon } from './ui.js';
 import {
   approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
 } from './store.js';
-import { startStream, ThreadModel } from './stream.js';
+import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
 import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
@@ -22,7 +22,37 @@ export const chat = {
   queue: signal([]),
   version: signal(0),
   model: new ThreadModel(),
+  /** The turns not loaded yet: `{ before, more, loading }`; null until the first page came. */
+  older: signal(null),
+  /** The events the model was built from, so earlier turns can be folded in ahead of them. */
+  events: [],
 };
+
+/**
+ * Fold the page of turns before the loaded ones in ahead of them (back to event `focus` when given): the model is built
+ * again from all of them. `beforeSwap` runs just before the thread changes (to keep the scroll position).
+ */
+async function loadEarlier(id, focus, beforeSwap) {
+  const o = chat.older.peek();
+  if (!o?.more || o.loading) return;
+  chat.older.value = { ...o, loading: true };
+  try {
+    const page = await historyPage(id, { before: o.before, focus });
+    if (chat.id.peek() !== id) return;
+    chat.events = [...page.events, ...chat.events];
+    const model = new ThreadModel();
+    model.apply(chat.events);
+    beforeSwap?.();
+    batch(() => {
+      chat.model = model;
+      chat.older.value = { before: page.before, more: page.more };
+      chat.version.value++;
+    });
+  } catch (e) {
+    if (chat.id.peek() === id) chat.older.value = o;
+    toast(e.message, 'err');
+  }
+}
 
 export async function refreshConv(id = chat.id.value) {
   const c = await api(`/api/conversations/${id}`);
@@ -133,6 +163,7 @@ export function ChatView({ id, focusEvent }) {
   const scroller = useRef(null);
   const stick = useRef(true); // follow new output while the user is at the bottom
   const pinned = useRef(0); // a search hit was just scrolled to: the replay after it must not scroll it away
+  const keep = useRef(null); // earlier turns go in above: where the view was, so it stays put
   const [hitShown, setHitShown] = useState(false);
 
   // Reset during render, not in an effect, so the first frame of a newly opened chat never shows the previous one.
@@ -143,6 +174,8 @@ export function ChatView({ id, focusEvent }) {
       chat.git.value = null;
       chat.queue.value = [];
       chat.model = new ThreadModel();
+      chat.older.value = null;
+      chat.events = [];
       chat.version.value++;
     });
   }
@@ -152,11 +185,14 @@ export function ChatView({ id, focusEvent }) {
     setHitShown(false);
     let frame = 0;
     let pending = [];
+    let stop = () => {};
+    let gone = false;
     // Many events arrive at once while the history replays: fold them in once per frame.
     const flush = () => {
       frame = 0;
       const events = pending;
       pending = [];
+      chat.events.push(...events);
       chat.model.apply(events);
       chat.version.value++;
       if (events.some((e) => TURN_END.has(e.type))) {
@@ -166,24 +202,50 @@ export function ChatView({ id, focusEvent }) {
       if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
       if (events.some((e) => e.type === 'conversation.title')) refreshConv(id).catch(() => {});
     };
-    const stop = startStream(id, (events) => {
+    const take = (events) => {
       pending.push(...events);
       frame ||= requestAnimationFrame(flush);
+    };
+    // The last turns first (a long chat is megabytes), then the stream on from them; earlier turns on request.
+    historyPage(id, { focus: focusEvent }).then((page) => {
+      if (gone) return;
+      chat.older.value = { before: page.before, more: page.more };
+      if (page.events.length) take(page.events);
+      stop = startStream(id, take, page.last);
+    }, () => {
+      if (gone) return;
+      chat.older.value = { before: null, more: false };
+      stop = startStream(id, take); // the whole history over the stream
     });
     refreshConv(id).catch(() => {});
     refreshQueue(id).catch(() => {});
     refreshGit(id).catch(() => {});
     return () => {
+      gone = true;
       stop();
       cancelAnimationFrame(frame);
       if (chat.id.peek() === id) chat.id.value = null; // reopening it later replays the stream into a fresh model
     };
   }, [id]);
 
+  const earlier = (focus) => loadEarlier(id, focus, () => {
+    const el = scroller.current;
+    if (el) keep.current = { height: el.scrollHeight, top: el.scrollTop };
+  });
+  // A search hit in this chat, before the turns loaded: load back to it.
+  useEffect(() => {
+    if (!focusEvent) return;
+    setHitShown(false);
+    const first = chat.events[0]?.id;
+    if (first && Number(focusEvent) < first) earlier(focusEvent);
+  }, [focusEvent]);
+
   const version = chat.version.value;
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    const kept = keep.current;
+    keep.current = null;
     if (focusEvent && !hitShown) {
       const hit = el.querySelector(`[data-event="${focusEvent}"]`);
       if (hit) {
@@ -194,12 +256,14 @@ export function ChatView({ id, focusEvent }) {
         return;
       }
     }
+    if (kept) { el.scrollTop = kept.top + el.scrollHeight - kept.height; return; }
     if (stick.current && Date.now() > pinned.current) el.scrollTop = el.scrollHeight;
   }, [version]);
 
   const onScroll = (e) => {
     const el = e.currentTarget;
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollTop < 200 && !stick.current) earlier(); // reading up to the top: the turns before come on their own
   };
 
   const model = chat.model;
@@ -210,12 +274,15 @@ export function ChatView({ id, focusEvent }) {
   const writes = dbApprovals.value.filter((a) => a.conv === id);
   const commands = sshApprovals.value.filter((a) => a.conv === id);
   const focus = route.value.focusEvent;
+  const older = chat.older.value;
 
   return html`<main class="main">
     <${ChatHead} project=${found?.project} conv=${found?.conv} />
     <div class="thread" ref=${scroller} onScroll=${onScroll}>
       <div class="thread-inner">
-        ${!model.blocks.length && !running && html`<div class="thread-empty">
+        ${older?.more && html`<button class="btn sm thread-earlier" disabled=${older.loading} onClick=${() => earlier()}>
+          ${older.loading ? html`<${Icon} name="loader-circle" spin />Loading earlier turns…` : html`<${Icon} name="arrow-up" />Load earlier turns`}</button>`}
+        ${older && !model.blocks.length && !running && html`<div class="thread-empty">
           <div class="empty-icon"><${Icon} name="message-square" /></div>
           <strong>Start the conversation</strong>
           <span class="dim">${found?.project?.name}: the agent works in ${conv?.worktree ? `its own worktree on ${conv.branch}` : 'the project folder'}.</span>

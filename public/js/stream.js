@@ -1,6 +1,6 @@
 // A chat's event stream (SSE over fetch, so the token goes in a header) and the thread model that folds the events
 // into what the panel shows: prompts, groups of tool steps, answers and notes.
-import { currentToken, handleUnauthorized } from './api.js';
+import { api, currentToken, handleUnauthorized } from './api.js';
 import { toDate } from './format.js';
 
 /** Split an SSE text buffer into complete events; returns the unfinished remainder. */
@@ -22,14 +22,17 @@ function parseSSE(buf) {
   return { events, rest };
 }
 
-/** Follow a conversation's event stream, resuming from the last id after a drop. Returns a stop function. */
-export function startStream(convId, onEvents) {
+/**
+ * Follow a conversation's event stream from after event `after`, resuming from the last id after a drop. Long tool
+ * output comes cut (see fullStep). Returns a stop function.
+ */
+export function startStream(convId, onEvents, after = 0) {
   const ac = new AbortController();
-  let last = 0;
+  let last = after;
   (async () => {
     while (!ac.signal.aborted) {
       try {
-        const res = await fetch(`/api/conversations/${convId}/events`, {
+        const res = await fetch(`/api/conversations/${convId}/events?compact=1`, {
           headers: { authorization: `Bearer ${currentToken()}`, 'last-event-id': String(last) },
           signal: ac.signal,
         });
@@ -59,17 +62,38 @@ export function startStream(convId, onEvents) {
 const ms = (ts) => toDate(ts)?.getTime() ?? Date.now();
 const HOOK_TRUST_NOTICE = '--dangerously-bypass-hook-trust is enabled.';
 
-/** One tool step from a completed item; a file change gives one step per file. */
+/**
+ * A page of a chat's history in whole turns: `{ events, before, more, last }`. Without `before`, the last turns
+ * (reaching back to event `focus`); with it, the turns before turn `before`. `last` is the event to stream on from.
+ */
+export const historyPage = (convId, { before, focus } = {}) => {
+  const q = new URLSearchParams({ turns: '10' });
+  if (before) q.set('before', before);
+  if (focus) q.set('focus', focus);
+  return api(`/api/conversations/${convId}/history?${q}`);
+};
+
+/**
+ * One tool step from a completed item; a file change gives one step per file. `cut`: the server cut its long output
+ * (see fullStep); a cut diff comes with its `stat`.
+ */
 function steps(item, id, at) {
+  const cut = !!item.cut;
   switch (item.type) {
     case 'command_execution':
-      return [{ kind: 'command', id, at, command: String(item.command || ''), output: String(item.aggregated_output || ''), exit: item.exit_code }];
+      return [{ kind: 'command', id, at, cut, command: String(item.command || ''), output: String(item.aggregated_output || ''), exit: item.exit_code }];
     case 'file_change':
-      return (item.changes || []).map((c, i) => ({ kind: 'file', id: `${id}.${i}`, at, path: String(c.path || ''), movePath: c.movePath, change: c.kind, diff: c.diff || '' }));
+      return (item.changes || []).map((c, i) => ({ kind: 'file', id: `${id}.${i}`, at, cut: !!c.stat, stat: c.stat, path: String(c.path || ''), movePath: c.movePath, change: c.kind, diff: c.diff || '' }));
     case 'tool_call': return [{ kind: 'tool', id, at, tool: item.tool || 'tool', text: item.text || '' }];
-    case 'reasoning': return item.text ? [{ kind: 'reasoning', id, at, text: String(item.text) }] : [];
+    case 'reasoning': return item.text ? [{ kind: 'reasoning', id, at, cut, text: String(item.text) }] : [];
     default: return [{ kind: 'tool', id, at, tool: item.type || 'item', text: '' }];
   }
+}
+
+/** A cut step in full, from its event (a step's id is its event's, or `event.index` for a file of a file change). */
+export async function fullStep(convId, s) {
+  const e = await api(`/api/conversations/${convId}/events/${String(s.id).split('.')[0]}`);
+  return steps(e.data?.item || {}, Number(String(s.id).split('.')[0]), s.at).find((f) => f.id === s.id) || s;
 }
 
 /**
