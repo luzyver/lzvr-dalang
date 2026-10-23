@@ -441,11 +441,12 @@ export class Store {
     return Number(this.run('INSERT INTO events (turn_id,type,payload,created_at) VALUES (?,?,?,?)', turnId, type, payload, new Date().toISOString()).lastInsertRowid);
   }
   eventCreatedAt(id: number): string | null { return this.get<{ created_at: string }>('SELECT created_at FROM events WHERE id=?', id)?.created_at ?? null; }
-  eventsAfter(convId: string, afterId: number): StoredEvent[] {
+  /** `limit`: at most that many (all when not given). */
+  eventsAfter(convId: string, afterId: number, limit?: number): StoredEvent[] {
     return this.all(
       `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
        JOIN turns t ON t.id = e.turn_id
-       WHERE t.conversation_id=? AND e.id>? ORDER BY e.id`, convId, afterId);
+       WHERE t.conversation_id=? AND e.id>? ORDER BY e.id${limit ? ' LIMIT ?' : ''}`, convId, afterId, ...(limit ? [limit] : []));
   }
   /** One event of a chat (null when it is not one of its). */
   eventOf(convId: string, id: number): StoredEvent | null {

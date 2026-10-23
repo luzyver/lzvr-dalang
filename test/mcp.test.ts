@@ -86,6 +86,35 @@ describe('MCP gateway', () => {
     expect(rest.events[0].id).toBeGreaterThan(first.next_after_id);
   });
 
+  it('cuts long tool output by default, gives it in full on request, and reads by turns', async () => {
+    const t = await boot();
+    const c = await t.connect();
+    const { a } = await twoConvs(c);
+    const out = 'o'.repeat(10_000);
+    let cmd = 0;
+    for (let i = 0; i < 3; i++) {
+      const turn = t.store.startTurn(a.id, `p${i}`);
+      t.store.addEvent(turn, 'user.prompt', JSON.stringify({ type: 'user.prompt', text: `p${i}` }));
+      for (let j = 0; j < 3; j++) t.store.addEvent(turn, 'item.updated', JSON.stringify({ type: 'item.updated', item: { aggregated_output: out } }));
+      cmd = t.store.addEvent(turn, 'item.completed', JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'ls', aggregated_output: out } }));
+    }
+    const cut = (await call(c, 'get_events', { conversation_id: a.id, limit: 2 }));
+    expect(cut.text).not.toContain(out);
+    expect(cut.json.events.map((e: { type: string }) => e.type)).toEqual(['user.prompt', 'item.completed']); // item.updated left out
+    expect(cut.json.events[1].data.item.cut).toBe(true);
+    const one = (await call(c, 'get_events', { conversation_id: a.id, after_id: cmd - 1, limit: 1, full: true })).json;
+    expect(one.events[0].data.item.aggregated_output).toBe(out);
+    const last = (await call(c, 'get_events', { conversation_id: a.id, last_turns: 2 })).json;
+    expect(last.events.filter((e: { type: string }) => e.type === 'user.prompt').map((e: { data: { text: string } }) => e.data.text)).toEqual(['p1', 'p2']);
+    expect(last.more_earlier).toBe(true);
+    const before = (await call(c, 'get_events', { conversation_id: a.id, last_turns: 2, before_turn: last.earlier_before_turn })).json;
+    expect(before.events[0].data.text).toBe('p0');
+    expect(before.more_earlier).toBe(false);
+    const odd = t.store.addEvent(t.store.startTurn(a.id, 'q'), 'item.completed', JSON.stringify({ type: 'item.completed', item: { id: 'w', type: 'web_search', query: out } }));
+    const oddCut = (await call(c, 'get_events', { conversation_id: a.id, after_id: odd - 1, limit: 1 })).json;
+    expect(oddCut.events[0].data.item).toEqual({ id: 'w', type: 'web_search', cut: true }); // an item of another kind says it was cut too
+  });
+
   it('reports tool errors as results, not crashes', async () => {
     const t = await boot();
     const c = await t.connect();
