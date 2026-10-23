@@ -161,6 +161,15 @@ describe('code memory', () => {
     t.dispatcher.kick(conv.id);
     await until(() => turnsDone(t.store, conv.id, 2));
     expect(indexes()).toBe(before + 1);
+    // A file already changed and edited again keeps its git status, but counts as a change too.
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 33;\n');
+    expect(await changed()).toBe(true);
+    // Turns starting together share one reindex, and each hears that it started.
+    let heard = 0;
+    const both = await Promise.all([t.codeMemory.refresh(p, () => heard++), t.codeMemory.refresh(p, () => heard++)]);
+    expect(both).toEqual(['ready', 'ready']);
+    expect(heard).toBe(2);
+    expect(indexes()).toBe(before + 2);
     expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
     await until(() => t.calls.some((c) => c.name === 'delete_project'));
     expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' });

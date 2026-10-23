@@ -456,7 +456,9 @@ export class Dispatcher {
         if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
       });
       const refreshed = await Promise.race([
-        this.codeMemory.refresh(project, () => this.emit(convId, turnId, { type: 'code_memory.indexing' })).catch(() => 'failed' as const),
+        // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
+        this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
+          .catch(() => 'failed' as const),
         cancelled,
       ]);
       if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });

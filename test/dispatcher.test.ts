@@ -239,6 +239,22 @@ describe('Dispatcher', () => {
     expect(store.eventsAfter(conv.id, 0).map((e) => e.type).some((t) => t.startsWith('item.') || t === 'account.selected')).toBe(false);
   });
 
+  it('puts nothing into a turn cancelled before its reindex starts', async () => {
+    const { dir, store, conv } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE });
+    let start!: () => void;
+    let asked!: () => void;
+    const askedP = new Promise<void>((r) => { asked = r; });
+    d.codeMemory = { guide: () => '', hooks: () => null, refresh: (_p, onIndex) => { start = onIndex!; asked(); return new Promise(() => {}); } };
+    store.enqueue(conv.id, 'x', []);
+    d.kick(conv.id);
+    await askedP;
+    expect(d.cancel(conv.id)).toBe(true);
+    await until(() => turnsDone(store, conv.id, 1));
+    start();
+    expect(store.eventsAfter(conv.id, 0).map((e) => e.type)).not.toContain('code_memory.indexing');
+  });
+
   it('tells a turn to use the db tools while a database connection is open to agents', async () => {
     const { dir, store, conv } = setupDispatcher();
     store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
