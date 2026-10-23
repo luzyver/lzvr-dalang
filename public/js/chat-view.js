@@ -26,6 +26,12 @@ export const chat = {
   older: signal(null),
   /** The events the model was built from, so earlier turns can be folded in ahead of them. */
   events: [],
+  /** Goes up each time a chat is opened (also the same one again): an answer for an earlier opening is dropped. */
+  session: 0,
+  /** A search hit to load back to once the page being loaded is in (it may not reach that far). */
+  focus: null,
+  /** The first event loaded (set as a page comes, before its events are folded in). */
+  first: null,
 };
 
 /**
@@ -34,12 +40,15 @@ export const chat = {
  */
 async function loadEarlier(id, focus, beforeSwap) {
   const o = chat.older.peek();
-  if (!o?.more || o.loading) return;
+  if (!o?.more) return;
+  if (o.loading) { if (focus) chat.focus = focus; return; }
+  const session = chat.session;
   chat.older.value = { ...o, loading: true };
   try {
     const page = await historyPage(id, { before: o.before, focus });
-    if (chat.id.peek() !== id) return;
+    if (chat.session !== session) return;
     chat.events = [...page.events, ...chat.events];
+    chat.first = page.events[0]?.id ?? chat.first;
     const model = new ThreadModel();
     model.apply(chat.events);
     beforeSwap?.();
@@ -49,9 +58,18 @@ async function loadEarlier(id, focus, beforeSwap) {
       chat.version.value++;
     });
   } catch (e) {
-    if (chat.id.peek() === id) chat.older.value = o;
+    if (chat.session !== session) return;
+    chat.older.value = o;
     toast(e.message, 'err');
   }
+  if (chat.session === session) await focusWanted(id, beforeSwap);
+}
+
+/** A search hit asked for while a page loaded, and not in what is loaded now: load back to it. */
+async function focusWanted(id, beforeSwap) {
+  const wanted = chat.focus;
+  chat.focus = null;
+  if (wanted && chat.first && Number(wanted) < chat.first) await loadEarlier(id, wanted, beforeSwap);
 }
 
 export async function refreshConv(id = chat.id.value) {
@@ -165,6 +183,10 @@ export function ChatView({ id, focusEvent }) {
   const pinned = useRef(0); // a search hit was just scrolled to: the replay after it must not scroll it away
   const keep = useRef(null); // earlier turns go in above: where the view was, so it stays put
   const [hitShown, setHitShown] = useState(false);
+  const keepScroll = () => {
+    const el = scroller.current;
+    if (el) keep.current = { height: el.scrollHeight, top: el.scrollTop };
+  };
 
   // Reset during render, not in an effect, so the first frame of a newly opened chat never shows the previous one.
   if (chat.id.peek() !== id) {
@@ -176,6 +198,9 @@ export function ChatView({ id, focusEvent }) {
       chat.model = new ThreadModel();
       chat.older.value = null;
       chat.events = [];
+      chat.session++;
+      chat.focus = null;
+      chat.first = null;
       chat.version.value++;
     });
   }
@@ -210,7 +235,9 @@ export function ChatView({ id, focusEvent }) {
     historyPage(id, { focus: focusEvent }).then((page) => {
       if (gone) return;
       chat.older.value = { before: page.before, more: page.more };
+      chat.first = page.events[0]?.id ?? null;
       if (page.events.length) take(page.events);
+      focusWanted(id, keepScroll); // a search hit in this chat that came while this page loaded
       stop = startStream(id, take, page.last);
     }, () => {
       if (gone) return;
@@ -228,16 +255,14 @@ export function ChatView({ id, focusEvent }) {
     };
   }, [id]);
 
-  const earlier = (focus) => loadEarlier(id, focus, () => {
-    const el = scroller.current;
-    if (el) keep.current = { height: el.scrollHeight, top: el.scrollTop };
-  });
+  const earlier = (focus) => loadEarlier(id, focus, keepScroll);
   // A search hit in this chat, before the turns loaded: load back to it.
   useEffect(() => {
     if (!focusEvent) return;
     setHitShown(false);
-    const first = chat.events[0]?.id;
-    if (first && Number(focusEvent) < first) earlier(focusEvent);
+    const o = chat.older.peek();
+    if (!o || o.loading) { chat.focus = focusEvent; return; } // a page is on its way: on from it once it is in
+    if (chat.first && Number(focusEvent) < chat.first) earlier(focusEvent);
   }, [focusEvent]);
 
   const version = chat.version.value;
