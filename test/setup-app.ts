@@ -54,7 +54,7 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   const store = new Store();
   // As in production: the secret entries are stored encrypted.
   store.sealKv(new Sealer('test-secret-key'), SEALED_KEYS);
-  const dispatcher = new Dispatcher(store, { homes: extra.homes ?? [join(base, 'home')], command: FAKE, env });
+  const dispatcher = new Dispatcher(store, { homes: extra.homes ?? [join(base, 'home')], command: FAKE, contextCompactTokens: cfg.contextCompactTokens, env });
   const push = new Push(store, { send: extra.pushSend ?? (async () => {}) });
   const logins = new Logins({
     command: FAKE, baseDir: join(cfg.stateDir, 'accounts'), accounts: dispatcher.accounts, store, env: extra.loginEnv,

@@ -598,7 +598,7 @@ export function buildApp(
 
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
-    return conv ? { ...conv, turns: store.listTurns(conv.id), token_usage: store.tokenUsage(conv.id).total } : notFound(reply);
+    return conv ? { ...conv, turns: store.listTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
   });
 
   // Serve links from agent answers only from this chat's own worktree/project.

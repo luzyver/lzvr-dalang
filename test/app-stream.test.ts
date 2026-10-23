@@ -76,6 +76,23 @@ describe('SSE', () => {
     return text;
   }
 
+  it('returns actual context independently of chat totals and hides it after a session switch', async () => {
+    const t = setupApp({ FAKE_CONTEXT: JSON.stringify({ tokens: 12_000, window: 200_000 }),
+      FAKE_USAGE: JSON.stringify({ input_tokens: 5_000_000, cached_input_tokens: 4_000_000, output_tokens: 100 }) });
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    t.store.enqueue(conv.id, 'task', []);
+    t.dispatcher.kick(conv.id);
+    await until(() => turnsDone(t.store, conv.id, 1));
+    const url = `/api/conversations/${conv.id}`;
+    const result = (await t.app.inject({ url, headers: AUTH })).json();
+    expect(result.context_usage).toEqual({ tokens: 12_000, window: 200_000 });
+    expect(result.token_usage.input_tokens).toBe(5_000_000);
+    await t.app.inject({ method: 'PUT', url: `${url}/backend`, headers: AUTH, payload: { backend: 'claude' } });
+    const switched = (await t.app.inject({ url, headers: AUTH })).json();
+    expect(switched.context_usage).toBeNull();
+    expect(switched.token_usage).toEqual(result.token_usage);
+  });
+
   it('streams live events and replays from Last-Event-ID', async () => {
     const t = setupApp();
     close = () => t.app.close();

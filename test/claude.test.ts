@@ -24,6 +24,24 @@ const run = (events: Record<string, unknown>[]) => {
 const assistant = (...content: unknown[]) => ({ type: 'assistant', message: { model: 'claude-x', content } });
 
 describe('ClaudeEvents', () => {
+  it('measures only the latest model request, including cached input, instead of result totals', () => {
+    const c = new ClaudeEvents();
+    c.map({ type: 'assistant', message: { model: 'model-a', content: [], usage: { input_tokens: 10, cache_read_input_tokens: 800, cache_creation_input_tokens: 100, output_tokens: 5 } } });
+    c.map({ type: 'assistant', message: { model: 'model-a', content: [], usage: { input_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 8 } } });
+    const result = c.map({ type: 'result', usage: { input_tokens: 5_000_000, output_tokens: 40_000 }, modelUsage: { 'model-a': { contextWindow: 200_000 } } });
+    expect(result[0]).toEqual({ type: 'context.usage', tokens: 1028, window: 200_000 });
+    expect(result[1]?.type).toBe('turn.completed');
+  });
+
+  it('recognizes native compaction without ending the session or reusing stale context', () => {
+    const c = new ClaudeEvents();
+    c.map({ type: 'system', subtype: 'init', session_id: 'same-session' });
+    c.map({ type: 'assistant', message: { model: 'model-a', content: [], usage: { input_tokens: 180_000 } } });
+    expect(c.map({ type: 'system', subtype: 'status', status: 'compacting' })).toEqual([{ type: 'context.compacting' }]);
+    expect(c.map({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 180_000 } }))
+      .toEqual([{ type: 'context.compacted', trigger: 'auto', before_tokens: 180_000 }]);
+    expect(c.map({ type: 'result', usage: { input_tokens: 1, output_tokens: 2 } }).map((e) => e.type)).toEqual(['turn.completed']);
+  });
   it('preserves cache usage so the panel can include it in reported input', () => {
     const events = run([{ type: 'result', is_error: false, usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 } }]);
     expect(events[0]).toMatchObject({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 } });

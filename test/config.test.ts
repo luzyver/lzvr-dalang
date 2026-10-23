@@ -36,6 +36,16 @@ describe('loadConfig', () => {
     }
   });
 
+  it('configures the native context compaction window with an opt-out', () => {
+    const base = { LZVR_TOKEN: 'x'.repeat(32), WORKSPACE_ROOT: '/w' };
+    expect(loadConfig(base).contextCompactTokens).toBe(100_000);
+    expect(loadConfig({ ...base, CONTEXT_COMPACT_TOKENS: '200000' }).contextCompactTokens).toBe(200_000);
+    expect(loadConfig({ ...base, CONTEXT_COMPACT_TOKENS: '0' }).contextCompactTokens).toBe(0);
+    for (const bad of ['-1', '99999', '1000001', '100000.5', 'abc', 'Infinity']) {
+      expect(() => loadConfig({ ...base, CONTEXT_COMPACT_TOKENS: bad }), bad).toThrow(/CONTEXT_COMPACT_TOKENS/);
+    }
+  });
+
   it('reads TRUST_PROXY as the addresses of the reverse proxies to believe', () => {
     const base = { LZVR_TOKEN: 'x'.repeat(32), WORKSPACE_ROOT: '/w' };
     expect(loadConfig(base).trustProxy).toEqual([]);

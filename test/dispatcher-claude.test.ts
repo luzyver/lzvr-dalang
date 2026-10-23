@@ -18,6 +18,35 @@ function setup(env: Record<string, string> = {}, homeNames = ['a']) {
 }
 
 describe('Dispatcher with the claude backend', () => {
+  it('passes the native window to Claude and keeps the session through compaction', async () => {
+    const env = { FAKE_CONTEXT: JSON.stringify({ tokens: 90_000, window: 200_000 }) };
+    const { store, dispatcher, conv } = setup(env);
+    store.enqueue(conv.id, 'first', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.contextUsage(conv.id)).toEqual({ tokens: 90_000, window: 200_000 });
+    expect(store.eventsAfter(conv.id, 0).some((e) => e.payload.includes('compact-window:100000'))).toBe(true);
+    env.FAKE_CONTEXT = JSON.stringify({ tokens: 12_000, window: 200_000, compacted: true });
+    store.enqueue(conv.id, 'second', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 2));
+    expect(store.contextUsage(conv.id)).toEqual({ tokens: 12_000, window: 200_000 });
+    expect(store.getConversation(conv.id)!.thread_id).toBe('sess-1');
+    expect(store.eventsAfter(conv.id, 0).filter((e) => e.type === 'context.compacted')).toHaveLength(1);
+  });
+
+  it('preserves Claude environment settings when Dalang compaction is opted out', async () => {
+    const env = { FAKE_CONTEXT: JSON.stringify({ tokens: 12_000 }), CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' };
+    const { store, conv, dispatcher: original } = setup(env);
+    const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: original.claudeAccounts.homes, claudeCommand: FAKE_CLAUDE, contextCompactTokens: 0, env });
+    store.enqueue(conv.id, 'task', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const payloads = store.eventsAfter(conv.id, 0).map((e) => e.payload).join('\n');
+    expect(payloads).toContain('compact-window:250000');
+    expect(payloads).not.toContain('When compacting context');
+  });
+
   it('runs a turn through Claude Code and records the session', async () => {
     const { store, dispatcher, conv } = setup();
     store.enqueue(conv.id, 'hello', []);

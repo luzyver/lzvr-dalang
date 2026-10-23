@@ -13,7 +13,7 @@ import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
 import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
 import { MemoryButton } from './memory.js';
-import { usageText, usageTitle } from './format.js';
+import { tokens, usageText, usageTitle } from './format.js';
 
 /** The open chat, shared with the inspector. `version` goes up whenever the thread model changed. */
 export const chat = {
@@ -317,8 +317,9 @@ export function ChatView({ id, focusEvent }) {
         ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
       </div>
     </div>
-    ${conv?.token_usage && html`<div class="chat-usage" aria-label="Total chat tokens" title=${`Reported usage across all agent sessions in this chat\n${usageTitle(conv.token_usage)}`}>
-      <span>Chat total</span><span>${usageText(conv.token_usage)}</span>
+    ${(conv?.token_usage || conv?.context_usage) && html`<div class="chat-usage" aria-label="Chat token usage">
+      ${conv?.context_usage && html`<span title="Context in the last model request, including its output. Separate from accumulated token usage.">Context ${tokens(conv.context_usage.tokens)}${conv.context_usage.window ? ` / ${tokens(conv.context_usage.window)}` : ''}</span>`}
+      ${conv?.token_usage && html`<span title=${`Reported usage across all agent sessions in this chat\n${usageTitle(conv.token_usage)}`}>Chat total ${usageText(conv.token_usage)}</span>`}
     </div>`}
     <${Composer} id=${id} project=${found?.project} />
   </main>`;

@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Sealer } from './secrets.js';
 import { AGENT_GIT_DEFAULTS, type AgentGitPolicy } from './agent-git.js';
 import { summarizeUsage, type ChatUsage } from './token-usage.js';
+import type { ContextUsage } from './context.js';
 import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
@@ -474,6 +475,22 @@ export class Store {
     return row ? (JSON.parse(row.payload) as { current: TurnSelection }).current : null;
   }
   eventCreatedAt(id: number): string | null { return this.get<{ created_at: string }>('SELECT created_at FROM events WHERE id=?', id)?.created_at ?? null; }
+  /** A compaction boundary invalidates the preceding sample until the next inference reports fresh context. */
+  contextUsage(convId: string): ContextUsage | null {
+    const conv = this.getConversation(convId);
+    if (!conv?.thread_id) return null;
+    const row = this.get<{ type: string; payload: string }>(
+      `SELECT e.type,e.payload FROM events e JOIN turns t ON t.id=e.turn_id
+       WHERE t.conversation_id=? AND e.type IN ('context.usage','context.compacted') ORDER BY e.id DESC LIMIT 1`, convId);
+    if (!row || row.type === 'context.compacted') return null;
+    const data = JSON.parse(row.payload) as ContextUsage & { backend: Backend; thread_id: string };
+    return data.backend === conv.backend && data.thread_id === conv.thread_id ? { tokens: data.tokens, ...(data.window && { window: data.window }) } : null;
+  }
+  hasContextCompaction(convId: string, threadId: string, nativeId: string): boolean {
+    return this.get(`SELECT 1 FROM events e JOIN turns t ON t.id=e.turn_id
+      WHERE t.conversation_id=? AND e.type='context.compacted'
+        AND json_extract(e.payload,'$.thread_id')=? AND json_extract(e.payload,'$.native_id')=? LIMIT 1`, convId, threadId, nativeId) !== null;
+  }
   /** Only the small accounting events, so totals never require loading the chat's tool output or history pages. */
   tokenUsage(convId: string): ChatUsage {
     return summarizeUsage(this.all<{ id: number; type: string; payload: string }>(

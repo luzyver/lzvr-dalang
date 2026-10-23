@@ -6,6 +6,49 @@ import { FAKE, turnsDone, until } from './helpers.js';
 import { setupDispatcher } from './setup.js';
 
 describe('Dispatcher', () => {
+  it('configures native compaction on resumed Codex turns and records actual context after a native checkpoint', async () => {
+    const env = { FAKE_CONTEXT: JSON.stringify({ tokens: 90_000, window: 200_000 }),
+      FAKE_USAGE: JSON.stringify({ input_tokens: 1_000_000, cached_input_tokens: 900_000, output_tokens: 100 }) };
+    const { store, dispatcher, conv } = setupDispatcher(env);
+    const run = async (count: number) => {
+      store.enqueue(conv.id, `task ${count}`, []);
+      dispatcher.kick(conv.id);
+      await until(() => turnsDone(store, conv.id, count));
+    };
+    await run(1);
+    const session = store.getConversation(conv.id)!.thread_id;
+    expect(store.contextUsage(conv.id)).toEqual({ tokens: 90_000, window: 200_000 });
+    env.FAKE_CONTEXT = JSON.stringify({ tokens: 16_000, window: 200_000, compacted: true });
+    env.FAKE_USAGE = JSON.stringify({ input_tokens: 1_300_000, cached_input_tokens: 1_100_000, output_tokens: 200 });
+    await run(2);
+    env.FAKE_CONTEXT = JSON.stringify({ tokens: 18_000, window: 200_000 });
+    await run(3); // the earlier compaction marker in the rollout must not be announced twice
+    expect(store.getConversation(conv.id)!.thread_id).toBe(session);
+    expect(store.contextUsage(conv.id)).toEqual({ tokens: 18_000, window: 200_000 });
+    const events = store.eventsAfter(conv.id, 0);
+    expect(events.filter((e) => e.type === 'context.compacted')).toHaveLength(1);
+    expect(store.tokenUsage(conv.id).total?.input_tokens).toBe(1_300_000); // usage and active context stay separate
+    const messages = events.filter((e) => e.type === 'item.completed').map((e) => JSON.parse(e.payload).item);
+    expect(messages).toHaveLength(3);
+    expect(messages[1].args).toContain('model_auto_compact_token_limit=100000');
+    expect(messages[1].args).toContain('resume');
+    expect(messages[1].args.join(' ')).toContain('user constraints and corrections');
+  });
+
+  it('leaves native settings alone when opted out and never applies the chat threshold to auxiliary requests', async () => {
+    const { store, dir, conv, dispatcher: original } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: original.accounts.homes, command: FAKE, contextCompactTokens: 0 });
+    store.enqueue(conv.id, 'task', []);
+    d.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const item = JSON.parse(store.eventsAfter(conv.id, 0).find((e) => e.type === 'item.completed')!.payload).item;
+    expect(item.args.join(' ')).not.toContain('model_auto_compact_token_limit');
+    expect(item.args.join(' ')).not.toContain('When compacting context');
+    const auxiliary = new Dispatcher(store, { homes: original.accounts.homes, command: FAKE, env: { FAKE_ECHO_ARGS: '1' } });
+    const args = JSON.parse(await auxiliary.ask('codex', 'draft a title', { cwd: dir })) as string[];
+    expect(args.join(' ')).not.toContain('model_auto_compact_token_limit');
+  });
+
   it('persists changes to the effective agent/model with the turn that starts using them', async () => {
     const { store, dispatcher, conv, dir } = setupDispatcher();
     store.setDefaultModel('gpt-small');
@@ -264,7 +307,7 @@ describe('Dispatcher', () => {
 
   it('tells a turn how to start sub-agents only when agents decide themselves and the chat still may', async () => {
     const { dir, store, conv } = setupDispatcher();
-    store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions
+    store.setAgentGit({ commit: true, push: true }); // keep git guidance out of this check
     const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE, mcpUrl: 'http://127.0.0.1:9876/mcp' });
     const argsOf = async (id: string, n: number) => {
       store.enqueue(id, 'x', []);
@@ -274,7 +317,7 @@ describe('Dispatcher', () => {
       return (JSON.parse(ev.payload) as { item: { args: string[] } }).item.args;
     };
     const guideArg = (args: string[]) => args.find((a) => a.startsWith('developer_instructions='));
-    expect(guideArg(await argsOf(conv.id, 1))).toBeUndefined(); // 'asked' is the default
+    expect(guideArg(await argsOf(conv.id, 1)) || '').not.toContain('create_conversation'); // 'asked' is the default
 
     store.setSubagentPolicy({ ...store.getSubagentPolicy(), mode: 'auto', maxDepth: 1 });
     store.setAgentModels(['small', 'big']);
@@ -286,7 +329,7 @@ describe('Dispatcher', () => {
 
     // A sub-agent at the depth limit is not told, and an admin's own guide replaces the built-in one.
     const sub = store.createConversation(conv.project_id, undefined, conv.id);
-    expect(guideArg(await argsOf(sub.id, 1))).toBeUndefined();
+    expect(guideArg(await argsOf(sub.id, 1)) || '').not.toContain('create_conversation');
     store.setSubagentPolicy({ ...store.getSubagentPolicy(), guide: 'Split big work.' });
     expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toMatch(/^Split big work\.\n\nFor this chat: project_id .*4 more sub-agent\(s\) allowed/);
   });
@@ -348,7 +391,7 @@ describe('Dispatcher', () => {
     };
     const conn = { id: 'pg', label: 'PG', driver: 'postgres', host: 'db', port: 5432, user: 'u', password: 'p', database: 'app', access: 'all', readOnly: false };
     saveConnections(store, [{ ...conn, agent: 'off' } as never]);
-    expect(await guideOf(1)).toBeNull();
+    expect(await guideOf(1) || '').not.toContain('db_list_connections');
     saveConnections(store, [{ ...conn, agent: 'read-only' } as never]);
     const text = (await guideOf(2))!;
     expect(text).toContain('db_list_connections');

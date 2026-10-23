@@ -195,6 +195,9 @@ export class ThreadModel {
       case 'account.selected': this.account = d.account || ''; break;
       case 'account.switched': this.#note(`Usage limit on ${d.from}: switching account`, 'warn', e.id); break;
       case 'account.exhausted': this.#note(d.message || 'Every account is at its usage limit', 'err', e.id); break;
+      case 'context.compacting': this.#closeSteps(); this.live = { label: 'Compacting context', detail: '' }; break;
+      case 'context.compacted': this.live = null; this.#closeSteps(); this.#note('Context compacted; continuing in the same session. Full history remains available.', 'dim', e.id); break;
+      case 'context.usage': break;
       case 'code_memory.indexing': this.#note('The code changed since its graph was indexed: reindexing before the agent starts', 'dim', e.id); break;
       case 'code_memory.indexed': this.#note('Code graph reindexed', 'dim', e.id); break;
       case 'code_memory.failed': this.#note('Could not reindex the code graph (see Settings → MCP → Code memory): the agent reads the previous one', 'warn', e.id); break;

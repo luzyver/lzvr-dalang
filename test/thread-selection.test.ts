@@ -5,6 +5,15 @@ import { ThreadModel } from '../public/js/stream.js';
 const event = (id: number, data: Record<string, unknown>) => ({ id, type: 'turn.selection', data });
 
 describe('selection changes in the chat thread', () => {
+  it('shows native compaction as a continuation note and ignores context telemetry as a chat message', () => {
+    const thread = new ThreadModel();
+    thread.apply([{ id: 1, type: 'context.compacting', data: {} }]);
+    expect(thread.live.label).toBe('Compacting context');
+    thread.apply([{ id: 2, type: 'context.compacted', data: {} }, { id: 3, type: 'context.usage', data: { tokens: 12000 } }]);
+    expect(thread.live).toBeNull();
+    expect(thread.blocks).toMatchObject([{ type: 'note', text: 'Context compacted; continuing in the same session. Full history remains available.' }]);
+  });
+
   it('shows the server-computed turn count instead of the cumulative session count on paged history', () => {
     const thread = new ThreadModel();
     const turnUsage = { input_tokens: 186561, output_tokens: 102, cached_input_tokens: 160256 };

@@ -4,7 +4,7 @@
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
-import { existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -42,7 +42,7 @@ process.stdin.on('end', async () => {
   const out = (e) => console.log(JSON.stringify(e));
   const home = process.env.CODEX_HOME || '';
   const i = args.indexOf('resume');
-  const threadId = i >= 0 ? args[i + 1] : `thread-${process.pid}`;
+  const threadId = i >= 0 ? args[i + 1] : process.env.FAKE_CONTEXT ? '11111111-2222-4333-8444-555555555555' : `thread-${process.pid}`;
   out({ type: 'thread.started', thread_id: threadId });
   out({ type: 'turn.started' });
   const mode = process.env.FAKE_MODE || 'ok';
@@ -73,6 +73,16 @@ process.stdin.on('end', async () => {
     item: { type: 'agent_message', text: process.env.FAKE_ANSWER ?? (process.env.FAKE_ECHO_ARGS ? JSON.stringify(args) : input), args, home, mcpToken: process.env.LZVR_MCP_TOKEN, leaked: process.env.LZVR_TOKEN,
       mcpsEnv: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('LZVR_MCPS_') || k === 'SENTRY_ACCESS_TOKEN')) },
   });
+  if (process.env.FAKE_CONTEXT) {
+    const context = JSON.parse(process.env.FAKE_CONTEXT);
+    mkdirSync(join(home, 'sessions'), { recursive: true });
+    const file = join(home, 'sessions', `rollout-test-${threadId}.jsonl`);
+    if (context.compacted) appendFileSync(file, JSON.stringify({ type: 'compacted', timestamp: new Date().toISOString() }) + '\n');
+    appendFileSync(file, JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: {
+      last_token_usage: { total_tokens: context.tokens }, model_context_window: context.window,
+      total_token_usage: { input_tokens: 50_000_000 },
+    }, rate_limits: null } }) + '\n');
+  }
   out({
     type: 'turn.completed',
     usage: process.env.FAKE_USAGE ? JSON.parse(process.env.FAKE_USAGE) : { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },

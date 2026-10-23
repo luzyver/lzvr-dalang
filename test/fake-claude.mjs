@@ -9,6 +9,11 @@ process.stdin.setEncoding('utf8');
 for await (const c of process.stdin) prompt += c;
 
 out({ type: 'system', subtype: 'init', session_id: sid });
+const context = process.env.FAKE_CONTEXT ? JSON.parse(process.env.FAKE_CONTEXT) : null;
+if (context?.compacted) {
+  out({ type: 'system', subtype: 'status', status: 'compacting' });
+  out({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 150000 } });
+}
 if ((process.env.FAKE_LIMIT_HOMES || '').split(',').includes(basename(process.env.CLAUDE_CONFIG_DIR || ''))) {
   // As Claude Code 2.1 reports it: the text alone matches no older limit wording; the typed api_error says what it is.
   const resetsAt = Math.floor(Date.now() / 1000) + 2 * 3600;
@@ -22,4 +27,6 @@ out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWin
 out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo hi' } }] } });
 out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'hi', is_error: false }] } });
 out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: `echo:${prompt}|${basename(process.env.CLAUDE_CONFIG_DIR || '')}${args.includes('--append-system-prompt') ? `|system:${args[args.indexOf('--append-system-prompt') + 1]}` : ''}${args.includes('--settings') ? `|settings:${args[args.indexOf('--settings') + 1]}|root:${process.env.LZVR_CODE_ROOT}` : ''}${args.find((a) => a.startsWith('--add-dir=')) ? `|${args.find((a) => a.startsWith('--add-dir='))}` : ''}${process.env.GIT_CONFIG_COUNT ? `|gitcfg:${process.env.GIT_CONFIG_COUNT}` : ''}` }] } });
-out({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 2 } });
+if (context) out({ type: 'assistant', message: { model: 'claude-x', content: [], usage: { input_tokens: context.tokens - 100, cache_read_input_tokens: 100 } } });
+if (context) out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: `compact-window:${process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 'unset'}` }] } });
+out({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 2 }, ...(context && { modelUsage: { 'claude-x': { contextWindow: context.window } } }) });
