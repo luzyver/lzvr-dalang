@@ -105,6 +105,8 @@ export class Dispatcher {
   private awaiting = new Set<string>();
   private bus = new EventEmitter();
   private stopping = false;
+  /** Shutting down but letting running turns finish: queued prompts wait in the queue for after the restart. */
+  private draining = false;
   private mcpTokens = new Map<string, { convId: string; author: string }>(); // token -> the turn it was minted for
   /**
    * The environment that makes git, gh, glab and ssh inside a turn work as the panel user it runs for (QueueItem.on_behalf,
@@ -176,7 +178,7 @@ export class Dispatcher {
 
   /** Start the next queued prompt if this conversation is idle. Safe to call any time. */
   kick(convId: string): void {
-    if (this.stopping || this.active.has(convId)) return;
+    if (this.stopping || this.draining || this.active.has(convId)) return;
     const item = this.store.popQueue(convId);
     if (!item) return;
     const ac = new AbortController();
@@ -206,13 +208,31 @@ export class Dispatcher {
   revokeMcpToken(token: string): void { this.mcpTokens.delete(token); }
 
   /**
-   * Stop for good: kill every running turn (status `interrupted`) and refuse to start new ones. Resolves once nothing is running.
+   * Stop for good. No new turn starts; running ones get up to `drainMs` to finish, then are queued again with `resume`
+   * (so after the restart they continue in the same session) and killed (status `interrupted`). Resolves once nothing
+   * runs, or after `timeoutMs` more.
    */
-  async shutdown(timeoutMs = 10_000): Promise<void> {
+  async shutdown(drainMs = 0, timeoutMs = 10_000): Promise<void> {
+    this.draining = true;
+    const idle = async (ms: number) => {
+      const start = Date.now();
+      while (this.active.size && Date.now() - start < ms) await new Promise((r) => setTimeout(r, 25));
+    };
+    if (this.active.size && drainMs > 0) {
+      console.log(`waiting up to ${Math.round(drainMs / 1000)}s for ${this.active.size} running turn(s) to finish before stopping`);
+      await idle(drainMs);
+    }
     this.stopping = true;
-    for (const ac of this.active.values()) ac.abort();
-    const start = Date.now();
-    while (this.active.size && Date.now() - start < timeoutMs) await new Promise((r) => setTimeout(r, 25));
+    for (const [convId, ac] of this.active) {
+      // Queued again before the kill: stopping the agent and the checkpoint after it may outlast `timeoutMs`, and the
+      // process exits then. One the person cancelled meanwhile is not resumed.
+      const item = this.running.get(convId);
+      if (item && !ac.signal.aborted) {
+        try { this.store.requeueResume(item); } catch (e) { console.error(`cannot queue chat ${convId} to resume`, e); }
+      }
+      ac.abort();
+    }
+    await idle(timeoutMs);
   }
 
   isRunning(convId: string): boolean { return this.active.has(convId); }
@@ -392,7 +412,7 @@ export class Dispatcher {
 
     const turnId = this.store.startTurn(convId, item.prompt);
     this.store.setStatus(convId, 'running');
-    this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }),
+    this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
       ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
     if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
       void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
@@ -402,7 +422,9 @@ export class Dispatcher {
     let failed = false;
     let usage: unknown = null;
     let lastMessage = '';
-    let workDone = false; // did an earlier attempt of THIS turn already do something (run a command, answer, ...)?
+    // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
+    let workDone = !!item.resume;
+    let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
     // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
     const mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
     // The agent's own git commands (commit, push) work as the user this turn runs for, never as someone else.
@@ -466,7 +488,7 @@ export class Dispatcher {
         const usedDiffs = new Set<string>();
         // After work has already happened, resending the bare request makes the agent redo it (commits, deploys...).
         const attemptPrompt = workDone
-          ? `Continue where you left off. An earlier attempt of this request was interrupted when its account hit a usage limit. ` +
+          ? `Continue where you left off. An earlier attempt of this request was interrupted when ${cutBy}. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
         const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
@@ -509,6 +531,7 @@ export class Dispatcher {
           accounts.block(home, limitMs ?? windowsResetMs(windows) ?? this.opts.blockMs ?? 60 * 60 * 1000);
           this.emit(convId, turnId, { type: 'account.switched', from: basename(home) });
           workDone ||= worked;
+          cutBy = 'its account hit a usage limit';
           continue;
         }
         break;
@@ -527,7 +550,7 @@ export class Dispatcher {
     const conversationStatus = failed && !cancelled ? 'failed' : 'idle';
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
-    if (interrupted) return; // shutting down: no notification
+    if (interrupted) return; // shutting down: no notification, shutdown queued the turn to go on after the restart
     // A sub-agent's work comes back to its parent, whose turn reading the report is remembered instead.
     if (this.opts.autoMemory && status === 'completed' && !conv.parent && lastMessage.trim() && this.store.getMemoryPolicy().auto) {
       void this.remember(conv, project, item.prompt, lastMessage, item.author);

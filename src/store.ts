@@ -99,6 +99,8 @@ export interface QueueItem {
   id: number; conversation_id: string; prompt: string; attachments: string[]; author: string; on_behalf: string;
   /** The chat whose agent sent this prompt over MCP, or ''. A sub-agent's answer to its parent goes back to it. */
   from_conv: string;
+  /** Set on the turn a restart cut off, queued again so it continues in the same session after the restart. */
+  resume?: boolean;
 }
 /**
  * How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked.
@@ -172,8 +174,8 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string }
-const toItem = (r: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[] });
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; resume: number }
+const toItem = ({ resume, ...r }: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}) });
 
 export class Store {
   readonly db: DatabaseSync;
@@ -202,6 +204,7 @@ export class Store {
     this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('queue', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('queue', 'from_conv', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('queue', 'resume', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('approvals', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     // A chat's history is read by its turns: without these, reading one chat scans the events of every chat.
@@ -414,8 +417,13 @@ export class Store {
       convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv);
     return Number(r.lastInsertRowid);
   }
+  /** Queue a turn a restart cut off again, ahead of what was waiting behind it (see QueueItem.resume). */
+  requeueResume(item: QueueItem): void {
+    this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,resume) VALUES (?,?,?,?,?,?,1)',
+      item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv);
+  }
   listQueue(convId: string): QueueItem[] {
-    return this.all<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY id', convId).map(toItem);
+    return this.all<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id', convId).map(toItem);
   }
   /** The chat a queued prompt waits in, or null. */
   queueConversation(id: number): string | null {
@@ -423,7 +431,7 @@ export class Store {
   }
   deleteQueueItem(id: number): boolean { return Number(this.run('DELETE FROM queue WHERE id=?', id).changes) > 0; }
   popQueue(convId: string): QueueItem | null {
-    const row = this.get<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY id LIMIT 1', convId);
+    const row = this.get<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id LIMIT 1', convId);
     if (!row) return null;
     this.run('DELETE FROM queue WHERE id=?', row.id);
     return toItem(row);

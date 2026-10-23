@@ -312,11 +312,69 @@ describe('Dispatcher', () => {
     await dispatcher.shutdown();
     expect(store.listTurns(conv.id)[0]!.status).toBe('interrupted');
     expect(store.getConversation(conv.id)).toMatchObject({ status: 'idle' });
-    expect(store.listQueue(conv.id)).toEqual([]);
+    expect(store.listQueue(conv.id)).toMatchObject([{ prompt: 'long task', resume: true }]);
     store.enqueue(conv.id, 'after', []);
     dispatcher.kick(conv.id); // a stopped dispatcher starts nothing new
     await new Promise((r) => setTimeout(r, 100));
     expect(store.listTurns(conv.id)).toHaveLength(1);
+  });
+
+  it('after a restart, a turn shutdown cut off continues in its session before the prompts queued behind it', async () => {
+    const { store, dispatcher, conv, dir } = setupDispatcher({ FAKE_MODE: 'slow' });
+    store.enqueue(conv.id, 'long task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    store.enqueue(conv.id, 'next', []);
+    await dispatcher.shutdown();
+    const thread = store.getConversation(conv.id)!.thread_id;
+    const restarted = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE });
+    restarted.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 3));
+    const turns = store.listTurns(conv.id);
+    expect(turns.map((t) => [t.prompt, t.status])).toEqual([['long task', 'interrupted'], ['long task', 'completed'], ['next', 'completed']]);
+    const events = store.eventsAfter(conv.id, 0);
+    const prompts = events.flatMap((e, i) => (e.type === 'user.prompt' ? [i] : []));
+    const resumed = events.slice(prompts[1], prompts[2]);
+    expect(JSON.parse(resumed.find((e) => e.type === 'user.prompt')!.payload)).toMatchObject({ resumed: true });
+    const item = JSON.parse(resumed.find((e) => e.type === 'item.completed')!.payload).item as { text: string; args: string[] };
+    expect(item.text).toMatch(/^Continue where you left off\. .*interrupted when Dalang restarted\..*\nlong task$/s);
+    expect(item.args.slice(item.args.indexOf('resume'), item.args.indexOf('resume') + 2)).toEqual(['resume', thread]);
+  });
+
+  it('shutdown queues a cut-off turn to resume before the agent is gone, so a timeout cannot lose it', async () => {
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'slow' });
+    store.enqueue(conv.id, 'long task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    const done = dispatcher.shutdown();
+    expect(dispatcher.isRunning(conv.id)).toBe(true); // the agent and the checkpoint after it are still to come
+    expect(store.listQueue(conv.id)).toMatchObject([{ prompt: 'long task', resume: true }]);
+    await done;
+    expect(store.listQueue(conv.id)).toHaveLength(1); // not queued twice
+  });
+
+  it('shutdown does not resume a turn the person cancelled', async () => {
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'slow' });
+    store.enqueue(conv.id, 'long task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    dispatcher.cancel(conv.id);
+    await dispatcher.shutdown();
+    expect(store.listQueue(conv.id)).toEqual([]);
+  });
+
+  it('shutdown with a drain time lets running turns finish and holds new prompts for after the restart', async () => {
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_DELAY_MS: '500' });
+    store.enqueue(conv.id, 'task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    const done = dispatcher.shutdown(10_000);
+    store.enqueue(conv.id, 'later', []);
+    dispatcher.kick(conv.id);
+    await done;
+    expect(store.listTurns(conv.id).map((t) => t.status)).toEqual(['completed']);
+    expect(store.listQueue(conv.id)).toMatchObject([{ prompt: 'later' }]);
+    expect(store.listQueue(conv.id)[0]!.resume).toBeUndefined();
   });
 
   it('delivers live events to subscribers until they unsubscribe', async () => {

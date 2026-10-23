@@ -206,6 +206,13 @@ when the lockfile changed, builds, restarts the service and waits for the port, 
 up. A failed pull or build leaves the running service alone. From your machine: `ssh server 'cd /opt/lzvr-dalang &&
 scripts/update.sh'`. Don't run it from a Dalang chat: the restart stops the server running that chat.
 
+A restart does not cut running chats off. On SIGTERM the panel stays up while running turns get `DRAIN_MINUTES`
+(default 5) to finish; new prompts wait in their chat's queue meanwhile. A turn still running then is stopped and,
+after the restart, continues in the same agent session ("continued after a restart" in the chat), ahead of the prompts
+queued behind it. For that systemd must signal only node and wait long enough: `update.sh` adds the drop-in
+`/etc/systemd/system/lzvr-dalang.service.d/drain.conf` with `KillMode=mixed` and `TimeoutStopSec=10min` the first
+time; raise `TimeoutStopSec` with it when you set a longer `DRAIN_MINUTES`. Ctrl+C (SIGINT) and a crash do not wait.
+
 ### Terminals without root
 
 The service runs as root, so a terminal in the code editor would be a root shell. That one is for the owner alone
@@ -427,6 +434,7 @@ Known limits:
 | `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset. |
 | `LZVR_VAPID_SUBJECT` | origin | Contact URL for Web Push (`mailto:` or `https:`). |
 | `LIMIT_BLOCK_MINUTES` | `60` | How long an account is skipped after a usage limit. |
+| `DRAIN_MINUTES` | `5` | On a restart (SIGTERM, `scripts/update.sh`, `autostart.cmd restart`), how long running turns may still finish before they are cut off; a cut-off turn continues in its session after the restart. `0` cuts them off at once. On the VM keep the unit's `TimeoutStopSec` longer (see "Install on the VM"). |
 | `LIMIT_REGEX` | built in | Case-insensitive regex that recognises a usage-limit error (see below). |
 | `MCP_CROSS_SEND` | `approve` | `auto` lets one chat message another through MCP without approval. |
 | `MCP_INJECT` | off | `1` gives every Codex turn this gateway's `/mcp` (see "MCP" below). Off by default; turn it on only after checking it works with your Codex version. |
@@ -895,7 +903,9 @@ starts. `run.cmd -Dev` runs `src/main.ts` through tsx without building; `-Instal
 
 To keep it running in the background from every logon, `autostart.cmd install` registers a `Dalang` Task Scheduler
 task that runs `scripts\run.ps1` hidden, logging to `state\autostart.log`. After an update, `autostart.cmd restart`
-pulls (`--ff-only`; `-NoPull` skips it), stops the task, frees the port and starts it again, which rebuilds. Also
+pulls (`--ff-only`; `-NoPull` skips it), lets running chats finish as on the VM (it creates `state\restart`, which
+Dalang watches since Windows has no SIGTERM; up to `DRAIN_MINUTES`, the rest continues after the restart), stops the
+task, frees the port and starts it again, which rebuilds. Also
 `stop`, `status` and `uninstall`. Don't run `restart` or `stop` from a Dalang chat: it stops the server running it.
 
 The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in

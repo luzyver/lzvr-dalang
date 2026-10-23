@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
@@ -73,22 +73,32 @@ const scheduler = new Scheduler(store, dispatcher);
 scheduler.start();
 started = true;
 
-// systemd sends SIGTERM on stop/restart: kill running turns cleanly.
+// Stop without cutting chats off: the panel stays up while running turns get DRAIN_MINUTES to finish (new prompts wait
+// in the queue); whatever still runs then is killed and resumed in its session after the restart. systemd sends SIGTERM
+// on stop/restart (its unit needs KillMode=mixed, else the agents get the SIGTERM too); Windows has no such signal, so
+// autostart.ps1 asks by creating state/restart. Ctrl+C (SIGINT) stops at once, resuming what ran.
 let closing = false;
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    if (closing) return;
-    closing = true;
-    void (async () => {
-      scheduler.stop();
-      await dispatcher.shutdown();
-      await codeMemory.stop();
-      await app.close().catch(() => {});
-      process.exit(0);
-    })();
-    setTimeout(() => process.exit(1), 15_000).unref();
-  });
+function close(drainMs: number): void {
+  if (closing) return;
+  closing = true;
+  void (async () => {
+    scheduler.stop();
+    await dispatcher.shutdown(drainMs);
+    await codeMemory.stop();
+    await app.close().catch(() => {});
+    process.exit(0);
+  })();
+  setTimeout(() => process.exit(1), drainMs + 15_000).unref();
 }
+process.on('SIGTERM', () => close(cfg.drainMs));
+process.on('SIGINT', () => close(0));
+const restartFlag = join(cfg.stateDir, 'restart');
+rmSync(restartFlag, { force: true }); // one left from before this start is done
+setInterval(() => {
+  if (!existsSync(restartFlag)) return;
+  rmSync(restartFlag, { force: true });
+  close(cfg.drainMs);
+}, 1000).unref();
 if (cfg.authBypass) console.warn('AUTH_BYPASS is on: anyone reaching this port is the owner. Local development only.');
 else if (!cfg.mailerUrl) console.warn('MAILER_URL is not set: email sign-in is off (the API token still works)');
 else if (!cfg.ownerEmails.length) console.warn('LZVR_OWNER_EMAILS is empty: only panel users with an email can sign in by email');
