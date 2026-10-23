@@ -134,6 +134,54 @@ describe('SSE', () => {
     expect(text.match(/^event: item\.completed$/gm)).toHaveLength(60);
   });
 
+  it('cuts long tool output for the panel and drops item.updated', async () => {
+    const t = setupApp();
+    close = () => t.app.close();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const base = `http://127.0.0.1:${(t.app.server.address() as { port: number }).port}`;
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const turn = t.store.startTurn(conv.id, 'x');
+    const out = 'o'.repeat(10_000);
+    const cmd = t.store.addEvent(turn, 'item.completed', JSON.stringify({ type: 'item.completed', item: { id: 'c', type: 'command_execution', command: 'ls', aggregated_output: out, exit_code: 0 } }));
+    t.store.addEvent(turn, 'item.updated', JSON.stringify({ type: 'item.updated', item: { type: 'command_execution', aggregated_output: out } }));
+    t.store.addEvent(turn, 'turn.completed', '{"type":"turn.completed"}');
+    const compact = await readUntil(await fetch(`${base}/api/conversations/${conv.id}/events?compact=1`, { headers: AUTH }), (s) => s.includes('event: turn.completed'));
+    expect(compact).not.toContain(out);
+    expect(compact).not.toContain('event: item.updated');
+    expect(compact).toContain('"cut":true');
+    const full = await readUntil(await fetch(`${base}/api/conversations/${conv.id}/events`, { headers: AUTH }), (s) => s.includes('event: turn.completed'));
+    expect(full).toContain(out); // API clients still get every event as it is
+    const one = await t.app.inject({ url: `/api/conversations/${conv.id}/events/${cmd}`, headers: AUTH });
+    expect(one.json().data.item.aggregated_output).toBe(out);
+    const other = t.store.createConversation(t.store.createProject('q', t.root).id);
+    expect((await t.app.inject({ url: `/api/conversations/${other.id}/events/${cmd}`, headers: AUTH })).statusCode).toBe(404);
+  });
+
+  it('pages the history in whole turns, newest first', async () => {
+    const t = setupApp();
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const firsts: number[] = [];
+    for (let i = 0; i < 25; i++) {
+      const turn = t.store.startTurn(conv.id, `p${i}`);
+      firsts.push(t.store.addEvent(turn, 'user.prompt', JSON.stringify({ type: 'user.prompt', text: `p${i}` })));
+      t.store.addEvent(turn, 'turn.completed', '{"type":"turn.completed"}');
+    }
+    const get = async (q: string) => (await t.app.inject({ url: `/api/conversations/${conv.id}/history?${q}`, headers: AUTH })).json();
+    const last = await get('turns=10');
+    expect(last.events).toHaveLength(20);
+    expect(last.events[0].data.text).toBe('p15');
+    expect(last.more).toBe(true);
+    expect(last.last).toBe(last.events[19].id);
+    const mid = await get(`turns=10&before=${last.before}`);
+    expect(mid.events[0].data.text).toBe('p5');
+    const rest = await get(`turns=10&before=${mid.before}`);
+    expect(rest.events.map((e: { data: { text?: string } }) => e.data.text).filter(Boolean)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4']);
+    expect(rest.more).toBe(false);
+    const toHit = await get(`turns=10&focus=${firsts[3]}`);
+    expect(toHit.events[0].data.text).toBe('p3'); // reaches back to a search hit
+    expect(toHit.more).toBe(true);
+  });
+
   it('404s for an unknown conversation', async () => {
     const t = setupApp();
     const r = await t.app.inject({ url: '/api/conversations/nope/events', headers: AUTH });

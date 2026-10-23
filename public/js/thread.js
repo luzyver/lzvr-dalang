@@ -9,6 +9,7 @@ import { copyText } from './code.js';
 import { downloadFile, fetchBlob } from './api.js';
 import { toast } from './store.js';
 import { clock, duration, plural, tokens } from './format.js';
+import { fullStep } from './stream.js';
 
 /** Re-renders every second: for "running for 2m 14s". */
 export function Elapsed({ since }) {
@@ -51,50 +52,75 @@ function useStepNav(list, current, onPick) {
   return [nav, onKeyDown];
 }
 
+/** The step in full: one whose long output the server cut is fetched while shown (null until it is). */
+function useFull(s, conversationId) {
+  const [full, setFull] = useState(null);
+  useEffect(() => {
+    setFull(null);
+    if (!s?.cut || !conversationId) return undefined;
+    let live = true;
+    fullStep(conversationId, s).then((f) => { if (live) setFull(f); }, (e) => { if (live) { setFull(s); toast(e.message, 'err'); } });
+    return () => { live = false; };
+  }, [s?.id, conversationId]);
+  return s?.cut && conversationId ? full : s;
+}
+
+const stepStat = (s) => s.stat || diffStats(s.diff);
+const Loading = () => html`<div class="diff-empty"><${Spinner} /></div>`;
+
 const ExitCode = ({ exit }) => (exit == null ? null
   : html`<span class=${cx('exit', exit === 0 ? 'ok' : 'bad')}><${Icon} name=${exit === 0 ? 'check' : 'x'} />exit ${exit}</span>`);
 
 /** A file step's diff in a dialog, like the Changes tab's, with the turn's other changed files a click away. */
-function StepDiffDialog({ list, current, root, onPick, onClose }) {
+function StepDiffDialog({ list, current, root, conversationId, onPick, onClose }) {
   const [mode, setMode] = useState(innerWidth > 1100 ? 'split' : 'unified');
   const [nav, onKeyDown] = useStepNav(list, current, onPick);
+  const full = useFull(current, conversationId);
   const path = current.movePath || current.path;
   const title = current.movePath ? `${relative(current.path, root)} → ${relative(current.movePath, root)}` : relative(current.path, root);
   return html`<div class="diff-dialog" tabindex="-1" onKeyDown=${onKeyDown}>
     <div class="diff-dialog-head">
       <${Icon} name=${CHANGE_ICON[current.change] || 'file-pen'} />
       <code class="diff-dialog-path" title=${title}>${title}</code>
-      <${DiffStat} ...${diffStats(current.diff)} />
+      <${DiffStat} ...${stepStat(current)} />
       <div class="spacer"></div>
       <${Seg} small label="Diff layout" value=${mode} onChange=${setMode} options=${[['unified', 'Unified'], ['split', 'Split']]} />
       ${nav}
       <button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button>
     </div>
-    <div class="diff-dialog-body"><${DiffView} diff=${current.diff} path=${path} mode=${mode} /></div>
+    <div class="diff-dialog-body">${full ? html`<${DiffView} diff=${full.diff} path=${path} mode=${mode} />` : html`<${Loading} />`}</div>
   </div>`;
 }
 
 /** A command step and its output in a dialog, with the turn's other commands a click away. */
-function StepCommandDialog({ list, current, onPick, onClose }) {
+function StepCommandDialog({ list, current, conversationId, onPick, onClose }) {
   const [nav, onKeyDown] = useStepNav(list, current, onPick);
+  const full = useFull(current, conversationId);
+  const command = full?.command ?? current.command;
   return html`<div class="diff-dialog" tabindex="-1" onKeyDown=${onKeyDown}>
     <div class="diff-dialog-head">
       <${Icon} name="terminal" />
-      <code class="diff-dialog-path cmd" title=${current.command}>${current.command || 'command'}</code>
+      <code class="diff-dialog-path cmd" title=${command}>${command || 'command'}</code>
       <${ExitCode} exit=${current.exit} />
       <div class="spacer"></div>
-      <button class="icon-btn sm" aria-label="Copy command" title="Copy command" onClick=${() => copyText(current.command || '')}><${Icon} name="copy" /></button>
+      <button class="icon-btn sm" aria-label="Copy command" title="Copy command" onClick=${() => copyText(command || '')}><${Icon} name="copy" /></button>
       ${nav}
       <button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button>
     </div>
     <div class="diff-dialog-body cmd-body">
-      <code class="step-cmd">$ ${current.command}</code>
-      ${current.output ? html`<pre class="output">${current.output}</pre>` : html`<div class="diff-empty">No output.</div>`}
+      <code class="step-cmd">$ ${command}</code>
+      ${!full ? html`<${Loading} />` : full.output ? html`<pre class="output">${full.output}</pre>` : html`<div class="diff-empty">No output.</div>`}
     </div>
   </div>`;
 }
 
-function Step({ s, root, onOpen }) {
+/** A thought, in full once opened. */
+function Reasoning({ s, conversationId }) {
+  const full = useFull(s, conversationId);
+  return html`<div class="step-body"><div class="reasoning">${full ? full.text : html`<${Spinner} />`}</div></div>`;
+}
+
+function Step({ s, root, conversationId, onOpen }) {
   const [open, setOpen] = useState(false);
   let icon;
   let label;
@@ -112,13 +138,13 @@ function Step({ s, root, onOpen }) {
     icon = CHANGE_ICON[s.change] || 'file-pen';
     label = CHANGE_LABEL[s.change] || 'Changed';
     detail = s.movePath ? `${relative(s.path, root)} → ${relative(s.movePath, root)}` : relative(s.path, root);
-    side = html`<${DiffStat} ...${diffStats(s.diff)} />`;
-    pops = !!s.diff;
+    side = html`<${DiffStat} ...${stepStat(s)} />`;
+    pops = !!s.diff || s.cut;
   } else if (s.kind === 'reasoning') {
     icon = 'lightbulb';
     label = 'Thought';
     detail = s.text.split('\n')[0].slice(0, 160);
-    body = html`<div class="step-body"><div class="reasoning">${s.text}</div></div>`;
+    body = html`<${Reasoning} s=${s} conversationId=${conversationId} />`;
   } else {
     icon = 'wrench';
     label = s.tool;
@@ -137,7 +163,7 @@ function Step({ s, root, onOpen }) {
   </li>`;
 }
 
-function Steps({ b, active, root }) {
+function Steps({ b, active, root, conversationId }) {
   // Open while the agent works on it, folded once done; a click overrides either.
   const [manual, setManual] = useState(null);
   const [viewing, setViewing] = useState(null);
@@ -146,7 +172,7 @@ function Steps({ b, active, root }) {
   const files = changed.length;
   const current = b.items.find((s) => s.id === viewing);
   // the dialog steps through the turn's steps of the same kind
-  const list = current ? b.items.filter((s) => s.kind === current.kind && (s.kind === 'command' || s.diff)) : [];
+  const list = current ? b.items.filter((s) => s.kind === current.kind && (s.kind === 'command' || s.diff || s.cut)) : [];
   const took = b.end - b.start;
   return html`<div class=${cx('turn', open && 'open')}>
     <button class="turn-head" aria-expanded=${open} onClick=${() => setManual(!open)}>
@@ -154,11 +180,11 @@ function Steps({ b, active, root }) {
       ${active ? html`<${Spinner} class="ok" /><span>Working</span>` : html`<span>${took >= 1000 ? `Worked for ${duration(took).replace(/\.\ds$/, 's')}` : 'Worked'}</span>`}
       <span class="dim">· ${plural(b.items.length, 'step')}${files ? ` · ${plural(files, 'file')} changed` : ''}</span>
     </button>
-    ${open && html`<ol class="steps">${b.items.map((s) => html`<${Step} key=${s.id} s=${s} root=${root} onOpen=${setViewing} />`)}</ol>`}
+    ${open && html`<ol class="steps">${b.items.map((s) => html`<${Step} key=${s.id} s=${s} root=${root} conversationId=${conversationId} onOpen=${setViewing} />`)}</ol>`}
     <${Modal} open=${!!current} label=${current?.kind === 'command' ? 'Command' : 'Diff'} class="diff-modal" onClose=${() => setViewing(null)}>
       ${current && (current.kind === 'command'
-        ? html`<${StepCommandDialog} list=${list} current=${current} onPick=${setViewing} onClose=${() => setViewing(null)} />`
-        : html`<${StepDiffDialog} list=${list} current=${current} root=${root} onPick=${setViewing} onClose=${() => setViewing(null)} />`)}
+        ? html`<${StepCommandDialog} list=${list} current=${current} conversationId=${conversationId} onPick=${setViewing} onClose=${() => setViewing(null)} />`
+        : html`<${StepDiffDialog} list=${list} current=${current} root=${root} conversationId=${conversationId} onPick=${setViewing} onClose=${() => setViewing(null)} />`)}
     <//>
   </div>`;
 }
@@ -186,7 +212,7 @@ export class Block extends Component {
       body = html`<div class="msg user">${b.files.length > 0 && html`<div class="msg-files">${b.files.map((p) => html`<${Attachment} key=${p} path=${p} />`)}</div>`}
         <div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
     } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} conversationId=${conversationId} />`;
-    else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} />`;
+    else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} conversationId=${conversationId} />`;
     else body = html`<div class=${cx('note', b.tone)}><${Icon} name=${b.tone === 'err' ? 'circle-alert' : b.tone === 'warn' ? 'triangle-alert' : 'info'} /><span>${b.text}</span></div>`;
     return html`<div class=${cx('block', hit && 'hit')} data-event=${b.eventId}>${body}</div>`;
   }

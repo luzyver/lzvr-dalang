@@ -204,6 +204,8 @@ export class Store {
     this.ensureColumn('queue', 'from_conv', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('approvals', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
+    // A chat's history is read by its turns: without these, reading one chat scans the events of every chat.
+    this.db.exec('CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id); CREATE INDEX IF NOT EXISTS events_turn ON events(turn_id)');
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
     this.fts = this.memoryIndex();
@@ -444,6 +446,33 @@ export class Store {
       `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
        JOIN turns t ON t.id = e.turn_id
        WHERE t.conversation_id=? AND e.id>? ORDER BY e.id`, convId, afterId);
+  }
+  /** One event of a chat (null when it is not one of its). */
+  eventOf(convId: string, id: number): StoredEvent | null {
+    return this.get(
+      `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
+       JOIN turns t ON t.id = e.turn_id WHERE e.id=? AND t.conversation_id=?`, id, convId);
+  }
+  /**
+   * A page of a chat's history in whole turns, so it folds into the thread on its own: the last `turns` turns before
+   * turn `before` (the newest when not given), reaching back to the turn of event `focus` when that lies before them.
+   * `first` is the page's first turn (the `before` of the page above it); `more` whether turns lie before it.
+   */
+  historyPage(convId: string, o: { turns: number; before?: number; focus?: number }): { events: StoredEvent[]; first: number | null; more: boolean } {
+    const before = o.before ?? Number.MAX_SAFE_INTEGER;
+    const ids = this.all<{ id: number }>('SELECT id FROM turns WHERE conversation_id=? AND id<? ORDER BY id DESC LIMIT ?', convId, before, o.turns);
+    let first = ids.length ? ids[ids.length - 1]!.id : null;
+    if (o.focus) {
+      const at = this.get<{ turn_id: number }>('SELECT e.turn_id FROM events e JOIN turns t ON t.id = e.turn_id WHERE e.id=? AND t.conversation_id=?', o.focus, convId);
+      if (at && at.turn_id < before && (first === null || at.turn_id < first)) first = at.turn_id;
+    }
+    if (first === null) return { events: [], first: null, more: false };
+    const events = this.all<StoredEvent>(
+      `SELECT e.id, t.conversation_id, e.type, e.payload, e.created_at FROM events e
+       JOIN turns t ON t.id = e.turn_id
+       WHERE t.conversation_id=? AND e.turn_id>=? AND e.turn_id<? ORDER BY e.id`, convId, first, before);
+    const more = this.get('SELECT 1 FROM turns WHERE conversation_id=? AND id<? LIMIT 1', convId, first) !== null;
+    return { events, first, more };
   }
 
   // --- project and personal memory (see memory.ts) ---

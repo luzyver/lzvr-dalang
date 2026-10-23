@@ -297,6 +297,7 @@ button.chat-fold:hover { color: var(--text); background: var(--hover); }
 
 .thread { flex: 1; overflow: auto; overscroll-behavior: contain; }
 .thread-inner { max-width: 780px; margin: 0 auto; padding: var(--s6) var(--s5) var(--s5); display: grid; gap: var(--s4); }
+.thread-earlier { justify-self: center; }
 .thread-empty { display: grid; justify-items: center; gap: 6px; text-align: center; padding: 12vh 16px 0; }
 .block { min-width: 0; scroll-margin: 24px; }
 .block.hit > * { outline: 2px solid var(--warn); outline-offset: 6px; border-radius: var(--r-lg); }
