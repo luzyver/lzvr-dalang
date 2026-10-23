@@ -671,14 +671,17 @@ HTTP routes) from [codebase-memory-mcp](https://github.com/DeusData/codebase-mem
 file by file. Give the path of the CBM binary (a release from its GitHub page; nothing to configure in the agents),
 **Test binary**, turn it on.
 
-- **Dalang runs it**: one CBM session for the whole server, started with Dalang's state dir as its folder. A project
-  is indexed only when someone asks, never on its own (not after turns, pulls or edits), so indexing never takes the
-  machine by surprise: the owner with **Index** / **Reindex** in the tab, an admin with the brain button in a chat's
+- **Dalang runs it**: one CBM session for the whole server, started with Dalang's state dir as its folder. A project's
+  first index is made only when someone asks: the owner with **Index** / **Reindex** in the tab, an admin with the brain button in a chat's
   header (shown only while code memory is on and the project's code changed since its graph, or it has none yet), and anyone else with that button too, as a request an admin or the owner approves in **Approvals** (it runs
   then; a push notification says one waits). Everyone only for projects they may open. A first index uses several cores for seconds to minutes;
   indexing again only reads what changed and takes seconds. The tab lists each project's index, and marks it
   **files changed since** when the project's git state (HEAD or uncommitted changes) differs from the one it indexed.
-  Turns are told when their graph was built, so they know newer code is not in it.
+- **A turn reads the graph of the code as it is now**: when a prompt arrives for a project whose graph exists but whose
+  files changed since, Dalang reindexes it first and the agent starts only once that is done (the chat shows a note;
+  a cancel stops the wait). A reindex that fails is noted too, and the turn goes on with the previous graph. Nothing
+  else reindexes on its own (not pulls, edits or time passing). A chat with its own worktree reads the graph of the
+  project's main folder, so only changes there count.
 - **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), also
   when the project goes while its index still runs. One CBM cannot delete right then (code memory off) is deleted
   when the next CBM session starts.

@@ -182,6 +182,9 @@ export class ThreadModel {
       case 'account.selected': this.account = d.account || ''; break;
       case 'account.switched': this.#note(`Usage limit on ${d.from}: switching account`, 'warn', e.id); break;
       case 'account.exhausted': this.#note(d.message || 'Every account is at its usage limit', 'err', e.id); break;
+      case 'code_memory.indexing': this.#note('The code changed since its graph was indexed: reindexing before the agent starts', 'dim', e.id); break;
+      case 'code_memory.indexed': this.#note('Code graph reindexed', 'dim', e.id); break;
+      case 'code_memory.failed': this.#note('Could not reindex the code graph (see Settings → MCP → Code memory): the agent reads the previous one', 'warn', e.id); break;
       case 'thread.started':
       case 'item.updated':
       case 'conversation.title':

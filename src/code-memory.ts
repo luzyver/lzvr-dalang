@@ -3,7 +3,8 @@
  * (symbols, calls, imports, routes) that agents query instead of grepping file by file.
  *
  * Dalang owns it, so the agents never run CBM themselves: one long-lived CBM session for the whole server, each
- * project indexed only when someone asks for it (Settings → MCP → Code memory → Index), and CBM's query tools passed on
+ * project indexed first when someone asks for it (Settings → MCP → Code memory → Index) and again before a turn when
+ * its files changed since (see refresh), and CBM's query tools passed on
  * through this gateway's /mcp with the project taken from the chat. That keeps a chat to
  * its own project and the projects its user may open: CBM itself would show every indexed repository to anyone.
  */
@@ -281,6 +282,23 @@ export class CodeMemory {
     if (!st?.graph || st.fingerprint === null) return null;
     const fp = await fingerprint(project.path).catch(() => null);
     return fp === null ? null : fp !== st.fingerprint;
+  }
+
+  /**
+   * Before a turn: reindex the project when its files changed since the last index, so the turn reads the graph of the
+   * code as it is now. `onIndex` is called once the reindex starts. 'fresh': nothing to do (up to date, no index yet,
+   * code memory off, or not a git repository); else how the reindex ended.
+   */
+  async refresh(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'> {
+    if (!this.active || !this.state(project.id)?.graph) return 'fresh';
+    const running = this.running.get(project.id);
+    if (running) await running; // one already on its way may leave nothing to do
+    if ((await this.changedSinceIndex(project)) !== true) {
+      return !running ? 'fresh' : this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
+    }
+    onIndex?.();
+    await this.index(project);
+    return this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
   }
 
   /** Forget a deleted project's graph. */

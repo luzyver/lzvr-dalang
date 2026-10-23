@@ -123,7 +123,7 @@ describe('code memory', () => {
     expect((await agent.listTools()).tools.map((x) => x.name).some((n) => n.startsWith('code_'))).toBe(false);
   });
 
-  it('says when files changed since the index, never indexes on its own, and forgets a deleted project', async () => {
+  it('says when files changed since the index, reindexes only before a turn, and forgets a deleted project', async () => {
     const t = await boot();
     const p = t.store.createProject('proj', join(t.root, 'proj'));
     const git = (...args: string[]) => execFileSync('git', ['-C', p.path, ...args]);
@@ -136,17 +136,31 @@ describe('code memory', () => {
     expect(await changed()).toBe(false);
     writeFileSync(join(p.path, 'a.ts'), 'export const a = 2;\n');
     expect(await changed()).toBe(true);
-    // A turn in the project folder, or time passing, indexes nothing.
+    // Time passing indexes nothing; a turn waits for the changed code to be reindexed before its agent starts.
     const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
     const before = indexes();
-    t.store.enqueue(t.store.createConversation(p.id).id, 'hi', []);
-    t.dispatcher.kick(t.store.listConversations(p.id)[0]!.id);
-    await until(() => turnsDone(t.store, t.store.listConversations(p.id)[0]!.id, 1));
     await new Promise((r) => setTimeout(r, 300));
     expect(indexes()).toBe(before);
-    await t.index(p.id);
-    await until(() => indexes() === before + 1 && t.codeMemory.state(p.id)?.status === 'ready');
+    let release!: () => void;
+    t.hold.index = new Promise((r) => { release = r; });
+    const conv = t.store.createConversation(p.id);
+    t.store.enqueue(conv.id, 'hi', []);
+    t.dispatcher.kick(conv.id);
+    await until(() => indexes() === before + 1);
+    const types = () => t.store.eventsAfter(conv.id, 0).map((e) => e.type);
+    expect(types()).toContain('code_memory.indexing');
+    expect(types().some((x) => x.startsWith('item.'))).toBe(false); // the agent has not started
+    release();
+    t.hold.index = null;
+    await until(() => turnsDone(t.store, conv.id, 1));
+    const seen = types();
+    expect(seen.indexOf('code_memory.indexed')).toBeLessThan(seen.findIndex((x) => x.startsWith('item.')));
     expect(await changed()).toBe(false);
+    // Nothing changed since: the next turn starts at once.
+    t.store.enqueue(conv.id, 'again', []);
+    t.dispatcher.kick(conv.id);
+    await until(() => turnsDone(t.store, conv.id, 2));
+    expect(indexes()).toBe(before + 1);
     expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
     await until(() => t.calls.some((c) => c.name === 'delete_project'));
     expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' });
