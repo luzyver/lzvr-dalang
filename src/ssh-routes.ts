@@ -93,10 +93,12 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     // (an admin could otherwise point a host at a server of their own and read its password there).
     const same = !!old && old.host === host && old.port === port && old.user === b.user.trim();
     const keep = (sent: string | undefined, was: string | undefined) => (sent === undefined ? (same ? was ?? '' : '') : sent);
-    const privateKey = b.privateKey === undefined ? keep(undefined, old?.privateKey) : b.privateKey.trim() ? `${b.privateKey.trim()}\n` : '';
+    // A host on a saved key was loaded with that key's secrets: they are the key's, never kept as the host's own.
+    const own = old?.keyId ? { privateKey: '', passphrase: '' } : old;
+    const privateKey = b.privateKey === undefined ? keep(undefined, own?.privateKey) : b.privateKey.trim() ? `${b.privateKey.trim()}\n` : '';
     const h: SshHost = {
       id, label: b.label.trim(), host, port, user: b.user.trim(), auth: b.auth, note: b.note?.trim() ?? '',
-      password: keep(b.password, old?.password), privateKey, passphrase: keep(b.passphrase, old?.passphrase),
+      password: keep(b.password, old?.password), privateKey, passphrase: keep(b.passphrase, own?.passphrase),
       sudoPassword: keep(b.sudoPassword, old?.sudoPassword),
       // A key trusted for one server says nothing about another: a new address starts untrusted.
       hostKey: b.hostKey ?? (old && old.host === host && old.port === port ? old.hostKey : ''),

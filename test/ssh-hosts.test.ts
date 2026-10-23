@@ -136,7 +136,10 @@ describe('SSH hosts', () => {
 
     expect((await t.put('kv2', { auth: 'key', keyId: 'missing', password: undefined })).json().error).toMatch(/no saved key missing/);
     expect((await t.app.inject({ method: 'DELETE', url: '/api/ssh/keys/deploy', headers: AUTH })).statusCode).toBe(409);
-    await t.put('kv', { auth: 'password' });
+    // Off the saved key, the host keeps no copy of it: its own key must be given.
+    expect((await t.put('kv', { auth: 'key', keyId: '', password: undefined })).json().error).toMatch(/private key is needed/);
+    expect((await t.put('kv', { auth: 'password' })).json()).toMatchObject({ hasKey: false, hasPassphrase: false });
+    expect(t.store.getKv('ssh_hosts')).not.toContain('PRIVATE KEY');
     expect((await t.app.inject({ method: 'DELETE', url: '/api/ssh/keys/deploy', headers: AUTH })).statusCode).toBe(204);
   });
 

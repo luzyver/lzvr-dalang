@@ -275,7 +275,7 @@ export function SshHostsView() {
       : tab === 'keys' ? html`<${KeysPane} keys=${keys} reload=${loadAll} onOpenHost=${openHost} />`
       : html`<div class=${cx('ssh-layout', !list.length && 'single')}>
         ${list.length > 0 && html`<div class="ssh-side">
-          ${list.length > 5 && html`<label class="ssh-find"><${Icon} name="search" />
+          ${(list.length > 5 || q) && html`<label class="ssh-find"><${Icon} name="search" />
             <input type="search" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} placeholder="Find a host" aria-label="Find a host" /></label>`}
           <nav class="ssh-list" aria-label="SSH hosts">
             ${hits.map((h) => html`<button key=${h.id} class=${cx('ssh-item', shown?.id === h.id && 'active')} title=${h.label} onClick=${() => setSel(h.id)}>
