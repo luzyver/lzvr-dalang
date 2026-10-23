@@ -341,6 +341,28 @@ describe('Dispatcher', () => {
     expect(item.args.slice(item.args.indexOf('resume'), item.args.indexOf('resume') + 2)).toEqual(['resume', thread]);
   });
 
+  it('shutdown queues a cut-off turn to resume before the agent is gone, so a timeout cannot lose it', async () => {
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'slow' });
+    store.enqueue(conv.id, 'long task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    const done = dispatcher.shutdown();
+    expect(dispatcher.isRunning(conv.id)).toBe(true); // the agent and the checkpoint after it are still to come
+    expect(store.listQueue(conv.id)).toMatchObject([{ prompt: 'long task', resume: true }]);
+    await done;
+    expect(store.listQueue(conv.id)).toHaveLength(1); // not queued twice
+  });
+
+  it('shutdown does not resume a turn the person cancelled', async () => {
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_MODE: 'slow' });
+    store.enqueue(conv.id, 'long task', []);
+    dispatcher.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'turn.started'));
+    dispatcher.cancel(conv.id);
+    await dispatcher.shutdown();
+    expect(store.listQueue(conv.id)).toEqual([]);
+  });
+
   it('shutdown with a drain time lets running turns finish and holds new prompts for after the restart', async () => {
     const { store, dispatcher, conv } = setupDispatcher({ FAKE_DELAY_MS: '500' });
     store.enqueue(conv.id, 'task', []);

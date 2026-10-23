@@ -20,12 +20,13 @@ $log = Join-Path $repo 'state\autostart.log'
 function Fail($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 function Info($msg) { Write-Host $msg -ForegroundColor DarkGray }
 
-# A setting from the environment, else .env, else the default.
+# A setting from the environment, else .env, else the default. In .env a value is quoted, or ends at a # comment.
 function Get-Setting($name, $default) {
   if (Test-Path "env:$name") { return (Get-Item "env:$name").Value }
   if (Test-Path '.env') {
+    $pattern = '^\s*' + $name + '\s*=\s*(?:"([^"]*)"|''([^'']*)''|([^#]*?))\s*(?:#.*)?$'
     foreach ($line in Get-Content '.env') {
-      if ($line -match "^\s*$name\s*=\s*(.*?)\s*$") { return $Matches[1].Trim('"', "'") }
+      if ($line -match $pattern) { return "$($Matches[1])$($Matches[2])$($Matches[3])" }
     }
   }
   return $default
@@ -62,11 +63,11 @@ function Stop-Dalang {
 # Dalang from before this left the file alone: then the usual Stop-Dalang cuts the turns off.
 function Request-Drain {
   if (-not (Get-Listener)) { return }
+  $minutes = [double](Get-Setting 'DRAIN_MINUTES' 5) # read first: a bad value fails here, before Dalang is asked to stop
   $flag = Join-Path (Get-Setting 'STATE_DIR' 'state') 'restart'
   New-Item -ItemType File -Force $flag | Out-Null
   for ($i = 0; $i -lt 10 -and (Test-Path $flag); $i++) { Start-Sleep -Milliseconds 500 }
   if (Test-Path $flag) { Remove-Item $flag -Force; Info 'This Dalang cannot wait for running chats: stopping it now.'; return }
-  $minutes = [double](Get-Setting 'DRAIN_MINUTES' 5)
   Info "Waiting for running chats to finish (up to $minutes min; new prompts wait in their queue)..."
   $deadline = (Get-Date).AddMinutes($minutes).AddSeconds(30)
   while ((Get-Listener) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }

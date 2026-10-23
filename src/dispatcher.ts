@@ -208,8 +208,9 @@ export class Dispatcher {
   revokeMcpToken(token: string): void { this.mcpTokens.delete(token); }
 
   /**
-   * Stop for good. No new turn starts; running ones get up to `drainMs` to finish, then are killed (status `interrupted`)
-   * and queued again with `resume`, so after the restart they continue in the same session. Resolves once nothing runs.
+   * Stop for good. No new turn starts; running ones get up to `drainMs` to finish, then are queued again with `resume`
+   * (so after the restart they continue in the same session) and killed (status `interrupted`). Resolves once nothing
+   * runs, or after `timeoutMs` more.
    */
   async shutdown(drainMs = 0, timeoutMs = 10_000): Promise<void> {
     this.draining = true;
@@ -222,7 +223,15 @@ export class Dispatcher {
       await idle(drainMs);
     }
     this.stopping = true;
-    for (const ac of this.active.values()) ac.abort();
+    for (const [convId, ac] of this.active) {
+      // Queued again before the kill: stopping the agent and the checkpoint after it may outlast `timeoutMs`, and the
+      // process exits then. One the person cancelled meanwhile is not resumed.
+      const item = this.running.get(convId);
+      if (item && !ac.signal.aborted) {
+        try { this.store.requeueResume(item); } catch (e) { console.error(`cannot queue chat ${convId} to resume`, e); }
+      }
+      ac.abort();
+    }
     await idle(timeoutMs);
   }
 
@@ -541,10 +550,7 @@ export class Dispatcher {
     const conversationStatus = failed && !cancelled ? 'failed' : 'idle';
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
-    if (interrupted) { // shutting down: no notification, the turn goes on after the restart
-      if (this.store.getConversation(convId)) this.store.requeueResume(item);
-      return;
-    }
+    if (interrupted) return; // shutting down: no notification, shutdown queued the turn to go on after the restart
     // A sub-agent's work comes back to its parent, whose turn reading the report is remembered instead.
     if (this.opts.autoMemory && status === 'completed' && !conv.parent && lastMessage.trim() && this.store.getMemoryPolicy().auto) {
       void this.remember(conv, project, item.prompt, lastMessage, item.author);
