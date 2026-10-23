@@ -143,7 +143,8 @@ const accountEnvFor = (forge: Forge, command: string[], cwd: string, fullRepo: s
 export function parsePrUrl(url: string): { forge: Forge | null; host: string; repo: string; number: number } | null {
   const gh = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
   if (gh) return { forge: 'github', host: gh[1]!.toLowerCase(), repo: gh[2]!, number: Number(gh[3]) };
-  const gl = /^https?:\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(url);
+  // Older GitLab versions leave out the `/-/` (`group/repo/merge_requests/1`).
+  const gl = /^https?:\/\/([^/]+)\/(.+?)(?:\/-)?\/merge_requests\/(\d+)/.exec(url);
   if (gl) return { forge: 'gitlab', host: gl[1]!.toLowerCase(), repo: gl[2]!, number: Number(gl[3]) };
   return null;
 }
