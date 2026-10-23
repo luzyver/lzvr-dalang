@@ -8,7 +8,7 @@ import { DiffView, diffStats } from './diff.js';
 import { copyText } from './code.js';
 import { downloadFile, fetchBlob } from './api.js';
 import { toast } from './store.js';
-import { clock, duration, plural, tokens } from './format.js';
+import { clock, duration, plural, usageText, usageTitle } from './format.js';
 import { fullStep } from './stream.js';
 
 /** Re-renders every second: for "running for 2m 14s". */
@@ -195,7 +195,7 @@ function Agent({ b, conversationId }) {
     <${Markdown} text=${b.text} conversationId=${conversationId} />
     <div class="msg-actions">
       <button class="icon-btn sm" aria-label="Copy answer" title="Copy as Markdown" onClick=${() => copyText(b.text)}><${Icon} name="copy" /></button>
-      <span class="msg-meta">${clock(b.at)}${u && ` · ${tokens(u.input_tokens)} in · ${tokens(u.output_tokens)} out`}</span>
+      <span class="msg-meta" title=${u ? `This turn\n${usageTitle(u)}` : undefined}>${clock(b.at)}${u && ` · ${usageText(u)}`}</span>
     </div>
   </div>`;
 }

@@ -440,6 +440,7 @@ Known limits:
 | `MCP_INJECT` | off | `1` gives every Codex turn this gateway's `/mcp` (see "MCP" below). Off by default; turn it on only after checking it works with your Codex version. |
 | `MCP_URL` | `http://127.0.0.1:<PORT>/mcp` | Where Codex should reach `/mcp` when `MCP_INJECT=1`. |
 | `AUTO_MEMORY` | on | `0` stops keeping facts from each finished turn in the project memory (see "Project memory" below); what agents and people save is still kept and shown. |
+| `CONTEXT_COMPACT_TOKENS` | `100000` | Native compaction window for chat turns, from `100000` to `1000000` tokens. `0` leaves the CLI's own settings unchanged; it does not disable native compaction. See "Active chat context" below. |
 | `AUTO_TITLE` | on | `0` turns off generated chat titles: the chat's agent gives each new chat a short title from its first prompt (one small read-only request, counted against the account's usage), else the first prompt is the title. |
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
@@ -606,6 +607,27 @@ filled in; every field can be changed. In a server's tab a switch turns it off w
 writes stay blocked) and Claude Code 2.1.299. An older Codex may not know `default_tools_approval_mode`, and then
 refuses every MCP call ("requires approval"). With `MCP_INJECT=1`, start one chat and ask it to list its MCP tools;
 if it cannot use them, update the CLI, or unset `MCP_INJECT` (everything else keeps working).
+
+### Active chat context
+
+Chat turns request earlier **native compaction** in both agents, including resumed sessions. Codex receives
+[`model_auto_compact_token_limit`](https://developers.openai.com/codex/config-reference); Claude Code receives
+[`CLAUDE_CODE_AUTO_COMPACT_WINDOW`](https://code.claude.com/docs/en/env-vars). The default is 100,000 tokens.
+The CLI applies its own model limits, headroom and compaction settings; the effective trigger can be earlier.
+Compaction must be enabled in the CLI. `CONTEXT_COMPACT_TOKENS=0` removes Dalang's override and retention guidance.
+Title generation, memory extraction and commit-message requests keep their existing settings.
+
+The CLI watches **active context**, not accumulated input tokens across a session or all calls within a turn.
+It creates a continuation summary when needed and keeps the same session. Dalang adds guidance to preserve the
+original goal, user constraints/corrections, decisions, modified files, checks and unfinished work. Older detail
+may be omitted from the model's summary; the full transcript remains in Dalang and agents with MCP can retrieve
+missing messages using `get_events` with `messages_only:true`, or tool output using full events.
+
+The chat footer shows **Context** separately from **Chat total** when a real sample is available. Codex samples come
+from `last_token_usage` in the session rollout; Claude samples come from the latest assistant message's usage,
+including cached input and output. These are last-reported samples, not estimates from cumulative usage. A native
+compaction boundary invalidates older samples until a fresh request reports one, and the chat records a
+**Context compacted** note. No extra summary request is made on every turn, and no SQLite migration is required.
 
 ### Project memory
 

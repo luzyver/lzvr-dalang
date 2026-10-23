@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { resolve } from 'node:path';
+import { DEFAULT_COMPACT_TOKENS } from './context.js';
 
 export interface Config {
   token: string;
@@ -35,6 +36,8 @@ export interface Config {
   autoTitle?: boolean;
   /** Keep what is worth keeping from each finished turn in its project's memory (see memory.ts; Settings can turn it off too). */
   autoMemory?: boolean;
+  /** Native context compaction window in tokens; 0 leaves the CLI's own settings unchanged. */
+  contextCompactTokens?: number;
   /** When set, every Codex turn is given this MCP endpoint plus a token bound to its conversation. */
   mcpUrl?: string;
   /** Mailer service base URL (`POST <url>/mail/send`) that delivers the sign-in codes. */
@@ -71,6 +74,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!Number.isFinite(blockMinutes) || blockMinutes <= 0) throw new Error('LIMIT_BLOCK_MINUTES must be a positive number');
   const drainMinutes = Number(env.DRAIN_MINUTES ?? 5);
   if (!Number.isFinite(drainMinutes) || drainMinutes < 0) throw new Error('DRAIN_MINUTES must be 0 or a positive number');
+  const contextCompactTokens = Number(env.CONTEXT_COMPACT_TOKENS ?? DEFAULT_COMPACT_TOKENS);
+  if (!Number.isInteger(contextCompactTokens) || (contextCompactTokens !== 0 && (contextCompactTokens < 100_000 || contextCompactTokens > 1_000_000))) {
+    throw new Error('CONTEXT_COMPACT_TOKENS must be 0 or an integer from 100000 to 1000000');
+  }
   const port = Number(env.PORT ?? 9876);
   const host = env.HOST ?? '127.0.0.1';
   const authBypass = env.AUTH_BYPASS === 'true' || env.AUTH_BYPASS === '1';
@@ -97,6 +104,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     mcpCrossSend: env.MCP_CROSS_SEND === 'auto' ? 'auto' : 'approve',
     autoTitle: env.AUTO_TITLE !== '0',
     autoMemory: env.AUTO_MEMORY !== '0',
+    contextCompactTokens,
     mailerUrl: env.MAILER_URL?.replace(/\/+$/, '') || undefined,
     mailFrom: env.MAIL_FROM || undefined,
     ownerEmails: (env.LZVR_OWNER_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),

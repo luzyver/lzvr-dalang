@@ -228,6 +228,23 @@ describe('model choice', () => {
   });
 });
 
+describe('agent choice', () => {
+  it('moves a chat to another CLI with that CLI\'s model, dropping its old session', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    t.store.setThread(conv.id, 'thread-old');
+    t.store.setModel(conv.id, 'gpt-5-codex');
+    const put = (payload: object) => t.app.inject({ method: 'PUT', url: `/api/conversations/${conv.id}/backend`, headers: AUTH, payload });
+    expect((await put({ backend: 'claude', model: 'opus' })).statusCode).toBe(204);
+    expect(t.store.getConversation(conv.id)).toMatchObject({ backend: 'claude', thread_id: null, model: 'opus' });
+    expect((await put({ backend: 'gemini' })).statusCode).toBe(400);
+    expect((await put({ backend: 'claude', model: '--bad' })).statusCode).toBe(400);
+    t.store.setThread(conv.id, 'thread-claude');
+    expect((await put({ backend: 'claude' })).statusCode).toBe(204); // same CLI: the session stays
+    expect(t.store.getConversation(conv.id)!.thread_id).toBe('thread-claude');
+  });
+});
+
 describe('model list', () => {
   it('answers with a list even when Codex cannot report its models', async () => {
     const t = setupApp();

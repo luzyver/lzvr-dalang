@@ -123,6 +123,19 @@ export class ThreadModel {
     const d = e.data || {};
     const at = ms(e.timestamp);
     switch (e.type) {
+      case 'turn.selection': {
+        if (!d.previous || !d.current) break;
+        const label = (backend) => backend === 'claude' ? 'Claude Code' : 'Codex';
+        const model = (selection) => selection.model || `${label(selection.backend)} default`;
+        const changes = [];
+        if (d.previous.backend !== d.current.backend) changes.push(`Agent changed: ${label(d.previous.backend)} → ${label(d.current.backend)}`);
+        if (d.previous.model !== d.current.model) changes.push(`Model changed: ${model(d.previous)} → ${model(d.current)}`);
+        if (changes.length) {
+          this.#closeSteps();
+          this.#note(changes.join(' · '), 'dim', e.id);
+        }
+        break;
+      }
       case 'user.prompt':
         this.#closeSteps();
         this.#turnAgent = null;
@@ -165,7 +178,7 @@ export class ThreadModel {
         break;
       }
       case 'turn.completed':
-        if (this.#turnAgent) { this.#turnAgent.usage = d.usage || {}; this.#turnAgent.v++; }
+        if (this.#turnAgent) { this.#turnAgent.usage = 'turn_usage' in d ? d.turn_usage : d.usage || null; this.#turnAgent.v++; }
         else this.#note('Turn finished without an answer', 'dim', e.id);
         this.#endTurn();
         break;
@@ -182,6 +195,9 @@ export class ThreadModel {
       case 'account.selected': this.account = d.account || ''; break;
       case 'account.switched': this.#note(`Usage limit on ${d.from}: switching account`, 'warn', e.id); break;
       case 'account.exhausted': this.#note(d.message || 'Every account is at its usage limit', 'err', e.id); break;
+      case 'context.compacting': this.#closeSteps(); this.live = { label: 'Compacting context', detail: '' }; break;
+      case 'context.compacted': this.live = null; this.#closeSteps(); this.#note('Context compacted; continuing in the same session. Full history remains available.', 'dim', e.id); break;
+      case 'context.usage': break;
       case 'code_memory.indexing': this.#note('The code changed since its graph was indexed: reindexing before the agent starts', 'dim', e.id); break;
       case 'code_memory.indexed': this.#note('Code graph reindexed', 'dim', e.id); break;
       case 'code_memory.failed': this.#note('Could not reindex the code graph (see Settings → MCP → Code memory): the agent reads the previous one', 'warn', e.id); break;

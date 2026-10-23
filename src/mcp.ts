@@ -183,14 +183,21 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     description: 'Change the model and/or reasoning effort of a conversation, from its next turn on (its session carries on). '
       + 'An agent may change its own conversation and the ones it created, within what list_models allows; \'\' goes back to the default. '
       + 'Move one step up at a time, when a result falls short (failing tests, unfinished or wrong work), not by default.',
-    inputSchema: { conversation_id: z.string(), model: MODEL.optional(), effort: EFFORT.optional() },
-  }, async ({ conversation_id, model, effort }) => {
+    inputSchema: {
+      conversation_id: z.string(), model: MODEL.optional(), effort: EFFORT.optional(),
+      backend: z.enum(BACKENDS).optional().describe('move it to another agent CLI: a new session, told the chat so far; '
+        + 'its model and effort go back to that CLI\'s defaults unless given. Not while a turn runs in it'),
+    },
+  }, async ({ conversation_id, model, effort, backend }) => {
     const c = conv(conversation_id);
     if (!c) return noConv(conversation_id);
     if (source && c.id !== source && c.parent !== source) return fail('an agent may only change its own conversation and the ones it created');
-    if (model === undefined && effort === undefined) return fail('give model, effort or both');
-    const why = refuseChoice(store, Boolean(source), c.backend, model, effort);
+    if (model === undefined && effort === undefined && backend === undefined) return fail('give model, effort, backend or a mix');
+    const moving = backend !== undefined && backend !== c.backend;
+    if (moving && dispatcher.isRunning(c.id)) return fail('a turn is running in that conversation: change its backend once it is done');
+    const why = refuseChoice(store, Boolean(source), backend ?? c.backend, model, effort);
     if (why) return fail(why);
+    if (moving) store.setBackend(c.id, backend);
     if (model !== undefined) store.setModel(c.id, model);
     if (effort !== undefined) store.setEffort(c.id, effort);
     return text(withEffective(store.getConversation(c.id)!));
@@ -263,21 +270,26 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
       + `By default long tool output (command output, diffs, thoughts over ${CUT} characters) is cut and marked "cut": true, `
       + 'and item.updated events are left out; read one cut event in full with after_id = its id - 1, limit 1, full true. '
       + 'Either after an event id (after_id, limit; next_after_id continues), or by turns: last_turns gives the last turns '
-      + '(before turn before_turn when given; earlier_before_turn pages further back while more_earlier is true).',
+      + '(before turn before_turn when given; earlier_before_turn pages further back while more_earlier is true). '
+      + 'messages_only returns prompts and agent messages, excluding tools and other events to save context.',
     inputSchema: {
       conversation_id: z.string(), after_id: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional(),
       full: z.boolean().optional(), last_turns: z.number().int().min(1).max(50).optional(), before_turn: z.number().int().min(1).optional(),
+      messages_only: z.boolean().optional(),
     },
-  }, async ({ conversation_id, after_id, limit, full, last_turns, before_turn }) => {
+  }, async ({ conversation_id, after_id, limit, full, last_turns, before_turn, messages_only }) => {
     if (!conv(conversation_id)) return noConv(conversation_id);
     // Every event's text goes into the caller's context: cut what it rarely needs, and no indentation.
     const shape = (rows: StoredEvent[]) => {
       const events = [];
       for (const r of rows) {
+        if (messages_only && r.type !== 'user.prompt' && r.type !== 'item.completed') continue;
         const payload = full ? r.payload : compactPayload(r.type, r.payload);
         if (payload === null) continue;
         let data: unknown = null;
         try { data = JSON.parse(payload); } catch { /* keep null */ }
+        if (messages_only && r.type !== 'user.prompt'
+          && (data as { item?: { type?: string } } | null)?.item?.type !== 'agent_message') continue;
         events.push({ id: r.id, type: r.type, data });
       }
       return events;

@@ -13,6 +13,25 @@ function fresh() {
 }
 
 describe('Store', () => {
+  it('keeps context samples separate from usage and invalidates them on compaction or backend/session switches', () => {
+    const { store, conv } = fresh();
+    const turn = store.startTurn(conv.id, 'task');
+    store.setThread(conv.id, 'session-a');
+    const sample = (threadId: string, tokens: number) => store.addEvent(turn, 'context.usage', JSON.stringify({ type: 'context.usage', backend: 'codex', thread_id: threadId, tokens, window: 200_000 }));
+    sample('session-a', 120_000);
+    expect(store.contextUsage(conv.id)).toEqual({ tokens: 120_000, window: 200_000 });
+    store.addEvent(turn, 'context.compacted', JSON.stringify({ type: 'context.compacted', thread_id: 'session-a', native_id: 'boundary-1' }));
+    expect(store.contextUsage(conv.id)).toBeNull();
+    expect(store.hasContextCompaction(conv.id, 'session-a', 'boundary-1')).toBe(true);
+    sample('session-a', 12_000);
+    expect(store.contextUsage(conv.id)?.tokens).toBe(12_000);
+    store.setThread(conv.id, 'session-b');
+    expect(store.contextUsage(conv.id)).toBeNull();
+    sample('session-b', 14_000);
+    store.setBackend(conv.id, 'claude');
+    expect(store.contextUsage(conv.id)).toBeNull();
+  });
+
   it('creates, lists and deletes projects (cascading to conversations)', () => {
     const { store, project, conv } = fresh();
     expect(store.listProjects().map((p) => p.id)).toEqual([project.id]);

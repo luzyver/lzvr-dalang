@@ -571,6 +571,22 @@ export function buildApp(
     return reply.code(204).send();
   });
 
+  // Another agent CLI from the next turn on, with that CLI's `model` (optional; '' = its default). A new session, told the
+  // chat so far. Not while a turn runs: it would record its old session's thread for the new CLI.
+  app.put<{ Params: { id: string }; Body: { backend: Backend; model?: string } }>('/api/conversations/:id/backend', {
+    schema: { body: { type: 'object', required: ['backend'], additionalProperties: false,
+      properties: { backend: { enum: [...BACKENDS] }, model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63})?$' } } } },
+  }, (req, reply) => {
+    const conv = store.getConversation(req.params.id);
+    if (!conv) return notFound(reply);
+    if (conv.backend !== req.body.backend && dispatcher.isRunning(conv.id)) {
+      return reply.code(409).send({ error: 'a turn is running in this chat: wait for it or stop it first' });
+    }
+    store.setBackend(conv.id, req.body.backend);
+    if (req.body.model !== undefined) store.setModel(conv.id, req.body.model);
+    return reply.code(204).send();
+  });
+
   app.put<{ Params: { id: string }; Body: { effort: string } }>('/api/conversations/:id/effort', {
     schema: { body: { type: 'object', required: ['effort'], additionalProperties: false,
       properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] } } } },
@@ -582,7 +598,7 @@ export function buildApp(
 
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
-    return conv ? { ...conv, turns: store.listTurns(conv.id) } : notFound(reply);
+    return conv ? { ...conv, turns: store.listTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
   });
 
   // Serve links from agent answers only from this chat's own worktree/project.
@@ -685,11 +701,16 @@ export function buildApp(
     if (!store.getConversation(id)) return notFound(reply);
     const num = (v: string | undefined) => (Number(v) > 0 ? Math.floor(Number(v)) : undefined);
     const page = store.historyPage(id, { turns: Math.min(num(req.query.turns) ?? 10, 200), before: num(req.query.before), focus: num(req.query.focus) });
+    const usage = store.tokenUsage(id);
     const events = [];
     for (const e of page.events) {
       const payload = compactPayload(e.type, e.payload);
       if (payload === null) continue;
-      try { events.push({ id: e.id, type: e.type, data: JSON.parse(payload) as unknown, timestamp: e.created_at }); } catch { /* not JSON: the stream drops it too */ }
+      try {
+        const data = JSON.parse(payload);
+        if (e.type === 'turn.completed') data.turn_usage = usage.byEvent.get(e.id) ?? null;
+        events.push({ id: e.id, type: e.type, data, timestamp: e.created_at });
+      } catch { /* not JSON: the stream drops it too */ }
     }
     const last = page.events.length ? page.events[page.events.length - 1]!.id : 0;
     return { events, before: page.first, more: page.more, last };
@@ -707,14 +728,19 @@ export function buildApp(
     if (!store.getConversation(id)) return notFound(reply);
     const after = Number(req.headers['last-event-id'] ?? req.query.after ?? 0) || 0;
     const compact = req.query.compact === '1';
+    let usage = compact ? store.tokenUsage(id) : null;
     reply.hijack();
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.flushHeaders(); // otherwise headers wait for the first event and an idle stream looks hung
     type Ev = { id: number; type: string; payload: string; created_at: string };
     const write = (e: Ev) => {
-      const payload = compact ? compactPayload(e.type, e.payload) : e.payload;
+      let payload = compact ? compactPayload(e.type, e.payload) : e.payload;
       if (payload === null) return true; // nothing written, so nothing to wait for
+      if (compact && e.type === 'turn.completed') {
+        if (!usage?.byEvent.has(e.id)) usage = store.tokenUsage(id); // a new live completion
+        try { payload = JSON.stringify({ ...JSON.parse(payload), turn_usage: usage!.byEvent.get(e.id) ?? null }); } catch { /* retain the original payload */ }
+      }
       return res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${payload}\ntimestamp: ${e.created_at}\n\n`);
     };
     // The history is replayed at the pace the reader takes it (a long chat is megabytes); live events that come

@@ -4,6 +4,8 @@ import { EventEmitter } from 'node:events';
 import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
+import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
+import { withHistory } from './chat-context.js';
 import { loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
@@ -14,9 +16,11 @@ import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
 import { RAW, type CodexEvent } from './runner.js';
-import { codexLimits, findRollout, type LimitWindow } from './sessions.js';
+import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
 import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
+
+export { withHistory } from './chat-context.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
@@ -55,6 +59,8 @@ export interface DispatcherOpts {
    * Settings has it on (else only agents and people add memories). Every turn is shown the project's memory either way.
    */
   autoMemory?: boolean;
+  /** 0 keeps native CLI settings. Applies only to chat turns, not title/memory/commit-message requests. */
+  contextCompactTokens?: number;
   /** Snapshot the agent's folder before and after each turn, so a turn's changes can be shown and undone (default on). */
   checkpoints?: boolean;
   /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
@@ -413,6 +419,12 @@ export class Dispatcher {
 
     const turnId = this.store.startTurn(convId, item.prompt);
     this.store.setStatus(convId, 'running');
+    const model = conv.model || this.store.getDefaultModel(conv.backend);
+    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
+    const current = { backend: conv.backend, model };
+    const previous = this.store.lastTurnSelection(convId);
+    const changed = previous && (previous.backend !== current.backend || previous.model !== current.model);
+    this.emit(convId, turnId, { type: 'turn.selection', current, ...(changed && { previous }) });
     this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
       ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
     if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
@@ -437,10 +449,10 @@ export class Dispatcher {
         '-c', 'mcp_servers.dalang.default_tools_approval_mode="approve"']
       : [];
     const servers = this.mcpServersFor?.(item.author);
+    const compactTokens = this.opts.contextCompactTokens ?? DEFAULT_COMPACT_TOKENS;
     if (servers && !claude) extraArgs.push(...servers.codexArgs);
-    const model = conv.model || this.store.getDefaultModel(conv.backend);
-    const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
     if (!claude) {
+      if (compactTokens > 0) extraArgs.push('-c', `model_auto_compact_token_limit=${compactTokens}`);
       if (model) extraArgs.push('-m', model);
       if (effort) extraArgs.push('-c', `model_reasoning_effort="${effort}"`);
     }
@@ -470,6 +482,7 @@ export class Dispatcher {
       memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
       skillsGuide(skills),
       agentGitGuide(agentGit),
+      ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
     ].filter(Boolean).join('\n\n');
     // A JSON string is also a valid TOML basic string, which is what `-c` reads.
     if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
@@ -504,11 +517,17 @@ export class Dispatcher {
         const attemptStart = Date.now() - 1000;
         const usedDiffs = new Set<string>();
         // After work has already happened, resending the bare request makes the agent redo it (commits, deploys...).
-        const attemptPrompt = workDone
+        const asked = workDone
           ? `Continue where you left off. An earlier attempt of this request was interrupted when ${cutBy}. ` +
             `Check what is already done and do not repeat completed steps.\n\nOriginal request:\n${prompt}`
           : prompt;
-        const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv, ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
+        // No session yet in a chat that already has turns (it moved to this CLI, or its first ones never got one): the
+        // new session is told the chat so far, else it starts knowing nothing of it.
+        const attemptPrompt = threadId ? asked : withHistory(this.store.priorTurns(convId, turnId), asked,
+          mcpToken ? { conversationId: convId, beforeTurn: turnId } : undefined);
+        const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv,
+          ...(claude && compactTokens > 0 && { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactTokens) }),
+          ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };
         const events = claude
           ? runClaudeTurn({
@@ -525,6 +544,9 @@ export class Dispatcher {
           }
           if (ev.type === 'account.limits') { windows = ev.windows as LimitWindow[]; this.recordLimits('claude', home, windows); continue; }
           if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
+          if (ev.type === 'context.usage' || ev.type === 'context.compacted') {
+            ev = { ...ev, backend: conv.backend, thread_id: this.store.getConversation(convId)?.thread_id };
+          }
           if (ev.type.startsWith('item.')) worked = true;
           if (ev.type === 'turn.completed') { usage = ev.usage ?? null; failed = false; completed = true; }
           const msg = ev.item as { type?: string; text?: unknown } | undefined;
@@ -538,10 +560,16 @@ export class Dispatcher {
           }
           this.emit(convId, turnId, ev);
         }
-        if (!claude) { // Codex only reports usage inside the session file it writes
+        if (!claude) { // Codex's active-context samples and rate-limit windows live in its session rollout.
           const t = this.store.getConversation(convId)?.thread_id;
-          const sessionsHome = this.accounts.primary();
-          if (t && sessionsHome) this.recordLimits('codex', home, windows = codexLimits(sessionsHome, t));
+          if (t) {
+            const info = codexSessionInfo(home, t);
+            this.recordLimits('codex', home, windows = info.limits);
+            if (info.compactedAt && Date.parse(info.compactedAt) >= attemptStart && !this.store.hasContextCompaction(convId, t, info.compactedAt)) {
+              this.emit(convId, turnId, { type: 'context.compacted', backend: 'codex', thread_id: t, native_id: info.compactedAt });
+            }
+            if (info.context) this.emit(convId, turnId, { type: 'context.usage', backend: 'codex', thread_id: t, ...info.context });
+          }
         }
         if (limited && !completed && !ac.signal.aborted) {
           // Not said in the failure: until the used-up usage window resets, else the configured time.

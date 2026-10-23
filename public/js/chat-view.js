@@ -13,6 +13,7 @@ import { Block, Elapsed, Live } from './thread.js';
 import { Composer } from './composer.js';
 import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
 import { MemoryButton } from './memory.js';
+import { tokens, usageText, usageTitle } from './format.js';
 
 /** The open chat, shared with the inspector. `version` goes up whenever the thread model changed. */
 export const chat = {
@@ -150,8 +151,6 @@ function ChatHead({ project, conv }) {
   const c = chat.conv.value || conv;
   const git = chat.git.value;
   const status = c?.status || 'idle';
-  const claude = (c?.backend || project?.backend) === 'claude';
-  const backend = claude ? 'Claude Code' : 'Codex';
   return html`<header class="chat-head">
     <button class="icon-btn sidebar-toggle" aria-label="Show sidebar" title="Sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
     <div class="crumbs">
@@ -159,7 +158,6 @@ function ChatHead({ project, conv }) {
       <${Icon} name="chevron-right" class="tiny dim crumb-sep" />
       <span class="crumb-title" title=${c?.title || 'New chat'}>${c?.title || 'New chat'}</span>
     </div>
-    <span class="backend" title=${`Agent: ${backend}`} aria-label=${backend} role="img"><${Icon} name=${claude ? 'asterisk' : 'code-xml'} /></span>
     ${status === 'running' && html`<span class="status running" title=${chat.model.account ? `on account ${chat.model.account}` : ''}>
       <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
     ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
@@ -319,6 +317,10 @@ export function ChatView({ id, focusEvent }) {
         ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
       </div>
     </div>
+    ${(conv?.token_usage || conv?.context_usage) && html`<div class="chat-usage" aria-label="Chat token usage">
+      ${conv?.context_usage && html`<span title="Context in the last model request, including its output. Separate from accumulated token usage.">Context ${tokens(conv.context_usage.tokens)}${conv.context_usage.window ? ` / ${tokens(conv.context_usage.window)}` : ''}</span>`}
+      ${conv?.token_usage && html`<span title=${`Reported usage across all agent sessions in this chat\n${usageTitle(conv.token_usage)}`}>Chat total ${usageText(conv.token_usage)}</span>`}
+    </div>`}
     <${Composer} id=${id} project=${found?.project} />
   </main>`;
 }

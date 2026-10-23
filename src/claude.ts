@@ -80,12 +80,20 @@ export class ClaudeEvents {
   private edits = new Map<string, string>(); // file tool_use id -> path, until its result (with the patch) arrives
   private started = false;
   private ended = false;
+  private context: { tokens: number; model: string } | null = null;
   /** Set once Claude Code says a request was refused by the account's usage limit: the turn's failure is then one. */
   private limit: { resetsAt?: number } | null = null;
 
   map(ev: CodexEvent): CodexEvent[] {
     switch (ev.type) {
       case 'system': {
+        if (ev.subtype === 'status' && ev.status === 'compacting') return [{ type: 'context.compacting' }];
+        if (ev.subtype === 'compact_boundary') {
+          this.context = null;
+          const metadata = ev.compact_metadata as { pre_tokens?: number; trigger?: string } | undefined;
+          return [{ type: 'context.compacted', ...(metadata?.trigger && { trigger: metadata.trigger }),
+            ...(Number.isFinite(metadata?.pre_tokens) && { before_tokens: metadata!.pre_tokens }) }];
+        }
         if (ev.subtype !== 'init' || this.started || typeof ev.session_id !== 'string') return [];
         this.started = true;
         return [{ type: 'thread.started', thread_id: ev.session_id }];
@@ -95,12 +103,19 @@ export class ClaudeEvents {
       case 'result': {
         this.ended = true;
         this.noteLimit(ev);
+        const models = ev.modelUsage as Record<string, { contextWindow?: number }> | undefined;
+        const window = this.context ? models?.[this.context.model]?.contextWindow : undefined;
+        const context = this.context ? [{ type: 'context.usage', tokens: this.context.tokens,
+          ...(typeof window === 'number' && Number.isFinite(window) && window > 0 && { window }) }] : [];
         if (ev.is_error) {
           const message = String(ev.result || ev.terminal_reason || ev.subtype || 'Claude Code failed');
-          return [{ type: 'turn.failed', error: { message }, ...(this.limit && { limit: this.limit }) }];
+          return [...context, { type: 'turn.failed', error: { message }, ...(this.limit && { limit: this.limit }) }];
         }
-        const u = (ev.usage ?? {}) as { input_tokens?: number; output_tokens?: number };
-        return [{ type: 'turn.completed', usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens } }];
+        const u = (ev.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+        return [...context, { type: 'turn.completed', usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens,
+          ...(u.cache_read_input_tokens !== undefined && { cache_read_input_tokens: u.cache_read_input_tokens }),
+          ...(u.cache_creation_input_tokens !== undefined && { cache_creation_input_tokens: u.cache_creation_input_tokens }),
+        } }];
       }
       case 'rate_limit_event': return this.limits(ev);
       default: return []; // stream_event, ...
@@ -141,6 +156,12 @@ export class ClaudeEvents {
 
   private assistant(ev: CodexEvent): CodexEvent[] {
     const out: CodexEvent[] = [];
+    const message = ev.message as { model?: string; usage?: Record<string, unknown> } | undefined;
+    const usage = message?.usage;
+    if (message?.model !== '<synthetic>' && typeof usage?.input_tokens === 'number' && Number.isFinite(usage.input_tokens) && usage.input_tokens >= 0) {
+      const count = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+      this.context = { tokens: usage.input_tokens + count(usage.cache_read_input_tokens) + count(usage.cache_creation_input_tokens) + count(usage.output_tokens), model: message?.model || '' };
+    }
     for (const b of this.blocks(ev)) {
       if (b.type === 'text' && b.text) out.push({ type: 'item.completed', item: { type: 'agent_message', text: b.text } });
       else if (b.type === 'thinking' && b.thinking) out.push({ type: 'item.completed', item: { type: 'reasoning', text: b.thinking } });
