@@ -226,6 +226,35 @@ describe('Dispatcher', () => {
     }
   });
 
+  it('waits for the code graph to be reindexed before the agent starts, and a cancel stops the wait', async () => {
+    const { dir, store, conv } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE });
+    d.codeMemory = { guide: () => '', hooks: () => null, refresh: (_p, onIndex) => { onIndex?.(); return new Promise(() => {}); } };
+    store.enqueue(conv.id, 'x', []);
+    d.kick(conv.id);
+    await until(() => store.eventsAfter(conv.id, 0).some((e) => e.type === 'code_memory.indexing'));
+    expect(d.cancel(conv.id)).toBe(true);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.listTurns(conv.id)[0]).toMatchObject({ status: 'cancelled' });
+    expect(store.eventsAfter(conv.id, 0).map((e) => e.type).some((t) => t.startsWith('item.') || t === 'account.selected')).toBe(false);
+  });
+
+  it('puts nothing into a turn cancelled before its reindex starts', async () => {
+    const { dir, store, conv } = setupDispatcher();
+    const d = new Dispatcher(store, { homes: [join(dir, 'a')], command: FAKE });
+    let start!: () => void;
+    let asked!: () => void;
+    const askedP = new Promise<void>((r) => { asked = r; });
+    d.codeMemory = { guide: () => '', hooks: () => null, refresh: (_p, onIndex) => { start = onIndex!; asked(); return new Promise(() => {}); } };
+    store.enqueue(conv.id, 'x', []);
+    d.kick(conv.id);
+    await askedP;
+    expect(d.cancel(conv.id)).toBe(true);
+    await until(() => turnsDone(store, conv.id, 1));
+    start();
+    expect(store.eventsAfter(conv.id, 0).map((e) => e.type)).not.toContain('code_memory.indexing');
+  });
+
   it('tells a turn to use the db tools while a database connection is open to agents', async () => {
     const { dir, store, conv } = setupDispatcher();
     store.setAgentGit({ commit: true, push: true }); // no git guide either, so only this one is in the instructions

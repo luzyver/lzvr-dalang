@@ -3,13 +3,15 @@
  * (symbols, calls, imports, routes) that agents query instead of grepping file by file.
  *
  * Dalang owns it, so the agents never run CBM themselves: one long-lived CBM session for the whole server, each
- * project indexed only when someone asks for it (Settings → MCP → Code memory → Index), and CBM's query tools passed on
+ * project indexed first when someone asks for it (Settings → MCP → Code memory → Index) and again before a turn when
+ * its files changed since (see refresh), and CBM's query tools passed on
  * through this gateway's /mcp with the project taken from the chat. That keeps a chat to
  * its own project and the projects its user may open: CBM itself would show every indexed repository to anyone.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -34,6 +36,9 @@ export interface IndexState {
   indexedAt: number; fingerprint: string | null;
   error: string;
 }
+
+/** A pre-turn check of one project (see CodeMemory.refresh): whether it is reindexing, and who wants to hear when it starts. */
+interface Refresh { indexing: boolean; onIndex: Set<() => void>; done: Promise<'fresh' | 'ready' | 'failed'> }
 
 export interface CbmTool { name: string; description?: string; inputSchema: JsonSchema }
 export type CbmResult = CallToolResult;
@@ -111,13 +116,22 @@ export function cbmVersion(command: string): Promise<string> {
   });
 }
 
-/** What git says the folder is now: HEAD plus the uncommitted changes. null outside a git repository. */
+/**
+ * What git says the folder is now: HEAD plus the uncommitted changes, with the size and time of each changed or new
+ * file (a file already changed and edited again keeps the same git status). null outside a git repository.
+ */
 async function fingerprint(dir: string): Promise<string | null> {
   if (!(await isRepo(dir))) return null;
-  const [head, status] = await Promise.all([
+  const [head, status, files] = await Promise.all([
     git(dir, ['rev-parse', 'HEAD']).catch(() => ''), git(dir, ['status', '--porcelain=v1', '-z'], 120_000),
+    git(dir, ['ls-files', '-z', '--modified', '--others', '--exclude-standard'], 120_000),
   ]);
-  return createHash('sha1').update(head).update('\0').update(status).digest('hex');
+  const h = createHash('sha1').update(head).update('\0').update(status);
+  for (const f of [...new Set(files.split('\0').filter(Boolean))].sort()) {
+    const s = await stat(join(dir, f)).catch(() => null); // deleted: its status says so
+    h.update('\0').update(f).update(s ? `\0${s.size}\0${s.mtimeMs}` : '\0-');
+  }
+  return h.digest('hex');
 }
 
 /** A JSON Schema property of a CBM tool as zod, loosely: CBM checks ranges and fills in defaults itself. */
@@ -156,6 +170,8 @@ export class CodeMemory {
   /** Per project: the index running now, and whether another one is wanted once it ends. */
   private running = new Map<string, Promise<void>>();
   private again = new Set<string>();
+  /** Per project, the pre-turn check running now (see refresh). */
+  private refreshing = new Map<string, Refresh>();
   /** Indexing runs one project at a time, so asking for several at once does not take every core. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -281,6 +297,38 @@ export class CodeMemory {
     if (!st?.graph || st.fingerprint === null) return null;
     const fp = await fingerprint(project.path).catch(() => null);
     return fp === null ? null : fp !== st.fingerprint;
+  }
+
+  /**
+   * Before a turn: reindex the project when its files changed since the last index, so the turn reads the graph of the
+   * code as it is now. `onIndex` is called once the reindex starts. 'fresh': nothing to do (up to date, no index yet,
+   * code memory off, or not a git repository); else how the reindex ended.
+   */
+  refresh(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'> {
+    if (!this.active || !this.state(project.id)?.graph) return Promise.resolve('fresh');
+    // Turns starting together share one check, so they never both see the change and index twice.
+    let r = this.refreshing.get(project.id);
+    if (!r) {
+      const job: Refresh = { indexing: false, onIndex: new Set(), done: Promise.resolve('fresh') };
+      job.done = this.refreshOnce(project, () => {
+        job.indexing = true;
+        for (const f of job.onIndex) f();
+      }).finally(() => { if (this.refreshing.get(project.id) === job) this.refreshing.delete(project.id); });
+      this.refreshing.set(project.id, r = job);
+    }
+    if (onIndex) { if (r.indexing) onIndex(); else r.onIndex.add(onIndex); }
+    return r.done;
+  }
+
+  private async refreshOnce(project: Project, onIndex: () => void): Promise<'fresh' | 'ready' | 'failed'> {
+    const running = this.running.get(project.id);
+    if (running) await running; // one already on its way may leave nothing to do
+    if ((await this.changedSinceIndex(project)) !== true) {
+      return !running ? 'fresh' : this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
+    }
+    onIndex();
+    await this.index(project);
+    return this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
   }
 
   /** Forget a deleted project's graph. */

@@ -119,6 +119,7 @@ export class Dispatcher {
   codeMemory?: {
     guide(project: Project, worktree: boolean): string;
     hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
+    refresh?(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'>;
   };
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
   /** Per project, the memory extraction running last: they run one after another, each seeing what the one before kept. */
@@ -448,6 +449,21 @@ export class Dispatcher {
     const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
     // Claude Code reads outside its folder only from directories it was given.
     if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
+    // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
+    // first, and the turn waits for it (a cancel stops the wait, not the index).
+    if (this.codeMemory?.refresh) {
+      const cancelled = new Promise<'cancelled'>((r) => {
+        if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
+      });
+      const refreshed = await Promise.race([
+        // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
+        this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
+          .catch(() => 'failed' as const),
+        cancelled,
+      ]);
+      if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });
+      if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
+    }
     const guide = [
       ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
       // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
@@ -463,8 +479,9 @@ export class Dispatcher {
     const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
     if (hooks) extraArgs.push(...hooks.args);
     try {
-      // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
-      for (;;) {
+      // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread. A turn
+      // cancelled before it started (while its code graph was reindexed) runs none.
+      while (!ac.signal.aborted) {
         const home = accounts.pick();
         if (!home) {
           failed = true;
