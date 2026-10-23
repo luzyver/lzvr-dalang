@@ -1,4 +1,5 @@
 import { readdirSync } from 'node:fs';
+import { request } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { insideRoot } from '../src/paths.js';
@@ -134,6 +135,27 @@ describe('SSE', () => {
     await t.app.close();
     expect(Date.now() - start).toBeLessThan(2000);
     await live.body!.cancel().catch(() => {});
+  });
+
+  it('lets a request still running finish while the app closes', async () => {
+    const t = setupApp();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const port = (t.app.server.address() as { port: number }).port;
+    const { payload, headers } = multipart('slow.txt', 'x'.repeat(4096));
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/uploads', headers });
+    const answer = new Promise<{ status: number; body: string }>((done, fail) => {
+      req.on('response', (res) => { let body = ''; res.on('data', (c) => { body += c; }); res.on('end', () => done({ status: res.statusCode!, body })); });
+      req.on('error', fail);
+    });
+    req.write(payload.slice(0, 200)); // the upload has started, the rest comes after close() began
+    await new Promise((r) => setTimeout(r, 100));
+    const closed = t.app.close();
+    await new Promise((r) => setTimeout(r, 100));
+    req.end(payload.slice(200));
+    const res = await answer;
+    expect(res.status).toBe(201);
+    expect(JSON.parse(res.body).path).toBeTruthy();
+    await closed;
   });
 
   it('streams live events and replays from Last-Event-ID', async () => {

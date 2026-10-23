@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -104,9 +105,7 @@ export function buildApp(
 
   // With trusted proxy addresses, req.ip is the entry that proxy appended to X-Forwarded-For, so a client cannot pick
   // its own rate-limit identity by sending the header. (`trustProxy: true` would take the client-controlled first entry.)
-  // close() cuts open connections: a chat's event stream pings every 15 s so it is never idle, and without this the
-  // listener is gone while close() waits on the streams until the drain fallback exits (nginx answers 502 meanwhile).
-  const app = Fastify({ trustProxy: cfg.trustProxy.length ? cfg.trustProxy : false, forceCloseConnections: true });
+  const app = Fastify({ trustProxy: cfg.trustProxy.length ? cfg.trustProxy : false });
   app.register(multipart, { limits: { fileSize: maxUpload, files: 1 } });
   const want = digest(cfg.token);
 
@@ -739,6 +738,12 @@ export function buildApp(
     try { return { id: e.id, type: e.type, data: JSON.parse(e.payload) as unknown, timestamp: e.created_at }; } catch { return notFound(reply); }
   });
 
+  // close() waits for requests still running (an upload, a clone), but a chat's event stream never ends by itself: without
+  // ending them here the listener is gone while close() waits on them until the drain fallback exits (nginx answers 502
+  // meanwhile). A reader reconnects with Last-Event-ID.
+  const streams = new Set<ServerResponse>();
+  app.addHook('preClose', async () => { for (const res of streams) res.end(); });
+
   /** `compact=1`: as the panel's thread takes it, long tool output cut (see event-view.ts). */
   app.get<{ Params: { id: string }; Querystring: { after?: string; compact?: string } }>('/api/conversations/:id/events', (req, reply) => {
     const id = req.params.id;
@@ -774,7 +779,8 @@ export function buildApp(
     const off = dispatcher.subscribe(id, send);
     const history = store.eventsAfter(id, after);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
-    res.on('close', () => { off(); clearInterval(ping); });
+    streams.add(res);
+    res.on('close', () => { off(); clearInterval(ping); streams.delete(res); });
     void (async () => {
       for (const e of history) {
         if (res.destroyed) return;
