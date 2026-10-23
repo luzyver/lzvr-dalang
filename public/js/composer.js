@@ -297,7 +297,9 @@ export function Composer({ id, project }) {
           value=${conv?.backend || 'codex'} options=${BACKEND_OPTIONS} disabled=${running} onChange=${setBackend} />
         <${ChipSelect} key=${`${id}-${conv?.backend}-model`} icon="cpu" title="Model" value=${currentModel === globalModel ? '' : currentModel} options=${modelOptions} onChange=${setModel} />
         <${ChipSelect} key=${`${id}-${conv?.backend}-effort`} icon="brain" title="Reasoning effort" value=${effortValue} options=${effortOptions} onChange=${setEffort} />
-        ${project && html`<span class="select-chip static" title="Sandbox of this project"><${Icon} name="shield-check" /><span>${project.sandbox}</span></span>`}
+        ${project && html`<button type="button" class="select-chip static" title=${`Sandbox of this project: ${project.sandbox}`}
+          aria-label=${`Sandbox of this project: ${project.sandbox}`} onClick=${() => toast(`Sandbox of this project: ${project.sandbox}`)}>
+          <${Icon} name="shield-check" /><span>${project.sandbox}</span></button>`}
         <div class="spacer"></div>
         ${running && html`<button class="btn sm stop" onClick=${stop} title="Stop the running turn"><${Icon} name="square" />Stop</button>`}
         <button class="send" aria-label=${running ? 'Queue' : 'Send'} title=${running ? 'Queue (runs after this turn)' : 'Send'} disabled=${!text.trim() || sending} onClick=${send}>
