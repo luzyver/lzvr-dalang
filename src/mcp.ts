@@ -15,7 +15,8 @@ import { cleanMemory, MEMORY_MAX, queryTerms, searchTerms } from './memory.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
-import type { Conversation, Memory, MemoryScope, Project, Store } from './store.js';
+import { compactPayload, CUT } from './event-view.js';
+import type { Conversation, Memory, MemoryScope, Project, Store, StoredEvent } from './store.js';
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
 type Deps = {
@@ -258,17 +259,51 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   });
 
   s.registerTool('get_events', {
-    description: 'Read a conversation\'s events (agent messages, commands, errors) after an event id. Use next_after_id to continue.',
-    inputSchema: { conversation_id: z.string(), after_id: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional() },
-  }, async ({ conversation_id, after_id, limit }) => {
+    description: 'Read a conversation\'s events (prompts, agent messages, commands, file changes, errors), oldest first. '
+      + `By default long tool output (command output, diffs, thoughts over ${CUT} characters) is cut and marked "cut": true, `
+      + 'and item.updated events are left out; read one cut event in full with after_id = its id - 1, limit 1, full true. '
+      + 'Either after an event id (after_id, limit; next_after_id continues), or by turns: last_turns gives the last turns '
+      + '(before turn before_turn when given; earlier_before_turn pages further back while more_earlier is true).',
+    inputSchema: {
+      conversation_id: z.string(), after_id: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional(),
+      full: z.boolean().optional(), last_turns: z.number().int().min(1).max(50).optional(), before_turn: z.number().int().min(1).optional(),
+    },
+  }, async ({ conversation_id, after_id, limit, full, last_turns, before_turn }) => {
     if (!conv(conversation_id)) return noConv(conversation_id);
-    const rows = store.eventsAfter(conversation_id, after_id ?? 0).slice(0, limit ?? 100);
-    const events = rows.map((r) => {
-      let data: unknown = null;
-      try { data = JSON.parse(r.payload); } catch { /* keep null */ }
-      return { id: r.id, type: r.type, data };
-    });
-    return text({ events, next_after_id: rows.length ? rows[rows.length - 1]!.id : (after_id ?? 0) });
+    // Every event's text goes into the caller's context: cut what it rarely needs, and no indentation.
+    const shape = (rows: StoredEvent[]) => {
+      const events = [];
+      for (const r of rows) {
+        const payload = full ? r.payload : compactPayload(r.type, r.payload);
+        if (payload === null) continue;
+        let data: unknown = null;
+        try { data = JSON.parse(payload); } catch { /* keep null */ }
+        events.push({ id: r.id, type: r.type, data });
+      }
+      return events;
+    };
+    const plain = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+    if (last_turns) {
+      const page = store.historyPage(conversation_id, { turns: last_turns, before: before_turn });
+      const lastId = page.events.length ? page.events[page.events.length - 1]!.id : 0;
+      return plain({ events: shape(page.events), next_after_id: lastId, earlier_before_turn: page.first, more_earlier: page.more });
+    }
+    // Read on past left-out events until `limit` are in (or none are left).
+    const want = limit ?? 100;
+    const events: ReturnType<typeof shape> = [];
+    let next = after_id ?? 0;
+    for (;;) {
+      const rows = store.eventsAfter(conversation_id, next, want);
+      if (!rows.length) break;
+      for (const r of rows) {
+        const [e] = shape([r]);
+        next = r.id;
+        if (e) events.push(e);
+        if (events.length === want) break;
+      }
+      if (events.length === want || rows.length < want) break;
+    }
+    return plain({ events, next_after_id: next });
   });
 
   s.registerTool('list_accounts', { description: 'List Codex accounts and whether each is at its usage limit.' }, async () => text(dispatcher.accounts.list()));
