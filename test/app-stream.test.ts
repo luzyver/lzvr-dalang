@@ -123,6 +123,19 @@ describe('SSE', () => {
     expect(switched.token_usage).toEqual(result.token_usage);
   });
 
+  it('closes the app at once while an event stream is open', async () => {
+    const t = setupApp();
+    await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const base = `http://127.0.0.1:${(t.app.server.address() as { port: number }).port}`;
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const live = await fetch(`${base}/api/conversations/${conv.id}/events`, { headers: AUTH });
+    expect(live.headers.get('content-type')).toContain('text/event-stream');
+    const start = Date.now();
+    await t.app.close();
+    expect(Date.now() - start).toBeLessThan(2000);
+    await live.body!.cancel().catch(() => {});
+  });
+
   it('streams live events and replays from Last-Event-ID', async () => {
     const t = setupApp();
     close = () => t.app.close();

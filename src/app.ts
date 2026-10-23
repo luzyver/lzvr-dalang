@@ -104,7 +104,9 @@ export function buildApp(
 
   // With trusted proxy addresses, req.ip is the entry that proxy appended to X-Forwarded-For, so a client cannot pick
   // its own rate-limit identity by sending the header. (`trustProxy: true` would take the client-controlled first entry.)
-  const app = Fastify({ trustProxy: cfg.trustProxy.length ? cfg.trustProxy : false });
+  // close() cuts open connections: a chat's event stream pings every 15 s so it is never idle, and without this the
+  // listener is gone while close() waits on the streams until the drain fallback exits (nginx answers 502 meanwhile).
+  const app = Fastify({ trustProxy: cfg.trustProxy.length ? cfg.trustProxy : false, forceCloseConnections: true });
   app.register(multipart, { limits: { fileSize: maxUpload, files: 1 } });
   const want = digest(cfg.token);
 
