@@ -13,6 +13,10 @@ All notable changes to this project are documented here. The format follows
   what is worth keeping (Settings → Project memory, `AUTO_MEMORY=0` turns it off); agents get `memory_search`,
   `memory_save`, `memory_update` and `memory_forget`, and people a memory button in the chat header. Each person also
   has a memory of their own preferences, shown to every turn they send in any project and seen by them alone
+- Restarts no longer cut running chats off: on SIGTERM (`scripts/update.sh`) or `autostart.cmd restart` on
+  Windows, running turns get `DRAIN_MINUTES` (default 5) to finish while the panel stays up and new prompts wait in
+  their queue; a turn still running then continues in its session after the restart. `update.sh` adds a systemd
+  drop-in with `KillMode=mixed` and `TimeoutStopSec=10min` for it
 
 ### Fixed
 

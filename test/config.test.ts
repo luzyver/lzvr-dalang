@@ -21,6 +21,13 @@ describe('loadConfig', () => {
     expect(c.mcpCrossSend).toBe('approve');
   });
 
+  it('reads how long a stop waits for running turns', () => {
+    const base = { LZVR_TOKEN: 'x'.repeat(32), WORKSPACE_ROOT: '/w' };
+    expect(loadConfig(base).drainMs).toBe(300_000);
+    expect(loadConfig({ ...base, DRAIN_MINUTES: '0' }).drainMs).toBe(0);
+    for (const bad of ['-1', 'abc', 'Infinity']) expect(() => loadConfig({ ...base, DRAIN_MINUTES: bad }), bad).toThrow(/DRAIN_MINUTES/);
+  });
+
   it('validates how long an account stays blocked', () => {
     const base = { LZVR_TOKEN: 'x'.repeat(32), WORKSPACE_ROOT: '/w' };
     expect(loadConfig({ ...base, LIMIT_BLOCK_MINUTES: '30' }).limitBlockMs).toBe(1_800_000);

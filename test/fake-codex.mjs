@@ -1,4 +1,4 @@
-// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this.
+// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
@@ -59,6 +59,7 @@ process.stdin.on('end', async () => {
   }
   if (mode === 'stubborn') process.on('SIGTERM', () => {}); // ignores polite kills
   if (mode === 'slow' || mode === 'stubborn') await new Promise((r) => setTimeout(r, 30000));
+  if (process.env.FAKE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_DELAY_MS)));
   if (process.env.FAKE_WRITE) { // FAKE_WRITE=name=content: write that file in the folder it works in (-C)
     const [name, ...content] = process.env.FAKE_WRITE.split('=');
     writeFileSync(join(args[args.indexOf('-C') + 1], name), content.join('='));

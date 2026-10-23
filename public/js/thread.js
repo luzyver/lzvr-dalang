@@ -210,7 +210,7 @@ export class Block extends Component {
     let body;
     if (b.type === 'user') {
       body = html`<div class="msg user">${b.files.length > 0 && html`<div class="msg-files">${b.files.map((p) => html`<${Attachment} key=${p} path=${p} />`)}</div>`}
-        <div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${clock(b.at)}</div></div>`;
+        <div class="bubble">${b.text}</div><div class="msg-meta">${b.author && html`<span class="msg-author">${b.author}</span> · `}${b.resumed && 'continued after a restart · '}${clock(b.at)}</div></div>`;
     } else if (b.type === 'agent') body = html`<${Agent} b=${b} v=${b.v} conversationId=${conversationId} />`;
     else if (b.type === 'steps') body = html`<${Steps} b=${b} v=${b.v} active=${active} root=${root} conversationId=${conversationId} />`;
     else body = html`<div class=${cx('note', b.tone)}><${Icon} name=${b.tone === 'err' ? 'circle-alert' : b.tone === 'warn' ? 'triangle-alert' : 'info'} /><span>${b.text}</span></div>`;

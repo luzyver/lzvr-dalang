@@ -1,6 +1,7 @@
 # Runs Dalang in the background at Windows logon through a Task Scheduler task. Usage: autostart.cmd <action>
 #   install    register the "Dalang" task (runs scripts\run.ps1 hidden at logon, log in state\autostart.log) and start it
-#   restart    git pull --ff-only, stop the task, free the port, start it again (run.ps1 rebuilds; -NoPull skips the pull)
+#   restart    git pull --ff-only, let running chats finish (up to DRAIN_MINUTES, default 5; one still running then is
+#              resumed after the restart), stop the task, free the port, start it again (run.ps1 rebuilds; -NoPull skips the pull)
 #   stop       stop the task and free the port
 #   status     task state, whether the port is listening, and the end of the log
 #   uninstall  stop and unregister the task
@@ -19,16 +20,17 @@ $log = Join-Path $repo 'state\autostart.log'
 function Fail($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 function Info($msg) { Write-Host $msg -ForegroundColor DarkGray }
 
-function Get-Port {
-  if ($env:PORT) { return [int]$env:PORT }
+# A setting from the environment, else .env, else the default.
+function Get-Setting($name, $default) {
+  if (Test-Path "env:$name") { return (Get-Item "env:$name").Value }
   if (Test-Path '.env') {
     foreach ($line in Get-Content '.env') {
-      if ($line -match '^\s*PORT\s*=\s*"?''?(\d+)') { return [int]$Matches[1] }
+      if ($line -match "^\s*$name\s*=\s*(.*?)\s*$") { return $Matches[1].Trim('"', "'") }
     }
   }
-  return 9876
+  return $default
 }
-$port = Get-Port
+$port = [int](Get-Setting 'PORT' 9876)
 
 function Get-Listener { Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 }
 function Get-Task { Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }
@@ -53,6 +55,21 @@ function Stop-Dalang {
   } else {
     Fail "Port $port is held by $($proc.ProcessName) (pid $($listener.OwningProcess)), not Dalang's node: free it first."
   }
+}
+
+# Asks Dalang to stop by itself (Windows has no SIGTERM): it creates state\restart, and Dalang then lets running turns
+# finish for up to DRAIN_MINUTES, resumes the rest after the restart, and exits. Returns once the port is closed. A
+# Dalang from before this left the file alone: then the usual Stop-Dalang cuts the turns off.
+function Request-Drain {
+  if (-not (Get-Listener)) { return }
+  $flag = Join-Path (Get-Setting 'STATE_DIR' 'state') 'restart'
+  New-Item -ItemType File -Force $flag | Out-Null
+  for ($i = 0; $i -lt 10 -and (Test-Path $flag); $i++) { Start-Sleep -Milliseconds 500 }
+  if (Test-Path $flag) { Remove-Item $flag -Force; Info 'This Dalang cannot wait for running chats: stopping it now.'; return }
+  $minutes = [double](Get-Setting 'DRAIN_MINUTES' 5)
+  Info "Waiting for running chats to finish (up to $minutes min; new prompts wait in their queue)..."
+  $deadline = (Get-Date).AddMinutes($minutes).AddSeconds(30)
+  while ((Get-Listener) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
 }
 
 # npm ci here in the console, not in the task: under conhost --headless an install script that spawns cmd.exe (ssh2's)
@@ -105,6 +122,7 @@ switch ($Action) {
       git pull --ff-only
       if ($LASTEXITCODE -ne 0) { Fail 'git pull failed: fix it (or use -NoPull) and retry. Dalang was left running.' }
     }
+    Request-Drain
     Stop-Dalang
     Install-Deps
     Start-Dalang

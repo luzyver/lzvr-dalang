@@ -21,6 +21,8 @@ export interface Config {
   forge?: 'github' | 'gitlab';
   /** How long an account stays skipped after hitting its usage limit. */
   limitBlockMs: number;
+  /** On SIGTERM or a restart request, how long running turns may still finish before they are cut off (and resumed after). */
+  drainMs: number;
   /** Overrides the built-in usage-limit detection regex. */
   limitRegex?: RegExp;
   /** The panel's full origin (https://panel.example.com): the Web Push contact when vapidSubject is unset. */
@@ -67,6 +69,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!env.WORKSPACE_ROOT) throw new Error('WORKSPACE_ROOT is required');
   const blockMinutes = Number(env.LIMIT_BLOCK_MINUTES ?? 60);
   if (!Number.isFinite(blockMinutes) || blockMinutes <= 0) throw new Error('LIMIT_BLOCK_MINUTES must be a positive number');
+  const drainMinutes = Number(env.DRAIN_MINUTES ?? 5);
+  if (!Number.isFinite(drainMinutes) || drainMinutes < 0) throw new Error('DRAIN_MINUTES must be 0 or a positive number');
   const port = Number(env.PORT ?? 9876);
   const host = env.HOST ?? '127.0.0.1';
   const authBypass = env.AUTH_BYPASS === 'true' || env.AUTH_BYPASS === '1';
@@ -85,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     glabCommand: [env.GLAB_BIN ?? 'glab'],
     forge: env.GIT_FORGE === 'github' || env.GIT_FORGE === 'gitlab' ? env.GIT_FORGE : undefined,
     limitBlockMs: blockMinutes * 60_000,
+    drainMs: drainMinutes * 60_000,
     mcpUrl: env.MCP_INJECT === '1' ? env.MCP_URL || `http://127.0.0.1:${port}/mcp` : undefined,
     limitRegex: env.LIMIT_REGEX ? new RegExp(env.LIMIT_REGEX, 'i') : undefined,
     origin: env.LZVR_ORIGIN || undefined,
