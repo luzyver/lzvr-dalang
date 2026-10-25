@@ -20,6 +20,8 @@ export const chat = {
   id: signal(null),
   conv: signal(null),
   git: signal(null),
+  /** Goes up when a turn reindexed the code graph (or started or failed to): the Code graph button looks again. */
+  codeGraph: signal(0),
   queue: signal([]),
   version: signal(0),
   model: new ThreadModel(),
@@ -110,7 +112,9 @@ function CodeGraphButton({ project }) {
     api(`/api/projects/${id}/code-memory`).then((r) => { if (shown.current === id) setS(r); }, () => {});
   };
   useEffect(() => { shown.current = project?.id ?? null; setS(null); load(); }, [project?.id]);
+  const reindexed = chat.codeGraph.value; // a turn reindexed it before its agent started
   useEffect(() => { if (git) load(); }, [git]);
+  useEffect(() => { if (reindexed) load(); }, [reindexed]);
   const indexing = s?.index?.status === 'indexing';
   // Look again while an index runs (often), and while a request waits for an admin (now and then): nothing else says
   // when an admin decided.
@@ -212,6 +216,7 @@ export function ChatView({ id, focusEvent }) {
         refreshConv(id).catch(() => {});
       }
       if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
+      if (events.some((e) => e.type.startsWith('code_memory.'))) chat.codeGraph.value++;
       if (events.some((e) => e.type === 'conversation.title')) refreshConv(id).catch(() => {});
     };
     const take = (events) => {
