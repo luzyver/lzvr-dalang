@@ -416,7 +416,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     }
   });
 
-  // Draft a commit message with the chat's own agent CLI and model. Changes nothing, so it is not limited like the rest.
+  // Draft a commit message with the chat's agent CLI and the default model and effort from Settings. Changes nothing, so it is not limited like the rest.
   app.post<{ Params: { id: string }; Body: { paths?: string[] } | undefined }>('/api/conversations/:id/git/message', {
     schema: { body: { type: 'object', additionalProperties: false, properties: { paths: pathsSchema } } },
   }, async (req, reply) => {
@@ -431,7 +431,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const requests = store.listTurns(c.conv.id).slice(-5).map((t) => t.prompt);
     const prompt = await commitMessagePrompt(c.cwd, files, requests, store.getKv('commit_prompt') || DEFAULT_COMMIT_PROMPT);
     try {
-      const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd, model: c.conv.model, effort: c.conv.effort });
+      const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd }); // Settings' default model and effort, not the chat's
       const message = cleanMessage(answer);
       return message ? { message } : reply.code(502).send({ error: 'the agent gave an empty answer' });
     } catch (e) {
@@ -450,7 +450,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const prompt = await mrDescriptionPrompt(c.project.path, t.branch, { name: t.base.name ?? 'the current branch', ref: t.base.ref }, requests,
       store.getKv('mr_prompt') || DEFAULT_MR_PROMPT);
     try {
-      const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd, model: c.conv.model, effort: c.conv.effort });
+      const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd }); // Settings' default model and effort, not the chat's
       const description = cleanMessage(answer);
       // `description` is for pasting into a Merge Request; `message` is the same as title line + body, for Create Merge Request.
       return description ? { description, message: toCommitMessage(description) } : reply.code(502).send({ error: 'the agent gave an empty answer' });
