@@ -45,6 +45,9 @@ if (cmd === 'auth status') {
   delete logins[flag('--hostname')];
   save();
   console.error(`✓ Logged out of ${flag('--hostname')}`);
+} else if (cmd === 'auth switch') {
+  if (!logins[flag('--hostname')]) { console.error(`not logged in to ${flag('--hostname')}`); process.exit(1); }
+  console.error(`✓ Switched active account for ${flag('--hostname')} to ${flag('--user')}`);
 } else if (cmd === 'auth setup-git') {
   // the real one writes the helper into the global git config; the test only checks it was asked
 } else if (cmd === 'ssh-key add') {

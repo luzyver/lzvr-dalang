@@ -220,6 +220,17 @@ describe('Settings → Git', () => {
     expect(t.calls('gh').some((c) => c.args.join(' ') === 'auth logout --hostname github.com --user octo')).toBe(true);
   });
 
+  it('makes another gh account the active one', async () => {
+    const t = setup();
+    await t.call('POST', '/api/settings/git/login', { forge: 'github', host: 'github.com', token: 'good-token', https: false });
+    const r = await t.call('POST', '/api/settings/git/switch', { host: 'github.com', user: 'octo' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().accounts).toEqual([{ host: 'github.com', user: 'octo', ok: true, active: true }]);
+    expect(t.calls('gh').some((c) => c.args.join(' ') === 'auth switch --hostname github.com --user octo')).toBe(true);
+    expect((await t.call('POST', '/api/settings/git/switch', { host: 'nope.example.com', user: 'octo' })).statusCode).toBe(502);
+    expect((await t.call('POST', '/api/settings/git/switch', { host: 'github.com', user: 'a b' })).statusCode).toBe(400);
+  });
+
   it('signs glab in and points git over HTTPS at it', async () => {
     const t = setup();
     const r = await t.call('POST', '/api/settings/git/login', { forge: 'gitlab', host: 'gitlab.example.com', token: 'good-token', https: true });

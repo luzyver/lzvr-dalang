@@ -96,6 +96,17 @@ export function gitAuthRoutes(app: FastifyInstance, d: { users: GitUsers }): voi
     return authOf(req).forgeStatus(req.body.forge);
   }));
 
+  // gh only: glab keeps a single login per host.
+  app.post<{ Body: { host: string; user: string } }>('/api/settings/git/switch', {
+    onRequest,
+    schema: { body: { type: 'object', required: ['host', 'user'], additionalProperties: false, properties: {
+      host, user: { type: 'string', minLength: 1, maxLength: 100, pattern: '^[\\w.-]+$' },
+    } } },
+  }, (req, reply) => handle(reply, async () => {
+    await authOf(req).switchAccount(req.body.host.trim().toLowerCase(), req.body.user);
+    return authOf(req).forgeStatus('github');
+  }));
+
   app.post<{ Body: { forge: 'github' | 'gitlab'; host: string } }>('/api/settings/git/https', {
     onRequest, schema: { body: { type: 'object', required: ['forge', 'host'], additionalProperties: false, properties: { forge, host } } },
   }, (req, reply) => handle(reply, async () => {
