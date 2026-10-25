@@ -9,7 +9,7 @@ import {
   approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
-import { Block, Elapsed, Live } from './thread.js';
+import { Block, Live } from './thread.js';
 import { Composer } from './composer.js';
 import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
 import { MemoryButton } from './memory.js';
@@ -147,10 +147,7 @@ function CodeGraphButton({ project }) {
 }
 
 function ChatHead({ project, conv }) {
-  chat.version.value; // the running turn's start and account come from the thread model
   const c = chat.conv.value || conv;
-  const git = chat.git.value;
-  const status = c?.status || 'idle';
   return html`<header class="chat-head">
     <button class="icon-btn sidebar-toggle" aria-label="Show sidebar" title="Sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
     <div class="crumbs">
@@ -158,18 +155,10 @@ function ChatHead({ project, conv }) {
       <${Icon} name="chevron-right" class="tiny dim crumb-sep" />
       <span class="crumb-title" title=${c?.title || 'New chat'}>${c?.title || 'New chat'}</span>
     </div>
-    ${status === 'running' && html`<span class="status running" title=${chat.model.account ? `on account ${chat.model.account}` : ''}>
-      <${Icon} name="loader-circle" spin />Running${chat.model.startedAt && html` · <${Elapsed} since=${chat.model.startedAt} />`}</span>`}
-    ${status === 'failed' && html`<span class="status failed"><${Icon} name="circle-alert" />Failed</span>`}
     <div class="spacer"></div>
     <${CodeGraphButton} project=${project} />
     <${MemoryButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
-    <button class="icon-btn" aria-label="Scheduled prompts" title="Scheduled prompts" onClick=${() => toggleInspector(true, 'schedules')}><${Icon} name="clock" /></button>
-    ${git?.repo && html`<button class="branch-btn" title="Changes: review, commit, revert" onClick=${() => toggleInspector(true, 'changes')}>
-      <${Icon} name="git-branch" /><span class="branch-name">${git.branch || 'HEAD'}</span>
-      ${git.files.length > 0 && html`<span class="branch-count">${git.files.length}</span>`}
-    </button>`}
     <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
   </header>`;
 }
