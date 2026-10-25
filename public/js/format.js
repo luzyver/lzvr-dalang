@@ -7,9 +7,14 @@ export function toDate(value) {
   return Number.isFinite(d.getTime()) ? d : null;
 }
 
+/** 14:05 today; 23 Oct, 14:05 on an earlier day; 23 Oct 2025, 14:05 in another year. */
 export const clock = (value) => {
   const d = toDate(value);
-  return d ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(d) : '';
+  if (!d) return '';
+  const now = new Date();
+  const opts = { hour: '2-digit', minute: '2-digit' };
+  if (d.toDateString() !== now.toDateString()) Object.assign(opts, { day: 'numeric', month: 'short' }, d.getFullYear() !== now.getFullYear() && { year: 'numeric' });
+  return new Intl.DateTimeFormat(undefined, opts).format(d);
 };
 
 export const dateTime = (value) => {
