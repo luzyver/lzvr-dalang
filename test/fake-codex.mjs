@@ -1,10 +1,11 @@
-// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
+// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline | orphan. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -57,8 +58,13 @@ process.stdin.on('end', async () => {
     console.log('{"type":"turn.completed","usage":{"input_tokens":1}}');
     return;
   }
+  if (mode === 'orphan') { // like a dev server the agent started: outlives its dead parent, holds our stdout open
+    const grandchild = `require('fs').writeFileSync(${JSON.stringify(process.env.FAKE_ORPHAN_PID)}, String(process.pid)); setTimeout(() => {}, 20000)`;
+    const middle = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref()`;
+    spawn(process.execPath, ['-e', middle], { stdio: ['ignore', 'inherit', 'inherit'] });
+  }
   if (mode === 'stubborn') process.on('SIGTERM', () => {}); // ignores polite kills
-  if (mode === 'slow' || mode === 'stubborn') await new Promise((r) => setTimeout(r, 30000));
+  if (mode === 'slow' || mode === 'stubborn' || mode === 'orphan') await new Promise((r) => setTimeout(r, 30000));
   if (process.env.FAKE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_DELAY_MS)));
   if (process.env.FAKE_WRITE) { // FAKE_WRITE=name=content: write that file in the folder it works in (-C)
     const [name, ...content] = process.env.FAKE_WRITE.split('=');

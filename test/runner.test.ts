@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -90,5 +90,27 @@ describe('runTurn', () => {
     }
     expect(last?.type).toBe('process.exit');
     expect(Date.now() - start).toBeLessThan(5000);
+  });
+
+  it('ends a cancelled run even when an orphaned grandchild still holds its output open', async () => {
+    const pidFile = join(dir, 'orphan.pid');
+    const ac = new AbortController();
+    const start = Date.now();
+    let last: CodexEvent | undefined;
+    try {
+      for await (const e of runTurn({
+        ...base, prompt: 'x', env: { FAKE_MODE: 'orphan', FAKE_ORPHAN_PID: pidFile }, signal: ac.signal, killGraceMs: 200,
+      })) {
+        last = e;
+        if (e.type === 'turn.started') {
+          while (!existsSync(pidFile)) await new Promise((r) => setTimeout(r, 20));
+          ac.abort();
+        }
+      }
+      expect(last?.type).toBe('process.exit');
+      expect(Date.now() - start).toBeLessThan(5000);
+    } finally {
+      try { process.kill(Number(readFileSync(pidFile, 'utf8'))); } catch { /* already gone */ }
+    }
   });
 });

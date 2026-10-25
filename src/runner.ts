@@ -44,19 +44,28 @@ export async function* runProcess(o: ProcessOpts): AsyncGenerator<CodexEvent> {
   child.stdin.on('error', () => {}); // EPIPE when the process dies early
   child.stdin.end(o.prompt);
 
+  let release = () => {};
+  const exited = new Promise<number | null>((resolve) => {
+    child.once('error', (e) => { stderr = e.message; rl.close(); resolve(-1); });
+    child.once('close', (code) => resolve(code));
+    // 'close' waits for stdout/stderr to close, and an orphaned grandchild (a dev server the agent started)
+    // can hold them open long after the agent is dead. Once a cancelled run is killed, stop waiting for them.
+    release = () => {
+      rl.close();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve(child.exitCode);
+    };
+  });
+
   let escalate: NodeJS.Timeout | undefined;
   const onAbort = () => {
     killTree(child, 'SIGTERM');
-    escalate = setTimeout(() => killTree(child, 'SIGKILL'), o.killGraceMs ?? 5000);
+    escalate = setTimeout(() => { killTree(child, 'SIGKILL'); release(); }, o.killGraceMs ?? 5000);
     escalate.unref();
   };
   if (o.signal?.aborted) onAbort();
   else o.signal?.addEventListener('abort', onAbort, { once: true });
-
-  const exited = new Promise<number | null>((resolve) => {
-    child.once('error', (e) => { stderr = e.message; rl.close(); resolve(-1); });
-    child.once('close', (code) => resolve(code));
-  });
 
   try {
     for await (const line of rl) {
