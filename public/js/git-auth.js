@@ -268,6 +268,10 @@ function ForgeTab({ forge, keys, helpers, server, onHelpers }) {
     setStatus(await api('/api/settings/git/logout', { method: 'POST', body: { forge, host: a.host, user: a.user } }));
     await onHelpers();
   });
+  const makeActive = (a) => guarded(async () => {
+    setStatus(await api('/api/settings/git/switch', { method: 'POST', body: { host: a.host, user: a.user } }));
+    toast(`${a.user} is now the active account on ${a.host}`);
+  });
   const setupHttps = (a) => guarded(async () => {
     await api('/api/settings/git/https', { method: 'POST', body: { forge, host: a.host } });
     toast(`git over HTTPS to ${a.host} now signs in with ${f.cli}`);
@@ -299,6 +303,7 @@ function ForgeTab({ forge, keys, helpers, server, onHelpers }) {
           <div class="id-sub"><span class="ellip mono">${a.host}</span>${!a.ok && html`<span class="warn">· login broken, sign in again</span>`}</div>
         </div>
         <${Menu} label=${`Actions for ${a.user}`} buttonClass="sm">
+          ${forge === 'github' && !a.active && html`<${MenuItem} icon="check" onClick=${makeActive(a)}>Make active<//>`}
           ${!httpsOn(a.host) && html`<${MenuItem} icon="arrow-up" onClick=${setupHttps(a)}>Use for git over HTTPS<//>`}
           ${keys.map((k) => html`<${MenuItem} key=${k.name} icon="key-round" onClick=${upload(a, k.name)}>Add ${k.name} to this account<//>`)}
           <${MenuItem} icon="log-out" danger onClick=${logout(a)}>Sign out<//>

@@ -345,6 +345,14 @@ export class GitAuth {
     if (!left.length) await this.dropHttps(host); // a helper with no login behind it would only fail
   }
 
+  /** Make another signed-in GitHub account the active one: gh's API calls and git over HTTPS then use it. */
+  async switchAccount(host: string, user: string): Promise<void> {
+    checkHost(host);
+    if (!/^[\w.-]+$/.test(user)) throw new GitAuthError('bad-input', 'not a valid account name');
+    await this.must(this.opts.ghCommand, 'gh', ['auth', 'switch', '--hostname', host, '--user', user]);
+    forgetGithubAccounts(); // pushes must pick up the newly active account
+  }
+
   /** Add one of the server's public keys to the signed-in account, so git over SSH works for it. */
   async uploadKey(forge: Forge, host: string, keyName: string, title: string): Promise<string> {
     checkHost(host);
