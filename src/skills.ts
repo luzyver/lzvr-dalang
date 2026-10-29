@@ -11,13 +11,24 @@ export const SKILLS_DIR = fileURLToPath(new URL('../skills', import.meta.url));
 
 export interface Skill { name: string; description: string; path: string }
 
-/** The `key: value` lines of a SKILL.md's frontmatter (one-line values only, quotes dropped). */
+/**
+ * The top-level `key: value` lines of a SKILL.md's frontmatter, quotes dropped. A block scalar (`key: >-` or `|`)
+ * takes its indented lines, joined into one line: the guide lists each description on one.
+ */
 function frontmatter(text: string): Record<string, string> {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  const lines = m?.[1]?.split(/\r?\n/) ?? [];
   const out: Record<string, string> = {};
-  for (const line of m?.[1]?.split(/\r?\n/) ?? []) {
-    const kv = /^([a-z_-]+):\s*(.*)$/i.exec(line);
-    if (kv) out[kv[1]!] = kv[2]!.trim().replace(/^(['"])(.*)\1$/, '$2');
+  for (let i = 0; i < lines.length; i++) {
+    const kv = /^([a-z_-]+):\s*(.*)$/i.exec(lines[i]!);
+    if (!kv) continue;
+    let value = kv[2]!.trim();
+    if (/^[>|][+-]?$/.test(value)) {
+      const block: string[] = [];
+      while (i + 1 < lines.length && (/^\s/.test(lines[i + 1]!) || !lines[i + 1]!.trim())) block.push(lines[++i]!.trim());
+      value = block.filter(Boolean).join(' ');
+    }
+    out[kv[1]!] = value.replace(/^(['"])(.*)\1$/, '$2');
   }
   return out;
 }

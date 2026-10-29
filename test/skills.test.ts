@@ -20,6 +20,13 @@ describe('Dalang skills', () => {
     expect(skills[1]!.path).toBe(join(dir, 'b-skill', 'SKILL.md').replace(/\\/g, '/'));
   });
 
+  it('joins a block scalar description into one line', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lzvr-skills-'));
+    mkdirSync(join(dir, 'folded'));
+    writeFileSync(join(dir, 'folded', 'SKILL.md'), '---\nname: f\ndescription: >-\n  Does f things\n\n  when asked.\nlicense: MIT\n---\n');
+    expect(loadSkills(dir).map((s) => s.description)).toEqual(['Does f things when asked.']);
+  });
+
   it('has nothing to say without skills, and a missing folder is none', () => {
     expect(loadSkills(join(tmpdir(), 'lzvr-no-such-dir'))).toEqual([]);
     expect(skillsGuide([])).toBe('');
