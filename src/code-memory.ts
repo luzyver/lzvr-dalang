@@ -79,7 +79,7 @@ const INDEX_TIMEOUT_MS = 30 * 60_000;
 const slash = (p: string) => p.replace(/\\/g, '/');
 
 /** Whether a folder brings Codex hooks of its own (`.codex/hooks.json`, or hooks in `.codex/config.toml`). */
-function hasCodexHooks(dir: string): boolean {
+export function hasCodexHooks(dir: string): boolean {
   if (existsSync(join(dir, '.codex', 'hooks.json'))) return true;
   try { return /^\s*\[*\s*hooks\b/m.test(readFileSync(join(dir, '.codex', 'config.toml'), 'utf8')); } catch { return false; }
 }

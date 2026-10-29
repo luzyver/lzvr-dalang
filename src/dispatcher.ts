@@ -5,6 +5,7 @@ import { basename, extname } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
+import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
@@ -13,14 +14,18 @@ import { loadConnections } from './databases.js';
 import { loadHosts } from './ssh-hosts.js';
 import { applyOps, extractionPrompt, memoryGuide, parseOps, pickFor } from './memory.js';
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
-import { isRepo, saveCheckpoint } from './git.js';
+import { checkpoint as gitCheckpoint, isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
+import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey } from './reviewer.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
 import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
 import type { Backend } from './util.js';
 
 export { withHistory } from './chat-context.js';
+
+/** A prompt that is an agent's report coming back (from a reviewer or sub-agent), not something a person asked. */
+const isContinuation = (item: QueueItem) => !item.author && /^\[(Reviewer|Sub-agent)\]/.test(item.prompt);
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
@@ -407,7 +412,11 @@ export class Dispatcher {
     if (!conv || !project) return; // deleted while queued
 
     const claude = conv.backend === 'claude';
-    const cwd = conv.worktree ?? project.path; // a chat with its own worktree never touches the project folder
+    // A reviewer reads its chat's folder and never writes: read-only, so no checkpoints either.
+    const reviewer = conv.role === REVIEWER_ROLE;
+    const reviewed = reviewer ? this.store.getConversation(conv.parent ?? '') : null;
+    const cwd = (reviewer ? reviewed?.worktree : conv.worktree) ?? project.path; // a chat with its own worktree never touches the project folder
+    const sandbox = reviewer ? 'read-only' : project.sandbox;
     const accounts = claude ? this.claudeAccounts : this.accounts;
     const label = claude ? 'Claude Code' : 'Codex';
     // Claude Code takes no image flag: it opens attached images itself from the path in the prompt.
@@ -436,8 +445,11 @@ export class Dispatcher {
       if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
         void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up
       }
-      checkpoints = this.opts.checkpoints !== false && project.sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
+      checkpoints = this.opts.checkpoints !== false && sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
       if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
+      // A new request of the person (not a reviewer's or sub-agent's report coming back, nor a turn a restart cut off
+      // going on) starts what the reviewer checks.
+      if (!conv.parent && !item.resume && !isContinuation(item)) this.store.setReview(convId, { request: item.prompt, base: `${turnId}-before`, rounds: 0, reviewer: '' });
       // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
       let workDone = !!item.resume;
       let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
@@ -480,7 +492,7 @@ export class Dispatcher {
         if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
       }
       const guide = [
-        ...(mcpToken ? [this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+        ...(mcpToken ? [reviewer ? '' : this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
@@ -492,7 +504,15 @@ export class Dispatcher {
       // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
       // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
       const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
-      const hooks = offered && (claude || await this.codexTrustsHooks()) ? offered : null;
+      // Impeccable's design detector after UI edits (see design-hook.ts), in turns that may write.
+      const design = sandbox === 'read-only' ? null
+        : designHookArgs(this.store.getDesignHook(), this.opts.skillsDir, conv.backend, [...new Set([cwd, project.path])]);
+      const trusted = claude || ((offered || design) && await this.codexTrustsHooks());
+      const hooks = offered && trusted ? offered : null;
+      if (design && trusted) {
+        await excludeCache(cwd);
+        if (hooks) hooks.args = mergeHookArgs(hooks.args, design); else extraArgs.push(...design);
+      }
       if (hooks) extraArgs.push(...hooks.args);
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread. A turn
       // cancelled before it started (while its code graph was reindexed) runs none.
@@ -533,11 +553,11 @@ export class Dispatcher {
         const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };
         const events = claude
           ? runClaudeTurn({
-            command: this.opts.claudeCommand, home, env, cwd, sandbox: project.sandbox, threadId,
+            command: this.opts.claudeCommand, home, env, cwd, sandbox, threadId,
             prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: extraArgs.length ? extraArgs : undefined, signal: ac.signal,
           })
           : runTurn({
-            command: this.opts.command, home, extraArgs, env, cwd, sandbox: project.sandbox, threadId,
+            command: this.opts.command, home, extraArgs, env, cwd, sandbox, threadId,
             prompt: attemptPrompt, images, signal: ac.signal,
           });
         for await (let ev of events) {
@@ -602,7 +622,13 @@ export class Dispatcher {
     if (this.opts.autoMemory && status === 'completed' && !conv.parent && lastMessage.trim() && this.store.getMemoryPolicy().auto) {
       void this.remember(conv, project, item.prompt, lastMessage, item.author);
     }
-    try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
+    if (reviewer) this.finishReview(conv, item, status, lastMessage);
+    else {
+      try { this.reportToParent(convId, item, status, lastMessage); } catch (e) { console.error('sub-agent report failed', e); }
+      if (status === 'completed' && checkpoints && !conv.parent) {
+        this.startReview(conv, cwd, lastMessage, item).catch((e) => console.error(`review of chat ${convId} failed`, e));
+      }
+    }
     try { this.opts.onTurnEnd?.({ convId, project: project.name, status, lastMessage }); } catch (e) { console.error('onTurnEnd failed', e); }
   }
 
@@ -660,12 +686,77 @@ export class Dispatcher {
     this.awaiting.delete(convId);
     const model = conv.model || this.store.getDefaultModel(conv.backend) || 'the CLI default';
     const answer = lastMessage.length > REPORT_MAX ? `${lastMessage.slice(0, REPORT_MAX)}\n[cut here; get_events has the rest]` : lastMessage;
-    const busy = this.store.listChildren(parent.id).filter((c) => c.id !== convId && this.workingFor(c, parent.id)).length;
+    const busy = this.store.listChildren(parent.id).filter((c) => c.id !== convId && !c.role && this.workingFor(c, parent.id)).length;
     const text = `[Sub-agent] "${conv.title ?? 'untitled'}" (conversation ${conv.id}, model ${model}) `
       + `${status === 'completed' ? 'finished' : `stopped: ${status}`}.${busy ? ` ${busy} other sub-agent(s) of yours are still working.` : ''}\n\n`
       + `Its last answer:\n\n${answer || '(none)'}\n\n`
       + 'Check the work before relying on it. send_prompt gives it more to do; set_model moves it up a model if this fell short.';
     this.store.enqueue(parent.id, text, [], '', item.on_behalf, parent.parent);
     this.kick(parent.id);
+  }
+  /**
+   * After a completed turn of a person's chat that changed files, its reviewer (a read-only sub-chat) checks the change
+   * since the person's request against that request. Not while its sub-agents still work for it or more is queued: the
+   * turn that goes on from there is reviewed instead. At most `maxRounds` reviews per request.
+   */
+  private async startReview(conv: Conversation, cwd: string, lastMessage: string, item: QueueItem): Promise<void> {
+    const policy = this.store.getReviewerPolicy();
+    const review = this.store.getReview(conv.id);
+    if (!policy.enabled || !review || review.rounds >= policy.maxRounds) return;
+    // A review is still awaited: a new round now would make its answer look late. And a turn on the findings of an
+    // earlier request is not reviewed against the latest request, nor counted in its rounds.
+    if (review.reviewer || isEarlierReview(item.prompt)) return;
+    // Still the same request, and no review of it started meanwhile (the person may have asked something new).
+    const current = () => { const r = this.store.getReview(conv.id); return r?.base === review.base && r.rounds === review.rounds; };
+    if (this.store.listQueue(conv.id).length || this.store.listChildren(conv.id).some((c) => !c.role && this.workingFor(c, conv.id))) return;
+    const after = this.store.listTurns(conv.id).at(-1);
+    const [base, head] = await Promise.all([gitCheckpoint(cwd, conv.id, review.base), after && gitCheckpoint(cwd, conv.id, `${after.id}-after`)]);
+    if (!base || !head || !current()) return;
+    const { files, diffs } = await collectChange(cwd, base, head);
+    if (!files.length || !current()) return;
+    let rev = this.store.listChildren(conv.id).find((c) => c.role === REVIEWER_ROLE);
+    if (!rev) {
+      rev = this.store.createConversation(conv.project_id, policy.backend || conv.backend, conv.id);
+      this.store.setRole(rev.id, REVIEWER_ROLE);
+      this.store.setTitle(rev.id, REVIEWER_TITLE);
+      if (policy.backend && policy.model) this.store.setModel(rev.id, policy.model);
+      if (policy.backend && policy.effort) this.store.setEffort(rev.id, policy.effort);
+    }
+    review.rounds++;
+    review.reviewer = rev.id;
+    this.store.setReview(conv.id, review);
+    const prompt = buildReviewPrompt({ request: review.request, answer: lastMessage, base, after: head, files, diffs, guide: policy.guide,
+      round: review.rounds, key: reviewKey(review) });
+    this.store.enqueue(rev.id, prompt, [], '', item.on_behalf || item.author, conv.id);
+    this.emit(conv.id, after!.id, { type: 'review.started', reviewer: rev.id, round: review.rounds, files: files.length });
+    this.kick(rev.id);
+  }
+
+  /**
+   * A reviewer's verdict: passed, or its issues go back to the reviewed chat as a new prompt for its agent to fix. Also
+   * when the person asked something new while the reviewer worked (which starts a new review state): its issues still
+   * hold for the code, so they go back marked as about an earlier change, without counting for the new request.
+   */
+  private finishReview(conv: Conversation, item: QueueItem, status: string, lastMessage: string): void {
+    const main = conv.parent ? this.store.getConversation(conv.parent) : null;
+    if (!main || item.from_conv !== main.id) return;
+    const review = this.store.getReview(main.id);
+    const asked = promptReview(item.prompt);
+    // A prompt without the key (started before keys existed) only counts when no newer review of this chat is queued behind it.
+    const newer = this.store.listQueue(conv.id).some((q) => q.from_conv === main.id);
+    const awaited = !!review && review.reviewer === conv.id && (asked ? asked.key === reviewKey(review) : !newer);
+    if (awaited) this.store.setReview(main.id, { ...review, reviewer: '' });
+    const turn = this.store.listTurns(main.id).at(-1);
+    if (!turn) return;
+    const round = awaited ? review.rounds : asked?.round ?? 0;
+    const note = { reviewer: conv.id, round, ...(!awaited && { earlier: true }) };
+    if (status !== 'completed') { this.emit(main.id, turn.id, { type: 'review.failed', ...note, status }); return; }
+    const verdict = parseVerdict(lastMessage);
+    if (verdict.ok) { this.emit(main.id, turn.id, { type: 'review.passed', ...note }); return; }
+    this.emit(main.id, turn.id, { type: 'review.issues', ...note });
+    const maxRounds = this.store.getReviewerPolicy().maxRounds;
+    const message = reviewerMessage({ reviewer: conv.id, issues: verdict.issues, round, maxRounds, earlier: !awaited });
+    this.store.enqueue(main.id, message, [], '', item.on_behalf, main.parent);
+    this.kick(main.id);
   }
 }

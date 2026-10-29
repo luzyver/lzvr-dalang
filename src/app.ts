@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
+import type { DesignHookPolicy } from './design-hook.js';
 import { clickupClient, clickupForAll, clickupRoutes, clickupSend } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
 import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
@@ -34,6 +35,7 @@ import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
 import { type Store, SUBAGENT_GUIDE, type SubagentPolicy } from './store.js';
+import { REVIEWER_GUIDE, type ReviewerPolicy } from './reviewer.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -342,6 +344,20 @@ export function buildApp(
     store.setSubagentPolicy({ ...store.getSubagentPolicy(), ...req.body });
     return reply.code(204).send();
   });
+  // The automatic reviewer of a person's chats (see reviewer.ts).
+  app.get('/api/settings/reviewer', { onRequest: requireAdmin }, () => ({ ...store.getReviewerPolicy(), defaultGuide: REVIEWER_GUIDE }));
+  app.put<{ Body: Partial<ReviewerPolicy> }>('/api/settings/reviewer', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', additionalProperties: false,
+      properties: {
+        enabled: { type: 'boolean' }, backend: { enum: ['', ...BACKENDS] }, model: { type: 'string', maxLength: 200 },
+        effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] },
+        maxRounds: { type: 'integer', minimum: 1, maximum: 10 }, guide: { type: 'string', maxLength: 8000 },
+      } } },
+  }, (req, reply) => {
+    store.setReviewerPolicy({ ...store.getReviewerPolicy(), ...req.body });
+    return reply.code(204).send();
+  });
   // Whether chat agents may commit and push themselves (see agent-git.ts); the panel's own commit and push always work.
   app.get('/api/settings/agent-git', { onRequest: requireAdmin }, () => store.getAgentGit());
   app.put<{ Body: AgentGitPolicy }>('/api/settings/agent-git', {
@@ -350,6 +366,15 @@ export function buildApp(
       properties: { commit: { type: 'boolean' }, push: { type: 'boolean' } } } },
   }, (req, reply) => {
     store.setAgentGit({ commit: req.body.commit, push: req.body.push });
+    return reply.code(204).send();
+  });
+  // Whether turns that may write run Impeccable's design detector after UI edits (see design-hook.ts).
+  app.get('/api/settings/design-hook', { onRequest: requireAdmin }, () => store.getDesignHook());
+  app.put<{ Body: DesignHookPolicy }>('/api/settings/design-hook', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['enabled'], additionalProperties: false, properties: { enabled: { type: 'boolean' } } } },
+  }, (req, reply) => {
+    store.setDesignHook({ enabled: req.body.enabled });
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.
