@@ -1,7 +1,11 @@
 // Fake `claude -p --output-format stream-json`. A CLAUDE_CONFIG_DIR basename listed in FAKE_LIMIT_HOMES hits a usage limit.
+import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
 const args = process.argv.slice(2);
+// Dalang's guide comes as a file: shown as the `--append-system-prompt` text it holds.
+const gf = args.indexOf('--append-system-prompt-file');
+if (gf >= 0) args.splice(gf, 2, '--append-system-prompt', readFileSync(args[gf + 1], 'utf8'));
 const out = (o) => console.log(JSON.stringify(o));
 const sid = args.includes('--resume') ? args[args.indexOf('--resume') + 1] : 'sess-1';
 let prompt = '';

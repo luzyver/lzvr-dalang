@@ -21,7 +21,7 @@ metadata:
 - Follow the project first: use the language version, framework, style, tooling and test setup it already has. The versions and tools named in this skill are defaults, not requirements; never upgrade or switch them on your own.
 - Do not add dependencies, frameworks or linters the project does not already use unless the person asks.
 - Keep code modular: small files, one responsibility each; match the surrounding code's naming and comment density.
-- Skills this one names as related (for example fullstack-guardian, api-designer, devops-engineer, test-master, database-optimizer, fastapi-expert) are not installed here; use the project's own conventions and the Dalang skills that are installed instead.
+- Related skills `devops-engineer`, `code-reviewer`, `security-reviewer` and `architecture-designer` are installed here. Others it names (for example fullstack-guardian, api-designer, test-master, database-optimizer, fastapi-expert) are not; use the project's own conventions and the Dalang skills that are installed instead.
 - Databases only through the Dalang db_* tools and servers only through ssh_list_hosts/ssh_exec; never connect with credentials from .env or config files.
 
 - Use tRPC, Zod or other libraries from the examples only when the project already uses them.

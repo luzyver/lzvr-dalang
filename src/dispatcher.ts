@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { basename, extname } from 'node:path';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, extname, join } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
@@ -499,8 +500,6 @@ export class Dispatcher {
         agentGitGuide(agentGit),
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');
-      // A JSON string is also a valid TOML basic string, which is what `-c` reads.
-      if (guide) extraArgs.push(...(claude ? ['--append-system-prompt', guide] : ['-c', `developer_instructions=${JSON.stringify(guide)}`]));
       // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
       // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
       const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
@@ -551,36 +550,49 @@ export class Dispatcher {
           ...(claude && compactTokens > 0 && { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactTokens) }),
           ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };
+        // The guide goes in a file, not on the command line: with every skill listed it is past Windows' 32k limit
+        // (spawn ENAMETOOLONG). Codex has no file flag for it, so it gets a profile in its home (`-p`, read from there).
+        const guideFile = guide ? join(home, claude ? `dalang-${turnId}.md` : `dalang-${turnId}.config.toml`) : null;
+        // A JSON string is also a valid TOML basic string.
+        if (guideFile) {
+          mkdirSync(home, { recursive: true });
+          writeFileSync(guideFile, claude ? guide : `developer_instructions = ${JSON.stringify(guide)}\n`);
+        }
+        const args = guideFile ? [...extraArgs, ...(claude ? ['--append-system-prompt-file', guideFile] : ['-p', `dalang-${turnId}`])] : extraArgs;
         const events = claude
           ? runClaudeTurn({
             command: this.opts.claudeCommand, home, env, cwd, sandbox, threadId,
-            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: extraArgs.length ? extraArgs : undefined, signal: ac.signal,
+            prompt: attemptPrompt, model, effort, mcpUrl: this.opts.mcpUrl, mcpServers: servers?.claudeServers, extraArgs: args.length ? args : undefined, signal: ac.signal,
           })
           : runTurn({
-            command: this.opts.command, home, extraArgs, env, cwd, sandbox, threadId,
+            command: this.opts.command, home, extraArgs: args, env, cwd, sandbox, threadId,
             prompt: attemptPrompt, images, signal: ac.signal,
           });
-        for await (let ev of events) {
-          if (!claude && ev.type === 'item.completed' && (ev.item as { type?: string } | undefined)?.type === 'file_change') {
-            ev = await this.withCodexDiffs(ev, this.store.getConversation(convId)?.thread_id ?? null, attemptStart, usedDiffs);
-          }
-          if (ev.type === 'account.limits') { windows = ev.windows as LimitWindow[]; this.recordLimits('claude', home, windows); continue; }
-          if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
-          if (ev.type === 'context.usage' || ev.type === 'context.compacted') {
-            ev = { ...ev, backend: conv.backend, thread_id: this.store.getConversation(convId)?.thread_id };
-          }
-          if (ev.type.startsWith('item.')) worked = true;
-          if (ev.type === 'turn.completed') { usage = ev.usage ?? null; failed = false; completed = true; }
-          const msg = ev.item as { type?: string; text?: unknown } | undefined;
-          if (ev.type === 'item.completed' && msg?.type === 'agent_message' && typeof msg.text === 'string') lastMessage = msg.text;
-          if (ev.type === 'turn.failed' || ev.type === 'error' || ev.type === 'process.exit') {
-            failed = true;
-            if (!limited && isLimit(ev, this.opts.limitRe ?? DEFAULT_LIMIT_RE)) {
-              limited = true;
-              limitMs = retryAfter(ev);
+        try {
+          for await (let ev of events) {
+            if (!claude && ev.type === 'item.completed' && (ev.item as { type?: string } | undefined)?.type === 'file_change') {
+              ev = await this.withCodexDiffs(ev, this.store.getConversation(convId)?.thread_id ?? null, attemptStart, usedDiffs);
             }
+            if (ev.type === 'account.limits') { windows = ev.windows as LimitWindow[]; this.recordLimits('claude', home, windows); continue; }
+            if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') this.store.setThread(convId, ev.thread_id);
+            if (ev.type === 'context.usage' || ev.type === 'context.compacted') {
+              ev = { ...ev, backend: conv.backend, thread_id: this.store.getConversation(convId)?.thread_id };
+            }
+            if (ev.type.startsWith('item.')) worked = true;
+            if (ev.type === 'turn.completed') { usage = ev.usage ?? null; failed = false; completed = true; }
+            const msg = ev.item as { type?: string; text?: unknown } | undefined;
+            if (ev.type === 'item.completed' && msg?.type === 'agent_message' && typeof msg.text === 'string') lastMessage = msg.text;
+            if (ev.type === 'turn.failed' || ev.type === 'error' || ev.type === 'process.exit') {
+              failed = true;
+              if (!limited && isLimit(ev, this.opts.limitRe ?? DEFAULT_LIMIT_RE)) {
+                limited = true;
+                limitMs = retryAfter(ev);
+              }
+            }
+            this.emit(convId, turnId, ev);
           }
-          this.emit(convId, turnId, ev);
+        } finally {
+          if (guideFile) rmSync(guideFile, { force: true });
         }
         if (!claude) { // Codex's active-context samples and rate-limit windows live in its session rollout.
           const t = this.store.getConversation(convId)?.thread_id;
