@@ -201,6 +201,12 @@ export class ThreadModel {
       case 'code_memory.indexing': this.#note('The code changed since its graph was indexed: reindexing before the agent starts', 'dim', e.id); break;
       case 'code_memory.indexed': this.#note('Code graph reindexed', 'dim', e.id); break;
       case 'code_memory.failed': this.#note('Could not reindex the code graph (see Settings → MCP → Code memory): the agent reads the previous one', 'warn', e.id); break;
+      case 'review.started': this.#note(`Reviewer checking ${d.files} changed file${d.files === 1 ? '' : 's'} (round ${d.round})`, 'dim', e.id); break;
+      case 'review.passed': this.#note(`Reviewer: no problems found${d.earlier ? ' in a change from before the latest request' : ''} (round ${d.round})`, 'dim', e.id); break;
+      case 'review.issues': this.#note(d.earlier
+        ? `Reviewer found problems in a change from before the latest request (round ${d.round}): sent to this chat to check`
+        : `Reviewer found problems (round ${d.round}): sent to this chat to fix`, 'warn', e.id); break;
+      case 'review.failed': this.#note(`Reviewer did not finish${d.earlier ? ' an earlier review' : ''} (round ${d.round}, ${d.status})`, 'warn', e.id); break;
       case 'thread.started':
       case 'item.updated':
       case 'conversation.title':

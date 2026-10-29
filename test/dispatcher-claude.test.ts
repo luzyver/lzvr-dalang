@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,7 +85,7 @@ describe('Dispatcher with the claude backend', () => {
     expect(texts.some((t) => t.includes(`|settings:{"hooks":{}}|root:${project.path}`))).toBe(true);
   });
 
-  it("offers Dalang's skills: listed in the system prompt, their folder readable", async () => {
+  it("offers Dalang's skills: listed in the system prompt (a file, past Windows' command-line limit), their folder readable", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lzvr-claude-'));
     const skillsDir = join(dir, 'skills');
     mkdirSync(join(skillsDir, 'charts'), { recursive: true });
@@ -98,6 +98,7 @@ describe('Dispatcher with the claude backend', () => {
     await until(() => turnsDone(store, conv.id, 1));
     const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
     expect(texts.some((t) => t.includes('Check them FIRST') && t.includes('- charts (') && t.includes(`|--add-dir=${skillsDir}`))).toBe(true);
+    expect(readdirSync(join(dir, 'a')).filter((f) => f.startsWith('dalang-'))).toEqual([]); // the guide file is gone after the turn
   });
 
   it('moves the same turn to the next Claude account at a usage limit', async () => {

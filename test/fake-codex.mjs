@@ -4,11 +4,17 @@
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 
 const args = process.argv.slice(2);
+// Dalang's guide comes as a profile in CODEX_HOME (`-p name`): shown as the `-c developer_instructions=...` it holds.
+const prof = process.argv.indexOf('-p') - 2;
+if (prof >= 0 && args[0] === 'exec') {
+  const toml = readFileSync(join(process.env.CODEX_HOME || '', `${args[prof + 1]}.config.toml`), 'utf8');
+  args.splice(prof, 2, '-c', `developer_instructions=${toml.replace(/^developer_instructions = /, '').trim()}`);
+}
 
 // `exec --help`: the flags this Codex knows. FAKE_OLD_CODEX=1: one from before hooks could skip trust.
 if (args[0] === 'exec' && args.includes('--help')) {

@@ -180,6 +180,80 @@ function AgentGit() {
   </section>`;
 }
 
+/** Impeccable's design detector: after an agent edits a UI file, its findings go into the agent's context. */
+function DesignHook() {
+  const [p, setP] = useState(null);
+  useEffect(() => { api('/api/settings/design-hook').then(setP).catch((e) => toast(e.message, 'err')); }, []);
+  const save = guarded(async (next) => {
+    setP(next);
+    await api('/api/settings/design-hook', { method: 'PUT', body: next });
+    toast("Saved: applies from each chat's next turn");
+  });
+  if (p == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  return html`<section class="form-card">
+    <strong>Design detector</strong>
+    <span class="dim small">After an agent edits a UI file (HTML, CSS, JSX, Vue, ...), the Impeccable skill's detector checks it
+      and tells the agent what to fix; at the end of the turn it makes a deeper pass. It never blocks an edit, stays silent on
+      other files, and skips projects that install Impeccable's hook themselves. Its cache (.impeccable/hook.cache.json) is
+      kept out of git changes.</span>
+    <label class="row"><input type="checkbox" checked=${p.enabled} onChange=${(e) => save({ enabled: e.currentTarget.checked })} />
+      <span>Check UI edits</span></label>
+  </section>`;
+}
+
+/** The automatic reviewer: after a person's chat changes files, a read-only sub-chat checks the work and sends back what is wrong. */
+function ReviewerSettings() {
+  const [p, setP] = useState(null);
+  const [models, setModels] = useState([]);
+  useEffect(() => {
+    api('/api/settings/reviewer').then((r) => setP({ ...r, guide: r.guide || r.defaultGuide })).catch((e) => toast(e.message, 'err'));
+  }, []);
+  // The models of the chosen agent, as in its defaults above.
+  const backend = p?.backend;
+  useEffect(() => {
+    setModels([]);
+    if (backend) api(`/api/models${backend === 'claude' ? '?backend=claude' : ''}`).then(setModels).catch(() => {});
+  }, [backend]);
+  // As with the orchestrator guide: the built-in guide unchanged stores nothing.
+  const save = guarded(async () => {
+    const { defaultGuide, ...body } = p;
+    await api('/api/settings/reviewer', { method: 'PUT', body: { ...body, guide: p.guide.trim() === defaultGuide.trim() ? '' : p.guide.trim() } });
+    toast('Reviewer settings saved');
+  });
+  if (p == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  return html`<section class="form-card">
+    <strong>Reviewer</strong>
+    <span class="dim small">After a turn of a person's chat that changed files, a second agent reads the change in a read-only
+      sub-chat and checks it against the request. When it finds problems it sends them to the chat as a message, and the
+      chat's agent fixes them, up to the rounds below per request.</span>
+    <label class="row"><input type="checkbox" checked=${p.enabled} onChange=${(e) => setP({ ...p, enabled: e.currentTarget.checked })} />
+      <span>Review the work of every chat automatically <span class="dim small">(uses more of the accounts' limits)</span></span></label>
+    ${p.enabled && html`
+      <div class="row wrap">
+        <${Field} label="Agent" hint="Same as chat: the reviewed chat's agent and its defaults">
+          <select value=${p.backend} onChange=${(e) => setP({ ...p, backend: e.currentTarget.value, model: '' })}>
+            <option value="">Same as chat</option><option value="codex">Codex</option><option value="claude">Claude Code</option>
+          </select><//>
+        ${p.backend && html`
+          <${Field} label="Model"><select value=${p.model} onChange=${(e) => setP({ ...p, model: e.currentTarget.value })}>
+            <option value="">Default</option>${models.map((m) => html`<option value=${m.slug}>${m.name} (${m.slug})</option>`)}
+            ${p.model && !models.some((m) => m.slug === p.model) && html`<option value=${p.model}>${p.model}</option>`}
+          </select><//>
+          <${Field} label="Effort"><select value=${p.effort} onChange=${(e) => setP({ ...p, effort: e.currentTarget.value })}>
+            <option value="">Default</option>${EFFORTS.map((x) => html`<option value=${x}>${x}</option>`)}
+          </select><//>`}
+        <${Field} label="Rounds per request" hint="Reviews of one request at most"><input type="number" min="1" max="10" value=${p.maxRounds}
+          onInput=${(e) => setP({ ...p, maxRounds: Math.max(1, Math.min(10, Number(e.currentTarget.value) || 1)) })} /><//>
+      </div>
+      <textarea class="prompt-edit" rows="6" aria-label="Reviewer guide" value=${p.guide} onInput=${(e) => setP({ ...p, guide: e.currentTarget.value })}></textarea>
+      <div class="row">
+        <button class="btn ghost sm" onClick=${() => setP({ ...p, guide: p.defaultGuide })} disabled=${p.guide === p.defaultGuide}>Reset guide to default</button>
+        ${p.guide.trim() !== p.defaultGuide.trim() && html`<span class="dim small">Customised</span>`}
+      </div>`}
+    <div class="row"><${AsyncButton} class="btn primary sm" onClick=${save}>Save<//></div>
+  </section>`;
+}
+
 const Defaults = () => html`
   <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
   <${DefaultsFor} backend="codex" title="Codex" />
@@ -189,6 +263,8 @@ const Defaults = () => html`
   <${AgentChoiceFor} backend="codex" title="Codex: agents may pick" />
   <${AgentChoiceFor} backend="claude" title="Claude Code: agents may pick" />
   <${SubagentLimits} />
+  <${ReviewerSettings} />
+  <${DesignHook} />
   <${AgentGit} />`;
 
 /** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */

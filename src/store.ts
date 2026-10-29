@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Sealer } from './secrets.js';
 import { AGENT_GIT_DEFAULTS, type AgentGitPolicy } from './agent-git.js';
+import { DESIGN_HOOK_DEFAULTS, type DesignHookPolicy } from './design-hook.js';
+import { REVIEWER_DEFAULTS, type ReviewerPolicy, type ReviewState } from './reviewer.js';
 import { summarizeUsage, type ChatUsage } from './token-usage.js';
 import type { ContextUsage } from './context.js';
 import type { Backend, ProjectAccess } from './util.js';
@@ -94,6 +96,8 @@ export interface Conversation {
   pr_branch: string | null;
   /** The chat whose agent created this one over MCP (a sub-agent), or '' when a person or an outside client did. */
   parent: string;
+  /** What the chat is for: '' for a normal one, 'reviewer' for the automatic reviewer of its parent (see reviewer.ts). */
+  role: string;
 }
 /**
  * `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it.
@@ -219,6 +223,7 @@ export class Store {
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
     this.ensureColumn('conversations', 'parent', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('conversations', 'role', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('users', 'email', 'TEXT');
     this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('queue', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
@@ -391,10 +396,23 @@ export class Store {
     try { return { ...AGENT_GIT_DEFAULTS, ...(JSON.parse(this.getKv('agent_git') ?? '{}') as Partial<AgentGitPolicy>) }; } catch { return AGENT_GIT_DEFAULTS; }
   }
   setAgentGit(p: AgentGitPolicy): void { this.setKv('agent_git', JSON.stringify(p)); }
+  /** Whether turns that may write run Impeccable's design detector after UI edits (see design-hook.ts); by default on. */
+  getDesignHook(): DesignHookPolicy {
+    try { return { ...DESIGN_HOOK_DEFAULTS, ...(JSON.parse(this.getKv('design_hook') ?? '{}') as Partial<DesignHookPolicy>) }; } catch { return DESIGN_HOOK_DEFAULTS; }
+  }
+  setDesignHook(p: DesignHookPolicy): void { this.setKv('design_hook', JSON.stringify(p)); }
   getMemoryPolicy(): MemoryPolicy {
     try { return { ...MEMORY_DEFAULTS, ...(JSON.parse(this.getKv('memory') ?? '{}') as Partial<MemoryPolicy>) }; } catch { return MEMORY_DEFAULTS; }
   }
   setMemoryPolicy(p: MemoryPolicy): void { this.setKv('memory', JSON.stringify(p)); }
+  getReviewerPolicy(): ReviewerPolicy {
+    try { return { ...REVIEWER_DEFAULTS, ...(JSON.parse(this.getKv('reviewer') ?? '{}') as Partial<ReviewerPolicy>) }; } catch { return REVIEWER_DEFAULTS; }
+  }
+  setReviewerPolicy(p: ReviewerPolicy): void { this.setKv('reviewer', JSON.stringify(p)); }
+  getReview(convId: string): ReviewState | null {
+    try { return JSON.parse(this.getKv(`review:${convId}`) ?? 'null') as ReviewState | null; } catch { return null; }
+  }
+  setReview(convId: string, r: ReviewState): void { this.setKv(`review:${convId}`, JSON.stringify(r)); }
 
   createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
     const p = { id: randomUUID(), name, path, sandbox, backend, access };
@@ -406,7 +424,10 @@ export class Store {
   }
   listProjects(): Project[] { return this.all('SELECT * FROM projects ORDER BY name'); }
   getProject(id: string): Project | null { return this.get('SELECT * FROM projects WHERE id=?', id); }
-  deleteConversation(id: string): boolean { return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0; }
+  deleteConversation(id: string): boolean {
+    this.deleteKv(`review:${id}`);
+    return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0;
+  }
   deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
 
   /** The chat runs on the project's backend unless told otherwise. */
@@ -419,8 +440,9 @@ export class Store {
   listConversations(projectId: string): Conversation[] {
     return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
   }
-  /** The sub-agents a chat's agent started (that still exist). */
-  countChildren(id: string): number { return this.get<{ n: number }>('SELECT count(*) AS n FROM conversations WHERE parent=?', id)!.n; }
+  /** The sub-agents a chat's agent started (that still exist); its automatic reviewer does not count. */
+  countChildren(id: string): number { return this.get<{ n: number }>("SELECT count(*) AS n FROM conversations WHERE parent=? AND role=''", id)!.n; }
+  setRole(id: string, role: string): void { this.run('UPDATE conversations SET role=? WHERE id=?', role, id); }
   /** The sub-agents a chat's agent started, in any project. */
   listChildren(id: string): Conversation[] { return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE parent=? ORDER BY c.rowid`, id); }
   /** How many sub-agent levels a chat is below a chat a person started (0 for that one). */
