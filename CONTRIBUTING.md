@@ -1,7 +1,7 @@
 # Contributing to Dalang
 
 Thanks for helping. This file covers how to get a working copy, the checks a change must pass and how commits and
-pull requests are written. How Dalang itself works is in the [guide](docs/guide.md).
+pull requests are written. See the [design documentation](docs/design.md) for how the application works.
 
 ## Setup
 
@@ -14,7 +14,48 @@ cp .env.example .env          # set LZVR_TOKEN (openssl rand -hex 32) and AUTH_B
 npm run dev                   # tsx src/main.ts, http://127.0.0.1:9876
 ```
 
-On Windows, `run.cmd -Dev` does the same in one go (see [Develop](docs/guide.md#develop)).
+On Windows, `run.cmd -Dev` does the same in one go (see [Development workflow](#development-workflow)).
+
+## Development workflow
+
+On native Windows, `run.cmd` (or `scripts\run.ps1`) does it in one go: checks Node, runs `npm ci` when the lockfile
+changed, writes `.env` from `.env.example` with a fresh `LZVR_TOKEN` on the first run, finds `codex.exe`, `claude.exe`,
+`gh.exe` and `glab.exe` when `.env` does not set `CODEX_BIN` / `CLAUDE_BIN` / `GH_BIN` / `GLAB_BIN`, then builds and
+starts. `run.cmd -Dev` runs `src/main.ts` through tsx without building; `-Install` forces `npm ci`.
+
+To keep it running in the background from every logon, `autostart.cmd install` registers a `Dalang` Task Scheduler
+task that runs `scripts\run.ps1` hidden, logging to `state\autostart.log`. After an update, `autostart.cmd restart`
+pulls (`--ff-only`; `-NoPull` skips it), lets running chats finish as on the VM (it creates `state\restart`, which
+Dalang watches since Windows has no SIGTERM; up to `DRAIN_MINUTES`, the rest continues after the restart), stops the
+task, frees the port and starts it again, which rebuilds. Also
+`stop`, `status` and `uninstall`. Don't run `restart` or `stop` from a Dalang chat: it stops the server running it.
+
+The panel (`public/`) has no build step: Preact components written with htm tagged templates, state in
+`@preact/signals`. Its libraries and fonts are copied from `node_modules` into `public/vendor` and `public/fonts` by
+`npm run vendor` (run it after updating one of them); bare imports are rewritten to relative ones there, since the CSP
+allows no inline import map. The code editor's CodeMirror and xterm.js are the exception: many small packages, so
+`npm run vendor` bundles them with esbuild into `public/vendor/code` (`scripts/code-editor.entry.mjs` lists what is
+used; each language is its own chunk, loaded when a file of it opens). The editor's page is the same shell under `/code`,
+whose CSP also allows inline styles (both libraries write `<style>` elements); the rest of the panel stays strict.
+Colours come from Radix Colors scales (Settings → Appearance switches the accent palette).
+
+## README screenshots
+
+The six images in `docs/screenshots/` come from the current frontend with fictional data in
+`scripts/screenshots/fixtures.py`. The capture script intercepts every request: static assets come from `public/`,
+API responses come from the fixtures, and external requests are rejected. It needs no running server, login,
+agent account or database. Chat messages, review results and test counts in the images are sample content.
+
+With Python 3.10+, the Python `playwright` package and its Chromium browser installed, run from the repository root:
+
+```sh
+python scripts/screenshots/capture.py
+```
+
+Use `--output <folder>` to preview elsewhere. The script captures desktop chat, split diff, code editor, SQL results,
+the light inbox and mobile views, then builds the hero and phone frames in Chromium. It replaces the six images
+only after all captures succeed without browser errors or unhandled requests. Inspect the images after UI changes;
+update the fixtures and README captions when the screens change.
 
 ## Layout
 
@@ -47,7 +88,9 @@ After updating a browser library (Preact, CodeMirror, xterm.js, highlight.js, ..
 - TypeScript `strict` with `noUncheckedIndexedAccess`; no `any` where a type can be named.
 - Match the surrounding code: naming, comment density and idiom. Comments say *why*, not *what*.
 - `.editorconfig` sets UTF-8, LF and two-space indentation.
-- User-facing behaviour, configuration and API changes go into [docs/guide.md](docs/guide.md) in the same change.
+- Update the relevant documentation with behaviour changes: [README](README.md) for the overview,
+  [Setup](docs/setup.md) for configuration, [Integrations](docs/integrations.md) for APIs/tools, and
+  [Design](docs/design.md) for workflows and internal behaviour.
 
 ## Commits and pull requests
 

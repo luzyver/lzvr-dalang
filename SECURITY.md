@@ -1,7 +1,7 @@
 # Security policy
 
 Dalang runs AI agents with shell access on your own machine, so its security model matters more than most web apps'.
-Read the [Security](docs/guide.md#security) section of the guide before exposing a panel.
+Read the [Security](docs/setup.md#security) section of the setup documentation before exposing a panel.
 
 ## Supported versions
 

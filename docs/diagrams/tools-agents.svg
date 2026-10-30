@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tools-agents-title tools-agents-desc" id="tools-agents-root">
+<title id="tools-agents-title">Tools, delegation and approvals</title>
+<desc id="tools-agents-desc">The running agent can access project files and configured external MCP servers. The built-in gateway scopes requests, starts child chats and enforces connection policy. Child reports enter the parent queue. Database and SSH operations execute only when permitted, with admin approval when required.</desc>
+<defs>
+      <style>#tools-agents-root { color-scheme: dark;
+      --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
+      --fg: #E6E8EB; --muted: #8B929C; --border: #23272D; --border-strong: #323840;
+      --accent: #FF6A2B; --accent-text: #FF7A40; --accent-soft: rgba(255,106,43,.12);
+      --font-sans: 'Geist', Arial, sans-serif;
+      --font-mono: 'Geist Mono', Consolas, monospace; }
+      #tools-agents-root { color: var(--fg); font-family: var(--font-sans); }
+      #tools-agents-root figure { margin: 32px 0 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+      #tools-agents-root figcaption { padding: 16px 24px; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+      #tools-agents-root .diagram-container { width: 100%; overflow-x: auto; }
+      #tools-agents-root .dg-arrow { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+      #tools-agents-root .dg-head { fill: var(--muted); }
+      #tools-agents-root .dg-mask { fill: var(--surface); }
+      #tools-agents-root .dg-label, #tools-agents-root .dg-tag-text, #tools-agents-root .dg-sub, #tools-agents-root .dg-legend-title { font-family: var(--font-mono); }
+      #tools-agents-root .dg-label { fill: var(--muted); font-size: 8px; letter-spacing: .08em; text-anchor: middle; }
+      #tools-agents-root .dg-box { stroke-width: 1; }
+      #tools-agents-root .is-backend .dg-box { fill: var(--surface); stroke: var(--fg); stroke-opacity: .6; }
+      #tools-agents-root .is-store .dg-box { fill: var(--surface-2); stroke: var(--muted); }
+      #tools-agents-root .is-input .dg-box { fill: var(--surface); stroke: var(--border-strong); }
+      #tools-agents-root .is-external .dg-box { fill: var(--surface); stroke: var(--border-strong); stroke-dasharray: 4 3; }
+      #tools-agents-root .is-focal .dg-box { fill: var(--accent-soft); stroke: var(--accent); }
+      #tools-agents-root .dg-tag { fill: none; stroke: var(--muted); stroke-opacity: .5; stroke-width: .8; }
+      #tools-agents-root .is-focal .dg-tag { stroke: var(--accent); }
+      #tools-agents-root .dg-tag-text { fill: var(--muted); font-size: 7px; letter-spacing: .08em; text-anchor: middle; }
+      #tools-agents-root .is-focal .dg-tag-text { fill: var(--accent-text); }
+      #tools-agents-root .dg-name { fill: var(--fg); font-family: var(--font-sans); font-size: 15px; font-weight: 600; text-anchor: middle; }
+      #tools-agents-root .dg-sub { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+      #tools-agents-root .dg-callout { fill: var(--muted); font-family: var(--font-sans); font-size: 12px; font-weight: 500; }
+      #tools-agents-root .dg-rule { stroke: var(--border); stroke-width: .8; }
+      #tools-agents-root .dg-legend-title { fill: var(--muted); font-size: 8px; letter-spacing: .18em; }
+      #tools-agents-root .dg-legend { fill: var(--muted); font-family: var(--font-sans); font-size: 9px; }
+      #tools-agents-root figcaption { padding: 16px; }
+      #tools-agents-root figure { overflow: visible; break-inside: avoid; }
+      #tools-agents-root .diagram-container { overflow: visible; }
+      #tools-agents-root nav { margin: 20px 0; font-size: 14px; }
+      #tools-agents-root a { color: var(--accent-text); }
+      #tools-agents-root .dg-note { fill: var(--muted); font: 12px Arial, sans-serif; }</style>
+<marker id="tools-agents-dg-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+<marker id="tools-agents-dg-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#FF6A2B"/>
+</marker>
+<marker id="tools-agents-dg-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+</defs>
+<rect width="960" height="600" fill="#121417"/>
+<path class="dg-arrow" d="M 256,296 H 368" marker-end="url(#tools-agents-dg-arrow)"/>
+<rect class="dg-mask" x="283.5" y="270" width="57" height="14" rx="2"/>
+<text class="dg-label" x="312" y="280">TOOL CALL</text>
+<path class="dg-arrow" d="M 480,248 V 184" marker-end="url(#tools-agents-dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="495.0" y="210" width="42" height="14" rx="2"/>
+<text class="dg-label" x="516" y="220">CREATE</text>
+<path class="dg-arrow" d="M 592,132 H 704" marker-end="url(#tools-agents-dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="627.0" y="106" width="42" height="14" rx="2"/>
+<text class="dg-label" x="648" y="116">REPORT</text>
+<path class="dg-arrow" d="M 592,296 H 704" marker-end="url(#tools-agents-dg-arrow)"/>
+<rect class="dg-mask" x="628.0" y="270" width="40" height="14" rx="2"/>
+<text class="dg-label" x="648" y="280">CHECK</text>
+<path class="dg-arrow" d="M 816,352 V 416" marker-end="url(#tools-agents-dg-arrow)"/>
+<rect class="dg-mask" x="832.5" y="378" width="47" height="14" rx="2"/>
+<text class="dg-label" x="856" y="388">EXECUTE</text>
+<path class="dg-arrow" d="M 592,468 H 648 Q 656,468 656,460 V 336 Q 656,328 664,328 H 704" marker-end="url(#tools-agents-dg-arrow)" stroke-dasharray="4 3"/>
+<path class="dg-arrow" d="M 144,248 V 184" marker-end="url(#tools-agents-dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="156.0" y="210" width="40" height="14" rx="2"/>
+<text class="dg-label" x="176" y="220">MCP</text>
+<path class="dg-arrow" d="M 144,352 V 416" marker-end="url(#tools-agents-dg-arrow)"/>
+<rect class="dg-mask" x="163.5" y="378" width="57" height="14" rx="2"/>
+<text class="dg-label" x="192" y="388">LOCAL I/O</text>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="271">CLI</text>
+<text class="dg-name" x="144" y="296">Running agent</text>
+<text class="dg-sub" x="144" y="316">Current chat · current user</text>
+<text class="dg-sub" x="144" y="333">Scoped tool credentials</text>
+</g>
+<g class="dg-node is-focal">
+<rect class="dg-mask" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="271">CORE</text>
+<text class="dg-name" x="480" y="296">Built-in MCP gateway</text>
+<text class="dg-sub" x="480" y="316">Turn token · project scope</text>
+<text class="dg-sub" x="480" y="333">Token revoked at turn end</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="368" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="103">CHILD</text>
+<text class="dg-name" x="480" y="128">Sub-agent chats</text>
+<text class="dg-sub" x="480" y="148">Own session · worktree option</text>
+<text class="dg-sub" x="480" y="165">Model / effort / depth limits</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="103">QUEUE</text>
+<text class="dg-name" x="816" y="128">Parent prompt queue</text>
+<text class="dg-sub" x="816" y="148">Child reports wake parent</text>
+<text class="dg-sub" x="816" y="165">Dispatcher resumes the chat</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="271">RULES</text>
+<text class="dg-name" x="816" y="296">Connection policy</text>
+<text class="dg-sub" x="816" y="316">Allow · deny · approval</text>
+<text class="dg-sub" x="816" y="333">Per-connection permissions</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="439">REMOTE</text>
+<text class="dg-name" x="816" y="464">Databases &amp; SSH</text>
+<text class="dg-sub" x="816" y="484">Queries · exports · commands</text>
+<text class="dg-sub" x="816" y="501">Gateway-managed access</text>
+</g>
+<g class="dg-node is-input">
+<rect class="dg-mask" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="439">ADMIN</text>
+<text class="dg-name" x="480" y="464">Admin approval</text>
+<text class="dg-sub" x="480" y="484">Required operations wait</text>
+<text class="dg-sub" x="480" y="501">Decision recorded by gateway</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="103">REMOTE</text>
+<text class="dg-name" x="144" y="128">External MCP servers</text>
+<text class="dg-sub" x="144" y="148">Configured per user sharing</text>
+<text class="dg-sub" x="144" y="165">Separate tools &amp; credentials</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="439">FILES</text>
+<text class="dg-name" x="144" y="464">Project files &amp; terminal</text>
+<text class="dg-sub" x="144" y="484">Native CLI filesystem access</text>
+<text class="dg-sub" x="144" y="501">Backend sandbox applies</text>
+</g>
+<line class="dg-rule" x1="32" y1="544" x2="928" y2="544"/>
+<text class="dg-legend" x="32" y="566">Orange: coordination</text>
+<text class="dg-legend" x="224" y="566">Filled: stored data</text>
+<text class="dg-legend" x="416" y="566">Dashed box: integration / optional</text>
+<text class="dg-legend" x="704" y="566">Dashed arrow: conditional</text>
+<text class="dg-note" x="32" y="590">Pending approval does not execute the operation. Native CLI access is outside the gateway tool policy.</text>
+</svg>

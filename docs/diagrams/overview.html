@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System overview</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+    /* Porto's Ops Console palette and typography; the shared skill is unchanged. */
+    :root {
+      color-scheme: dark;
+      --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
+      --fg: #E6E8EB; --muted: #8B929C; --border: #23272D; --border-strong: #323840;
+      --accent: #FF6A2B; --accent-text: #FF7A40; --accent-soft: rgba(255,106,43,.12);
+      --font-sans: 'Geist', Arial, sans-serif;
+      --font-mono: 'Geist Mono', Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 48px 24px; background: var(--bg); color: var(--fg); font-family: var(--font-sans); }
+    main { max-width: 1120px; min-width: 0; margin: auto; }
+    h1 { margin: 0 0 16px; font-size: clamp(28px, 4vw, 40px); font-weight: 600; letter-spacing: -.035em; }
+    p { margin: 0; font-size: 16px; line-height: 1.6; color: var(--muted); }
+    header p { max-width: 720px; }
+    figure { margin: 32px 0 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+    figcaption { padding: 16px 24px; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    footer p { max-width: 860px; font-size: 14px; }
+    /* Compact SVG labels follow the reference diagram's type ramp; page body remains 16px. */
+
+  svg { display: block; width: 100%; min-width: 960px; height: auto; }
+  .dg-arrow { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+  .dg-head { fill: var(--muted); }
+  .dg-mask { fill: var(--surface); }
+  .dg-label, .dg-tag-text, .dg-sub, .dg-legend-title { font-family: var(--font-mono); }
+  .dg-label { fill: var(--muted); font-size: 8px; letter-spacing: .08em; text-anchor: middle; }
+  .dg-box { stroke-width: 1; }
+  .is-backend .dg-box { fill: var(--surface); stroke: var(--fg); stroke-opacity: .6; }
+  .is-store .dg-box { fill: var(--surface-2); stroke: var(--muted); }
+  .is-input .dg-box { fill: var(--surface); stroke: var(--border-strong); }
+  .is-external .dg-box { fill: var(--surface); stroke: var(--border-strong); stroke-dasharray: 4 3; }
+  .is-focal .dg-box { fill: var(--accent-soft); stroke: var(--accent); }
+  .dg-tag { fill: none; stroke: var(--muted); stroke-opacity: .5; stroke-width: .8; }
+  .is-focal .dg-tag { stroke: var(--accent); }
+  .dg-tag-text { fill: var(--muted); font-size: 7px; letter-spacing: .08em; text-anchor: middle; }
+  .is-focal .dg-tag-text { fill: var(--accent-text); }
+  .dg-name { fill: var(--fg); font-family: var(--font-sans); font-size: 15px; font-weight: 600; text-anchor: middle; }
+  .dg-sub { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+  .dg-callout { fill: var(--muted); font-family: var(--font-sans); font-size: 12px; font-weight: 500; }
+  .dg-rule { stroke: var(--border); stroke-width: .8; }
+  .dg-legend-title { fill: var(--muted); font-size: 8px; letter-spacing: .18em; }
+  .dg-legend { fill: var(--muted); font-family: var(--font-sans); font-size: 9px; }
+
+    @media (max-width: 600px) { body { padding: 28px 16px; } figcaption { padding: 16px; } }
+    @media print { body { padding: 0; } figure { overflow: visible; break-inside: avoid; } .diagram-container { overflow: visible; } svg { min-width: 0; } }
+  
+    nav { margin: 20px 0; font-size: 14px; } a { color: var(--accent-text); } .dg-note { fill: var(--muted); font: 12px Arial, sans-serif; }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>System overview</h1>
+<p>One view of the gateway, agent execution and the capabilities around each conversation.</p>
+</header>
+<nav aria-label="Architecture diagrams">
+<a href="architecture.html">Execution detail</a> · <a href="context-review.html">Context &amp; review</a> · <a href="tools-agents.html">Tools &amp; sub-agents</a>
+</nav>
+<figure>
+<figcaption>System overview · current implementation · 31 October 2026</figcaption>
+<div class="diagram-container" tabindex="0" role="region" aria-label="Scrollable system overview">
+<svg viewBox="0 0 960 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="overview-title overview-desc">
+<title id="overview-title">System overview</title>
+<desc id="overview-desc">The panel and API reach a gateway with authentication, scheduling, durable queues, account failover and restart recovery. Memory, code graph and skills prepare turns. Native CLI agents use model APIs, project worktrees and tools. Sub-agent reports and review findings return to the parent conversation. SQLite stores state; database and SSH tools enforce scoped access and approvals.</desc>
+<defs>
+<marker id="dg-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+<marker id="dg-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#FF6A2B"/>
+</marker>
+<marker id="dg-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+</defs>
+<rect width="960" height="680" fill="#121417"/>
+<path class="dg-arrow" d="M 256,112 H 304 Q 312,112 312,120 V 280 Q 312,288 320,288 H 368" marker-end="url(#dg-arrow)"/>
+<path class="dg-arrow" d="M 256,320 H 368" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="280.5" y="294" width="47" height="14" rx="2"/>
+<text class="dg-label" x="304" y="304">REQUEST</text>
+<path class="dg-arrow" d="M 592,320 H 704" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="629.5" y="294" width="37" height="14" rx="2"/>
+<text class="dg-label" x="648" y="304">SPAWN</text>
+<path class="dg-arrow" d="M 816,256 V 176" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="835.0" y="210" width="42" height="14" rx="2"/>
+<text class="dg-label" x="856" y="220">PROMPT</text>
+<path class="dg-arrow" d="M 816,384 V 464" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="831.5" y="418" width="57" height="14" rx="2"/>
+<text class="dg-label" x="860" y="428">TOOL CALL</text>
+<path class="dg-arrow" d="M 448,256 V 176" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="391.0" y="210" width="42" height="14" rx="2"/>
+<text class="dg-label" x="412" y="220">CREATE</text>
+<path class="dg-arrow" d="M 512,176 V 256" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="527.0" y="210" width="42" height="14" rx="2"/>
+<text class="dg-label" x="548" y="220">REPORT</text>
+<path class="dg-arrow" d="M 368,352 H 304 Q 296,352 296,360 V 520 Q 296,528 288,528 H 256" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="305.5" y="426" width="37" height="14" rx="2"/>
+<text class="dg-label" x="324" y="436">STATE</text>
+<path class="dg-arrow" d="M 448,384 V 464" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="384.5" y="418" width="47" height="14" rx="2"/>
+<text class="dg-label" x="408" y="428">CHANGES</text>
+<path class="dg-arrow" d="M 512,464 V 384" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="530.0" y="418" width="52" height="14" rx="2"/>
+<text class="dg-label" x="556" y="428">FINDINGS</text>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="32" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="32" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="44" y="60" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="70" y="71">CONTEXT</text>
+<text class="dg-name" x="144" y="96">Memory &amp; guidance</text>
+<text class="dg-sub" x="144" y="120">Project / personal memory</text>
+<text class="dg-sub" x="144" y="139">Code graph · shared skills</text>
+<text class="dg-sub" x="144" y="158">Prepared before each turn</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="368" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="368" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="380" y="60" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="406" y="71">CHILD</text>
+<text class="dg-name" x="480" y="96">Sub-agents</text>
+<text class="dg-sub" x="480" y="120">Separate sessions</text>
+<text class="dg-sub" x="480" y="139">Optional isolated worktrees</text>
+<text class="dg-sub" x="480" y="158">Reports return to parent queue</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="704" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="704" y="48" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="716" y="60" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="742" y="71">REMOTE</text>
+<text class="dg-name" x="816" y="96">Model providers</text>
+<text class="dg-sub" x="816" y="120">OpenAI · Anthropic</text>
+<text class="dg-sub" x="816" y="139">Called by the native CLI</text>
+</g>
+<g class="dg-node is-input">
+<rect class="dg-mask" x="32" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="32" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="44" y="268" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="70" y="279">CLIENT</text>
+<text class="dg-name" x="144" y="304">Panel &amp; API</text>
+<text class="dg-sub" x="144" y="328">Chat · inbox · editors</text>
+<text class="dg-sub" x="144" y="347">Changes · terminal · Web Push</text>
+<text class="dg-sub" x="144" y="366">PWA · HTTP · MCP clients</text>
+</g>
+<g class="dg-node is-focal">
+<rect class="dg-mask" x="368" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="368" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="380" y="268" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="406" y="279">CORE</text>
+<text class="dg-name" x="480" y="304">Gateway &amp; dispatcher</text>
+<text class="dg-sub" x="480" y="328">Auth · roles · project scope</text>
+<text class="dg-sub" x="480" y="347">Queues · schedules · failover</text>
+<text class="dg-sub" x="480" y="366">SSE · restart / resume</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="704" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="704" y="256" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="716" y="268" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="742" y="279">CLI</text>
+<text class="dg-name" x="816" y="304">Agent runtime</text>
+<text class="dg-sub" x="816" y="328">Codex CLI · Claude Code</text>
+<text class="dg-sub" x="816" y="347">Worktrees · git checkpoints</text>
+<text class="dg-sub" x="816" y="366">Native context compaction</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="32" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="32" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="44" y="476" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="70" y="487">STORE</text>
+<text class="dg-name" x="144" y="512">SQLite state</text>
+<text class="dg-sub" x="144" y="536">Chats · events · prompt queues</text>
+<text class="dg-sub" x="144" y="555">Memories · schedules</text>
+<text class="dg-sub" x="144" y="574">Settings · approval records</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="368" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="368" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="380" y="476" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="406" y="487">CHECKS</text>
+<text class="dg-name" x="480" y="512">Review &amp; design checks</text>
+<text class="dg-sub" x="480" y="536">Optional read-only reviewer</text>
+<text class="dg-sub" x="480" y="555">Advisory UI design hooks</text>
+<text class="dg-sub" x="480" y="574">Findings feed correction rounds</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="704" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-box" x="704" y="464" width="224" height="128" rx="6"/>
+<rect class="dg-tag" x="716" y="476" width="52" height="16" rx="2"/>
+<text class="dg-tag-text" x="742" y="487">TOOLS</text>
+<text class="dg-name" x="816" y="512">Tools &amp; connections</text>
+<text class="dg-sub" x="816" y="536">DB / SSH · scoped approvals</text>
+<text class="dg-sub" x="816" y="555">External MCP · own policies</text>
+<text class="dg-sub" x="816" y="574">Native access uses CLI sandbox</text>
+</g>
+<line class="dg-rule" x1="32" y1="616" x2="928" y2="616"/>
+<text class="dg-legend" x="32" y="640">Orange: coordination</text>
+<text class="dg-legend" x="240" y="640">Filled: stored context / state</text>
+<text class="dg-legend" x="520" y="640">Dashed box: external integration</text>
+<text class="dg-legend" x="776" y="640">Dashed arrow: conditional</text>
+<text class="dg-note" x="32" y="666">Grouped capabilities, not separate services. The design guide expands execution, context and tool permissions.</text>
+</svg>
+</div>
+</figure>
+<footer>
+<p>Review, design hooks and code graphs are optional. Account failover stays within the selected backend. Built-in MCP tools enforce scoped permissions; external MCP servers and native CLI access follow their own policies. See <a href="../design.md">the design guide</a> for the detailed flows.</p>
+</footer>
+</main>
+</body>
+</html>
