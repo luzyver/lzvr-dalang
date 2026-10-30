@@ -30,21 +30,65 @@ export const ui = {
   /** mobile: the sidebar drawer; desktop: whether the sidebar column is shown */
   sidebarOpen: signal(false),
   sidebarHidden: signal(pref('dalang-sidebar-hidden', false)),
-  inspectorOpen: signal(wide() && pref('dalang-inspector', true)),
+  /** Closed until asked for, or until a turn in the open chat leaves changed files (see autoOpenInspector). */
+  inspectorOpen: signal(wide() && pref('dalang-inspector', false)),
+  /** The inspector's width in px on wide screens (dragged at its edge), and whether it fills the main area. */
+  inspectorWidth: signal(pref('dalang-inspector-width', 480)),
+  inspectorMax: signal(false),
   inspectorTab: signal('changes'),
   palette: signal(false),
   /** the open settings section, or null */
   settings: signal(null),
   addProject: signal(false),
   collapsed: signal(new Set(pref('dalang-collapsed', []))),
+  /** How the sidebar lists chats: 'project' (each project with its chats) or 'status' (needs you, running, recent). */
+  groupBy: signal(pref('dalang-group-by', 'project')),
 };
 
+export function setGroupBy(by) {
+  ui.groupBy.value = by;
+  keep('dalang-group-by', by);
+}
+
+/**
+ * chat id -> the `last_at` of its last turn when it was last looked at, so a chat that finished a turn since shows as
+ * unread. Kept on this device only. Before the first look ever, every chat counts as seen (seeded in loadProjects).
+ * The mark only moves forward, so details that come back late cannot turn a read turn unread again.
+ */
+export const seen = signal(pref('dalang-seen', null));
+function markSeen(list) {
+  const next = { ...seen.value };
+  let changed = false;
+  for (const c of list) if (c.last_at && !(next[c.id] >= c.last_at)) { next[c.id] = c.last_at; changed = true; }
+  if (!changed) return;
+  seen.value = next;
+  keep('dalang-seen', next);
+}
+
+/** Chats whose inspector was closed by hand: changed files do not open it again there until the page reloads. */
+const dismissed = new Set();
+
 export function toggleInspector(open = !ui.inspectorOpen.value, tab) {
+  const r = route.peek();
+  if (r.view === 'chat') { if (open) dismissed.delete(r.id); else dismissed.add(r.id); }
   batch(() => {
     if (tab) ui.inspectorTab.value = tab;
     ui.inspectorOpen.value = open;
+    if (!open) ui.inspectorMax.value = false;
   });
   if (wide()) keep('dalang-inspector', open);
+}
+
+/** The open chat's files changed: show them, on a screen wide enough for a column, unless it was closed there. */
+export function autoOpenInspector(id, changed) {
+  if (!changed || !wide() || ui.inspectorOpen.peek() || dismissed.has(id)) return;
+  batch(() => { ui.inspectorTab.value = 'changes'; ui.inspectorOpen.value = true; });
+}
+
+export function setInspectorWidth(px) {
+  const w = Math.round(Math.min(Math.max(px, 360), Math.max(360, innerWidth - 560)));
+  ui.inspectorWidth.value = w;
+  keep('dalang-inspector-width', w);
 }
 export function toggleSidebar() {
   if (innerWidth <= 900) ui.sidebarOpen.value = !ui.sidebarOpen.value;
@@ -89,17 +133,27 @@ export async function loadProjects() {
     projects.value = list;
     convs.value = new Map(entries);
   });
-  // The open chat is gone (deleted elsewhere, or its project removed).
+  if (!seen.value) { seen.value = {}; markSeen(entries.flatMap(([, l]) => l)); }
+  // The open chat is gone (deleted elsewhere, or its project removed); the one in view is read as it changes.
   const r = route.value;
   if (r.view === 'chat' && !findConv(r.id)) goHome();
+  else if (r.view === 'chat') markSeen([findConv(r.id).conv]);
 }
 
-/** Patch a chat in the sidebar's lists (status or title changed in the open chat). */
-export function patchConv(id, patch) {
+/**
+ * Patch a chat in the sidebar's lists (status, title or last turn changed in the open chat). The chat in view, or one
+ * whose turn was watched to its end (`read`), is read as it changes, so the next poll does not show it as unread.
+ * A patch older than what the list has (details that came back after newer ones) is dropped.
+ */
+export function patchConv(id, patch, read = false) {
   const found = findConv(id);
-  if (!found || Object.entries(patch).every(([k, v]) => found.conv[k] === v)) return;
+  if (!found || (patch.last_at && found.conv.last_at && patch.last_at < found.conv.last_at)) return;
+  const conv = { ...found.conv, ...patch };
+  const r = route.peek();
+  if (read || (r.view === 'chat' && r.id === id)) markSeen([conv]);
+  if (Object.entries(patch).every(([k, v]) => found.conv[k] === v)) return;
   const next = new Map(convs.value);
-  next.set(found.project.id, next.get(found.project.id).map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  next.set(found.project.id, next.get(found.project.id).map((c) => (c.id === id ? conv : c)));
   convs.value = next;
 }
 
@@ -113,6 +167,7 @@ export function openChat(id, focusEvent) {
     ui.sidebarOpen.value = false;
     ui.palette.value = false;
   });
+  markSeen([findConv(id).conv]);
   setHash(`#c=${encodeURIComponent(id)}`);
 }
 

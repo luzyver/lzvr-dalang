@@ -14,7 +14,7 @@ import { opNote } from './git-sync.js';
 
 const ROW = 30; // px per commit
 const LANE = 14; // px between lanes
-const COLORS = 8; // lane colours, .lane-0 … .lane-7 in app.css
+const COLORS = 8; // lane colours, .lane-0 … .lane-7 in public/css/dialogs.css
 
 /**
  * Lay the commits out in lanes. Each lane waits for one commit (the parent of the one above it); a commit takes the

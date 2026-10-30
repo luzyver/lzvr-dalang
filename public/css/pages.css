@@ -1,0 +1,13 @@
+/* pages in the main column (Scheduled, Approvals); Home is in home.css */
+.page { max-width: 780px; margin: 0 auto; padding: var(--s5); display: grid; gap: var(--s3); }
+.page > p { margin: 0; }
+
+/* schedules */
+.sched { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); min-width: 0; }
+.sched.off { opacity: .7; }
+.sched-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--fs-sm); font-weight: 600; min-width: 0; }
+.sched-chat, .sched-when { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-prompt { white-space: pre-wrap; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.sched-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; color: var(--text-faint); }
+.sched-meta code { color: var(--text-dim); }
+

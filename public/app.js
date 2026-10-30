@@ -24,7 +24,8 @@ function Shell() {
   const inChat = r.view === 'chat';
   const inspector = inChat && ui.inspectorOpen.value;
   const close = () => { ui.sidebarOpen.value = false; ui.inspectorOpen.value = false; };
-  return html`<div class=${cx('app', ui.sidebarHidden.value && 'no-side', !inspector && 'no-insp', ui.sidebarOpen.value && 'side-open')}>
+  return html`<div class=${cx('app', ui.sidebarHidden.value && 'no-side', !inspector && 'no-insp', inspector && ui.inspectorMax.value && 'insp-max', ui.sidebarOpen.value && 'side-open')}
+    style=${{ '--insp-w': `${ui.inspectorWidth.value}px` }}>
     <${Sidebar} />
     ${inChat ? html`<${ChatView} key=${r.id} id=${r.id} focusEvent=${r.focusEvent} />`
       : r.view === 'schedules' ? html`<${SchedulesView} />`

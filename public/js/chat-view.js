@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { confirmDialog, Icon } from './ui.js';
 import {
-  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
+  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Live } from './thread.js';
@@ -75,11 +75,15 @@ async function focusWanted(id, beforeSwap) {
   if (wanted && chat.first && Number(wanted) < chat.first) await loadEarlier(id, wanted, beforeSwap);
 }
 
-export async function refreshConv(id = chat.id.value) {
+/**
+ * Load the chat's details. The sidebar's copy is patched even when another chat opened meanwhile; `watched` (a turn's
+ * end shown in this chat) marks that turn read then too, so the answer coming late does not leave it unread. Details
+ * older than the ones already shown (two refreshes answered out of order) are not shown.
+ */
+export async function refreshConv(id = chat.id.value, watched = false) {
   const c = await api(`/api/conversations/${id}`);
-  if (chat.id.value !== id) return;
-  chat.conv.value = c;
-  patchConv(id, { status: c.status, ...(c.title && { title: c.title }) });
+  patchConv(id, { status: c.status, last_at: c.last_at, ...(c.title && { title: c.title }) }, watched);
+  if (chat.id.value === id && !(chat.conv.value?.id === id && chat.conv.value.last_at > c.last_at)) chat.conv.value = c;
 }
 export async function refreshQueue(id = chat.id.value) {
   const q = await api(`/api/conversations/${id}/queue`);
@@ -87,7 +91,9 @@ export async function refreshQueue(id = chat.id.value) {
 }
 export async function refreshGit(id = chat.id.value) {
   const s = await api(`/api/conversations/${id}/git`);
-  if (chat.id.value === id) chat.git.value = s;
+  if (chat.id.value !== id) return;
+  chat.git.value = s;
+  autoOpenInspector(id, s?.files?.length);
 }
 
 const TURN_END = new Set(['turn.completed', 'turn.failed', 'turn.status', 'process.exit', 'user.prompt']);
@@ -163,7 +169,7 @@ function ChatHead({ project, conv }) {
     <${CodeGraphButton} project=${project} />
     <${MemoryButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
-    <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
+    <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector: changes, schedules and info" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
   </header>`;
 }
 
@@ -213,7 +219,7 @@ export function ChatView({ id, focusEvent }) {
       chat.version.value++;
       if (events.some((e) => TURN_END.has(e.type))) {
         refreshQueue(id).catch(() => {});
-        refreshConv(id).catch(() => {});
+        refreshConv(id, true).catch(() => {});
       }
       if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
       if (events.some((e) => e.type.startsWith('code_memory.'))) chat.codeGraph.value++;

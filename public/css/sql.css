@@ -1,0 +1,147 @@
+/* ---------- 10. SQL editor (its own tab, /sql): connections | consoles / results, on the code editor's layout ---------- */
+.ide.sql .err, .sql-dialog .err { color: var(--err); }
+.sql-tag { display: inline-grid; place-items: center; flex: none; color: var(--text-faint); }
+.sql-tag .i { width: 12px; height: 12px; }
+.sql-tag.warn { color: var(--warn); }
+.tree-icon.pk { color: var(--warn); }
+.sql-col { cursor: default; }
+.sql-type { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font: 11px var(--mono); color: var(--text-faint); }
+.sql-new { flex: none; align-self: center; margin: 0 4px; }
+.sql-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; flex: none; border-bottom: 1px solid var(--line); min-width: 0; }
+.sql-conn { min-height: 28px !important; height: 28px; padding: 0 8px !important; font-size: 12.5px; max-width: 260px; }
+.sql-db { max-width: 180px; font-family: var(--mono); }
+.sql-picker { position: relative; flex: none; }
+.sql-picker-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 120px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
+.sql-picker-btn:hover { border-color: var(--line-hover); }
+.sql-picker-btn[aria-expanded="true"] { border-color: var(--accent); }
+.sql-picker-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-picker-pop { position: absolute; z-index: 150; top: calc(100% + 4px); left: 0; width: max(100%, 280px); max-width: min(420px, calc(100vw - 24px)); display: flex; flex-direction: column; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.sql-picker-find { margin: 0 0 6px; }
+.sql-picker-list { max-height: min(340px, 50vh); overflow: auto; overscroll-behavior: contain; }
+.sql-picker-item { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border-radius: var(--r-sm); font: 12.5px var(--mono); cursor: pointer; white-space: nowrap; }
+.sql-picker-item span { overflow: hidden; text-overflow: ellipsis; }
+.sql-picker-item.hi { background: var(--hover); }
+.sql-picker-item.on { color: var(--accent-text); }
+.sql-picker-item .i.invisible { visibility: hidden; }
+.sql-picker-item mark { background: var(--warn-soft); color: inherit; border-radius: 2px; }
+.sql-picker-note { padding: 6px 8px 2px; }
+.sql-limit { display: inline-flex; align-items: center; gap: 6px; }
+.sql-limit select { min-height: 26px !important; height: 26px; padding: 0 6px !important; font-size: 12px; }
+.sql-results { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.term-tab.err { color: var(--err); }
+.sql-results .term-tab { padding-right: 3px; }
+.menu-ext { margin-left: 8px; font-size: 11px; }
+/* Database engines' logos, each in its colour (picked to read on light and dark). */
+.i[style*="db-postgresql"] { --engine: #4f86c6; color: var(--engine); }
+.i[style*="db-mysql"] { --engine: #e48e00; color: var(--engine); }
+.i[style*="db-mariadb"] { --engine: #c0765a; color: var(--engine); }
+.i[style*="db-sqlite"] { --engine: #4fa3d9; color: var(--engine); }
+.i[style*="db-mongodb"] { --engine: #47a248; color: var(--engine); }
+.i[style*="db-redis"] { --engine: #dc382d; color: var(--engine); }
+/* An open row tints its icon with the accent; a logo keeps its own colour. */
+.tree-row .tree-icon.engine, .tree-row[aria-expanded] .tree-icon.engine { color: var(--engine); opacity: 1; }
+.sql-read { flex: none; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+/* The tree scrolls inside the side bar (a long list would otherwise push it past the window). */
+.ide.sql .ide-files { min-height: 0; overflow: hidden; }
+.ide.sql .files-pane { min-height: 0; }
+.sql-find { display: flex; align-items: center; gap: 6px; margin: 0 8px 6px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); flex: none; }
+.sql-find:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.sql-find input { flex: 1; min-width: 0; min-height: 28px !important; height: 28px; border: 0 !important; box-shadow: none !important; background: none; padding: 0 !important; font-size: var(--fs-sm); }
+.sql-found-row { --depth: 0; }
+.sql-found-row .sql-type { max-width: 50%; }
+.sql-found mark { background: var(--warn-soft); color: inherit; border-radius: 2px; }
+.tree-row.flash { background: var(--accent-soft-2); transition: background .6s; }
+.tree-row:not(:hover) .sql-read { opacity: .7; }
+.sql-file-name { display: flex; align-items: center; gap: 6px; }
+.sql-file-name input { flex: 1; min-width: 0; }
+.sql-ws { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.sql-ws select { min-height: 28px !important; height: 28px; padding: 0 26px 0 8px !important; font-size: 12.5px; font-weight: 600; max-width: 260px; }
+.sql-ws-pick { display: grid; gap: 8px; max-height: 50vh; overflow: auto; padding: 2px; }
+.sql-ws-empty { margin-top: 8px; gap: 6px; }
+/* Results full screen: only the results are left. */
+.ide.sql.term-max { grid-template-rows: minmax(0, 1fr); }
+.ide.sql.term-max .ide-head, .ide.sql.term-max .ide-files, .ide.sql.term-max .ide-resize, .ide.sql.term-max .ide-status, .ide.sql.term-max .ide-nav { display: none !important; }
+.term-tab-close { opacity: 0; margin-left: 1px; }
+.term-tab:hover .term-tab-close, .term-tab.active .term-tab-close { opacity: 1; }
+@media (hover: none) { .term-tab-close { opacity: 1; } }
+.sql-output { display: grid; gap: 2px; padding: 8px 12px; overflow: auto; font-size: var(--fs-sm); }
+.sql-output-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sql-output-item code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.sql-grid-wrap { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.sql-grid { border-collapse: separate; border-spacing: 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.sql-grid th, .sql-grid td { max-width: 420px; padding: 3px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.sql-grid th { position: sticky; top: 0; z-index: 1; background: var(--bg-side); font-weight: 600; color: var(--text); }
+.sql-grid th small { margin-left: 6px; font-weight: 400; color: var(--text-faint); }
+.sql-grid td.num { text-align: right; }
+.sql-grid td.null { color: var(--text-faint); font-style: italic; }
+.sql-grid .rownum { position: sticky; left: 0; background: var(--bg-side); color: var(--text-faint); text-align: right; font-weight: 400; }
+.sql-grid th.rownum { z-index: 2; }
+.sql-grid tbody tr:hover td { background: var(--hover); }
+.sql-grid tbody tr:hover td.rownum { background: var(--surface-3); }
+.sql-more { padding: 8px 12px; }
+.sql-grid-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sql-grid-body { flex: 1; min-height: 0; display: flex; }
+.sql-filter { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--line); flex: none; flex-wrap: wrap; }
+.sql-filter-label { font-size: 11.5px; font-weight: 600; color: var(--syn-k); }
+.sql-filter input { flex: 1 1 240px; min-height: 26px !important; height: 26px; padding: 0 8px !important; font-size: 12px; }
+.sql-grid th.sortable { cursor: pointer; user-select: none; }
+.sql-grid th.sortable:hover { color: var(--accent-text); }
+.sql-grid th .sort { margin-left: 4px; color: var(--accent-text); }
+.sql-col-resize { position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; cursor: col-resize; z-index: 1; }
+.sql-col-resize:hover { background: var(--accent); opacity: .5; }
+.sql-grid th .pk { margin-left: 4px; color: var(--warn); vertical-align: -2px; }
+.sql-grid td { cursor: default; }
+.sql-grid td.sel { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+.sql-grid td.changed { background: var(--warn-soft); }
+.sql-grid tr.sel-row td.rownum { color: var(--accent-text); }
+.sql-grid tr.deleted td:not(.rownum) { text-decoration: line-through; color: var(--err); background: var(--err-soft); }
+.sql-grid tr.added td:not(.rownum) { background: var(--ok-soft); }
+.sql-value { width: min(360px, 45%); flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg-side); min-height: 0; }
+.sql-value .pane-head { gap: 6px; border-bottom: 1px solid var(--line); }
+.sql-value .pane-title { text-transform: none; letter-spacing: 0; font-size: 12.5px; color: var(--text); }
+.sql-value-body { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.sql-value-edit { flex: 1; min-height: 80px; margin: 8px 10px 0; resize: none; font-size: 12px; }
+.sql-value-actions { padding: 8px 10px; gap: 6px; }
+.sql-value-note { padding: 0 12px 8px; }
+.sql-warning { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--text); }
+.sql-warning > .i { color: var(--warn); flex: none; margin-top: 2px; }
+.btn.on { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent-line); }
+.sql-preview-pane { display: grid; gap: 4px; padding: 6px 10px 8px; border-bottom: 1px solid var(--line); flex: none; max-height: 34%; overflow: auto; background: var(--bg-side); }
+.sql-preview { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: var(--surface-3); border-radius: var(--r-md); max-height: 50vh; overflow: auto; }
+/* The query that read the rows, whole, with its copy button right after it: beside the rest of the footer while it
+   fits there, wrapped in the space left (on a line of its own when that is too narrow); a very long one scrolls. */
+.sql-foot > .sql-ran { display: block; flex: 1 1 260px; min-width: 0; max-height: 8em; overflow: auto; color: var(--text-faint); }
+.sql-ran > .mono { white-space: pre-wrap; word-break: break-word; }
+.sql-ran > .icon-btn { display: inline-grid; vertical-align: middle; margin: -2px 0 0 4px; }
+.sql-ask-context { margin: 6px 0 0; padding: 10px; max-height: 240px; overflow: auto; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; background: var(--surface-3); border-radius: var(--r-md); }
+.sql-history-search { flex: 1 1 200px; }
+.sql-history-item .btn { height: 24px; }
+@media (max-width: 760px) {
+  .sql-grid-body { flex-direction: column; }
+  .sql-value { width: auto; max-height: 45%; border-left: 0; border-top: 1px solid var(--line); }
+}
+.sql-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 4px 12px; flex: none; border-top: 1px solid var(--line); }
+.sql-foot > span { display: inline-flex; align-items: center; gap: 4px; }
+.sql-error { display: flex; gap: 8px; padding: 10px 14px; color: var(--err); overflow: auto; }
+.sql-error > .i { flex: none; margin-top: 2px; }
+.sql-error pre { margin: 2px 0 0; font: 12.5px var(--mono); white-space: pre-wrap; word-break: break-word; }
+.sql-dialog { width: 600px; }
+/* The dialog itself clips; a long form (or agent log) scrolls inside it. */
+.sql-dialog > .dialog-body { max-height: calc(100dvh - 34px); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+/* The engines (six, with their logos) fit on one line, and wrap where the dialog is narrower. */
+.sql-form > .seg { flex-wrap: wrap; max-width: 100%; justify-self: start; }
+.sql-form > .seg button { padding: 4px 9px; gap: 5px; }
+.sql-port { width: 100px; }
+.sql-ssh { display: grid; gap: 10px; padding: 10px 0 2px 14px; border-left: 2px solid var(--line-strong); }
+.sql-key { font-size: 11.5px; resize: vertical; min-height: 84px; }
+.sql-key-file { height: 24px; padding: 0 6px; font-weight: 500; }
+.sql-form .row.wrap > .field:has(.sql-port) { flex: 0 0 110px; }
+.sql-log { display: grid; gap: 8px; max-height: 65vh; overflow: auto; }
+.sql-log-item { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.sql-log-item.failed { border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+.sql-log-item pre { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+@media (max-width: 760px) {
+  .sql-bar { flex-wrap: wrap; }
+  .sql-conn { max-width: none; flex: 1 1 100%; font-size: 16px; }
+}
+

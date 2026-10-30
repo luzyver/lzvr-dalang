@@ -1,0 +1,91 @@
+/* ---------- 8. Responsive: inspector overlays below 1280px; the sidebar is a drawer below 900px ---------- */
+@media (max-width: 1280px) {
+  .app, .app.no-insp { grid-template-columns: var(--side-w) minmax(0, 1fr); }
+  .app.no-side, .app.no-side.no-insp { grid-template-columns: 0 minmax(0, 1fr); }
+  .inspector { position: fixed; top: 0; right: 0; bottom: 0; width: min(var(--insp-w), 100vw); z-index: 40; box-shadow: var(--shadow-lg); transition: translate .25s var(--ease), visibility .25s; }
+  .app.no-insp .inspector { translate: 100% 0; }
+  .app:not(.no-insp) .scrim { display: block; position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .25); }
+  /* over the page here: maximized is simply the full width */
+  .app.insp-max { grid-template-columns: var(--side-w) minmax(0, 1fr); }
+  .app.insp-max.no-side { grid-template-columns: 0 minmax(0, 1fr); }
+  .app.insp-max > .main { visibility: visible; }
+  .app.insp-max .inspector { width: 100vw; }
+}
+@media (max-width: 900px) {
+  dialog.diff-modal { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
+  .diff-dialog-head { flex-wrap: wrap; padding-top: max(10px, env(safe-area-inset-top)); }
+  .diff-dialog-path { flex-basis: calc(100% - 120px); }
+  .app, .app.no-insp, .app.no-side, .app.no-side.no-insp { grid-template-columns: minmax(0, 1fr); }
+  .main { grid-column: 1; }
+  .sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: min(310px, 86vw); z-index: 50; box-shadow: var(--shadow-lg); transition: translate .25s var(--ease), visibility .25s; visibility: visible !important; }
+  .app:not(.side-open) .sidebar { translate: -100% 0; visibility: hidden !important; }
+  .app.side-open .scrim { display: block; position: fixed; inset: 0; z-index: 45; background: rgb(0 0 0 / .3); }
+  .app .main .sidebar-toggle { display: inline-grid !important; }
+  .chat-head { padding: 0 var(--s2); padding-top: env(safe-area-inset-top); height: calc(var(--head-h) + env(safe-area-inset-top)); gap: 4px; }
+  .chat-head .sidebar-toggle { margin-left: 0; }
+  .backend, .crumb-project, .crumb-sep { display: none; }
+  .branch-name { display: none; }
+  .branch-btn { padding: 0 6px; }
+  .thread-inner { padding: var(--s4) var(--s3); }
+  .page { padding: var(--s4) var(--s3); }
+  .composer-wrap { padding: 0 var(--s2) max(var(--s2), env(safe-area-inset-bottom)); }
+  .composer { box-shadow: var(--shadow-sm); }
+  .composer textarea { font-size: 16px; } /* no zoom-in on iOS */
+  /* Agent, model and effort keep their labels in a row that scrolls sideways; the sandbox is in the project's menu. */
+  .composer-bar { flex-wrap: nowrap; }
+  .composer-opts { flex: 1; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .composer-opts::-webkit-scrollbar { display: none; }
+  .composer-opts + .spacer { display: none; }
+  .composer-opts > * { flex: none; }
+  .select-chip { flex: none; max-width: 140px; }
+  .select-chip > .i.tiny, .select-chip.static { display: none; }
+  .inspector { top: auto; left: 0; width: 100vw; height: 88dvh; border-radius: var(--r-xl) var(--r-xl) 0 0; border: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  .app.no-insp .inspector { translate: 0 100%; }
+  .app.insp-max, .app.insp-max.no-side { grid-template-columns: minmax(0, 1fr); }
+  .insp-resize, .insp-max-btn { display: none; }
+  .settings { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
+  .settings-layout { grid-template-columns: 1fr; }
+  .settings-nav, .settings-main > .dialog-head h2 { display: none; }
+  .settings-picker { display: block; flex: 1; }
+  .settings-main > .dialog-head { padding: max(12px, env(safe-area-inset-top)) 12px 12px; }
+  .settings-body { padding: 16px; }
+  .palette { margin-top: max(12px, env(safe-area-inset-top)); }
+  .meter-row { grid-template-columns: 70px minmax(40px, 1fr) 36px; }
+  .meter-row > :last-child { display: none; }
+}
+@media (max-width: 480px) {
+  /* The agent's name is in the box's placeholder already: its chip keeps the icon so model and effort fit. */
+  .composer-opts > .chip-picker:first-child .select-chip > span:not(.i) { display: none; }
+}
+@media (max-width: 600px) {
+  /* File changes lives in the mobile inspector sheet; give its controls room to wrap cleanly. */
+  .insp-body { padding: 12px; }
+  .changes { gap: 12px; }
+  .head-row { align-items: flex-start; gap: 6px; }
+  .head-row > .head-branch { flex: 1 1 auto; min-width: 0; }
+  .head-branch .branch-btn { max-width: min(68vw, 260px); }
+  .head-actions { padding-top: 1px; }
+  .file { min-height: 42px; gap: 7px; padding-inline: 9px; }
+  .file-list-head { padding-inline: 9px; }
+  .commit-box > .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .commit-box > .row > .spacer { display: none; }
+  .commit-box > .row > .btn { justify-content: center; min-width: 0; padding-inline: 9px; }
+  .diff-dialog-head { gap: 6px; padding-inline: 10px; }
+  .diff-dialog-head > .spacer { display: none; }
+  .diff-dialog-path { flex: 1 1 45%; }
+  .diff-dialog-head > .seg { order: 1; }
+  .diff-nav { order: 2; margin-left: auto; }
+  .diff-dialog-head > .icon-btn { order: 3; }
+}
+
+/* Touch screens: controls get a finger-sized target, and keyboard hints that cannot be pressed are not shown. */
+@media (pointer: coarse) {
+  .icon-btn { width: 44px; height: 44px; }
+  .icon-btn.sm { width: 36px; height: 36px; }
+  .nav-item, .chat, .settings-link, .menu-item { min-height: 40px; }
+  .select-chip { height: 36px; }
+  .send { width: 40px; height: 40px; }
+  .btn { height: 40px; }
+  .btn.sm { height: 34px; }
+}
+@media (hover: none) { .search-trigger kbd, .home kbd, .btn kbd { display: none; } }

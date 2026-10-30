@@ -2,7 +2,7 @@
 // ones and a bottom sheet on phones.
 import { html, cx } from './lib.js';
 import { Icon } from './ui.js';
-import { findConv, toggleInspector, ui } from './store.js';
+import { findConv, setInspectorWidth, toggleInspector, ui } from './store.js';
 import { chat } from './chat-view.js';
 import { ChangesPane } from './git.js';
 import { SchedulesPane } from './schedules.js';
@@ -29,16 +29,50 @@ function InfoPane({ id }) {
 
 const TABS = [['changes', 'Changes'], ['schedules', 'Schedules'], ['info', 'Info']];
 
+/** The inspector's left edge: drag it, or focus it and use the arrow keys, to make the column wider or narrower. */
+function ResizeHandle() {
+  const drag = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    document.documentElement.classList.add('resizing');
+    const move = (m) => setInspectorWidth(innerWidth - m.clientX);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      document.documentElement.classList.remove('resizing');
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up, { once: true });
+    el.addEventListener('pointercancel', up, { once: true });
+  };
+  const key = (e) => {
+    const step = e.shiftKey ? 96 : 24;
+    if (e.key === 'ArrowLeft') setInspectorWidth(ui.inspectorWidth.value + step);
+    else if (e.key === 'ArrowRight') setInspectorWidth(ui.inspectorWidth.value - step);
+    else return;
+    e.preventDefault();
+  };
+  return html`<div class="insp-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector" title="Drag to resize"
+    tabindex="0" aria-valuenow=${ui.inspectorWidth.value} onPointerDown=${drag} onKeyDown=${key} onDblClick=${() => setInspectorWidth(480)}></div>`;
+}
+
 export function Inspector({ id }) {
   const tab = ui.inspectorTab.value;
   const count = chat.git.value?.files?.length || 0;
+  const max = ui.inspectorMax.value;
   return html`<aside class="inspector" aria-label="Inspector">
+    ${!max && html`<${ResizeHandle} />`}
     <div class="insp-head">
       <div class="tabs" role="tablist">
         ${TABS.map(([k, label]) => html`<button key=${k} role="tab" aria-selected=${tab === k} class=${cx('tab', tab === k && 'active')} onClick=${() => { ui.inspectorTab.value = k; }}>
           ${label}${k === 'changes' && count > 0 && html`<span class="tab-count">${count}</span>`}</button>`)}
       </div>
-      <button class="icon-btn" aria-label="Close inspector" onClick=${() => toggleInspector(false)}><${Icon} name="x" /></button>
+      <div class="insp-actions">
+        <button class="icon-btn insp-max-btn" aria-label=${max ? 'Restore inspector' : 'Maximize inspector'} title=${max ? 'Restore' : 'Maximize'} aria-pressed=${max}
+          onClick=${() => { ui.inspectorMax.value = !max; }}><${Icon} name=${max ? 'minimize-2' : 'maximize-2'} /></button>
+        <button class="icon-btn" aria-label="Close inspector" title="Close" onClick=${() => toggleInspector(false)}><${Icon} name="x" /></button>
+      </div>
     </div>
     <div class="insp-body">
       ${tab === 'changes' && html`<${ChangesPane} id=${id} />`}

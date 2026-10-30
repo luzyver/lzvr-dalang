@@ -17,7 +17,7 @@ describe('panel', () => {
     const js = await app.inject({ url: '/app.js' });
     expect(js.statusCode).toBe(200);
     expect(js.headers['content-type']).toContain('javascript');
-    expect((await app.inject({ url: '/app.css' })).headers['content-type']).toContain('text/css');
+    expect((await app.inject({ url: '/css/base.css' })).headers['content-type']).toContain('text/css');
     const mf = await app.inject({ url: '/manifest.webmanifest' });
     expect(mf.json()).toMatchObject({ display: 'standalone', start_url: '/' });
     expect((await app.inject({ url: '/sw.js' })).headers['content-type']).toContain('javascript');
@@ -68,10 +68,10 @@ describe('panel', () => {
 
   it('answers an unchanged file with 304', async () => {
     const { app } = setupApp();
-    const first = await app.inject({ url: '/app.css' });
+    const first = await app.inject({ url: '/css/base.css' });
     const etag = first.headers.etag as string;
     expect(etag).toMatch(/^"[\w-]+"$/);
-    const again = await app.inject({ url: '/app.css', headers: { 'if-none-match': etag } });
+    const again = await app.inject({ url: '/css/base.css', headers: { 'if-none-match': etag } });
     expect(again.statusCode).toBe(304);
     expect(again.body).toBe('');
   });

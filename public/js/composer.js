@@ -293,6 +293,7 @@ export function Composer({ id, project }) {
       <div class="composer-bar">
         <button class="icon-btn" aria-label="Attach files" title="Attach files" onClick=${() => fileInput.current.click()}><${Icon} name="paperclip" /></button>
         <input ref=${fileInput} type="file" multiple hidden onChange=${(e) => { setFiles([...files, ...e.currentTarget.files]); e.currentTarget.value = ''; }} />
+        <div class="composer-opts">
         <${ChipSelect} key=${`${id}-agent`} icon=${conv?.backend === 'claude' ? 'asterisk' : 'code-xml'} title=${running ? 'Agent (change it once this turn is done)' : 'Agent'}
           value=${conv?.backend || 'codex'} options=${BACKEND_OPTIONS} disabled=${running} onChange=${setBackend} />
         <${ChipSelect} key=${`${id}-${conv?.backend}-model`} icon="cpu" title="Model" value=${currentModel === globalModel ? '' : currentModel} options=${modelOptions} onChange=${setModel} />
@@ -300,6 +301,7 @@ export function Composer({ id, project }) {
         ${project && html`<button type="button" class="select-chip static" title=${`Sandbox of this project: ${project.sandbox}`}
           aria-label=${`Sandbox of this project: ${project.sandbox}`} onClick=${() => toast(`Sandbox of this project: ${project.sandbox}`)}>
           <${Icon} name="shield-check" /><span>${project.sandbox}</span></button>`}
+        </div>
         <div class="spacer"></div>
         ${running && html`<button class="btn sm stop" onClick=${stop} title="Stop the running turn"><${Icon} name="square" />Stop</button>`}
         <button class="send" aria-label=${running ? 'Queue' : 'Send'} title=${running ? 'Queue (runs after this turn)' : 'Send'} disabled=${!text.trim() || sending} onClick=${send}>

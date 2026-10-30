@@ -124,6 +124,19 @@ describe('SSE', () => {
     expect(switched.token_usage).toEqual(result.token_usage);
   });
 
+  it("gives the chat's last turn time, the same as its project's chat list", async () => {
+    const t = setupApp();
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const url = `/api/conversations/${conv.id}`;
+    expect((await t.app.inject({ url, headers: AUTH })).json().last_at).toBeNull();
+    t.store.enqueue(conv.id, 'task', []);
+    t.dispatcher.kick(conv.id);
+    await until(() => turnsDone(t.store, conv.id, 1));
+    const lastAt = (await t.app.inject({ url, headers: AUTH })).json().last_at;
+    expect(lastAt).toBeTruthy();
+    expect(lastAt).toBe(t.store.listConversations(conv.project_id)[0]!.last_at);
+  });
+
   it('closes the app at once while an event stream is open', async () => {
     const t = setupApp();
     await t.app.listen({ host: '127.0.0.1', port: 0 });
