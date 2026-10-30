@@ -24,9 +24,12 @@ import type { Backend } from './util.js';
 
 /**
  * What Settings → MCP → Code memory saves (kv `code_memory`). Empty dirs leave CBM's own defaults. `hooks`: turns also
- * get graph context next to their own searches (see CodeMemory.hooks).
+ * get graph context next to their own searches (see CodeMemory.hooks). `autoReindex`: a turn first reindexes a project
+ * whose files changed since its index (see CodeMemory.refresh); off, indexes are redone only when someone asks.
  */
-export interface CodeMemorySettings { enabled: boolean; command: string; cacheDir: string; runtimeDir: string; hooks: boolean }
+export interface CodeMemorySettings {
+  enabled: boolean; command: string; cacheDir: string; runtimeDir: string; hooks: boolean; autoReindex: boolean;
+}
 
 /** One project's index (kv `code_memory:<project id>`). `graph` is CBM's name for it, known after the first index. */
 export interface IndexState {
@@ -58,7 +61,7 @@ const KEY = 'code_memory';
 const stateKey = (projectId: string) => `${KEY}:${projectId}`;
 /** Graphs of deleted projects CBM could not delete yet (see CodeMemory.dropGraph). */
 const ORPHANS_KEY = 'code_memory_orphans';
-const EMPTY: CodeMemorySettings = { enabled: false, command: '', cacheDir: '', runtimeDir: '', hooks: true };
+const EMPTY: CodeMemorySettings = { enabled: false, command: '', cacheDir: '', runtimeDir: '', hooks: true, autoReindex: true };
 /** The hook Claude Code runs (scripts/, next to src/ and dist/), with the node running Dalang. */
 const HOOK_SCRIPT = fileURLToPath(new URL('../scripts/code-memory-hook.mjs', import.meta.url));
 const HOOK_TIMEOUT_S = 5;
@@ -170,6 +173,12 @@ export class CodeMemory {
   /** Per project: the index running now, and whether another one is wanted once it ends. */
   private running = new Map<string, Promise<void>>();
   private again = new Set<string>();
+  /** The project whose index CBM is building now (one at a time, see queue). */
+  private current: string | null = null;
+  /** Per project, raised when its index is deleted (see drop): an index asked for before then is dropped. */
+  private epochs = new Map<string, number>();
+  /** Per project, ends the wait for its index (see drop). */
+  private cancels = new Map<string, () => void>();
   /** Per project, the pre-turn check running now (see refresh). */
   private refreshing = new Map<string, Refresh>();
   /** Indexing runs one project at a time, so asking for several at once does not take every core. */
@@ -186,7 +195,7 @@ export class CodeMemory {
       const s = { ...EMPTY, ...JSON.parse(this.store.getKv(KEY) ?? '{}') };
       return {
         enabled: s.enabled === true, command: String(s.command), cacheDir: String(s.cacheDir), runtimeDir: String(s.runtimeDir),
-        hooks: s.hooks !== false,
+        hooks: s.hooks !== false, autoReindex: s.autoReindex !== false,
       };
     } catch { return EMPTY; }
   }
@@ -250,17 +259,24 @@ export class CodeMemory {
     const run = (async () => {
       do {
         this.again.delete(project.id);
-        const job = this.queue.then(() => this.indexOnce(project));
+        const epoch = this.epoch(project.id);
+        const job = this.queue.then(() => this.indexOnce(project, epoch));
         this.queue = job.catch(() => {});
-        await job;
+        // Deleted while queued behind another project's index: the wait ends now, and the job is skipped once its turn comes.
+        await Promise.race([job, new Promise<void>((r) => this.cancels.set(project.id, r))]);
       } while (this.again.has(project.id));
     })().finally(() => this.running.delete(project.id));
     this.running.set(project.id, run);
     return run;
   }
 
-  private async indexOnce(project: Project): Promise<void> {
-    if (!this.store.getProject(project.id)) return; // deleted while queued
+  private epoch(projectId: string): number { return this.epochs.get(projectId) ?? 0; }
+
+  private async indexOnce(project: Project, epoch: number): Promise<void> {
+    // A project deleted, or its index deleted, while its index ran (see drop) keeps no state, and the graph the index
+    // just built goes too.
+    const gone = () => !this.store.getProject(project.id) || this.epoch(project.id) !== epoch;
+    if (gone()) return; // while queued
     const prev = this.state(project.id);
     const base: IndexState = prev ?? { status: 'indexing', graph: '', nodes: 0, edges: 0, indexedAt: 0, fingerprint: null, error: '' };
     if (!existsSync(project.path)) {
@@ -268,13 +284,13 @@ export class CodeMemory {
       return;
     }
     this.setState(project.id, { ...base, status: 'indexing', error: '' });
-    // A project deleted while its index ran was forgotten meanwhile (see forget): its state stays gone, and the graph
-    // the index just built goes too.
-    const gone = () => !this.store.getProject(project.id);
     try {
       const fp = await fingerprint(project.path).catch(() => null);
       const c = await this.connection();
-      const r = await c.callTool('index_repository', { repo_path: project.path }, INDEX_TIMEOUT_MS);
+      if (gone()) return;
+      this.current = project.id;
+      const r = await c.callTool('index_repository', { repo_path: project.path }, INDEX_TIMEOUT_MS)
+        .finally(() => { if (this.current === project.id) this.current = null; });
       const j = resultJson(r);
       if (r.isError || !j || typeof j.project !== 'string') throw new Error(resultText(r).slice(0, 1000) || 'CBM gave no answer');
       if (gone()) { await this.dropGraph(j.project); return; }
@@ -305,7 +321,7 @@ export class CodeMemory {
    * code memory off, or not a git repository); else how the reindex ended.
    */
   refresh(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'> {
-    if (!this.active || !this.state(project.id)?.graph) return Promise.resolve('fresh');
+    if (!this.active || !this.settings().autoReindex || !this.state(project.id)?.graph) return Promise.resolve('fresh');
     // Turns starting together share one check, so they never both see the change and index twice.
     let r = this.refreshing.get(project.id);
     if (!r) {
@@ -323,20 +339,35 @@ export class CodeMemory {
   private async refreshOnce(project: Project, onIndex: () => void): Promise<'fresh' | 'ready' | 'failed'> {
     const running = this.running.get(project.id);
     if (running) await running; // one already on its way may leave nothing to do
-    if ((await this.changedSinceIndex(project)) !== true) {
-      return !running ? 'fresh' : this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
-    }
+    // An index deleted meanwhile (see drop) leaves nothing to wait for.
+    const ended = () => { const st = this.state(project.id); return !st ? 'fresh' : st.status === 'ready' ? 'ready' : 'failed'; };
+    if ((await this.changedSinceIndex(project)) !== true) return !running ? 'fresh' : ended();
     onIndex();
     await this.index(project);
-    return this.state(project.id)?.status === 'ready' ? 'ready' : 'failed';
+    return ended();
+  }
+
+  /**
+   * Delete a project's index: its state and graph, an index of it waiting in the queue, and one CBM is building now
+   * (which only stops with the CBM session: a new one starts at once, so chats keep their tools). A turn waiting for
+   * that index starts without it.
+   */
+  async drop(project: Project): Promise<void> {
+    const st = this.state(project.id);
+    this.epochs.set(project.id, this.epoch(project.id) + 1);
+    this.again.delete(project.id);
+    this.cancels.get(project.id)?.();
+    this.cancels.delete(project.id);
+    this.store.deleteKv(stateKey(project.id));
+    if (this.current === project.id) {
+      await this.disconnect();
+      if (this.settings().enabled) void this.connection().catch(() => {});
+    }
+    if (st?.graph) await this.dropGraph(st.graph);
   }
 
   /** Forget a deleted project's graph. */
-  async forget(project: Project): Promise<void> {
-    const st = this.state(project.id);
-    this.store.deleteKv(stateKey(project.id));
-    if (st?.graph) await this.dropGraph(st.graph);
-  }
+  forget(project: Project): Promise<void> { return this.drop(project); }
 
   private orphans(): string[] {
     try { return JSON.parse(this.store.getKv(ORPHANS_KEY) ?? '[]'); } catch { return []; }

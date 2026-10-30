@@ -17,8 +17,9 @@ const OBJ = (props: Record<string, object>, required: string[] = []) => ({ type:
 /** A CBM session that answers from memory and records what it was asked. */
 function fakeCbm() {
   const calls: { name: string; args: Record<string, unknown> }[] = [];
-  /** While set, index_repository waits for it (an index in flight). */
-  const hold: { index: Promise<void> | null } = { index: null };
+  /** While set, index_repository waits for it (an index in flight); closing the session stops it, as CBM exiting would. */
+  const hold: { index: Promise<void> | null; closed: number } = { index: null, closed: 0 };
+  const stops: ((e: Error) => void)[] = [];
   const cbm: CbmClient = {
     listTools: async () => [
       { name: 'search_graph', description: 'Find symbols.', inputSchema: OBJ({ project: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer' } }, ['project']) },
@@ -28,13 +29,13 @@ function fakeCbm() {
     ],
     callTool: async (name, args) => {
       calls.push({ name, args });
-      if (name === 'index_repository' && hold.index) await hold.index;
+      if (name === 'index_repository' && hold.index) await Promise.race([hold.index, new Promise((_, stop) => stops.push(stop))]);
       const answer = name === 'index_repository'
         ? { project: `G-${basename(String(args.repo_path))}`, nodes: 10, edges: 20, status: 'indexed' }
         : { tool: name, project: args.project, query: args.query };
       return { content: [{ type: 'text', text: JSON.stringify(answer) }] };
     },
-    close: async () => {},
+    close: async () => { hold.closed++; for (const stop of stops.splice(0)) stop(new Error('connection closed')); },
   };
   return { cbm, calls, hold };
 }
@@ -179,7 +180,7 @@ describe('code memory', () => {
   it('answers a query on a project without an index with what to do instead', async () => {
     const t = await boot();
     const p = t.store.createProject('proj', join(t.root, 'proj'));
-    await t.codeMemory.save({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '', hooks: true });
+    await t.codeMemory.save({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '', hooks: true, autoReindex: true });
     await expect(t.codeMemory.query(p, 'search_graph', {})).rejects.toThrow(/no code graph yet .* use grep/);
     await expect(t.codeMemory.query(p, 'delete_project', {})).rejects.toThrow(/no such code memory tool/);
     expect(t.calls.some((c) => c.name === 'index_repository')).toBe(false);
@@ -231,15 +232,111 @@ describe('code memory', () => {
     const t = await boot();
     const p = t.store.createProject('proj', join(t.root, 'proj'));
     await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    t.hold.index = new Promise(() => {});
+    await t.index(p.id);
+    await until(() => t.calls.some((c) => c.name === 'index_repository'));
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
+    await until(() => t.hold.closed === 1); // the index was stopped
+    await until(() => t.codeMemory.active); // by a new CBM session, so chats keep their tools
+    await new Promise((r) => setTimeout(r, 100));
+    expect(t.codeMemory.state(p.id)).toBeNull(); // not brought back
+  });
+
+  it('drops the graph an index built for a project deleted as it ended', async () => {
+    const t = await boot();
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
     let release!: () => void;
     t.hold.index = new Promise((r) => { release = r; });
     await t.index(p.id);
     await until(() => t.calls.some((c) => c.name === 'index_repository'));
-    expect((await t.app.inject({ method: 'DELETE', url: `/api/projects/${p.id}`, headers: AUTH })).statusCode).toBe(204);
+    t.store.deleteProject(p.id); // gone from the store before forget could stop the index
     release();
     await until(() => t.calls.some((c) => c.name === 'delete_project'));
     expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' }); // the graph it just built
-    expect(t.codeMemory.state(p.id)).toBeNull(); // not brought back
+  });
+
+  it('deletes an index on request, stopping one running or queued, and a turn waiting for it starts', async () => {
+    const t = await boot();
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    mkdirSync(join(t.root, 'other'));
+    const q = t.store.createProject('other', join(t.root, 'other'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', p.path, ...args]);
+    git('init', '-q');
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 1;\n');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+    await t.turnOn();
+    const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
+    const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
+    const admin = bearer((await mkUser(t, 'adi', 'admin')).token);
+    const del = (id: string, headers: Record<string, string>) => t.app.inject({ method: 'DELETE', url: `/api/projects/${id}/code-memory/index`, headers });
+
+    // A turn waits for the reindex of changed code; deleting the index stops it, and the turn goes on without a graph.
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 2;\n');
+    let release!: () => void;
+    t.hold.index = new Promise((r) => { release = r; });
+    const before = indexes();
+    const waiting = t.codeMemory.refresh(p);
+    await until(() => indexes() === before + 1);
+    void t.codeMemory.index(q); // queued behind it
+    expect((await del(p.id, dev)).statusCode).toBe(403);
+    expect((await del(p.id, admin)).statusCode).toBe(204);
+    expect(t.hold.closed).toBe(1);
+    expect(await waiting).toBe('fresh');
+    expect(t.codeMemory.state(p.id)).toBeNull();
+    expect(t.calls.filter((c) => c.name === 'delete_project').map((c) => c.args)).toEqual([{ project: 'G-proj' }]);
+    release();
+    t.hold.index = null;
+    await until(() => indexes() === before + 2 && t.codeMemory.state(q.id)?.status === 'ready'); // the queue goes on
+
+    // A reindex queued behind another project's never runs once deleted, a turn waiting for it starts at once, and the
+    // running one is left alone.
+    expect((await t.index(p.id)).statusCode).toBe(202);
+    await until(() => t.codeMemory.state(p.id)?.status === 'ready');
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 3;\n');
+    t.hold.index = new Promise(() => {});
+    void t.codeMemory.index(q);
+    await until(() => indexes() === before + 4);
+    let started = false;
+    const queued = t.codeMemory.refresh(p, () => { started = true; });
+    await until(() => started); // its reindex waits in the queue
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/settings/code-memory/projects/${p.id}/index`, headers: AUTH })).statusCode).toBe(204);
+    expect(await queued).toBe('fresh');
+    expect(t.hold.closed).toBe(1);
+    expect(indexes()).toBe(before + 4);
+    t.hold.index = null;
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/settings/code-memory/projects/${q.id}/index`, headers: AUTH })).statusCode).toBe(204);
+    expect(t.hold.closed).toBe(2);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(indexes()).toBe(before + 4);
+    expect(t.codeMemory.state(p.id)).toBeNull();
+    expect(t.codeMemory.state(q.id)).toBeNull();
+    // Indexing again works.
+    expect((await t.index(p.id)).statusCode).toBe(202);
+    await until(() => t.codeMemory.state(p.id)?.status === 'ready');
+  });
+
+  it('reindexes before a turn only while that is on', async () => {
+    const t = await boot();
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', p.path, ...args]);
+    git('init', '-q');
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 1;\n');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+    await t.turnOn();
+    expect((await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '', autoReindex: false })).json().autoReindex).toBe(false);
+    // Saved without it (an older panel): stays as it was.
+    expect((await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' })).json().autoReindex).toBe(false);
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 2;\n');
+    const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
+    const before = indexes();
+    expect(await t.codeMemory.refresh(p)).toBe('fresh');
+    expect(indexes()).toBe(before);
+    await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '', autoReindex: true });
+    expect(await t.codeMemory.refresh(p)).toBe('ready');
+    expect(indexes()).toBe(before + 1);
   });
 
   it('deletes the graph of a project deleted while code memory was off once it is on again', async () => {

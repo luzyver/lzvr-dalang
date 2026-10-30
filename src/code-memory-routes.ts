@@ -23,19 +23,21 @@ export function codeMemoryRoutes(app: FastifyInstance, d: { store: Store; codeMe
 
   app.get('/api/settings/code-memory', { onRequest: requireOwner }, () => view());
 
-  app.put<{ Body: { enabled: boolean; command: string; cacheDir: string; runtimeDir: string; hooks?: boolean } }>('/api/settings/code-memory', {
+  app.put<{ Body: { enabled: boolean; command: string; cacheDir: string; runtimeDir: string; hooks?: boolean; autoReindex?: boolean } }>('/api/settings/code-memory', {
     onRequest: requireOwner,
     schema: { body: {
       type: 'object', required: ['enabled', 'command', 'cacheDir', 'runtimeDir'], additionalProperties: false,
       properties: {
         enabled: { type: 'boolean' }, command: { type: 'string', maxLength: 500 },
         cacheDir: { type: 'string', maxLength: 500 }, runtimeDir: { type: 'string', maxLength: 500 }, hooks: { type: 'boolean' },
+        autoReindex: { type: 'boolean' },
       },
     } },
   }, async (req, reply) => {
     const b = req.body;
     const next = {
       enabled: b.enabled, command: b.command.trim(), cacheDir: b.cacheDir.trim(), runtimeDir: b.runtimeDir.trim(), hooks: b.hooks ?? true,
+      autoReindex: b.autoReindex ?? cm.settings().autoReindex,
     };
     if (next.enabled && !next.command) return reply.code(400).send({ error: 'give the path of the codebase-memory-mcp binary' });
     await cm.save(next);
@@ -56,6 +58,15 @@ export function codeMemoryRoutes(app: FastifyInstance, d: { store: Store; codeMe
     if (!cm.settings().enabled) return reply.code(400).send({ error: 'code memory is off' });
     void cm.index(project);
     return reply.code(202).send({ queued: true });
+  });
+
+  // Delete a project's index (also one running or queued). Works while code memory is off too: the graph then goes
+  // once CBM runs again.
+  app.delete<{ Params: { id: string } }>('/api/settings/code-memory/projects/:id/index', { onRequest: requireOwner }, async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: 'not found' });
+    await cm.drop(project);
+    return reply.code(204).send();
   });
 }
 
@@ -95,6 +106,16 @@ export function codeIndexRoutes(app: FastifyInstance, d: { store: Store; codeMem
       enabled: cm.settings().enabled, index: cm.state(p.id), changed: await cm.changedSinceIndex(p),
       pending: pendingFor(p.id), direct: admin(req.user!),
     };
+  });
+
+  // Delete the project's index, or stop one running: admins only, like indexing at once.
+  app.delete<{ Params: { id: string } }>('/api/projects/:id/code-memory/index', async (req, reply) => {
+    const u = req.user!;
+    const p = projectFor(u, req.params.id);
+    if (!p) return reply.code(404).send({ error: 'not found' });
+    if (!admin(u)) return reply.code(403).send({ error: 'admin only' });
+    await cm.drop(p);
+    return reply.code(204).send();
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/code-memory/index', (req, reply) => {
