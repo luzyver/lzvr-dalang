@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Context and review</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+    /* Porto's Ops Console palette and typography; the shared skill is unchanged. */
+    :root {
+      color-scheme: dark;
+      --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
+      --fg: #E6E8EB; --muted: #8B929C; --border: #23272D; --border-strong: #323840;
+      --accent: #FF6A2B; --accent-text: #FF7A40; --accent-soft: rgba(255,106,43,.12);
+      --font-sans: 'Geist', Arial, sans-serif;
+      --font-mono: 'Geist Mono', Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 48px 24px; background: var(--bg); color: var(--fg); font-family: var(--font-sans); }
+    main { max-width: 1120px; min-width: 0; margin: auto; }
+    h1 { margin: 0 0 16px; font-size: clamp(28px, 4vw, 40px); font-weight: 600; letter-spacing: -.035em; }
+    p { margin: 0; font-size: 16px; line-height: 1.6; color: var(--muted); }
+    header p { max-width: 720px; }
+    figure { margin: 32px 0 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+    figcaption { padding: 16px 24px; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    footer p { max-width: 860px; font-size: 14px; }
+    /* Compact SVG labels follow the reference diagram's type ramp; page body remains 16px. */
+
+  svg { display: block; width: 100%; min-width: 960px; height: auto; }
+  .dg-arrow { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+  .dg-head { fill: var(--muted); }
+  .dg-mask { fill: var(--surface); }
+  .dg-label, .dg-tag-text, .dg-sub, .dg-legend-title { font-family: var(--font-mono); }
+  .dg-label { fill: var(--muted); font-size: 8px; letter-spacing: .08em; text-anchor: middle; }
+  .dg-box { stroke-width: 1; }
+  .is-backend .dg-box { fill: var(--surface); stroke: var(--fg); stroke-opacity: .6; }
+  .is-store .dg-box { fill: var(--surface-2); stroke: var(--muted); }
+  .is-input .dg-box { fill: var(--surface); stroke: var(--border-strong); }
+  .is-external .dg-box { fill: var(--surface); stroke: var(--border-strong); stroke-dasharray: 4 3; }
+  .is-focal .dg-box { fill: var(--accent-soft); stroke: var(--accent); }
+  .dg-tag { fill: none; stroke: var(--muted); stroke-opacity: .5; stroke-width: .8; }
+  .is-focal .dg-tag { stroke: var(--accent); }
+  .dg-tag-text { fill: var(--muted); font-size: 7px; letter-spacing: .08em; text-anchor: middle; }
+  .is-focal .dg-tag-text { fill: var(--accent-text); }
+  .dg-name { fill: var(--fg); font-family: var(--font-sans); font-size: 15px; font-weight: 600; text-anchor: middle; }
+  .dg-sub { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+  .dg-callout { fill: var(--muted); font-family: var(--font-sans); font-size: 12px; font-weight: 500; }
+  .dg-rule { stroke: var(--border); stroke-width: .8; }
+  .dg-legend-title { fill: var(--muted); font-size: 8px; letter-spacing: .18em; }
+  .dg-legend { fill: var(--muted); font-family: var(--font-sans); font-size: 9px; }
+
+    @media (max-width: 600px) { body { padding: 28px 16px; } figcaption { padding: 16px; } }
+    @media print { body { padding: 0; } figure { overflow: visible; break-inside: avoid; } .diagram-container { overflow: visible; } svg { min-width: 0; } }
+  
+    nav { margin: 20px 0; font-size: 14px; } a { color: var(--accent-text); } .dg-note { fill: var(--muted); font: 12px Arial, sans-serif; }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Context and review</h1>
+<p>A turn receives durable context before it starts. Optional checks feed findings back to the agent; completed turns can contribute memories for later chats.</p>
+</header>
+<nav aria-label="Architecture diagrams">
+<a href="architecture.html">Overview</a> · <a href="context-review.html">Context &amp; review</a> · <a href="tools-agents.html">Tools &amp; sub-agents</a>
+</nav>
+<figure>
+<figcaption>Context and review · current implementation · 31 October 2026</figcaption>
+<div class="diagram-container" tabindex="0" role="region" aria-label="Scrollable architecture diagram">
+<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="context-review-title context-review-desc">
+<title id="context-review-title">Context and review</title>
+<desc id="context-review-desc">Project and personal memory, the optional code graph, and shared skills feed turn context. The agent produces checkpointed changes. The optional read-only reviewer returns issues for bounded correction rounds; design hooks provide separate advisory feedback.</desc>
+<defs>
+<marker id="dg-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+<marker id="dg-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#FF6A2B"/>
+</marker>
+<marker id="dg-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+</defs>
+<rect width="960" height="600" fill="#121417"/>
+<path class="dg-arrow" d="M 256,132 H 424 Q 432,132 432,140 V 248" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="319.0" y="106" width="42" height="14" rx="2"/>
+<text class="dg-label" x="340" y="116">INJECT</text>
+<path class="dg-arrow" d="M 256,296 H 368" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="292.0" y="270" width="40" height="14" rx="2"/>
+<text class="dg-label" x="312" y="280">GUIDE</text>
+<path class="dg-arrow" d="M 256,468 H 296 Q 304,468 304,460 V 376 Q 304,368 312,368 H 424 Q 432,368 432,360 V 352" marker-end="url(#dg-arrow)"/>
+<path class="dg-arrow" d="M 592,296 H 704" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="624.5" y="270" width="47" height="14" rx="2"/>
+<text class="dg-label" x="648" y="280">PREPARE</text>
+<path class="dg-arrow" d="M 816,184 V 248" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="836.0" y="210" width="52" height="14" rx="2"/>
+<text class="dg-label" x="862" y="220">FEEDBACK</text>
+<path class="dg-arrow" d="M 816,352 V 416" marker-end="url(#dg-arrow)"/>
+<rect class="dg-mask" x="828.0" y="378" width="40" height="14" rx="2"/>
+<text class="dg-label" x="848" y="388">DIFF</text>
+<path class="dg-arrow" d="M 704,468 H 592" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="627.0" y="442" width="42" height="14" rx="2"/>
+<text class="dg-label" x="648" y="452">REVIEW</text>
+<path class="dg-arrow" d="M 536,416 V 352" marker-end="url(#dg-arrow)" stroke-dasharray="4 3"/>
+<rect class="dg-mask" x="551.0" y="378" width="42" height="14" rx="2"/>
+<text class="dg-label" x="572" y="388">ISSUES</text>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="103">FACTS</text>
+<text class="dg-name" x="144" y="128">Durable memory</text>
+<text class="dg-sub" x="144" y="148">Project facts · preferences</text>
+<text class="dg-sub" x="144" y="165">Optional auto-extraction</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="271">GRAPH</text>
+<text class="dg-name" x="144" y="296">Code memory</text>
+<text class="dg-sub" x="144" y="316">Refresh stale index first</text>
+<text class="dg-sub" x="144" y="333">Symbols · calls · routes</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="439">GUIDE</text>
+<text class="dg-name" x="144" y="464">Skills &amp; policies</text>
+<text class="dg-sub" x="144" y="484">Shared skill library</text>
+<text class="dg-sub" x="144" y="501">Git · sandbox · context</text>
+</g>
+<g class="dg-node is-focal">
+<rect class="dg-mask" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="271">CORE</text>
+<text class="dg-name" x="480" y="296">Turn context</text>
+<text class="dg-sub" x="480" y="316">Prompt · history · memory</text>
+<text class="dg-sub" x="480" y="333">Guides · graph availability</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="271">CLI</text>
+<text class="dg-name" x="816" y="296">Agent turn</text>
+<text class="dg-sub" x="816" y="316">Resume native session</text>
+<text class="dg-sub" x="816" y="333">Produce edits and events</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="103">HOOK</text>
+<text class="dg-name" x="816" y="128">Design checks</text>
+<text class="dg-sub" x="816" y="148">UI-edit / stop feedback</text>
+<text class="dg-sub" x="816" y="165">Advisory · when supported</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="439">GIT</text>
+<text class="dg-name" x="816" y="464">Checkpointed changes</text>
+<text class="dg-sub" x="816" y="484">Before / after snapshots</text>
+<text class="dg-sub" x="816" y="501">Diff + request for review</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="439">REVIEW</text>
+<text class="dg-name" x="480" y="464">Automatic reviewer</text>
+<text class="dg-sub" x="480" y="484">Optional read-only child</text>
+<text class="dg-sub" x="480" y="501">Bounded correction rounds</text>
+</g>
+<line class="dg-rule" x1="32" y1="544" x2="928" y2="544"/>
+<text class="dg-legend" x="32" y="566">Orange: coordination</text>
+<text class="dg-legend" x="224" y="566">Filled: stored data</text>
+<text class="dg-legend" x="416" y="566">Dashed box: integration / optional</text>
+<text class="dg-legend" x="704" y="566">Dashed arrow: conditional</text>
+<text class="dg-note" x="32" y="590">Review waits for queued work and sub-agents. Findings are queued back into the original conversation.</text>
+</svg>
+</div>
+</figure>
+<footer>
+<p>Code memory, auto-extraction and automatic review are optional. A failed graph refresh is reported and the turn can continue. Design feedback is independent of the reviewer; neither substitutes for connection approvals. Memory updates after successful turns are omitted from the arrows for clarity. See <a href="../design.md">design documentation</a> for source-module references.</p>
+</footer>
+</main>
+</body>
+</html>

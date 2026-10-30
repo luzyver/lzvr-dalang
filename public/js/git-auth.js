@@ -287,7 +287,7 @@ function ForgeTab({ forge, keys, helpers, server, onHelpers }) {
   if (status == null) return html`${lead}<div class="id-card"><div class="id-row"><${Spinner} /><span class="dim small">Asking ${f.cli}…</span></div></div>`;
   if (!status.installed) {
     return html`${lead}<${Empty} icon="circle-alert" title=${`${f.cli} is not installed`}>Install it on the server (see "Merge Requests: gh and glab"
-      in docs/guide.md), or point ${forge === 'github' ? 'GH_BIN' : 'GLAB_BIN'} at it, then restart Dalang.<//>`;
+      in docs/setup.md), or point ${forge === 'github' ? 'GH_BIN' : 'GLAB_BIN'} at it, then restart Dalang.<//>`;
   }
   const none = !status.accounts.length;
   return html`${lead}

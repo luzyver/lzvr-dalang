@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc" id="architecture-root">
+<title id="architecture-title">Gateway and execution</title>
+<desc id="architecture-desc">Web panel and API requests pass access checks. Scheduled prompts enter the dispatcher, backed by SQLite. Account selection and failover support CLI sessions, which call model providers and work in project folders.</desc>
+<defs>
+      <style>#architecture-root { color-scheme: dark;
+      --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
+      --fg: #E6E8EB; --muted: #8B929C; --border: #23272D; --border-strong: #323840;
+      --accent: #FF6A2B; --accent-text: #FF7A40; --accent-soft: rgba(255,106,43,.12);
+      --font-sans: 'Geist', Arial, sans-serif;
+      --font-mono: 'Geist Mono', Consolas, monospace; }
+      #architecture-root { color: var(--fg); font-family: var(--font-sans); }
+      #architecture-root figure { margin: 32px 0 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+      #architecture-root figcaption { padding: 16px 24px; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+      #architecture-root .diagram-container { width: 100%; overflow-x: auto; }
+      #architecture-root .dg-arrow { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+      #architecture-root .dg-head { fill: var(--muted); }
+      #architecture-root .dg-mask { fill: var(--surface); }
+      #architecture-root .dg-label, #architecture-root .dg-tag-text, #architecture-root .dg-sub, #architecture-root .dg-legend-title { font-family: var(--font-mono); }
+      #architecture-root .dg-label { fill: var(--muted); font-size: 8px; letter-spacing: .08em; text-anchor: middle; }
+      #architecture-root .dg-box { stroke-width: 1; }
+      #architecture-root .is-backend .dg-box { fill: var(--surface); stroke: var(--fg); stroke-opacity: .6; }
+      #architecture-root .is-store .dg-box { fill: var(--surface-2); stroke: var(--muted); }
+      #architecture-root .is-input .dg-box { fill: var(--surface); stroke: var(--border-strong); }
+      #architecture-root .is-external .dg-box { fill: var(--surface); stroke: var(--border-strong); stroke-dasharray: 4 3; }
+      #architecture-root .is-focal .dg-box { fill: var(--accent-soft); stroke: var(--accent); }
+      #architecture-root .dg-tag { fill: none; stroke: var(--muted); stroke-opacity: .5; stroke-width: .8; }
+      #architecture-root .is-focal .dg-tag { stroke: var(--accent); }
+      #architecture-root .dg-tag-text { fill: var(--muted); font-size: 7px; letter-spacing: .08em; text-anchor: middle; }
+      #architecture-root .is-focal .dg-tag-text { fill: var(--accent-text); }
+      #architecture-root .dg-name { fill: var(--fg); font-family: var(--font-sans); font-size: 15px; font-weight: 600; text-anchor: middle; }
+      #architecture-root .dg-sub { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+      #architecture-root .dg-callout { fill: var(--muted); font-family: var(--font-sans); font-size: 12px; font-weight: 500; }
+      #architecture-root .dg-rule { stroke: var(--border); stroke-width: .8; }
+      #architecture-root .dg-legend-title { fill: var(--muted); font-size: 8px; letter-spacing: .18em; }
+      #architecture-root .dg-legend { fill: var(--muted); font-family: var(--font-sans); font-size: 9px; }
+      #architecture-root figcaption { padding: 16px; }
+      #architecture-root figure { overflow: visible; break-inside: avoid; }
+      #architecture-root .diagram-container { overflow: visible; }
+      #architecture-root nav { margin: 20px 0; font-size: 14px; }
+      #architecture-root a { color: var(--accent-text); }
+      #architecture-root .dg-note { fill: var(--muted); font: 12px Arial, sans-serif; }</style>
+<marker id="architecture-dg-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+<marker id="architecture-dg-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#FF6A2B"/>
+</marker>
+<marker id="architecture-dg-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+<polygon points="0 0, 8 3, 0 6" fill="#8B929C"/>
+</marker>
+</defs>
+<rect width="960" height="600" fill="#121417"/>
+<path class="dg-arrow" d="M 256,128 H 368" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="288.5" y="102" width="47" height="14" rx="2"/>
+<text class="dg-label" x="312" y="112">REQUEST</text>
+<path class="dg-arrow" d="M 480,184 V 248" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="496.0" y="210" width="40" height="14" rx="2"/>
+<text class="dg-label" x="516" y="220">QUEUE</text>
+<path class="dg-arrow" d="M 368,288 H 256" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="292.0" y="262" width="40" height="14" rx="2"/>
+<text class="dg-label" x="312" y="272">STATE</text>
+<path class="dg-arrow" d="M 256,468 H 312 Q 320,468 320,460 V 328 Q 320,320 328,320 H 368" marker-end="url(#architecture-dg-arrow)"/>
+<path class="dg-arrow" d="M 480,416 V 352" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="495.0" y="378" width="42" height="14" rx="2"/>
+<text class="dg-label" x="516" y="388">SELECT</text>
+<path class="dg-arrow" d="M 592,296 H 704" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="628.0" y="270" width="40" height="14" rx="2"/>
+<text class="dg-label" x="648" y="280">SPAWN</text>
+<path class="dg-arrow" d="M 816,248 V 184" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="831.0" y="210" width="42" height="14" rx="2"/>
+<text class="dg-label" x="852" y="220">PROMPT</text>
+<path class="dg-arrow" d="M 816,352 V 416" marker-end="url(#architecture-dg-arrow)"/>
+<rect class="dg-mask" x="828.0" y="378" width="40" height="14" rx="2"/>
+<text class="dg-label" x="848" y="388">EDIT</text>
+<g class="dg-node is-input">
+<rect class="dg-mask" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="103">CLIENT</text>
+<text class="dg-name" x="144" y="128">Web panel &amp; API</text>
+<text class="dg-sub" x="144" y="148">Inbox · chat · editors</text>
+<text class="dg-sub" x="144" y="165">PWA · HTTP · MCP clients</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="368" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="103">ACCESS</text>
+<text class="dg-name" x="480" y="128">Gateway</text>
+<text class="dg-sub" x="480" y="148">Fastify · authentication</text>
+<text class="dg-sub" x="480" y="165">Roles · project access</text>
+</g>
+<g class="dg-node is-external">
+<rect class="dg-mask" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="80" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="92" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="103">REMOTE</text>
+<text class="dg-name" x="816" y="128">Model providers</text>
+<text class="dg-sub" x="816" y="148">OpenAI · Anthropic</text>
+<text class="dg-sub" x="816" y="165">Called by the selected CLI</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="271">STORE</text>
+<text class="dg-name" x="144" y="296">SQLite state</text>
+<text class="dg-sub" x="144" y="316">Chats · events · queues</text>
+<text class="dg-sub" x="144" y="333">Memories · approvals</text>
+</g>
+<g class="dg-node is-focal">
+<rect class="dg-mask" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="271">CORE</text>
+<text class="dg-name" x="480" y="296">Turn dispatcher</text>
+<text class="dg-sub" x="480" y="316">Per-chat queue · SSE events</text>
+<text class="dg-sub" x="480" y="333">Restart drain · resume</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="248" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="260" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="271">CLI</text>
+<text class="dg-name" x="816" y="296">Agent sessions</text>
+<text class="dg-sub" x="816" y="316">Codex CLI · Claude Code</text>
+<text class="dg-sub" x="816" y="333">Native context compaction</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="32" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="44" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="66" y="439">CRON</text>
+<text class="dg-name" x="144" y="464">Scheduled prompts</text>
+<text class="dg-sub" x="144" y="484">Due schedules enqueue work</text>
+<text class="dg-sub" x="144" y="501">Same queue as chat prompts</text>
+</g>
+<g class="dg-node is-backend">
+<rect class="dg-mask" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="368" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="380" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="402" y="439">AUTH</text>
+<text class="dg-name" x="480" y="464">Account pool</text>
+<text class="dg-sub" x="480" y="484">Backend · model · effort</text>
+<text class="dg-sub" x="480" y="501">Usage-limit failover</text>
+</g>
+<g class="dg-node is-store">
+<rect class="dg-mask" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-box" x="704" y="416" width="224" height="104" rx="6"/>
+<rect class="dg-tag" x="716" y="428" width="44" height="16" rx="2"/>
+<text class="dg-tag-text" x="738" y="439">FILES</text>
+<text class="dg-name" x="816" y="464">Project workspace</text>
+<text class="dg-sub" x="816" y="484">Optional git worktrees</text>
+<text class="dg-sub" x="816" y="501">Checkpoints · Changes</text>
+</g>
+<line class="dg-rule" x1="32" y1="544" x2="928" y2="544"/>
+<text class="dg-legend" x="32" y="566">Orange: coordination</text>
+<text class="dg-legend" x="224" y="566">Filled: stored data</text>
+<text class="dg-legend" x="416" y="566">Dashed box: integration / optional</text>
+<text class="dg-legend" x="704" y="566">Dashed arrow: conditional</text>
+<text class="dg-note" x="32" y="590">SSE streams stored events to the panel. Turn completion and pending approvals can send Web Push.</text>
+</svg>

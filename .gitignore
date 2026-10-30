@@ -2,6 +2,10 @@
 node_modules
 dist
 coverage
+__pycache__/
+
+# generated design-detector cache (keep project configuration)
+.impeccable/hook.cache.json
 
 # runtime state and secrets
 state
