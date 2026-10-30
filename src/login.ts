@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions, SHARED_DIRS, type Accounts } from './accounts.js';
 import { killTree } from './runner.js';
 import type { Store } from './store.js';
@@ -34,6 +34,8 @@ export interface LoginState {
   url: string | null;
   code: string | null;
   error?: string;
+  /** Signing an existing account in again rather than adding a new one. */
+  relogin: boolean;
 }
 
 interface Opts {
@@ -67,17 +69,25 @@ export class Logins {
 
   get(id: string): LoginState | null { return this.states.get(id) ?? null; }
 
-  start(name: string): string {
-    if (!NAME_RE.test(name)) throw new LoginError('bad-name', 'name must be 1-32 characters: a-z, 0-9, - or _ (starting with a letter or digit)');
+  /** `relogin` signs an existing account in again (expired or revoked login), keeping its folder, sessions and settings. */
+  start(name: string, o: { relogin?: boolean } = {}): string {
     if (this.running) throw new LoginError('busy', 'another login is already in progress');
-    const home = join(this.opts.baseDir, name);
-    if (this.opts.accounts.list().some((a) => a.name === name) || existsSync(home)) {
-      throw new LoginError('exists', `an account named "${name}" already exists`);
+    let home: string;
+    if (o.relogin) {
+      const found = this.opts.accounts.homes.find((h) => basename(h) === name);
+      if (!found) throw new LoginError('not-found', `no account named "${name}"`);
+      home = found;
+    } else {
+      if (!NAME_RE.test(name)) throw new LoginError('bad-name', 'name must be 1-32 characters: a-z, 0-9, - or _ (starting with a letter or digit)');
+      home = join(this.opts.baseDir, name);
+      if (this.opts.accounts.list().some((a) => a.name === name) || existsSync(home)) {
+        throw new LoginError('exists', `an account named "${name}" already exists`);
+      }
+      mkdirSync(home, { recursive: true, mode: 0o700 });
     }
-    mkdirSync(home, { recursive: true, mode: 0o700 });
 
     const id = randomUUID();
-    const st: LoginState = { id, name, status: 'pending', output: '', url: null, code: null };
+    const st: LoginState = { id, name, status: 'pending', output: '', url: null, code: null, relogin: !!o.relogin };
     this.states.set(id, st);
     this.running = id;
 
@@ -99,7 +109,7 @@ export class Logins {
       if (this.running === id) this.running = null;
       this.children.delete(id);
       clearTimeout(timer);
-      if (status !== 'success') rmSync(home, { recursive: true, force: true }); // never leave half a login behind
+      if (status !== 'success' && !o.relogin) rmSync(home, { recursive: true, force: true }); // never leave half a login behind
     };
 
     const timer = setTimeout(() => {
@@ -128,10 +138,13 @@ export class Logins {
       void this.check(home).then((ok) => {
         if (st.status !== 'pending') return;
         if (ok !== true) { settle('failed', 'the login did not complete (the CLI reports this account as not logged in)'); return; }
-        this.opts.accounts.add(home);
-        this.opts.store.setKv(this.kind.kv, JSON.stringify([...new Set([...this.loadExtras(), home])]));
-        linkSessions(this.opts.accounts.homes, [...this.kind.shared]); // so a chat can resume on the new account
+        if (!o.relogin) {
+          this.opts.accounts.add(home);
+          this.opts.store.setKv(this.kind.kv, JSON.stringify([...new Set([...this.loadExtras(), home])]));
+          linkSessions(this.opts.accounts.homes, [...this.kind.shared]); // so a chat can resume on the new account
+        }
         this.statusCache.set(home, { value: true, at: Date.now() });
+        this.opts.accounts.setLoggedOut(home, false);
         settle('success');
       });
     });
@@ -179,7 +192,7 @@ export class Logins {
     this.children.delete(id);
     killTree(child, 'SIGTERM');
     // the folder goes once the process is gone, so it is not deleted from under a still-running login
-    child.once('close', () => rmSync(join(this.opts.baseDir, st.name), { recursive: true, force: true }));
+    if (!st.relogin) child.once('close', () => rmSync(join(this.opts.baseDir, st.name), { recursive: true, force: true }));
     return true;
   }
 
@@ -210,6 +223,12 @@ export class Logins {
     if (hit && !o.fresh && Date.now() - hit.at < STATUS_TTL_MS) return hit.value;
     const value = await this.check(home);
     this.statusCache.set(home, { value, at: Date.now() });
+    if (value !== null) this.opts.accounts.setLoggedOut(home, !value); // signed out: not picked for turns until signed in again
     return value;
+  }
+
+  /** Re-check every account now, so a signed-out one is skipped before a prompt reaches it. */
+  async refreshAll(): Promise<void> {
+    await Promise.all([...this.opts.accounts.homes].map((h) => this.isLoggedIn(h, { fresh: true })));
   }
 }

@@ -23,8 +23,9 @@ function Limits({ l }) {
   })}</div>`;
 }
 
-function AddAccount({ backend, label, onDone }) {
-  const [name, setName] = useState('');
+/** Adds an account, or with `relogin` (an existing account's name) signs that one in again. */
+function AddAccount({ backend, label, onDone, relogin }) {
+  const [name, setName] = useState(relogin ?? '');
   const [login, setLogin] = useState(null); // { id, status, output, url, code, error }
   const [code, setCode] = useState('');
   const timer = useRef(0);
@@ -34,14 +35,14 @@ function AddAccount({ backend, label, onDone }) {
       setLogin({ id, ...s });
       if (s.status !== 'pending') {
         clearInterval(timer.current);
-        if (s.status === 'success') { toast(`Account "${s.name}" added`); setName(''); }
+        if (s.status === 'success') { toast(`Account "${s.name}" ${relogin ? 'signed in again' : 'added'}`); if (!relogin) setName(''); }
         onDone();
       }
     } catch (e) { clearInterval(timer.current); toast(e.message, 'err'); }
   };
   useEffect(() => () => clearInterval(timer.current), []); // stops polling once the section is left
   const start = guarded(async () => {
-    const r = await api('/api/accounts/login', { method: 'POST', body: { name: name.trim(), backend } });
+    const r = await api('/api/accounts/login', { method: 'POST', body: { name: name.trim(), backend, ...(relogin && { relogin: true }) } });
     clearInterval(timer.current);
     timer.current = setInterval(() => poll(r.id), 1500);
     await poll(r.id);
@@ -53,14 +54,14 @@ function AddAccount({ backend, label, onDone }) {
     await poll(login.id);
   });
   const pending = login?.status === 'pending';
-  return html`<section class="form-card">
-    <strong>Add an account</strong>
+  return html`<section class=${relogin ? 'login-inline' : 'form-card'}>
+    ${!relogin && html`<strong>Add an account</strong>`}
     <span class="dim small">${backend === 'claude'
-      ? 'Runs "claude auth login" on the server. A browser window opens on that machine; sign in with the account you want to add (or open the link below). If the page shows a code instead of finishing, paste it here.'
-      : 'Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to add.'}</span>
+      ? `Runs "claude auth login" on the server. A browser window opens on that machine; sign in with the account you want to ${relogin ? 'use' : 'add'} (or open the link below). If the page shows a code instead of finishing, paste it here.`
+      : `Runs "codex login --device-auth" on the server. Open the link, enter the code and approve with the account you want to ${relogin ? 'use' : 'add'}.`}</span>
     <div class="row">
-      <input value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="account name (a-z, 0-9, - or _)" aria-label="Account name" disabled=${pending} />
-      ${pending ? html`<button class="btn danger" onClick=${cancel}>Cancel</button>` : html`<${AsyncButton} class="btn primary" icon="key-round" onClick=${start}>Start login<//>`}
+      ${!relogin && html`<input value=${name} onInput=${(e) => setName(e.currentTarget.value)} placeholder="account name (a-z, 0-9, - or _)" aria-label="Account name" disabled=${pending} />`}
+      ${pending ? html`<button class="btn danger" onClick=${cancel}>Cancel</button>` : html`<${AsyncButton} class="btn primary" icon="key-round" onClick=${start}>${relogin ? 'Sign in again' : 'Start login'}<//>`}
     </div>
     ${login && html`<div class="login-flow">
       ${pending && html`<div class="row"><${Spinner} /><span>Waiting for the sign-in to finish…</span></div>`}
@@ -70,7 +71,7 @@ function AddAccount({ backend, label, onDone }) {
       ${backend === 'claude' && pending && html`<div class="row">
         <input value=${code} onInput=${(e) => setCode(e.currentTarget.value)} placeholder="code from the sign-in page" aria-label="Code from the sign-in page" />
         <${AsyncButton} class="btn" onClick=${sendCode}>Send code<//></div>`}
-      ${login.status === 'success' && html`<div class="ok-text"><${Icon} name="circle-check" /> Account "${login.name}" added.</div>`}
+      ${login.status === 'success' && html`<div class="ok-text"><${Icon} name="circle-check" /> Account "${login.name}" ${relogin ? 'signed in again' : 'added'}.</div>`}
       ${login.status === 'cancelled' && html`<div class="dim">Cancelled.</div>`}
       ${login.status === 'failed' && html`<div class="form-error">Failed: ${login.error || 'unknown error'}</div>`}
       ${login.output && html`<details class="login-log"><summary>CLI output</summary><pre>${login.output}</pre></details>`}
@@ -114,6 +115,7 @@ export function AccountsSection({ backend }) {
               <button class="icon-btn sm danger" aria-label=${`Remove ${a.name}`} title="Remove" onClick=${remove(a)}><${Icon} name="trash-2" /></button>
             </div>
             <${Limits} l=${a.limits} />
+            ${a.loggedIn === false && html`<${AddAccount} backend=${backend} label=${label} onDone=${load} relogin=${a.name} />`}
           </section>`;
         })}
     <${AddAccount} backend=${backend} label=${label} onDone=${load} />`;
