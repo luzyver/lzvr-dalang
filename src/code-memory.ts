@@ -345,11 +345,15 @@ export class CodeMemory {
   }
 
   private async refreshOnce(project: Project, onIndex: () => void): Promise<'fresh' | 'ready' | 'failed'> {
+    const epoch = this.epoch(project.id);
     const running = this.running.get(project.id);
     if (running) await running; // one already on its way may leave nothing to do
     // An index deleted meanwhile (see drop) leaves nothing to wait for.
     const ended = () => { const st = this.state(project.id); return !st ? 'fresh' : st.status === 'ready' ? 'ready' : 'failed'; };
-    if ((await this.changedSinceIndex(project)) !== true) return !running ? 'fresh' : ended();
+    const changed = await this.changedSinceIndex(project);
+    // Deleted while that looked at the files: it compared with the index as it was, which must not come back.
+    if (this.epoch(project.id) !== epoch || !this.state(project.id)?.graph) return 'fresh';
+    if (changed !== true) return !running ? 'fresh' : ended();
     onIndex();
     await this.index(project);
     return ended();

@@ -338,6 +338,15 @@ describe('code memory', () => {
     expect(await t.codeMemory.refresh(p)).toBe('ready');
     expect(indexes()).toBe(before + 1);
     expect(t.hold.closed).toBe(0); // saving other settings left the CBM session be
+
+    // Deleted while a turn's check reads the changed files: the check must not bring the index back.
+    writeFileSync(join(p.path, 'a.ts'), 'export const a = 3;\n');
+    const checking = t.codeMemory.refresh(p);
+    await t.codeMemory.drop(p);
+    expect(await checking).toBe('fresh');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(indexes()).toBe(before + 1);
+    expect(t.codeMemory.state(p.id)).toBeNull();
   });
 
   it('keeps an index as it was when code memory is turned off while it runs or waits', async () => {
