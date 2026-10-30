@@ -14,6 +14,17 @@ describe('Accounts', () => {
     expect(a.pick()).toBeNull();
   });
 
+  it('skips signed-out accounts and says so when nothing is left', () => {
+    const a = new Accounts(['/h/a', '/h/b']);
+    a.setLoggedOut('/h/a', true);
+    expect(a.pick()).toBe('/h/b');
+    a.setEnabled('/h/b', false);
+    expect(a.pick()).toBeNull();
+    expect(a.exhaustedReason()).toContain('signed out');
+    a.setLoggedOut('/h/a', false);
+    expect(a.exhaustedReason()).not.toContain('signed out');
+  });
+
   it('unblocks after the block time passes, and on demand', () => {
     let now = 1000;
     const a = new Accounts(['/h/a', '/h/b'], 500, () => now);
