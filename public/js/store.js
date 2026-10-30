@@ -53,12 +53,13 @@ export function setGroupBy(by) {
 /**
  * chat id -> the `last_at` of its last turn when it was last looked at, so a chat that finished a turn since shows as
  * unread. Kept on this device only. Before the first look ever, every chat counts as seen (seeded in loadProjects).
+ * The mark only moves forward, so details that come back late cannot turn a read turn unread again.
  */
 export const seen = signal(pref('dalang-seen', null));
 function markSeen(list) {
   const next = { ...seen.value };
   let changed = false;
-  for (const c of list) if (c.last_at && next[c.id] !== c.last_at) { next[c.id] = c.last_at; changed = true; }
+  for (const c of list) if (c.last_at && !(next[c.id] >= c.last_at)) { next[c.id] = c.last_at; changed = true; }
   if (!changed) return;
   seen.value = next;
   keep('dalang-seen', next);
@@ -139,12 +140,20 @@ export async function loadProjects() {
   else if (r.view === 'chat') markSeen([findConv(r.id).conv]);
 }
 
-/** Patch a chat in the sidebar's lists (status or title changed in the open chat). */
-export function patchConv(id, patch) {
+/**
+ * Patch a chat in the sidebar's lists (status, title or last turn changed in the open chat). The chat in view, or one
+ * whose turn was watched to its end (`read`), is read as it changes, so the next poll does not show it as unread.
+ * A patch older than what the list has (details that came back after newer ones) is dropped.
+ */
+export function patchConv(id, patch, read = false) {
   const found = findConv(id);
-  if (!found || Object.entries(patch).every(([k, v]) => found.conv[k] === v)) return;
+  if (!found || (patch.last_at && found.conv.last_at && patch.last_at < found.conv.last_at)) return;
+  const conv = { ...found.conv, ...patch };
+  const r = route.peek();
+  if (read || (r.view === 'chat' && r.id === id)) markSeen([conv]);
+  if (Object.entries(patch).every(([k, v]) => found.conv[k] === v)) return;
   const next = new Map(convs.value);
-  next.set(found.project.id, next.get(found.project.id).map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  next.set(found.project.id, next.get(found.project.id).map((c) => (c.id === id ? conv : c)));
   convs.value = next;
 }
 

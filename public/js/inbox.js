@@ -10,7 +10,7 @@ export const allChats = computed(() => projects.value
   .sort((a, b) => (b.conv.last_at || '').localeCompare(a.conv.last_at || '')));
 
 /** A chat that ended a turn since it was last open on this device (not the one in view). */
-export const isUnread = (c) => !!c.last_at && c.status !== 'running' && !!seen.value && seen.value[c.id] !== c.last_at
+export const isUnread = (c) => !!c.last_at && c.status !== 'running' && !!seen.value && !(seen.value[c.id] >= c.last_at)
   && !(route.value.view === 'chat' && route.value.id === c.id);
 
 /** chat id -> how many approvals wait in it (messages to it, database writes and SSH commands it asked for). */

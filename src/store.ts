@@ -456,6 +456,8 @@ export class Store {
     return depth;
   }
   getConversation(id: string): Conversation | null { return this.get(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE id=?`, id); }
+  /** When the chat's last turn ended (or started, while it runs): the `last_at` its project's chat list shows. */
+  lastAt(id: string): string | null { return this.get<{ last_at: string | null }>(`SELECT ${LAST_AT} AS last_at FROM conversations c WHERE id=?`, id)?.last_at ?? null; }
   setTitle(id: string, title: string): void { this.run('UPDATE conversations SET auto_title=? WHERE id=?', title, id); }
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);

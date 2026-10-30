@@ -75,11 +75,15 @@ async function focusWanted(id, beforeSwap) {
   if (wanted && chat.first && Number(wanted) < chat.first) await loadEarlier(id, wanted, beforeSwap);
 }
 
-export async function refreshConv(id = chat.id.value) {
+/**
+ * Load the chat's details. The sidebar's copy is patched even when another chat opened meanwhile; `watched` (a turn's
+ * end shown in this chat) marks that turn read then too, so the answer coming late does not leave it unread. Details
+ * older than the ones already shown (two refreshes answered out of order) are not shown.
+ */
+export async function refreshConv(id = chat.id.value, watched = false) {
   const c = await api(`/api/conversations/${id}`);
-  if (chat.id.value !== id) return;
-  chat.conv.value = c;
-  patchConv(id, { status: c.status, ...(c.title && { title: c.title }) });
+  patchConv(id, { status: c.status, last_at: c.last_at, ...(c.title && { title: c.title }) }, watched);
+  if (chat.id.value === id && !(chat.conv.value?.id === id && chat.conv.value.last_at > c.last_at)) chat.conv.value = c;
 }
 export async function refreshQueue(id = chat.id.value) {
   const q = await api(`/api/conversations/${id}/queue`);
@@ -215,7 +219,7 @@ export function ChatView({ id, focusEvent }) {
       chat.version.value++;
       if (events.some((e) => TURN_END.has(e.type))) {
         refreshQueue(id).catch(() => {});
-        refreshConv(id).catch(() => {});
+        refreshConv(id, true).catch(() => {});
       }
       if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
       if (events.some((e) => e.type.startsWith('code_memory.'))) chat.codeGraph.value++;
