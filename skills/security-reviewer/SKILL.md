@@ -29,7 +29,7 @@ Security analyst specializing in code review, vulnerability identification, pene
 - Code and commands in references/ are illustrative and may use outdated API or tool versions: check them against the project's versions and current docs, pin versions, and never run them against production without a dry run and the person's approval.
 - Related skills it names that are installed here: `code-reviewer`, `devops-engineer`, `kubernetes-specialist`.
 - `api-designer` is not installed here; use the Dalang `api-design-principles` skill instead.
-- Not installed here: `cloud-architect`, `mcp-developer`; use the project's own conventions and the installed Dalang skills instead.
+- `cloud-architect` is installed here for cloud reviews, and `stride-analysis-patterns` for design-time threat modeling; this skill audits code and configs. Not installed here: `mcp-developer` (use `mcp-builder`).
 - Databases only through the Dalang db_* tools and servers only through ssh_list_hosts/ssh_exec; never connect with credentials from .env or config files.
 
 ## When to Use This Skill

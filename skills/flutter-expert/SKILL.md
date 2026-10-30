@@ -24,7 +24,7 @@ Senior mobile engineer building high-performance cross-platform applications wit
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Check the Flutter and Dart versions the project uses (`pubspec.yaml`, `flutter --version`) and its state management (Riverpod, Bloc or other) before suggesting one.
 - Keep code modular: small files, one responsibility each; match the surrounding code's naming and comment density.
-- `test-master` is not installed here; use the Dalang `test-driven-development` skill instead.
+- Use `test-master` for test strategy, coverage and E2E suites, and `test-driven-development` for the red-green workflow while coding.
 - Not installed here: `fullstack-guardian`, `native-expert`, `react-native-expert`; use the project's own conventions and the installed Dalang skills instead.
 - Code and commands in references/ are illustrative and may use outdated API or tool versions: check them against the project's versions and current docs, pin versions, and never run them against production without a dry run and the person's approval.
 - Databases only through the Dalang db_* tools and servers only through ssh_list_hosts/ssh_exec; never connect with credentials from .env or config files.

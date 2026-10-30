@@ -25,7 +25,7 @@ Senior engineer conducting thorough, constructive code reviews that improve qual
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Report findings in this chat (file:line, severity, what breaks, the fix). Do not post PR comments or push; change code only when the person asks for fixes.
 - Related skills it names that are installed here: `architecture-designer`, `security-reviewer`.
-- `test-master` is not installed here; use the Dalang `test-driven-development` skill instead.
+- Use `test-master` for test strategy, coverage and E2E suites, and `test-driven-development` for the red-green workflow while coding.
 - Code and commands in references/ are illustrative and may use outdated API or tool versions: check them against the project's versions and current docs, pin versions, and never run them against production without a dry run and the person's approval.
 - Databases only through the Dalang db_* tools and servers only through ssh_list_hosts/ssh_exec; never connect with credentials from .env or config files.
 

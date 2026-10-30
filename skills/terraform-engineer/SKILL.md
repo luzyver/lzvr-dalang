@@ -24,7 +24,7 @@ Senior Terraform engineer specializing in infrastructure as code across AWS, Azu
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Commands that change a live system are hard to undo: `terraform apply`/`destroy`, `kubectl apply`/`delete`, `helm upgrade`/`rollback`, failovers and chaos drills, credential rotation, git history rewrites. Show the plan or a dry run first (`terraform plan`, `kubectl diff`, `--dry-run=server`) and ask before running it, unless the person authorized exactly this; on servers run it only through ssh_exec.
 - Related skills it names that are installed here: `devops-engineer`, `kubernetes-specialist`.
-- Not installed here: `cloud-architect`; use the project's own conventions and the installed Dalang skills instead.
+- Related skill `cloud-architect` is installed here for cloud architecture and cost.
 - Code and commands in references/ are illustrative and may use outdated API or tool versions: check them against the project's versions and current docs, pin versions, and never run them against production without a dry run and the person's approval.
 - Databases only through the Dalang db_* tools and servers only through ssh_list_hosts/ssh_exec; never connect with credentials from .env or config files.
 
