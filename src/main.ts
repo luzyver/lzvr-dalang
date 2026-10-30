@@ -62,6 +62,11 @@ for (const h of linkSessions(dispatcher.accounts.homes)) {
 
 dispatcher.loadDisabled();
 
+// A signed-out account is skipped like a switched-off one; check at start and every minute so prompts never hit it.
+const watchLogins = () => Promise.all([logins, claudeLogins].map((l) => l.refreshAll().catch(() => {})));
+await watchLogins(); // first check done before queues restart, so no turn is sent to an account that is already signed out
+setInterval(() => void watchLogins(), 60_000).unref();
+
 // A crash can leave turns `running`; fail them and restart any leftover queues.
 for (const id of store.resetRunning()) dispatcher.kick(id);
 

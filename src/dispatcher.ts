@@ -298,7 +298,7 @@ export class Dispatcher {
     const model = o.model || this.store.getDefaultModel(backend);
     const effort = o.effort || this.store.getDefaultEffort(backend);
     const signal = AbortSignal.timeout(o.timeoutMs ?? 120_000);
-    let error = accounts.homes.length ? 'every account is switched off or at its usage limit' : `no ${claude ? 'Claude Code' : 'Codex'} account has been added yet`;
+    let error = accounts.homes.length ? accounts.exhaustedReason() : `no ${claude ? 'Claude Code' : 'Codex'} account has been added yet`;
     for (let home = accounts.pick(); home; home = accounts.pick()) {
       const extraArgs = claude
         ? ['--no-session-persistence', '--tools', '']
@@ -523,7 +523,7 @@ export class Dispatcher {
             type: 'account.exhausted',
             message: accounts.homes.length === 0
               ? `no ${label} account has been added yet: an admin needs to add one in the panel and sign in`
-              : 'every account is switched off or at its usage limit',
+              : accounts.exhaustedReason(),
           });
           break;
         }

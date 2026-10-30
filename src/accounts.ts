@@ -71,6 +71,8 @@ export class Accounts {
   private blocked = new Map<string, number>();
   /** Accounts an admin switched off: never picked, whatever their limit state. */
   private disabled = new Set<string>();
+  /** Accounts whose login the CLI says is gone: never picked, so a prompt does not fail on them. */
+  private loggedOut = new Set<string>();
 
   constructor(
     readonly homes: string[],
@@ -92,15 +94,27 @@ export class Accounts {
     if (i >= 0) this.homes.splice(i, 1);
     this.blocked.delete(home);
     this.disabled.delete(home);
+    this.loggedOut.delete(home);
   }
 
   setEnabled(home: string, enabled: boolean): void {
     if (enabled) this.disabled.delete(home); else this.disabled.add(home);
   }
 
+  /** The CLI reports this account as signed out: it is skipped (like a switched-off one) until it is signed in again. */
+  setLoggedOut(home: string, loggedOut: boolean): void {
+    if (loggedOut) this.loggedOut.add(home); else this.loggedOut.delete(home);
+  }
+
+  /** Why `pick()` came back empty while accounts exist: names signed-out ones so the fix (sign in again) is clear. */
+  exhaustedReason(): string {
+    const out = this.homes.some((h) => this.loggedOut.has(h));
+    return out ? 'every account is switched off, at its usage limit or signed out (sign in again in the panel)' : 'every account is switched off or at its usage limit';
+  }
+
   /** First account (configured order) that is not currently blocked. */
   pick(): string | null {
-    return this.homes.find((h) => !this.disabled.has(h) && (this.blocked.get(h) ?? 0) <= this.now()) ?? null;
+    return this.homes.find((h) => !this.disabled.has(h) && !this.loggedOut.has(h) && (this.blocked.get(h) ?? 0) <= this.now()) ?? null;
   }
 
   block(home: string, ms: number = this.blockMs): void {

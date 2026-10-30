@@ -396,15 +396,16 @@ export function buildApp(
   });
 
   // Adding an account links another ChatGPT/Codex login to this machine: admins only (agent tokens cannot reach /api at all).
-  app.post<{ Body: { name: string; backend?: Backend } }>('/api/accounts/login', {
+  app.post<{ Body: { name: string; backend?: Backend; relogin?: boolean } }>('/api/accounts/login', {
     onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['name'], additionalProperties: false,
-      properties: { name: { type: 'string' }, backend: { enum: [...BACKENDS] } } } },
+      properties: { name: { type: 'string' }, backend: { enum: [...BACKENDS] }, relogin: { type: 'boolean' } } } },
   }, (req, reply) => {
     try {
-      return reply.code(202).send({ id: forBackend(backendOf(req.body.backend)).logins.start(req.body.name) });
+      const id = forBackend(backendOf(req.body.backend)).logins.start(req.body.name, { relogin: req.body.relogin });
+      return reply.code(202).send({ id });
     } catch (e) {
-      if (e instanceof LoginError) return reply.code(e.code === 'bad-name' ? 400 : 409).send({ error: e.message });
+      if (e instanceof LoginError) return reply.code(e.code === 'bad-name' ? 400 : e.code === 'not-found' ? 404 : 409).send({ error: e.message });
       throw e;
     }
   });
