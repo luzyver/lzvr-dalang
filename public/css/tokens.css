@@ -1,0 +1,77 @@
+/* Dalang panel. Colour scales: Radix Colors v3 (MIT). Fonts: Geist / Geist Mono (OFL, public/fonts). Icons: Lucide (ISC).
+   The styles are split by area and loaded in order by index.html: tokens, base, primitives, then the shell and its parts,
+   dialogs, responsive overrides, and the code and SQL editors. Components use only the semantic tokens of section 2; a
+   palette only swaps the raw scales of section 1. */
+
+@font-face { font-family: Geist; src: url('/fonts/Geist-Variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: 'Geist Mono'; src: url('/fonts/GeistMono-Variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+
+/* ---------- 1. Raw scales (n = neutral, a = accent; steps 1..12 as in Radix) ---------- */
+:root {
+  --g3: #e6f7ed; --g11: #208368; --r3: #feebec; --r9: #e5484d; --r11: #ce2c31; --y3: #fff7c2; --y11: #ab6400; --b11: #0d74ce; --p11: #8145b5;
+}
+[data-mode=dark] {
+  --g3: #0f2e22; --g11: #1fd8a4; --r3: #3b1219; --r9: #e5484d; --r11: #ff9592; --y3: #302008; --y11: #ffca16; --b11: #70b8ff; --p11: #d19dff;
+}
+[data-palette=iris] {
+  --n1:#fcfcfd; --n2:#f9f9fb; --n3:#f0f0f3; --n4:#e8e8ec; --n5:#e0e1e6; --n6:#d9d9e0; --n7:#cdced6; --n8:#b9bbc6; --n9:#8b8d98; --n10:#80838d; --n11:#60646c; --n12:#1c2024;
+  --a1:#fdfdff; --a2:#f8f8ff; --a3:#f0f1fe; --a4:#e6e7ff; --a5:#dadcff; --a6:#cbcdff; --a7:#b8baf8; --a8:#9b9ef0; --a9:#5b5bd6; --a10:#5151cd; --a11:#5753c6; --a12:#272962;
+  --a-contrast: #fff;
+}
+[data-palette=iris][data-mode=dark] {
+  --n1:#111113; --n2:#18191b; --n3:#212225; --n4:#272a2d; --n5:#2e3135; --n6:#363a3f; --n7:#43484e; --n8:#5a6169; --n9:#696e77; --n10:#777b84; --n11:#b0b4ba; --n12:#edeef0;
+  --a1:#13131e; --a2:#171625; --a3:#202248; --a4:#262a65; --a5:#303374; --a6:#3d3e82; --a7:#4a4a95; --a8:#5958b1; --a9:#5b5bd6; --a10:#6e6ade; --a11:#b1a9ff; --a12:#e0dffe;
+}
+[data-palette=jade] {
+  --n1:#fbfdfc; --n2:#f7f9f8; --n3:#eef1f0; --n4:#e6e9e8; --n5:#dfe2e0; --n6:#d7dad9; --n7:#cbcfcd; --n8:#b8bcba; --n9:#868e8b; --n10:#7c8481; --n11:#5f6563; --n12:#1a211e;
+  --a1:#fbfefd; --a2:#f4fbf7; --a3:#e6f7ed; --a4:#d6f1e3; --a5:#c3e9d7; --a6:#acdec8; --a7:#8bceb6; --a8:#56ba9f; --a9:#29a383; --a10:#26997b; --a11:#208368; --a12:#1d3b31;
+  --a-contrast: #fff;
+}
+[data-palette=jade][data-mode=dark] {
+  --n1:#101211; --n2:#171918; --n3:#202221; --n4:#272a29; --n5:#2e3130; --n6:#373b39; --n7:#444947; --n8:#5b625f; --n9:#63706b; --n10:#717d79; --n11:#adb5b2; --n12:#eceeed;
+  --a1:#0d1512; --a2:#121c18; --a3:#0f2e22; --a4:#0b3b2c; --a5:#114837; --a6:#1b5745; --a7:#246854; --a8:#2a7e68; --a9:#29a383; --a10:#27b08b; --a11:#1fd8a4; --a12:#adf0d4;
+}
+[data-palette=amber] {
+  --n1:#fdfdfc; --n2:#f9f9f8; --n3:#f1f0ef; --n4:#e9e8e6; --n5:#e2e1de; --n6:#dad9d6; --n7:#cfceca; --n8:#bcbbb5; --n9:#8d8d86; --n10:#82827c; --n11:#63635e; --n12:#21201c;
+  --a1:#fefdfb; --a2:#fefbe9; --a3:#fff7c2; --a4:#ffee9c; --a5:#fbe577; --a6:#f3d673; --a7:#e9c162; --a8:#e2a336; --a9:#ffc53d; --a10:#ffba18; --a11:#ab6400; --a12:#4f3422;
+  --a-contrast: #4f3422;
+}
+[data-palette=amber][data-mode=dark] {
+  --n1:#111110; --n2:#191918; --n3:#222221; --n4:#2a2a28; --n5:#31312e; --n6:#3b3a37; --n7:#494844; --n8:#62605b; --n9:#6f6d66; --n10:#7c7b74; --n11:#b5b3ad; --n12:#eeeeec;
+  --a1:#16120c; --a2:#1d180f; --a3:#302008; --a4:#3f2700; --a5:#4d3000; --a6:#5c3d05; --a7:#714f19; --a8:#8f6424; --a9:#ffc53d; --a10:#ffd60a; --a11:#ffca16; --a12:#ffe7b3;
+  --a-contrast: #4f3422;
+}
+/* With an amber accent, "needs attention" moves to orange so it never looks like the accent. */
+[data-palette=amber] { --y3: #ffefd6; --y11: #cc4e00; }
+[data-palette=amber][data-mode=dark] { --y3: #331e0b; --y11: #ff801f; }
+
+/* ---------- 2. Semantic tokens ---------- */
+:root {
+  --bg: var(--n1); --bg-side: color-mix(in srgb, var(--n2), var(--a2) 45%); --surface: var(--n1); --surface-2: var(--n2); --surface-3: var(--n3);
+  --hover: var(--n4); --pressed: var(--n5);
+  --line: var(--n6); --line-strong: var(--n7); --line-hover: var(--n8);
+  --text: var(--n12); --text-dim: var(--n11); --text-faint: color-mix(in srgb, var(--n11) 72%, var(--n9)); /* step 9 alone is under 4.5:1 */
+  --accent: var(--a9); --accent-hover: var(--a10); --accent-fg: var(--a-contrast); --accent-text: var(--a11); --accent-soft: var(--a3); --accent-soft-2: var(--a4); --accent-line: var(--a7);
+  --ok: var(--g11); --ok-soft: var(--g3); --warn: var(--y11); --warn-soft: var(--y3); --err: var(--r11); --err-soft: var(--r3);
+  --syn-k: var(--p11); --syn-s: var(--g11); --syn-f: var(--b11); --syn-n: var(--y11); --syn-c: var(--n9); --syn-t: var(--a11);
+
+  --font: Geist, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+  /* type scale: meta, UI, body, section titles, page titles */
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px;
+  --r-sm: 6px; --r-md: 9px; --r-lg: 13px; --r-xl: 18px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / .05);
+  --shadow-lg: 0 12px 40px -8px rgb(0 0 0 / .18), 0 2px 6px rgb(0 0 0 / .06);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --side-w: 272px; --insp-w: 480px; --head-h: 52px;
+}
+/* Light: the sidebar takes a hint of the accent. Dark: the content area sits a step above the sidebar, which recedes. */
+[data-mode=dark] {
+  --bg-side: var(--n1); --bg: var(--n2); --surface: var(--n2); --surface-2: var(--n3); --surface-3: var(--n4); --hover: var(--n5); --pressed: var(--n6);
+  --line: var(--n5); --line-strong: var(--n6); --line-hover: var(--n7); /* on dark, step 6 hairlines read as heavy */
+  --shadow-lg: 0 16px 48px -8px rgb(0 0 0 / .6), 0 0 0 1px var(--n6);
+  --text-faint: color-mix(in srgb, var(--n11) 45%, var(--n9));
+  color-scheme: dark;
+}
+

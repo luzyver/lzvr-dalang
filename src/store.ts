@@ -79,6 +79,8 @@ export interface Conversation {
   title?: string | null;
   /** The generated title alone (null until one exists). */
   auto_title?: string | null;
+  /** In a project's list of chats: when its last turn ended, or started while it runs (null before any turn). */
+  last_at?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
   /** Codex model for this chat; empty = Codex's own default. */
   model: string;
@@ -176,6 +178,8 @@ export interface SearchHit {
 export interface StoredEvent { id: number; conversation_id: string; type: string; payload: string; created_at: string }
 
 const TITLE = `COALESCE(c.auto_title, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1))`;
+/** When the chat's last turn ended, or started while it runs (UTC, `YYYY-MM-DD HH:MM:SS`); null before any turn. */
+const LAST_AT = `(SELECT COALESCE(t.ended_at, t.started_at) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id DESC LIMIT 1)`;
 
 /** A LIKE pattern (used with `ESCAPE '\'`) in which `%`, `_` and `\` match themselves. */
 const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
@@ -438,7 +442,7 @@ export class Store {
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
-    return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
+    return this.all(`SELECT c.*, ${TITLE} AS title, ${LAST_AT} AS last_at FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
   }
   /** The sub-agents a chat's agent started (that still exist); its automatic reviewer does not count. */
   countChildren(id: string): number { return this.get<{ n: number }>("SELECT count(*) AS n FROM conversations WHERE parent=? AND role=''", id)!.n; }

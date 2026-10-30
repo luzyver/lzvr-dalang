@@ -1,4 +1,5 @@
-// The sidebar: search, Scheduled / Approvals, every project with its chats, account usage and the user menu.
+// The sidebar: new chat and search, Approvals / Scheduled, the chats by project or by status, the tools, account usage
+// and the user menu.
 // Also the Add project dialog.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
@@ -7,9 +8,10 @@ import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
   approvals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
-  toggleCollapsed, toggleSidebar, ui,
+  setGroupBy, toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
+import { ago, byStatus, isUnread, WHY } from './inbox.js';
 
 /** Per backend, the first account that is ready and how much of its tightest usage window is left. */
 export const usage = signal([]);
@@ -83,7 +85,7 @@ export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} 
  * One chat in the sidebar. In a project with sub-agents (`tree`) every row gets a fold slot, so the dots line up, and is
  * indented by its depth with a guide line under each parent.
  */
-function ChatRow({ c, active, tree = false, depth = 0, kids = 0, folded = false }) {
+function ChatRow({ c, active, tree = false, depth = 0, kids = 0, folded = false, project, why }) {
   const title = c.title || 'New chat';
   const remove = guarded(async () => {
     if (!await confirmDialog({
@@ -98,18 +100,21 @@ function ChatRow({ c, active, tree = false, depth = 0, kids = 0, folded = false 
     if (active) goHome();
     await loadProjects();
   });
-  return html`<div class=${cx('chat-row', active && 'active', tree && 'in-tree', depth > 0 && 'sub')} style=${tree ? { '--depth': depth } : undefined}>
+  const unread = isUnread(c);
+  const status = why ? WHY[why].label : unread ? 'New answer' : c.status;
+  return html`<div class=${cx('chat-row', active && 'active', tree && 'in-tree', depth > 0 && 'sub', unread && 'unread')} style=${tree ? { '--depth': depth } : undefined}>
     ${tree && (kids > 0
       ? html`<button class="chat-fold" aria-expanded=${!folded} aria-label=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent(s) of ${title}`}
           title=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent${kids > 1 ? 's' : ''}`} onClick=${() => toggleCollapsed(c.id)}>
           <${Icon} name=${folded ? 'chevron-right' : 'chevron-down'} class="tiny" /></button>`
       : html`<span class="chat-fold" aria-hidden="true"></span>`)}
     <a class="chat" href=${`#c=${c.id}`} aria-current=${active ? 'page' : undefined} onClick=${(e) => { e.preventDefault(); openChat(c.id); }}>
-      <span class=${cx('dot', c.status)} title=${c.status}></span>
-      <span class="chat-title" title=${title}>${title}</span>
+      <span class=${cx('dot', c.status, why === 'approval' && 'waiting')} title=${status} role="img" aria-label=${status}></span>
+      <span class="chat-title" title=${project ? `${title} · ${project.name}` : title}>${title}${project && html`<small class="chat-project">${project.name}</small>`}</span>
       ${folded && html`<span class="chat-kids" title=${`${kids} sub-agent${kids > 1 ? 's' : ''} folded away`}>${kids}</span>`}
       ${c.parent && c.model && html`<span class="chat-model" title=${`Sub-agent on ${c.model}${c.effort ? `, ${c.effort} effort` : ''}`}>${c.model}</span>`}
       ${c.worktree && html`<span class="chat-branch" title=${`Own worktree on ${c.branch}`}><${Icon} name="git-branch" class="tiny" /></span>`}
+      ${c.status !== 'running' && c.last_at && html`<span class="chat-time">${ago(c.last_at)}</span>`}
     </a>
     <button class="icon-btn sm row-action" aria-label=${`Delete chat ${title}`} title="Delete chat" onClick=${remove}><${Icon} name="trash-2" /></button>
   </div>`;
@@ -185,10 +190,35 @@ function Project({ p }) {
   </div>`;
 }
 
+/** The chats across projects: what needs a person first, then what runs, then the rest by recent activity. */
+function StatusList() {
+  const { attention, running, rest } = byStatus.value;
+  const current = route.value.view === 'chat' ? route.value.id : null;
+  const rows = (list) => list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} project=${x.project} why=${x.why} active=${x.conv.id === current} />`);
+  const group = (label, list, cls) => list.length > 0 && html`<div class=${cx('status-group', cls)}>
+    <div class="group-head"><span>${label}</span><span class="count">${list.length}</span></div>
+    <div class="chats flat">${rows(list)}</div></div>`;
+  return html`${group('Needs you', attention, 'attention')}${group('Running', running)}${group('Recent', rest.slice(0, 40))}
+    ${!attention.length && !running.length && !rest.length && html`<div class="side-empty">No chats yet.</div>`}`;
+}
+
+/** Start a chat: straight away with one project, otherwise pick the project from a menu. */
+function NewChat() {
+  const list = projects.value;
+  if (list.length <= 1) {
+    return html`<button class="new-chat" disabled=${!list.length} onClick=${list[0] && newChat(list[0])}><${Icon} name="square-pen" /><span>New chat</span></button>`;
+  }
+  return html`<${Menu} icon="square-pen" text="New chat" label="New chat in a project" align="start" class="new-chat-menu" buttonClass="new-chat">
+    ${list.map((p) => html`<${MenuItem} key=${p.id} icon="folder" onClick=${newChat(p)}>${p.name}<//>`)}
+  <//>`;
+}
+
 export function Sidebar() {
   const user = me.value;
   const view = route.value.view;
   const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length;
+  const by = ui.groupBy.value;
+  const go = (name) => (e) => { e.preventDefault(); openView(name); };
   useEffect(() => {
     refreshUsage();
     const t = setInterval(refreshUsage, 60000);
@@ -202,26 +232,33 @@ export function Sidebar() {
       </a>
       <button class="icon-btn" aria-label="Hide sidebar" title="Hide sidebar" onClick=${toggleSidebar}><${Icon} name="panel-left" /></button>
     </div>
-    <button class="search-trigger" onClick=${() => { ui.palette.value = true; }}>
-      <${Icon} name="search" /><span>Search or run a command</span><kbd>${navigator.platform.startsWith('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
-    </button>
+    <div class="side-actions">
+      <${NewChat} />
+      <button class="search-trigger" aria-label="Search or run a command" title="Search or run a command" onClick=${() => { ui.palette.value = true; }}>
+        <${Icon} name="search" /><span>Search</span><kbd>${navigator.platform.startsWith('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+      </button>
+    </div>
     <nav class="side-nav">
-      <a class=${cx('nav-item', view === 'schedules' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('schedules'); }}>
-        <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
-      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('approvals'); }}>
+      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${go('approvals')}>
         <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
-      <a class="nav-item" href="/sql" target="dalang-sql" title="Opens in its own tab" onClick=${(e) => { e.preventDefault(); openSqlEditor(); }}>
-        <${Icon} name="database" />SQL Editor</a>
-      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'ssh' && 'active')} href="#" onClick=${(e) => { e.preventDefault(); openView('ssh'); }}>
-        <${Icon} name="terminal" />SSH Hosts</a>`}
+      <a class=${cx('nav-item', view === 'schedules' && 'active')} href="#" onClick=${go('schedules')}>
+        <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
     </nav>
     <div class="side-section">
-      <div class="section-head"><span>Projects</span>
-        ${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="plus" /></button>`}</div>
-      ${projects.value.map((p) => html`<${Project} key=${p.id} p=${p} />`)}
-      ${!projects.value.length && html`<div class="side-empty">${isAdmin.value ? 'No projects yet. Add a folder with the + above.' : 'No projects yet. An admin adds them.'}</div>`}
+      <div class="section-head">
+        <${Seg} small label="Group chats by" value=${by} onChange=${setGroupBy} options=${[['project', 'Projects'], ['status', 'Status']]} />
+        ${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}</div>
+      ${by === 'status' ? html`<${StatusList} />` : html`
+        ${projects.value.map((p) => html`<${Project} key=${p.id} p=${p} />`)}
+        ${!projects.value.length && html`<div class="side-empty">${isAdmin.value ? 'No projects yet. Add a folder with the button above.' : 'No projects yet. An admin adds them.'}</div>`}`}
     </div>
     <div class="side-bottom">
+      <nav class="side-tools" aria-label="Tools">
+        <a class="nav-item" href="/sql" target="dalang-sql" title="Opens in its own tab" onClick=${(e) => { e.preventDefault(); openSqlEditor(); }}>
+          <${Icon} name="database" />SQL Editor<${Icon} name="external-link" class="tiny trail" /></a>
+        ${isAdmin.value && html`<a class=${cx('nav-item', view === 'ssh' && 'active')} href="#" onClick=${go('ssh')}>
+          <${Icon} name="terminal" />SSH Hosts</a>`}
+      </nav>
       ${usage.value.map((u) => html`<button class="usage" key=${u.label} title="Accounts" onClick=${() => openSettings(u.label === 'Codex' ? 'codex' : 'claude')}>
         <div class="usage-row"><span>${u.label} · ${u.name}</span><span class=${cx(u.blocked ? 'warn' : 'dim')}>${u.blocked ? 'at limit' : u.left == null ? '' : `${u.left}% left`}</span></div>
         ${u.left != null && html`<div class="meter"><span class=${cx(u.left <= 10 ? 'hot' : u.left <= 30 && 'warm')} style=${{ width: `${u.left}%` }}></span></div>`}

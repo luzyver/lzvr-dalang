@@ -15,7 +15,7 @@ export function Icon({ name, class: cls, spin }) {
  */
 /** The database engines' names, by driver. */
 export const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis' };
-/** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (app.css). */
+/** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (public/css). */
 export const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis' };
 export const EngineIcon = ({ driver, class: cls }) => html`<${Icon} name=${ENGINE_ICONS[driver] || 'database'} class=${cx('engine', `engine-${driver}`, cls)} />`;
 
@@ -75,9 +75,10 @@ export function ConfirmDialog() {
 
 /**
  * A button that opens a small menu. The menu is fixed-positioned from the button's place on screen, so a scrolling
- * sidebar cannot clip it, and it opens upwards near the bottom of the screen.
+ * sidebar cannot clip it, and it opens upwards near the bottom of the screen. With `text` the button shows it next to
+ * the icon instead of being an icon button; `align="start"` lines the menu up with the button's left edge, not its right.
  */
-export function Menu({ icon = 'ellipsis', label, children, class: cls, buttonClass }) {
+export function Menu({ icon = 'ellipsis', label, text, align = 'end', children, class: cls, buttonClass }) {
   const [pos, setPos] = useState(null);
   const wrap = useRef(null);
   useEffect(() => {
@@ -101,10 +102,12 @@ export function Menu({ icon = 'ellipsis', label, children, class: cls, buttonCla
     if (pos) { setPos(null); return; }
     const r = e.currentTarget.getBoundingClientRect();
     const up = innerHeight - r.bottom < 240;
-    setPos({ right: `${Math.max(8, innerWidth - r.right)}px`, ...(up ? { bottom: `${innerHeight - r.top + 4}px` } : { top: `${r.bottom + 4}px` }) });
+    const x = align === 'start' ? { left: `${Math.max(8, r.left)}px` } : { right: `${Math.max(8, innerWidth - r.right)}px` };
+    setPos({ ...x, ...(up ? { bottom: `${innerHeight - r.top + 4}px` } : { top: `${r.bottom + 4}px` }) });
   };
   return html`<div class=${cx('menu', cls)} ref=${wrap}>
-    <button class=${cx('icon-btn', buttonClass)} aria-label=${label} title=${label} aria-haspopup="menu" aria-expanded=${!!pos} onClick=${toggle}><${Icon} name=${icon} /></button>
+    <button class=${cx(!text && 'icon-btn', buttonClass)} aria-label=${text ? undefined : label} title=${label} aria-haspopup="menu" aria-expanded=${!!pos} onClick=${toggle}>
+      <${Icon} name=${icon} />${text && html`<span>${text}</span>`}</button>
     ${pos && html`<div class="menu-pop" role="menu" style=${pos} onClick=${() => setPos(null)}>${children}</div>`}
   </div>`;
 }

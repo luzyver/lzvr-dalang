@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { confirmDialog, Icon } from './ui.js';
 import {
-  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, toggleInspector, toggleSidebar, ui,
+  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Live } from './thread.js';
@@ -87,7 +87,9 @@ export async function refreshQueue(id = chat.id.value) {
 }
 export async function refreshGit(id = chat.id.value) {
   const s = await api(`/api/conversations/${id}/git`);
-  if (chat.id.value === id) chat.git.value = s;
+  if (chat.id.value !== id) return;
+  chat.git.value = s;
+  autoOpenInspector(id, s?.files?.length);
 }
 
 const TURN_END = new Set(['turn.completed', 'turn.failed', 'turn.status', 'process.exit', 'user.prompt']);
@@ -163,7 +165,7 @@ function ChatHead({ project, conv }) {
     <${CodeGraphButton} project=${project} />
     <${MemoryButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
-    <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
+    <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector: changes, schedules and info" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
   </header>`;
 }
 

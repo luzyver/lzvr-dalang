@@ -320,7 +320,8 @@ function Settings() {
   return html`<div class="settings-layout">
     <nav class="settings-nav" aria-label="Settings sections">
       <div class="group-label">Settings</div>
-      ${visible.map(([k, label, icon]) => html`<button key=${k} class=${cx('settings-link', k === current && 'active')} onClick=${() => go(k)}><${Icon} name=${icon} />${label}</button>`)}
+      ${visible.map(([k, label, icon]) => html`<button key=${k} class=${cx('settings-link', k === current && 'active')} aria-current=${k === current ? 'page' : undefined}
+        autofocus=${k === current} onClick=${() => go(k)}><${Icon} name=${icon} />${label}</button>`)}
     </nav>
     <div class="settings-main">
       <div class="dialog-head">

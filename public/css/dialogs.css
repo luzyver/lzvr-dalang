@@ -1,0 +1,186 @@
+/* ---------- 6. Dialogs: palette, settings, add project ---------- */
+dialog.modal { border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); padding: 0; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow: hidden; }
+dialog.modal::backdrop { background: rgb(0 0 0 / .35); backdrop-filter: blur(2px); }
+dialog.modal[open] { animation: pop .18s var(--ease); }
+@keyframes pop { from { opacity: 0; scale: .97; translate: 0 -6px; } }
+.dialog { width: 520px; }
+.dialog.confirm { width: 420px; }
+.confirm-message { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px, calc(100dvh - 32px)); }
+.history { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; }
+.history > .log { flex: 1; }
+.history > .btn { align-self: center; }
+.log { overflow: auto; min-height: 0; margin: 0 -8px; }
+.log-row { display: flex; align-items: stretch; height: 30px; padding: 0 8px; border-radius: var(--r-sm); }
+.log-row { cursor: pointer; }
+.log-row:hover { background: var(--hover); }
+.commit-view > .dialog-head { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.commit-view[hidden] { display: none; }
+.commit-actions { display: flex; gap: 2px; flex-wrap: wrap; }
+.tag-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
+.tag-form > input { flex: 1 1 160px; min-width: 0; }
+.compare-form > input { flex: 1; min-width: 0; }
+.compare-log { max-height: 180px; overflow: auto; flex: none; }
+.commit-head { display: grid; gap: 6px; }
+.commit-subject { font-weight: 600; overflow-wrap: anywhere; }
+.commit-body { margin: 0; max-height: 140px; overflow: auto; white-space: pre-wrap; font: 12.5px/1.5 var(--mono); color: var(--text-dim); }
+.commit-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 300px) 1fr; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.commit-files { overflow: auto; border-right: 1px solid var(--line); }
+.commit-files .file { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; text-align: left; }
+.commit-files .file.selected { background: var(--accent-soft); }
+.commit-diff { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.commit-diff-path { padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+.commit-diff .diff-scroll { flex: 1; max-height: none; }
+.commit-diff .pane-loading { padding: 16px; }
+@media (max-width: 760px) {
+  .commit-split { grid-template-columns: 1fr; grid-template-rows: minmax(90px, 30%) 1fr; }
+  .commit-files { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+.log-graph { width: var(--graph-w); flex: none; overflow: hidden; margin-right: 8px; }
+.graph { display: block; }
+.graph path { fill: none; stroke-width: 1.6; stroke: currentColor; }
+.graph circle { fill: currentColor; stroke: var(--surface); stroke-width: 1.5; }
+.graph circle.merge { fill: var(--surface); stroke: currentColor; }
+.graph .lane-0 { color: var(--accent); } .graph .lane-1 { color: #e5484d; } .graph .lane-2 { color: #30a46c; } .graph .lane-3 { color: #f5a524; }
+.graph .lane-4 { color: #8e4ec6; } .graph .lane-5 { color: #0090ff; } .graph .lane-6 { color: #e93d82; } .graph .lane-7 { color: #12a594; }
+.log-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; font-size: var(--fs-sm); }
+.log-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-meta { flex: none; display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.log-hash { border: 0; background: none; padding: 0; color: var(--text-dim); font-size: 12px; cursor: pointer; }
+.log-hash:hover { color: var(--accent-text); }
+.ref { display: inline-block; font: 550 11px var(--mono); padding: 1px 6px; margin-right: 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--text-dim); vertical-align: 1px; }
+.ref.head { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-text); }
+.ref.remote { border-style: dashed; }
+.ref.tag { color: var(--text); }
+@media (max-width: 640px) { .log-meta > span { display: none; } }
+.dialog-body { display: grid; gap: 14px; padding: 16px 20px 20px; }
+/* tall dialogs fill their modal: a column whose list (or diff) takes the room left, rather than grid rows stretching */
+.dialog-body.history, .dialog-body.stash-dialog { display: flex; flex-direction: column; }
+.dialog-body.history > *, .dialog-body.stash-dialog > * { flex: none; }
+.dialog-body.history > .log, .dialog-body.history > .commit-split, .dialog-body.stash-dialog > .stash-list { flex: 1; min-height: 0; }
+.dialog-body.history > .compare-log { flex: 0 1 auto; min-height: 60px; }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dialog-head h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; flex: 1; }
+.palette { width: 640px; margin-top: 11vh; }
+.palette-input { display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 54px; border-bottom: 1px solid var(--line); }
+.palette-input > .i { color: var(--text-faint); width: 18px; height: 18px; }
+.palette-input input { flex: 1; border: 0 !important; background: none; outline: none; box-shadow: none !important; padding: 0; font-size: 15.5px; }
+.palette-list { padding: 4px 6px 8px; max-height: min(56vh, 520px); overflow: auto; }
+.palette-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--r-md); background: none; text-align: left; font-size: var(--fs-sm); }
+.palette-item > .i { color: var(--text-faint); }
+.palette-item > .dot { margin: 0 4.5px; }
+.palette-text { flex: 1; display: grid; min-width: 0; }
+.palette-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-text strong { font-weight: 550; }
+.palette-item.active { background: var(--surface-3); }
+.palette-item.active > .i { color: var(--accent-text); }
+.palette-empty { padding: 24px; text-align: center; color: var(--text-faint); font-size: var(--fs-sm); }
+.settings { width: 900px; height: min(640px, calc(100dvh - 32px)); }
+.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100%; }
+.settings-nav { background: var(--bg-side); border-right: 1px solid var(--line); padding: 8px; display: grid; align-content: start; gap: 1px; overflow: auto; }
+.settings-link { display: flex; align-items: center; gap: 9px; min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-md); background: none; text-align: left; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-link:hover { background: var(--hover); color: var(--text); }
+.settings-link.active { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.settings-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.settings-main > .dialog-head { padding: 14px 16px 12px 24px; border-bottom: 1px solid var(--line); }
+.settings-picker { display: none; }
+.settings-body { flex: 1; overflow: auto; padding: 18px 24px 24px; display: grid; gap: 14px; align-content: start; }
+.settings-body > p { margin: 0; }
+.swatches { display: grid; gap: 8px; }
+.swatches button { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); text-align: left; }
+.swatches button:hover { border-color: var(--line-hover); }
+.swatches button > span:nth-child(2) { display: grid; font-size: var(--fs-sm); flex: 1; }
+.swatches button.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sw { width: 34px; height: 34px; border-radius: 10px; flex: none; }
+.sw-iris { background: linear-gradient(135deg, #5b5bd6 50%, #d9d9e0 50%); }
+.sw-jade { background: linear-gradient(135deg, #29a383 50%, #d7dad9 50%); }
+.sw-amber { background: linear-gradient(135deg, #ffc53d 50%, #dad9d6 50%); }
+.sw-check { color: var(--accent-text); }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.setting-row:last-child { border-bottom: 0; }
+
+/* SSH hosts page: the hosts on the left, the one picked on the right (stacked on a narrow screen). */
+.page.ssh-page { max-width: 1080px; }
+.ssh-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--s4); align-items: start; }
+.ssh-layout.single { grid-template-columns: minmax(0, 1fr); }
+/* The left column stays in view while the host on the right scrolls: the search on top, the list scrolls itself. */
+.ssh-side { display: flex; flex-direction: column; gap: 8px; position: sticky; top: 0; max-height: calc(100dvh - var(--head-h) - 2 * var(--s5)); min-width: 0; }
+.ssh-find { position: relative; display: block; }
+.ssh-find > .i { position: absolute; left: 9px; top: 50%; translate: 0 -50%; color: var(--text-dim); pointer-events: none; }
+.ssh-find > input { width: 100%; padding-left: 30px; }
+.ssh-list { display: grid; align-content: start; gap: 2px; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 1px; }
+.ssh-none { padding: 8px 10px; }
+.ssh-search { width: 180px; min-height: 30px; padding: 4px 9px; }
+.ssh-more { justify-self: center; margin-top: 6px; }
+.ssh-keys { display: grid; gap: var(--s3); }
+.ssh-pub { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-3); }
+.ssh-pub > code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ssh-item { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--text-dim); text-align: left; font: inherit; cursor: pointer; }
+.ssh-item:hover { background: var(--hover); color: var(--text); }
+.ssh-item.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); }
+.ssh-item.add { font-size: var(--fs-sm); }
+.ssh-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ssh-item-top > strong, .ssh-item > .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-detail { display: grid; gap: var(--s3); min-width: 0; }
+.ssh-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ssh-detail-title { min-width: 0; overflow-wrap: anywhere; }
+.ssh-addr { display: grid; grid-template-columns: minmax(0, 2fr) 90px minmax(0, 1fr); gap: 8px; }
+.ssh-log { display: grid; }
+.ssh-log-row { display: grid; gap: 3px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.ssh-log-row:last-child { border-bottom: 0; }
+.ssh-log-cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .ssh-layout { grid-template-columns: minmax(0, 1fr); }
+  .ssh-side { position: static; max-height: none; }
+  .ssh-list { max-height: 40vh; }
+  .ssh-addr { grid-template-columns: 80px minmax(0, 1fr); }
+  .ssh-addr > .field:first-child { grid-column: 1 / -1; }
+}
+.prompt-edit { font-size: 12.5px; line-height: 1.55; }
+.account { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.account-head { display: flex; align-items: center; gap: 10px; }
+.meters { display: grid; gap: 6px; }
+.meter-row { display: grid; grid-template-columns: 90px minmax(60px, 1fr) 40px auto; align-items: center; gap: 10px; font-size: 12.5px; }
+.meter-label { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter-row .meter { height: 6px; }
+.meter-pct { font-variant-numeric: tabular-nums; text-align: right; }
+.login-flow { display: grid; gap: 8px; padding-top: 4px; }
+.login-flow > a.btn { justify-self: start; }
+.login-code { font-size: 16px; font-weight: 600; letter-spacing: .08em; padding: 2px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-sm); user-select: all; }
+.login-log summary { cursor: pointer; font-size: 12.5px; color: var(--text-faint); }
+.login-log pre { margin: 6px 0 0; padding: 10px; background: var(--surface-3); border-radius: var(--r-md); font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+/* Settings → Git & forges: a tab per topic, each a list of rows (.id-card, as in the Changes tab) */
+.git-settings { display: grid; gap: 12px; }
+.git-settings > .seg { justify-self: start; }
+.git-scope { display: flex; align-items: flex-start; gap: 9px; padding: 9px 12px; border-radius: var(--r-md); font-size: var(--fs-sm); line-height: 1.45;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text-dim); }
+.git-scope strong { color: var(--text); }
+.git-scope > .i { margin-top: 2px; }
+.git-scope.user { background: var(--accent-soft); border-color: var(--accent-line); }
+.git-lead { margin: 0; }
+.git-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 -4px; min-height: 28px; font-size: var(--fs-sm); }
+.git-settings .id-card { background: var(--surface); }
+.git-settings .id-row { padding: 9px 8px 9px 12px; }
+.git-settings .id-row > input.grow { flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.git-settings .id-row .menu { flex: none; }
+.id-form-fields.three { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.git-alt { display: grid; gap: 8px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.git-alt > .btn { justify-self: start; }
+.ssh-out { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--surface-2); font-size: 12px; max-height: 160px; overflow: auto; white-space: pre-wrap;
+  border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.users td.actions { text-align: right; white-space: nowrap; }
+.users select { min-height: 30px; padding-top: 3px; padding-bottom: 3px; width: auto; }
+
+/* login */
+.login-screen { min-height: 100dvh; display: grid; place-items: center; padding: 20px; overflow: auto;
+  background: radial-gradient(1200px 600px at 50% -10%, var(--accent-soft), transparent 70%), var(--bg); }
+.login { width: min(380px, 100%); display: grid; gap: 14px; padding: 28px 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow-lg); }
+.login h1 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+.login p { margin: 2px 0 0; font-size: var(--fs-sm); }
+.login-fields { display: grid; gap: 14px; }
+.login-send { display: flex; }
+.login-send > input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; position: relative; }
+.login-send > input:focus { z-index: 1; }
+.login-send > .btn { flex: none; height: auto; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; box-shadow: none; }
+.login > .btn.ghost.sm { justify-self: center; }
+

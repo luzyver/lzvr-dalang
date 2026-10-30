@@ -1,0 +1,45 @@
+/* Home: the overview (needs you, running, recent; start a chat, accounts), and the welcome before the first project */
+.home { min-height: 100%; display: grid; justify-items: center; align-content: center; gap: 12px; padding: 32px 20px 12vh; text-align: center; }
+.home h1 { margin: 10px 0 0; font-size: var(--fs-xl); font-weight: 650; letter-spacing: -.02em; }
+.home p { margin: 0 0 8px; max-width: 40ch; }
+
+.overview { width: 100%; max-width: 960px; margin: 0 auto; padding: var(--s5) var(--s5) 10vh; display: grid; gap: var(--s5); }
+.ov-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s3); }
+.ov-intro h1 { margin: 0; font-size: var(--fs-xl); font-weight: 650; letter-spacing: -.02em; line-height: 1.25; text-wrap: balance; }
+.ov-intro p { margin: 2px 0 0; color: var(--text-dim); font-size: var(--fs-md); }
+.ov-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: var(--s5); align-items: start; }
+.ov-col { display: grid; gap: var(--s5); min-width: 0; }
+
+.ov-section { display: grid; gap: 6px; min-width: 0; }
+.ov-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.ov-head h2 { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: var(--fs-md); font-weight: 600; }
+.ov-count { font-size: var(--fs-sm); font-weight: 500; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ov-empty { margin: 0; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: var(--r-lg); color: var(--text-faint); font-size: var(--fs-sm); }
+
+/* rows in one bordered list, divided by hairlines: scannable, not a grid of cards */
+.ov-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+.ov-list > li + li { border-top: 1px solid var(--line); }
+.ov-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; border: 0; background: none; text-align: left; color: var(--text); }
+.ov-row:hover { background: var(--hover); }
+.ov-row:focus-visible { outline-offset: -2px; }
+.ov-icon { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: var(--r-md); background: var(--surface-3); color: var(--text-dim); }
+.ov-icon .i { width: 15px; height: 15px; }
+.ov-icon.warn { background: var(--warn-soft); color: var(--warn); }
+.ov-icon.err { background: var(--err-soft); color: var(--err); }
+.ov-icon.accent { background: var(--accent-soft); color: var(--accent-text); }
+.ov-main { flex: 1; display: grid; min-width: 0; line-height: 1.35; }
+.ov-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 550; }
+.ov-main > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-faint); }
+.ov-time { flex: none; font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ov-go { color: var(--text-faint); opacity: 0; transition: opacity .1s; }
+.ov-row:hover .ov-go, .ov-row:focus-visible .ov-go { opacity: 1; color: var(--accent-text); }
+.ov-usage { display: grid; justify-items: end; gap: 4px; flex: none; width: 96px; }
+.ov-left { font-size: var(--fs-xs); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ov-left.warn { color: var(--warn); }
+.ov-usage .meter { width: 100%; }
+
+@media (max-width: 900px) {
+  .ov-cols { grid-template-columns: minmax(0, 1fr); }
+  .overview { padding: var(--s4) var(--s3) 12vh; }
+}
+@media (hover: none) { .ov-go { opacity: 1; } }

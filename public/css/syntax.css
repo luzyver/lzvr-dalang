@@ -1,0 +1,10 @@
+/* ---------- 7. Syntax highlighting (highlight.js classes) ---------- */
+.hljs-keyword, .hljs-built_in, .hljs-selector-tag, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--syn-k); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-attribute .hljs-string, .hljs-meta .hljs-string { color: var(--syn-s); }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-selector-id { color: var(--syn-f); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-variable.constant_, .hljs-bullet { color: var(--syn-n); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--syn-c); font-style: italic; }
+.hljs-type, .hljs-title.class_, .hljs-tag, .hljs-name, .hljs-attr, .hljs-attribute, .hljs-property, .hljs-selector-class, .hljs-template-variable { color: var(--syn-t); }
+.hljs-deletion { color: var(--err); }
+.hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 650; }
+

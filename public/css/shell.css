@@ -1,0 +1,14 @@
+/* ---------- 5. Shell ---------- */
+.app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr) var(--insp-w); height: 100dvh; }
+.app.no-insp { grid-template-columns: var(--side-w) minmax(0, 1fr) 0; }
+.app.no-side { grid-template-columns: 0 minmax(0, 1fr) var(--insp-w); }
+.app.no-side.no-insp { grid-template-columns: 0 minmax(0, 1fr) 0; }
+.app.no-side .sidebar, .app.no-insp .inspector { visibility: hidden; }
+.app:not(.no-side) .main .sidebar-toggle { display: none; }
+.scrim { display: none; }
+
+/* a maximized inspector takes the main column's place */
+.app.insp-max { grid-template-columns: var(--side-w) 0 minmax(0, 1fr); }
+.app.insp-max.no-side { grid-template-columns: 0 0 minmax(0, 1fr); }
+.app.insp-max > .main { visibility: hidden; }
+.app.insp-max .inspector { border-left: 0; }

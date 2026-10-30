@@ -1,0 +1,38 @@
+/* ---------- 3. Base ---------- */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: var(--fs-md)/1.55 var(--font); -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; overflow: hidden; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+a { color: var(--accent-text); text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+code, pre, kbd, .mono { font-family: var(--mono); }
+code, kbd { font-size: .88em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: var(--accent-soft-2); }
+html { scrollbar-color: var(--line-hover) transparent; caret-color: var(--accent); }
+.dim { color: var(--text-dim); } .small { font-size: var(--fs-sm); } .tiny.i { width: 13px; height: 13px; }
+.warn { color: var(--warn); } .ok { color: var(--ok); } .ok-text { color: var(--ok); display: flex; align-items: center; gap: 6px; }
+.spacer { flex: 1; }
+kbd { color: var(--text-faint); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; background: var(--surface); font-size: 11px; line-height: 1.6; white-space: nowrap; }
+mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
+input:not([type=checkbox]), select, textarea {
+  width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); transition: border-color .12s, box-shadow .12s;
+}
+input:not([type=checkbox]):hover, select:hover, textarea:hover { border-color: var(--line-hover); }
+input:not([type=checkbox]):focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+textarea { resize: vertical; field-sizing: content; }
+input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; flex: none; cursor: pointer; }
+select { appearance: none; padding-right: 30px; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%), linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%; background-size: 5px 5px; background-repeat: no-repeat; }
+.boot { height: 100dvh; }
+
+/* icons: Lucide SVGs as CSS masks (js/ui.js sets --m), coloured by currentColor */
+.i { display: inline-block; flex: none; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { rotate: 360deg; } }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
