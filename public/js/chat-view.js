@@ -136,8 +136,22 @@ function CodeGraphButton({ project }) {
   if (!s?.enabled || !(s.changed || !st?.graph || indexing || s.pending)) return null;
   const state = !st?.graph ? (st?.status === 'failed' ? `Failed: ${st.error}` : 'Not indexed yet')
     : indexing ? 'Indexing…' : `Indexed ${ago(st.indexedAt)}${s.changed ? ', files changed since' : ''}`;
-  const action = s.pending ? `Waiting for an admin to approve ${s.pending.who}'s request` : `Click to ${st?.graph ? 'index it again' : 'index it'}${s.direct ? '' : ' (an admin approves)'}`;
+  const action = s.pending ? `Waiting for an admin to approve ${s.pending.who}'s request`
+    : indexing && s.direct ? 'Click to stop it'
+    : `Click to ${st?.graph ? 'index it again' : 'index it'}${s.direct ? '' : ' (an admin approves)'}`;
   const click = guarded(async () => {
+    // An index taking too long: an admin may stop it (which deletes the graph, so turns stop waiting for it).
+    if (indexing && s.direct) {
+      const stop = await confirmDialog({
+        title: `Stop indexing ${project.name}?`,
+        message: 'The index stops and the code graph is deleted: chats go back to grep and file reads, and a turn waiting for it starts. Index it again any time.',
+        confirmText: 'Stop and delete', danger: true,
+      });
+      if (!stop) return;
+      await api(`/api/projects/${project.id}/code-memory/index`, { method: 'DELETE' });
+      toast('Indexing stopped, code graph deleted');
+      return load();
+    }
     if (s.pending || indexing) return toast(s.pending ? 'Already asked: waiting for an admin in Approvals' : 'Already indexing');
     const ok = await confirmDialog({
       title: `${st?.graph ? 'Reindex' : 'Index'} the code graph of ${project.name}?`,

@@ -74,13 +74,16 @@ function CodeMemoryCard() {
   const [s, setS] = useState(null);
   const [result, setResult] = useState(null);
   const load = () => api('/api/settings/code-memory').then(setS).catch((e) => toast(e.message, 'err'));
+  // The projects' indexes only: the settings fields stay as edited until Save.
+  const loadIndexes = () => api('/api/settings/code-memory')
+    .then((r) => setS((cur) => ({ ...cur, projects: r.projects, active: r.active, tools: r.tools }))).catch((e) => toast(e.message, 'err'));
   useEffect(() => { load(); }, []);
   // While an index runs, look again every few seconds.
   const busy = s?.projects.some((p) => p.index?.status === 'indexing');
-  useEffect(() => { if (!busy) return undefined; const t = setInterval(load, 3000); return () => clearInterval(t); }, [busy]);
+  useEffect(() => { if (!busy) return undefined; const t = setInterval(loadIndexes, 3000); return () => clearInterval(t); }, [busy]);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
   const save = guarded(async (enabled = s.enabled) => {
-    setS(await api('/api/settings/code-memory', { method: 'PUT', body: { enabled, command: s.command, cacheDir: s.cacheDir, runtimeDir: s.runtimeDir, hooks: s.hooks } }));
+    setS(await api('/api/settings/code-memory', { method: 'PUT', body: { enabled, command: s.command, cacheDir: s.cacheDir, runtimeDir: s.runtimeDir, hooks: s.hooks, autoReindex: s.autoReindex } }));
     toast(enabled ? 'Code memory saved: projects are being indexed' : 'Code memory saved');
   });
   const test = async () => {
@@ -89,7 +92,19 @@ function CodeMemoryCard() {
   };
   const reindex = guarded(async (id) => {
     await api(`/api/settings/code-memory/projects/${encodeURIComponent(id)}/index`, { method: 'POST' });
-    await load();
+    await loadIndexes();
+  });
+  const drop = guarded(async (p) => {
+    const indexing = p.index?.status === 'indexing';
+    const ok = await confirmDialog({
+      title: `${indexing ? 'Stop indexing and delete' : 'Delete'} the code graph of ${p.name}?`,
+      message: 'Its chats go back to grep and file reads, and turns no longer reindex it. Index it again any time.',
+      confirmText: indexing ? 'Stop and delete' : 'Delete', danger: true,
+    });
+    if (!ok) return;
+    await api(`/api/settings/code-memory/projects/${encodeURIComponent(p.id)}/index`, { method: 'DELETE' });
+    toast('Code graph deleted');
+    await loadIndexes();
   });
   if (s == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
   return html`<section class="form-card">
@@ -110,6 +125,9 @@ function CodeMemoryCard() {
     <label class="check small"><input type="checkbox" checked=${s.hooks} onChange=${(e) => setS({ ...s, hooks: e.currentTarget.checked })} />
       Hooks: next to each search (Claude Code: Grep, Glob, Bash; Codex: rg or grep in its shell), the agent also sees the
       matching symbols from the graph. Codex runs it with --dangerously-bypass-hook-trust, never in a repository with its own .codex hooks</label>
+    <label class="check small"><input type="checkbox" checked=${s.autoReindex} onChange=${(e) => setS({ ...s, autoReindex: e.currentTarget.checked })} />
+      Reindex before each turn: a project whose files changed since its index is reindexed first, and the turn waits for it.
+      Off, indexes are redone only with Reindex (here or the brain button in a chat)</label>
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${() => save()}>Save<//>
       <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.command}>Test binary<//>
@@ -122,11 +140,17 @@ function CodeMemoryCard() {
         <div><strong>${p.name}</strong>
           <div class="dim small">${!p.index ? 'Not indexed yet'
             : p.index.status === 'indexing' ? html`<${Spinner} /> Indexing…`
-            : p.index.status === 'failed' ? html`<span class="note err">Failed: ${p.index.error}</span>`
+            : p.index.status === 'failed' && !p.index.graph ? html`<span class="note err">Failed: ${p.index.error}</span>`
             : html`${p.index.nodes.toLocaleString()} nodes, ${p.index.edges.toLocaleString()} edges · indexed ${ago(p.index.indexedAt)}${
-              p.changed ? html` · <span class="pill warn">files changed since</span>` : ''}`}</div></div>
-        <button class=${cx('btn sm', p.changed || !p.index?.graph ? '' : 'ghost')} disabled=${p.index?.status === 'indexing'} onClick=${() => reindex(p.id)}>
-          <${Icon} name="refresh-cw" />${p.index?.graph ? 'Reindex' : 'Index'}</button>
+              p.changed ? html` · <span class="pill warn">files changed since</span>` : ''}${
+              p.index.status === 'failed' ? html`<div class="note err">Last reindex failed: ${p.index.error}</div>` : ''}`}</div></div>
+        <div class="row" style="flex-shrink: 0">
+          <button class=${cx('btn sm', p.changed || !p.index?.graph ? '' : 'ghost')} disabled=${p.index?.status === 'indexing'} onClick=${() => reindex(p.id)}>
+            <${Icon} name="refresh-cw" />${p.index?.graph ? 'Reindex' : 'Index'}</button>
+          <button class="icon-btn sm danger" style=${p.index ? '' : 'visibility: hidden'} disabled=${!p.index} aria-hidden=${!p.index}
+            title=${p.index?.status === 'indexing' ? 'Stop indexing and delete the graph' : 'Delete the graph'}
+            aria-label="Delete the code graph" onClick=${() => drop(p)}><${Icon} name="trash-2" /></button>
+        </div>
       </div>`)}
     </div>`}
   </section>`;

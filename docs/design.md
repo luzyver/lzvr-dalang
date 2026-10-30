@@ -252,10 +252,15 @@ file by file. Give the path of the CBM binary (a release from its GitHub page; n
   files changed since, Dalang reindexes it first and the agent starts only once that is done (the chat shows a note;
   a cancel stops the wait). A reindex that fails is noted too, and the turn goes on with the previous graph. Nothing
   else reindexes on its own (not pulls, edits or time passing). A chat with its own worktree reads the graph of the
-  project's main folder, so only changes there count.
-- **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), also
-  when the project goes while its index still runs. One CBM cannot delete right then (code memory off) is deleted
-  when the next CBM session starts.
+  project's main folder, so only changes there count. **Reindex before each turn** in the tab turns this off: graphs
+  then stay as they are until someone clicks Reindex.
+- **Deleting an index**: the trash button next to a project in the tab (the owner), or the brain button in a chat while
+  it indexes (an admin), deletes the project's graph, drops an index of it waiting in the queue, and stops one running
+  (by restarting the CBM session, so chats keep their tools). A turn waiting for that index starts without it, and
+  turns stop reindexing the project until it is indexed again.
+- **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), and
+  stops its index if one still runs. One CBM cannot delete right then (code memory off) is deleted when the next CBM
+  session starts.
 - **Chats query it through `/mcp`**, as `code_search_graph`, `code_trace_path`, `code_get_code_snippet`,
   `code_get_architecture`, `code_query_graph` and the other read tools, on their own chat's project (or another project
   their user may open, by `project_id`). CBM itself would show every indexed repository to anyone; through the gateway
