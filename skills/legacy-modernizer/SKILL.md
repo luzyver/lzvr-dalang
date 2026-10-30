@@ -22,7 +22,7 @@ metadata:
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Keep code modular: small files, one responsibility each; match the surrounding code's naming and comment density.
 - Related skills it names that are installed here: `devops-engineer`.
-- `test-master` is not installed here; use the Dalang `test-driven-development` skill instead.
+- Use `test-master` for test strategy, coverage and E2E suites, and `test-driven-development` for the red-green workflow while coding.
 - Not installed here: `golden-master`; use the project's own conventions and the installed Dalang skills instead.
 - Commands that change a live system are hard to undo: deploys, database migrations (`DROP COLUMN`, bulk backfills), traffic shifts and cutovers. Show the plan or a dry run first and ask before running it, unless the person authorized exactly this; on servers run it only through ssh_exec.
 - Every traffic shift or cutover step needs the person's approval, a written rollback trigger (for example error rate or p95 latency above baseline) and a tested rollback path before it starts.

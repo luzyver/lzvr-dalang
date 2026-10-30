@@ -353,4 +353,4 @@ secret-scan:
 
 - `github-actions-templates` - For GitHub Actions integration
 - `gitlab-ci-patterns` - For GitLab CI integration
-- `deployment-pipeline-design` - For pipeline architecture
+- `devops-engineer` - For pipeline architecture and deployment strategy

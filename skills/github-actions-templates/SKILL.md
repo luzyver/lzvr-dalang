@@ -326,5 +326,5 @@ jobs:
 ## Related Skills
 
 - `gitlab-ci-patterns` - For GitLab CI workflows
-- `deployment-pipeline-design` - For pipeline architecture
+- `devops-engineer` - For pipeline architecture and deployment strategy
 - `secrets-management` - For secrets handling
