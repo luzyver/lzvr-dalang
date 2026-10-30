@@ -200,9 +200,15 @@ export class CodeMemory {
     } catch { return EMPTY; }
   }
 
-  /** Save the settings; a new binary or folder starts a new CBM session (indexing nothing: that is asked per project). */
+  /**
+   * Save the settings. Turning it on or off, a new binary or folder, or saving while it is not running starts a new CBM
+   * session (indexing nothing: that is asked per project); other settings leave the session, and an index it runs, be.
+   */
   async save(s: CodeMemorySettings): Promise<void> {
+    const prev = this.settings();
     this.store.setKv(KEY, JSON.stringify(s));
+    const same = prev.enabled === s.enabled && prev.command === s.command && prev.cacheDir === s.cacheDir && prev.runtimeDir === s.runtimeDir;
+    if (same && (!s.enabled || this.active)) return;
     await this.disconnect();
     if (s.enabled) await this.connection().catch(() => {}); // reads the tool list, so chats get the tools
   }
@@ -276,7 +282,7 @@ export class CodeMemory {
     // A project deleted, or its index deleted, while its index ran (see drop) keeps no state, and the graph the index
     // just built goes too.
     const gone = () => !this.store.getProject(project.id) || this.epoch(project.id) !== epoch;
-    if (gone()) return; // while queued
+    if (gone() || !this.settings().enabled) return; // while queued, or turned off meanwhile
     const prev = this.state(project.id);
     const base: IndexState = prev ?? { status: 'indexing', graph: '', nodes: 0, edges: 0, indexedAt: 0, fingerprint: null, error: '' };
     if (!existsSync(project.path)) {
@@ -300,6 +306,8 @@ export class CodeMemory {
       });
     } catch (e) {
       if (gone()) return;
+      // Stopped by turning code memory off: not a failure, the index stays as it was.
+      if (!this.settings().enabled) { if (prev) this.setState(project.id, prev); else this.store.deleteKv(stateKey(project.id)); return; }
       this.setState(project.id, { ...base, status: 'failed', error: (e as Error).message.slice(0, 1000) });
     }
   }

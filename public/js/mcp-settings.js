@@ -140,13 +140,17 @@ function CodeMemoryCard() {
         <div><strong>${p.name}</strong>
           <div class="dim small">${!p.index ? 'Not indexed yet'
             : p.index.status === 'indexing' ? html`<${Spinner} /> Indexing…`
-            : p.index.status === 'failed' ? html`<span class="note err">Failed: ${p.index.error}</span>`
+            : p.index.status === 'failed' && !p.index.graph ? html`<span class="note err">Failed: ${p.index.error}</span>`
             : html`${p.index.nodes.toLocaleString()} nodes, ${p.index.edges.toLocaleString()} edges · indexed ${ago(p.index.indexedAt)}${
-              p.changed ? html` · <span class="pill warn">files changed since</span>` : ''}`}</div></div>
-        <button class=${cx('btn sm', p.changed || !p.index?.graph ? '' : 'ghost')} disabled=${p.index?.status === 'indexing'} onClick=${() => reindex(p.id)}>
-          <${Icon} name="refresh-cw" />${p.index?.graph ? 'Reindex' : 'Index'}</button>
-        ${p.index && html`<button class="icon-btn sm danger" title=${p.index.status === 'indexing' ? 'Stop indexing and delete the graph' : 'Delete the graph'}
-          aria-label="Delete the code graph" onClick=${() => drop(p)}><${Icon} name="trash-2" /></button>`}
+              p.changed ? html` · <span class="pill warn">files changed since</span>` : ''}${
+              p.index.status === 'failed' ? html`<div class="note err">Last reindex failed: ${p.index.error}</div>` : ''}`}</div></div>
+        <div class="row" style="flex-shrink: 0">
+          <button class=${cx('btn sm', p.changed || !p.index?.graph ? '' : 'ghost')} disabled=${p.index?.status === 'indexing'} onClick=${() => reindex(p.id)}>
+            <${Icon} name="refresh-cw" />${p.index?.graph ? 'Reindex' : 'Index'}</button>
+          <button class="icon-btn sm danger" style=${p.index ? '' : 'visibility: hidden'} disabled=${!p.index} aria-hidden=${!p.index}
+            title=${p.index?.status === 'indexing' ? 'Stop indexing and delete the graph' : 'Delete the graph'}
+            aria-label="Delete the code graph" onClick=${() => drop(p)}><${Icon} name="trash-2" /></button>
+        </div>
       </div>`)}
     </div>`}
   </section>`;

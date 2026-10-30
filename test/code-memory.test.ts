@@ -337,6 +337,25 @@ describe('code memory', () => {
     await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '', autoReindex: true });
     expect(await t.codeMemory.refresh(p)).toBe('ready');
     expect(indexes()).toBe(before + 1);
+    expect(t.hold.closed).toBe(0); // saving other settings left the CBM session be
+  });
+
+  it('keeps an index as it was when code memory is turned off while it runs or waits', async () => {
+    const t = await boot();
+    mkdirSync(join(t.root, 'other'));
+    const p = t.store.createProject('proj', join(t.root, 'proj'));
+    const q = t.store.createProject('other', join(t.root, 'other'));
+    await t.turnOn();
+    const ready = t.codeMemory.state(p.id);
+    t.hold.index = new Promise(() => {});
+    void t.codeMemory.index(p);
+    void t.codeMemory.index(q); // waits behind it
+    await until(() => t.codeMemory.state(p.id)?.status === 'indexing');
+    await t.settings({ enabled: false, command: 'cbm', cacheDir: '', runtimeDir: '' });
+    expect(t.hold.closed).toBe(1);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(t.codeMemory.state(p.id)).toEqual(ready); // not "failed"
+    expect(t.codeMemory.state(q.id)?.status).toBe('ready');
   });
 
   it('deletes the graph of a project deleted while code memory was off once it is on again', async () => {
