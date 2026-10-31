@@ -397,6 +397,20 @@ export async function remoteBranch(cwd: string, name: string): Promise<string | 
   return (await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/remotes/${main}/${name}`]).then(() => true, () => false)) ? `${main}/${name}` : null;
 }
 
+/** Whether `ref` (a full name such as `refs/heads/main`) exists as it is: no revision expressions like `main~1`. */
+const refExists = (cwd: string, ref: string) => git(cwd, ['show-ref', '--verify', '--quiet', ref]).then(() => true, () => false);
+
+/**
+ * What to compare against for branch `name`: its copy on the default remote when there is one, else the local branch.
+ * Null if neither, or if `name` is not a branch name at all (`main~1`, `@{-1}`, `-x`).
+ */
+export async function branchRef(cwd: string, name: string): Promise<{ name: string; ref: string } | null> {
+  if (name.startsWith('-') || !(await git(cwd, ['check-ref-format', `refs/heads/${name}`]).then(() => true, () => false))) return null;
+  const { main } = await remotesOf(cwd);
+  if (main && (await refExists(cwd, `refs/remotes/${main}/${name}`))) return { name, ref: `${main}/${name}` };
+  return (await refExists(cwd, `refs/heads/${name}`)) ? { name, ref: name } : null;
+}
+
 /** Where the checked-out branch syncs from: its upstream, else the same name on the default remote. Null if neither. */
 export async function upstreamRef(cwd: string): Promise<string | null> {
   const u = (await git(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).catch(() => '')).trim();

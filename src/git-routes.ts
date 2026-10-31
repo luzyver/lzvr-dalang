@@ -137,19 +137,34 @@ Use conventional commit types: feat, fix, chore, refactor, docs, style, test, pe
 - Omit sections that are not relevant to the change
 - Title must be 70 characters or fewer`;
 
-/** What a chat's Merge Request would go from and into. `base.name` is null when there is no branch to open one into. */
-export interface MrTarget { branch: string; base: { name: string | null; ref: string } }
+/**
+ * What a chat's Merge Request would go from and into. `base.name` is null when there is no branch to open one into.
+ * `usual` is the branch it would go into without a pick (see mrTarget), `picked` whether the chat goes into another one,
+ * `missing` whether that branch is not in this repository (nor its remote-tracking copy), so nothing compares against it.
+ */
+export interface MrTarget { branch: string; base: { name: string | null; ref: string }; usual: string | null; picked: boolean; missing: boolean }
+
+/** The Merge Request this chat opened for `branch`; rows from before `pr_branch` existed are worktree chats only. */
+export const prFor = (conv: Conversation, branch: string) =>
+  (conv.pr_branch ? conv.pr_branch === branch : !!conv.worktree) ? conv.pr_url : null;
 
 /**
  * A worktree chat proposes its own branch into the branch it started from. A plain chat proposes whatever branch the
- * project folder has checked out into the remote's default branch, unless that is the default branch itself.
+ * project folder has checked out into the remote's default branch, unless that is the default branch itself. A branch
+ * picked for the chat (`mr_base`) goes first while it exists and is not the branch proposed; once a Merge Request was
+ * opened into it, it stays the target even when its ref is gone here (the forge still has it).
  */
 export async function mrTarget(conv: Conversation, project: Project): Promise<MrTarget | null> {
-  if (conv.worktree && conv.branch) return { branch: conv.branch, base: { name: conv.base_branch, ref: conv.base_branch ?? 'HEAD' } };
-  const branch = await git.currentBranch(project.path);
+  const own = !!(conv.worktree && conv.branch);
+  const branch = own ? conv.branch! : await git.currentBranch(project.path);
   if (!branch) return null;
-  const base = await git.defaultBranch(project.path);
-  return base && base.name !== branch ? { branch, base } : null;
+  const usual = own ? { name: conv.base_branch, ref: conv.base_branch ?? 'HEAD' } : await git.defaultBranch(project.path);
+  const chosen = conv.mr_base && conv.mr_base !== branch ? conv.mr_base : null;
+  const found = chosen ? await git.branchRef(project.path, chosen) : null;
+  const kept = chosen && !found && prFor(conv, branch) ? { name: chosen, ref: chosen } : null;
+  const base = found ?? kept ?? usual;
+  if (!base || base.name === branch) return null;
+  return { branch, base, usual: usual?.name ?? null, picked: base.name !== usual?.name, missing: !!kept };
 }
 
 /**
@@ -242,10 +257,6 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   const aheadOf = async (repo: string, t: MrTarget) =>
     Number((await git.git(repo, ['rev-list', '--count', `${t.base.ref}..${t.branch}`]).catch(() => '0')).trim()) || 0;
 
-  /** The Merge Request this chat opened for `branch`; rows from before `pr_branch` existed are worktree chats only. */
-  const prFor = (conv: Conversation, branch: string) =>
-    (conv.pr_branch ? conv.pr_branch === branch : !!conv.worktree) ? conv.pr_url : null;
-
   const gitFailed = (reply: Reply, e: unknown) => {
     if (e instanceof git.GitError) return reply.code(400).send({ error: e.message });
     throw e;
@@ -273,9 +284,11 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const mr = t && {
       branch: t.branch, base: t.base.name, ahead: await aheadOf(c.project.path, t), pr: prFor(c.conv, t.branch),
       behind: base ? Number((await git.git(c.cwd, ['rev-list', '--count', `HEAD..${base.ref}`]).catch(() => '0')).trim()) || 0 : 0,
-      baseRef: base?.ref ?? null,
+      baseRef: base?.ref ?? null, usual: t.usual, picked: t.picked, baseMissing: t.missing,
     };
-    return { ...s, worktree: c.conv.worktree ? mr : null, mr };
+    // No target (a plain chat on the default branch): the branch it could still propose into a picked one.
+    const pickFrom = !t && !c.conv.worktree ? s.branch : null;
+    return { ...s, worktree: c.conv.worktree ? mr : null, mr, mrPick: pickFrom && { branch: pickFrom, usual: (await git.defaultBranch(c.project.path))?.name ?? null } };
   });
 
   /**
@@ -459,6 +472,35 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     }
   });
 
+  // Pick the branch this chat's Merge Request goes into: a local branch or one on the default remote. An empty `base`
+  // goes back to the usual one (see mrTarget). Refused while this branch's Merge Request is open (409).
+  app.put<{ Params: { id: string }; Body: { base: string } }>('/api/conversations/:id/git/mr-base', {
+    schema: { body: { type: 'object', required: ['base'], additionalProperties: false, properties: { base: { type: 'string', maxLength: 200 } } } },
+  }, async (req, reply) => {
+    const c = load(req.params.id, reply);
+    if (!c) return;
+    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
+    if (!(await git.isRepo(c.project.path))) return reply.code(400).send({ error: 'not a git repository' });
+    const name = req.body.base.trim();
+    const branch = c.conv.worktree && c.conv.branch ? c.conv.branch : await git.currentBranch(c.project.path);
+    if (name) {
+      if (name === branch) return reply.code(400).send({ error: `${name} is the branch the Merge Request comes from` });
+      if (!(await git.branchRef(c.project.path, name))) return reply.code(400).send({ error: `no such branch: ${name}` });
+    }
+    // An open Merge Request keeps the branch it was opened into; once merged or closed, the next one may go elsewhere.
+    const url = branch && prFor(c.conv, branch);
+    if (url) {
+      const cli = prCli(url);
+      const state = cli && (await prStatus(cli.forge, cli.command, c.cwd, url).then((p) => p.state, () => null));
+      if (state !== 'merged' && state !== 'closed') {
+        return reply.code(409).send({ error: `a Merge Request is already open for ${branch}: change its target on the forge, or merge or close it first` });
+      }
+    }
+    store.setMrBase(c.conv.id, name || null);
+    const t = await mrTarget(store.getConversation(c.conv.id)!, c.project);
+    return { base: t?.base.name ?? null, usual: t?.usual ?? null, picked: t?.picked ?? false };
+  });
+
   // Push the chat's branch and open a Merge Request (GitLab, via `glab`) or pull request (GitHub, via `gh`) from it into
   // its target (see mrTarget), with the server's own CLI login. Without a title, the last commit's subject.
   // The body is optional, so it is checked here rather than by a schema.
@@ -497,6 +539,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       const command = (forge === 'github' ? cfg.ghCommand : cfg.glabCommand) ?? [forge === 'github' ? 'gh' : 'glab'];
       const pr = await createPullRequest({ forge, command, cwd: c.cwd, repo, branch, base, title, body: rawBody.trim() });
       store.setPrUrl(c.conv.id, pr.url, branch);
+      store.setMrBase(c.conv.id, base); // the target stays what it was opened into, even if the usual one changes
       return { ...pr, forge, push };
     } catch (e) { return gitFailed(reply, e); }
   });

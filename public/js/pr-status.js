@@ -23,12 +23,13 @@ ${s.checks.filter((c) => c.state === 'fail').map((c) => `- ${c.name}${c.url ? ` 
 
 Find out why (run the same checks locally where you can) and fix it.`;
 
-export function PrStatus({ id, url, onDone }) {
+/** `onState`: told the state ('open', 'draft', 'merged', 'closed') each time it is read, null when it could not be. */
+export function PrStatus({ id, url, onDone, onState }) {
   const [s, setS] = useState(null);
   const [error, setError] = useState('');
   const [method, setMethod] = useState('squash');
   const [comments, setComments] = useState(false);
-  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => { setS(r); setError(''); }, (e) => setError(e.message));
+  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => { setS(r); setError(''); onState?.(r.state); }, (e) => { setError(e.message); onState?.(null); });
   useEffect(() => { setS(null); load(); }, [id, url]);
 
   const merge = guarded(async () => {
@@ -37,7 +38,9 @@ export function PrStatus({ id, url, onDone }) {
       message: `${s.title}\n\n${method === 'squash' ? 'All its commits become one commit' : method === 'rebase' ? 'Its commits are replayed onto the target branch' : 'A merge commit joins it in'}.`,
       confirmText: 'Merge',
     })) return;
-    setS(await api(`/api/conversations/${id}/git/pull-request/merge`, { method: 'POST', body: { method } }));
+    const r = await api(`/api/conversations/${id}/git/pull-request/merge`, { method: 'POST', body: { method } });
+    setS(r);
+    onState?.(r.state);
     await onDone('Merged');
   });
 

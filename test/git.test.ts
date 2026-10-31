@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -26,7 +26,7 @@ async function gitProject(sandbox = 'workspace-write') {
   const project = (await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: 'proj', path: 'proj', sandbox } })).json();
   const chat = async (worktree: boolean) =>
     t.app.inject({ method: 'POST', url: `/api/projects/${project.id}/conversations`, headers: AUTH, payload: { worktree } });
-  const call = (method: 'GET' | 'POST', url: string, payload?: unknown, headers: Record<string, string> = AUTH) =>
+  const call = (method: 'GET' | 'POST' | 'PUT', url: string, payload?: unknown, headers: Record<string, string> = AUTH) =>
     t.app.inject({ method, url, headers, payload: payload as Record<string, unknown> | undefined });
   return { ...t, repo, project, chat, call };
 }
@@ -653,7 +653,7 @@ describe('Merge Requests on GitHub / GitLab', () => {
 
     const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
     expect(s.worktree).toBeNull();
-    expect(s.mr).toEqual({ branch: 'feature/x', base: 'main', ahead: 1, behind: 0, baseRef: 'origin/main', pr: null });
+    expect(s.mr).toEqual({ branch: 'feature/x', base: 'main', ahead: 1, behind: 0, baseRef: 'origin/main', pr: null, usual: 'main', picked: false, baseMissing: false });
     const prompt = (await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`)).json().description as string;
     expect(prompt).toContain('merging branch feature/x into main');
     expect(prompt).toContain('+x');
@@ -666,6 +666,63 @@ describe('Merge Requests on GitHub / GitLab', () => {
     // on another branch the link is not this branch's Merge Request
     sh(t.repo, 'checkout', '-q', '-b', 'feature/y');
     expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ branch: 'feature/y', pr: null });
+  });
+
+  it('opens one into a branch picked for the chat, and goes back to the usual one', async () => {
+    const t = await forgeProject();
+    sh(t.repo, 'branch', 'develop');
+    sh(t.repo, 'push', '-q', 'origin', 'develop');
+    const conv = (await t.chat(true)).json();
+    writeFileSync(join(conv.worktree, 'b.txt'), 'b\n');
+    sh(conv.worktree, 'add', '.');
+    sh(conv.worktree, 'commit', '-q', '-m', 'feat: Add b');
+    const put = (base: string) => t.call('PUT', `/api/conversations/${conv.id}/git/mr-base`, { base });
+
+    expect((await put('nope')).json().error).toMatch(/no such branch/);
+    expect((await put('develop~1')).json().error).toMatch(/no such branch/); // a revision, not a branch
+    expect((await put('@{-1}')).json().error).toMatch(/no such branch/);
+    expect((await put(conv.branch)).statusCode).toBe(400);
+    expect((await put('develop')).json()).toEqual({ base: 'develop', usual: 'main', picked: true });
+    expect((await put('')).json()).toEqual({ base: 'main', usual: 'main', picked: false });
+    // before a Merge Request is opened, a picked branch that is gone no longer counts
+    sh(t.repo, 'branch', 'gone');
+    await put('gone');
+    sh(t.repo, 'branch', '-D', 'gone');
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ base: 'main', picked: false, baseMissing: false });
+    await put('develop');
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ base: 'develop', baseRef: 'origin/develop', ahead: 1, picked: true });
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`)).json().description).toContain(`merging branch ${conv.branch} into develop`);
+    await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, { title: 'feat: Add b' });
+    expect(t.calls()[0].args.slice(0, 6)).toEqual(['pr', 'create', '--head', conv.branch, '--base', 'develop']);
+
+    // while it is open its target stays; once merged the next one may go elsewhere
+    const open = await put('');
+    expect(open.statusCode).toBe(409);
+    expect(open.json().error).toMatch(/already open/);
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ base: 'develop', picked: true });
+    // nor when its ref is gone here: the forge still has it
+    sh(t.repo, 'branch', '-D', 'develop');
+    sh(t.repo, 'update-ref', '-d', 'refs/remotes/origin/develop');
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json().mr).toMatchObject({ base: 'develop', picked: true, baseMissing: true });
+    appendFileSync(join(t.base, 'gh.log'), `${JSON.stringify({ args: ['pr', 'merge'], merge: true })}\n`);
+    expect((await put('')).json()).toEqual({ base: 'main', usual: 'main', picked: false });
+  });
+
+  it('opens one from a plain chat on the default branch into a picked branch', async () => {
+    const t = await forgeProject();
+    sh(t.repo, 'branch', 'develop');
+    sh(t.repo, 'push', '-q', 'origin', 'develop');
+    const conv = (await t.chat(false)).json();
+    writeFileSync(join(t.repo, 'm.txt'), 'm\n');
+    await t.call('POST', `/api/conversations/${conv.id}/git/commit`, { message: 'fix: On main' });
+    const s = (await t.call('GET', `/api/conversations/${conv.id}/git`)).json();
+    expect(s.mr).toBeNull();
+    expect(s.mrPick).toEqual({ branch: 'main', usual: 'main' });
+
+    expect((await t.call('PUT', `/api/conversations/${conv.id}/git/mr-base`, { base: 'develop' })).json()).toEqual({ base: 'develop', usual: 'main', picked: true });
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`)).json()).toMatchObject({ mr: { branch: 'main', base: 'develop', ahead: 1 }, mrPick: null });
+    await t.call('POST', `/api/conversations/${conv.id}/git/pull-request`, { title: 'fix: On main' });
+    expect(t.calls()[0].args.slice(0, 6)).toEqual(['pr', 'create', '--head', 'main', '--base', 'develop']);
   });
 
   it('reads the host and repository from a remote address', () => {
