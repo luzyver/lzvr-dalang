@@ -96,6 +96,8 @@ export interface Conversation {
   /** The Merge Request / pull request this chat opened last, or null, and the branch it is for (null in older rows). */
   pr_url: string | null;
   pr_branch: string | null;
+  /** The branch picked for this chat's Merge Request to go into, or null for the usual one (see mrTarget). */
+  mr_base: string | null;
   /** The chat whose agent created this one over MCP (a sub-agent), or '' when a person or an outside client did. */
   parent: string;
   /** What the chat is for: '' for a normal one, 'reviewer' for the automatic reviewer of its parent (see reviewer.ts). */
@@ -226,6 +228,7 @@ export class Store {
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
+    this.ensureColumn('conversations', 'mr_base', 'TEXT');
     this.ensureColumn('conversations', 'parent', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'role', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('users', 'email', 'TEXT');
@@ -464,6 +467,7 @@ export class Store {
   }
   setBranch(id: string, branch: string): void { this.run('UPDATE conversations SET branch=? WHERE id=?', branch, id); }
   setPrUrl(id: string, url: string, branch: string): void { this.run('UPDATE conversations SET pr_url=?, pr_branch=? WHERE id=?', url, branch, id); }
+  setMrBase(id: string, base: string | null): void { this.run('UPDATE conversations SET mr_base=? WHERE id=?', base, id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
   setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }

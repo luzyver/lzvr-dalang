@@ -16,6 +16,7 @@ import { ConflictMenu, isConflict, SyncBanners } from './git-sync.js';
 import { Stashes } from './git-stash.js';
 import { Checkpoints } from './checkpoints.js';
 import { PrStatus } from './pr-status.js';
+import { MrBase, MrPick, targetFree } from './mr-base.js';
 
 /** How the push after a commit or Merge Request went. */
 const pushNote = (p) => (!p ? '' : p.error ? ` · push failed: ${p.error}` : p.pushed ? ` · pushed to ${p.pushed}` : ' · not pushed (no remote)');
@@ -281,6 +282,11 @@ function MergeRequest({ id, s, creds, onCheck, onDone }) {
   const w = s.mr;
   const [mrText, setMrText] = useState('');
   const [description, setDescription] = useState('');
+  const [picking, setPicking] = useState(false);
+  // The forge's state of the Merge Request linked here (undefined until read, null if it could not be): while it is
+  // open, or not known, its target stays; once merged or closed another one may be opened, into another branch too.
+  const [prState, setPrState] = useState(undefined);
+  const free = targetFree(w.pr, prState);
   const generate = guarded(async () => {
     const r = await api(`/api/conversations/${id}/git/mr-description`, { method: 'POST' });
     setDescription(r.description);
@@ -295,20 +301,28 @@ function MergeRequest({ id, s, creds, onCheck, onDone }) {
     await onDone();
   });
   return html`<section class="branch-card">
-    <div class="branch-line"><${Icon} name="git-branch" /><code>${w.branch}</code><${Icon} name="chevron-right" class="tiny dim" /><code>${w.base || 'detached HEAD'}</code></div>
+    <div class="branch-line"><${Icon} name="git-branch" /><code>${w.branch}</code><${Icon} name="chevron-right" class="tiny dim" />
+      ${!free ? html`<code>${w.base || 'detached HEAD'}</code>`
+        : html`<button class="btn ghost sm branch-btn" title="Pick the branch the Merge Request goes into" onClick=${() => setPicking(true)}>
+          <code>${w.base || 'detached HEAD'}</code><${Icon} name="chevron-down" class="tiny" /></button>`}
+      ${w.picked && html`<span class="chip" title=${`Picked for this chat; usually ${w.usual || 'none'}`}>picked</span>`}
+      ${w.baseMissing && html`<span class="chip warn" title=${`${w.base} is not in this repository (nor fetched from the remote): fetch, or pick another branch once the Merge Request is closed`}>not here</span>`}</div>
     <div class="dim small">${s.worktree ? 'Own worktree' : 'Project folder'} · ${w.ahead ? `${plural(w.ahead, 'commit')} not in ${w.base || 'the project folder'} yet` : 'nothing to propose yet'}</div>
     ${w.pr && html`<a class="mr-link" href=${w.pr} target="_blank" rel="noopener noreferrer"><${Icon} name="git-pull-request" /><span>${w.pr}</span><${Icon} name="external-link" class="tiny" /></a>`}
-    ${w.pr && html`<${PrStatus} id=${id} url=${w.pr} onDone=${onDone} />`}
-    ${w.ahead > 0 && !w.pr && html`<${MrCredentials} c=${creds} onCheck=${onCheck} />`}
+    ${w.pr && html`<${PrStatus} id=${id} url=${w.pr} onDone=${onDone} onState=${setPrState} />`}
+    ${w.ahead > 0 && free && html`<${MrCredentials} c=${creds} onCheck=${onCheck} />`}
     ${w.ahead > 0 && html`<div class="mr-box">
       <textarea rows="4" value=${mrText} onInput=${(e) => setMrText(e.currentTarget.value)}
         placeholder="Merge Request title on the first line, description below (empty title: the last commit's subject)"></textarea>
       <div class="row">
-        ${!w.pr && w.base && html`<${AsyncButton} class="btn primary sm" icon="git-pull-request" onClick=${create}>Create Merge Request<//>`}
+        ${free && w.base && html`<${AsyncButton} class="btn primary sm" icon="git-pull-request" onClick=${create}>Create Merge Request<//>`}
         <${AsyncButton} class="btn ghost sm" icon="sparkles" busyText="Generating…" title="Let the agent describe what this branch brings" onClick=${generate}>Generate description<//>
         ${description && html`<button class="btn ghost sm" onClick=${() => copyText(description, 'MR description copied')}><${Icon} name="copy" />Copy Markdown</button>`}
       </div>
     </div>`}
+    <${Modal} open=${picking} label="Merge into" class="dialog" onClose=${() => setPicking(false)}>
+      ${picking && html`<${MrBase} id=${id} branch=${w.branch} base=${w.base} usual=${w.usual} picked=${w.picked} onClose=${() => setPicking(false)} onDone=${onDone} />`}
+    <//>
   </section>`;
 }
 
@@ -555,6 +569,7 @@ export function ChangesPane({ id }) {
     <//>
     <${SyncBanners} id=${id} s=${s} after=${after} />
     ${s.mr && html`<${MergeRequest} key=${s.mr.branch} id=${id} s=${s} creds=${creds} onCheck=${checkCreds} onDone=${after} />`}
+    ${!s.mr && s.mrPick && html`<${MrPick} id=${id} pick=${s.mrPick} onDone=${after} />`}
     ${!files.length ? html`<${Empty} icon="circle-check" title="No uncommitted changes">Everything in this folder is committed.<//>` : html`
       <section class="file-list">
         <div class="file-list-head">
