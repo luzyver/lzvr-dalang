@@ -1,4 +1,7 @@
-import { changedBetween, diffBetween, type GitFile } from './git.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { changedBetween, diffBetween, git, type GitFile } from './git.js';
 import type { Backend } from './util.js';
 
 /**
@@ -27,8 +30,22 @@ export function promptReview(prompt: string): { key: string; round: number } | n
 /** The flag on a reviewer's own chat (conversations.role). */
 export const REVIEWER_ROLE = 'reviewer';
 export const REVIEWER_TITLE = 'Reviewer';
+/**
+ * Where a reviewer finds the whole change: a file it reads like any other. Its shell is read-only, and both backends
+ * may refuse `git diff` there (Claude Code cannot ask; Codex blocks it by policy), so it never needs git itself.
+ */
+export const reviewDiffDir = (reviewerId: string) => join(tmpdir(), 'dalang-review', reviewerId);
 
-/** How much of the diff goes into the review prompt; the reviewer can read the rest itself. */
+/** Writes the whole diff between two checkpoints for the reviewer (each round overwrites the last); its path. */
+export async function writeChangeFile(cwd: string, base: string, after: string, reviewerId: string): Promise<string> {
+  const dir = reviewDiffDir(reviewerId);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'change.diff');
+  writeFileSync(file, await git(cwd, ['diff', '--no-color', '-M', base, after, '--']));
+  return file;
+}
+
+/** How much of the diff goes into the review prompt; the reviewer reads the rest in its diff file. */
 const DIFF_MAX = 60_000;
 const ANSWER_MAX = 8_000;
 /** Files whose diff goes into the prompt; the list names them all. */
@@ -53,13 +70,17 @@ export async function collectChange(cwd: string, base: string, after: string): P
 /** What the reviewer is asked: the person's request, the agent's answer, and the change between the two checkpoints. */
 export function buildReviewPrompt(o: {
   request: string; answer: string; base: string; after: string; files: GitFile[]; diffs: string[]; guide?: string; round: number; key: string;
+  /** The whole diff (writeChangeFile), when it could be written. */
+  diffFile?: string;
 }): string {
   const list = o.files.map((f) => `${f.status} ${f.from ? `${f.from} -> ` : ''}${f.path}`).join('\n');
   return `You are the reviewer of another agent's work in this repository (round ${o.round}, review ${o.key}).\n\n`
     + `${o.guide?.trim() || REVIEWER_GUIDE}\n\n`
     + `The request it worked on:\n\n${cut(o.request, ANSWER_MAX)}\n\n`
     + `Its last answer:\n\n${cut(o.answer, ANSWER_MAX) || '(none)'}\n\n`
-    + `Changed files (git checkpoints ${o.base}..${o.after}; \`git diff ${o.base} ${o.after}\` shows all of it):\n${list}\n\n`
+    + `Changed files (git checkpoints ${o.base}..${o.after}):\n${list}\n\n`
+    + (o.diffFile ? `The whole diff is in the file ${o.diffFile}. Your shell may refuse even reads (git included): then read it `
+      + 'with the dalang MCP tool review_diff (by lines), and the files under review with review_read_file.\n\n' : '')
     + `Diff:\n\n${cut(o.diffs.join('\n'), DIFF_MAX)}\n\n`
     + 'Read the files themselves where the diff is not enough. Answer with LGTM alone on the first line when the work is '
     + 'fine. Otherwise put ISSUES on the first line, then a numbered list: each issue with file:line, what is wrong and '

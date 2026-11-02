@@ -14,6 +14,7 @@ import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { cleanMemory, MEMORY_MAX, queryTerms, searchTerms } from './memory.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
+import { reviewTools } from './review-tools.js';
 import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
 import { compactPayload, CUT } from './event-view.js';
 import type { Conversation, Memory, MemoryScope, Project, Store, StoredEvent } from './store.js';
@@ -414,6 +415,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   const hosts = loadHosts(store).filter((h) => h.agent !== 'off' && canAccess(viewer, h.access));
   if (hosts.length) sshTools(server, store, push, hosts, { who: onBehalf, conv: source });
   if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
+  reviewTools(server, store, source);
   return server;
 }
 

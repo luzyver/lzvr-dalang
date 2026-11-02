@@ -17,7 +17,7 @@ import { applyOps, extractionPrompt, memoryGuide, parseOps, pickFor } from './me
 import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { checkpoint as gitCheckpoint, isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
-import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey } from './reviewer.js';
+import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, reviewDiffDir, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey, writeChangeFile } from './reviewer.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
 import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
@@ -477,6 +477,8 @@ export class Dispatcher {
       const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
       // Claude Code reads outside its folder only from directories it was given.
       if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
+      // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
+      if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
       // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
       // first, and the turn waits for it (a cancel stops the wait, not the index).
       if (this.codeMemory?.refresh) {
@@ -737,8 +739,10 @@ export class Dispatcher {
     review.rounds++;
     review.reviewer = rev.id;
     this.store.setReview(conv.id, review);
+    const diffFile = await writeChangeFile(cwd, base, head, rev.id)
+      .catch((e) => { console.warn(`no diff file for the review of chat ${conv.id}: ${(e as Error).message}`); return undefined; });
     const prompt = buildReviewPrompt({ request: review.request, answer: lastMessage, base, after: head, files, diffs, guide: policy.guide,
-      round: review.rounds, key: reviewKey(review) });
+      round: review.rounds, key: reviewKey(review), diffFile });
     this.store.enqueue(rev.id, prompt, [], '', item.on_behalf || item.author, conv.id);
     this.emit(conv.id, after!.id, { type: 'review.started', reviewer: rev.id, round: review.rounds, files: files.length });
     this.kick(rev.id);

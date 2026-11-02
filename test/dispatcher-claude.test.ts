@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { Dispatcher } from '../src/dispatcher.js';
+import { reviewDiffDir } from '../src/reviewer.js';
 import { Store } from '../src/store.js';
 import { turnsDone, until } from './helpers.js';
 
@@ -99,6 +100,20 @@ describe('Dispatcher with the claude backend', () => {
     const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
     expect(texts.some((t) => t.includes('Check them FIRST') && t.includes('- charts (') && t.includes(`|--add-dir=${skillsDir}`))).toBe(true);
     expect(readdirSync(join(dir, 'a')).filter((f) => f.startsWith('dalang-'))).toEqual([]); // the guide file is gone after the turn
+  });
+
+  it('lets only a reviewer read its diff file, outside the folder', async () => {
+    const { store, dispatcher, conv } = setup();
+    const rev = store.createConversation(conv.project_id, 'claude', conv.id);
+    store.setRole(rev.id, 'reviewer');
+    for (const c of [conv, rev]) {
+      store.enqueue(c.id, 'hi', []);
+      dispatcher.kick(c.id);
+      await until(() => turnsDone(store, c.id, 1));
+    }
+    const has = (id: string) => store.eventsAfter(id, 0).some((e) => e.payload.includes(JSON.stringify(`|--add-dir=${reviewDiffDir(id)}`).slice(1, -1)));
+    expect(has(rev.id)).toBe(true);
+    expect(has(conv.id)).toBe(false);
   });
 
   it('moves the same turn to the next Claude account at a usage limit', async () => {
