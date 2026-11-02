@@ -25,6 +25,11 @@ if (cmd === 'auth status') {
     // a host that never answers (an intranet GitLab with the VPN off)
     console.log(only);
     setInterval(() => {}, 1000);
+  } else if (only && only === process.env.FAKE_API_FAIL_HOST) {
+    // a host that fails at once (the network dropped); with no login behind it, glab says so as well
+    console.error(`${only}\n  x ${only}: API call failed: dial tcp: lookup ${only}: no such host`);
+    if (!logins[only]) console.error('  ! No token found (checked config file, keyring, and environment variables).');
+    process.exit(1);
   } else if (!hosts.length) {
     console.error('You are not logged into any GitHub hosts.');
     process.exit(1);

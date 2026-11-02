@@ -278,6 +278,24 @@ describe('Settings → Git', () => {
     ]);
   });
 
+  it('keeps a glab login whose API call failed, so a network blip does not hide the host', async () => {
+    const t = setup();
+    const cfg = join(t.dir, 'glab-config');
+    mkdirSync(cfg);
+    writeFileSync(join(cfg, 'config.yml'), ['hosts:', '    git.example.com:', '        user: octo'].join('\n'));
+    writeFileSync(join(cfg, 'logins.json'), JSON.stringify({ 'git.example.com': 'octo' }));
+    const auth = new GitAuth({
+      ghCommand: ['gh'], glabCommand: [process.execPath, fakeForge, join(t.dir, 'glab')], sshDir: join(t.dir, 'ssh'),
+      env: { GLAB_CONFIG_DIR: cfg, FAKE_API_FAIL_HOST: 'git.example.com' },
+    });
+    expect((await auth.forgeStatus('gitlab')).accounts).toEqual([{ host: 'git.example.com', user: 'octo', ok: false, active: true }]);
+    expect(await auth.forgeForHost('git.example.com')).toBe('gitlab');
+
+    // no token behind it: signed out, even though glab keeps the host and its user in the config
+    writeFileSync(join(cfg, 'logins.json'), '{}');
+    expect((await auth.forgeStatus('gitlab')).accounts).toEqual([]);
+  });
+
   it('uploads a public key to the account on the right host', async () => {
     const t = setup();
     await t.call('POST', '/api/settings/git/ssh-keys', { name: 'id_ed25519', comment: 'c' });

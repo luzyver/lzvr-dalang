@@ -291,8 +291,10 @@ export class GitAuth {
     for (const { h, r } of results) {
       const timedOut = r.code === null;
       const found = parseAuthStatus(r.out).filter((a) => a.host === h.host);
-      // a host that did not answer in time still has its login: show it as broken rather than not at all
-      accounts.push(...(found.length || !timedOut || !h.user ? found : [{ host: h.host, user: h.user, ok: false, active: true }]));
+      // a host that did not answer, or whose API call failed, still has its login: show it as broken rather than not at
+      // all, or forgeForHost forgets the host for minutes after one network blip. Without a token it is simply signed out.
+      const broken = timedOut || (/API call failed/.test(r.out) && !/No token found/.test(r.out));
+      accounts.push(...(found.length || !broken || !h.user ? found : [{ host: h.host, user: h.user, ok: false, active: true }]));
       const text = r.out.replace(/\n?timed out$/, '').trim() || h.host;
       output.push(timedOut ? `${text}\n  x ${h.host}: no answer in ${ms / 1000}s (is the host reachable from the server? VPN?)` : text);
     }
