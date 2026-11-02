@@ -1,6 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { reviewDiffDir } from '../src/reviewer.js';
 import { fakeClickUp } from './fake-clickup.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { mkUser, setupApp, type AppExtras } from './setup-app.js';
@@ -241,6 +244,35 @@ describe('agents calling the gateway from inside a conversation', () => {
     const sneaky = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id)}`, 'x-conversation-id': b.id });
     expect((await call(sneaky, 'send_prompt', { conversation_id: b.id, prompt: 'as b' })).json.status).toBe('pending_approval');
     expect(t.store.listTurns(b.id)).toEqual([]);
+  });
+});
+
+describe('reviewer tools', () => {
+  it('let only a reviewer read its whole diff and the files under review, by lines and inside the folder', async () => {
+    const t = await boot();
+    const { a, p } = await twoConvs(await t.connect());
+    const rev = t.store.createConversation(p.id, 'codex', a.id);
+    t.store.setRole(rev.id, 'reviewer');
+    const dir = t.store.getProject(p.id)!.path;
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'a.ts'), 'one\ntwo\nthree');
+    mkdirSync(reviewDiffDir(rev.id), { recursive: true });
+    writeFileSync(join(reviewDiffDir(rev.id), 'change.diff'), Array.from({ length: 2500 }, (_, i) => `+line ${i + 1}`).join('\n'));
+    try {
+      const names = (c: C) => c.listTools().then((r) => r.tools.map((x) => x.name));
+      expect(await names(await t.connectAs(a.id))).not.toContain('review_diff');
+      const c = await t.connectAs(rev.id);
+      expect(await names(c)).toEqual(expect.arrayContaining(['review_diff', 'review_read_file']));
+      const first = (await call(c, 'review_diff')).json;
+      expect(first).toMatchObject({ total_lines: 2500, offset: 1, next_offset: 2001 });
+      const rest = (await call(c, 'review_diff', { offset: first.next_offset })).json;
+      expect(rest.text.split('\n')).toHaveLength(500);
+      expect(rest.text.endsWith('2500\t+line 2500')).toBe(true);
+      expect(rest.next_offset).toBeUndefined();
+      expect((await call(c, 'review_read_file', { path: 'src/a.ts', offset: 2, limit: 1 })).json.text).toBe('2\ttwo');
+      expect((await call(c, 'review_read_file', { path: '.' })).json.entries).toContain('src/');
+      expect((await call(c, 'review_read_file', { path: '../' })).isError).toBe(true);
+    } finally { rmSync(reviewDiffDir(rev.id), { recursive: true, force: true }); }
   });
 });
 

@@ -1,5 +1,9 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildReviewPrompt, isEarlierReview, parseVerdict, promptReview, REVIEWER_DEFAULTS, REVIEWER_GUIDE, REVIEWER_ROLE, reviewerMessage, reviewKey } from '../src/reviewer.js';
+import { buildReviewPrompt, isEarlierReview, parseVerdict, promptReview, REVIEWER_DEFAULTS, REVIEWER_GUIDE, REVIEWER_ROLE, reviewDiffDir, reviewerMessage, reviewKey, writeChangeFile } from '../src/reviewer.js';
 import { Store } from '../src/store.js';
 
 describe('reviewer', () => {
@@ -19,11 +23,28 @@ describe('reviewer', () => {
     expect(p).toContain(REVIEWER_GUIDE);
     expect(p).toContain('add a button');
     expect(p).toContain('M a.ts\nR c.ts -> b.ts');
-    expect(p).toContain('git diff t1-before t1-after');
+    expect(p).not.toContain('git diff');
+    expect(buildReviewPrompt({ ...base, files, diffFile: '/tmp/r/change.diff' })).toContain('The whole diff is in the file /tmp/r/change.diff');
     expect(p).toContain('### a.ts\n+x');
     expect(buildReviewPrompt({ ...base, files, guide: 'Only check tests.' })).not.toContain(REVIEWER_GUIDE);
     expect(promptReview(p)).toEqual({ round: 1, key: 't1-before/1' });
     expect(promptReview('[Reviewer] something else')).toBeNull();
+  });
+
+  it('writes the whole change for the reviewer to read without git, past what the prompt holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lzvr-review-'));
+    const g = (...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+    g('init', '-q');
+    writeFileSync(join(dir, 'a.txt'), 'one\n');
+    g('add', '.'); g('commit', '-qm', 'one');
+    const base = g('rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'a.txt'), `${'x'.repeat(70_000)}\n`);
+    g('commit', '-qam', 'two');
+    const file = await writeChangeFile(dir, base, g('rev-parse', 'HEAD'), 'rev-test');
+    expect(file.startsWith(reviewDiffDir('rev-test'))).toBe(true);
+    const diff = readFileSync(file, 'utf8');
+    expect(diff).toContain('-one');
+    expect(diff).toContain(`+${'x'.repeat(70_000)}`);
   });
 
   it('sends the issues back as a [Reviewer] message', () => {
