@@ -20,7 +20,7 @@ import type { McpLaunch } from './mcp-servers.js';
 import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, reviewDiffDir, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey, writeChangeFile } from './reviewer.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
-import { CeilingError, refuseChoice, refuseEffort, refuseModel, runOf } from './model-ceiling.js';
+import { CeilingError, EFFORTS, refuseChoice, refuseEffort, refuseModel, runOf, TOP_EFFORT } from './model-ceiling.js';
 import { type Conversation, type Project, type QueueItem, type Store } from './store.js';
 import type { Backend } from './util.js';
 
@@ -291,6 +291,24 @@ export class Dispatcher {
     return list;
   }
 
+  /**
+   * `effort` brought down to the highest one `model` on `backend` takes, for an effort handed over from a chat on
+   * another model or CLI: first to the CLI's own top (Codex has no max), then to what its model list gives for the
+   * model (its CLI's default model when null, any of its models when that is unknown too), when it lists it.
+   */
+  async fitEffort(backend: Backend, model: string | null, effort: string): Promise<string> {
+    const below = (e: string, ok: (x: string) => boolean) => {
+      const at = EFFORTS.indexOf(e as never);
+      return at < 0 || ok(e) ? e : EFFORTS.slice(0, at).reverse().find(ok) ?? e;
+    };
+    const top = EFFORTS.indexOf(TOP_EFFORT[backend] as never);
+    const capped = below(effort, (x) => EFFORTS.indexOf(x as never) <= top);
+    const list = await this.models(backend).catch(() => [] as ModelInfo[]);
+    const slug = model || this.store.getDefaultModel(backend) || null;
+    const known = slug ? list.find((m) => m.slug === slug)?.efforts : [...new Set(list.flatMap((m) => m.efforts))];
+    return known?.length ? below(capped, (x) => known.includes(x)) : capped;
+  }
+
   /** What one account's CLI lists; `ok` is false when the CLI failed (missing, timed out). */
   private modelsOf(backend: Backend, home: string | null): Promise<{ ok: boolean; list: ModelInfo[] }> {
     const claude = backend === 'claude';
@@ -458,7 +476,7 @@ export class Dispatcher {
     let mcpToken: string | null = null;
     try {
       this.store.setStatus(convId, 'running');
-      if (!reviewer) conv = this.holdBelowParents(conv);
+      if (!reviewer) conv = await this.holdBelowParents(conv);
       const model = conv.model || this.store.getDefaultModel(conv.backend);
       const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
       const current = { backend: conv.backend, model };
@@ -706,14 +724,15 @@ export class Dispatcher {
    * CLI (a name means nothing to the other one), the effort anywhere. What still runs above then fails the turn with
    * the reason, which goes to its parent as the report.
    */
-  private holdBelowParents(conv: Conversation): Conversation {
+  private async holdBelowParents(conv: Conversation): Promise<Conversation> {
     const ups: Conversation[] = [];
     for (let up = this.store.getConversation(conv.parent); up && ups.length < 100; up = this.store.getConversation(up.parent)) ups.push(up);
     for (const up of ups) {
       const cap = runOf(this.store, up);
       const same = up.backend === conv.backend;
       if (same && refuseModel(runOf(this.store, this.store.getConversation(conv.id)!), cap)) this.store.setModel(conv.id, cap.model ?? '');
-      if (refuseEffort(runOf(this.store, this.store.getConversation(conv.id)!), cap)) this.store.setEffort(conv.id, cap.effort ?? (same ? '' : 'low'));
+      const now = runOf(this.store, this.store.getConversation(conv.id)!);
+      if (refuseEffort(now, cap)) this.store.setEffort(conv.id, cap.effort ? await this.fitEffort(conv.backend, now.model, cap.effort) : same ? '' : 'low');
     }
     const c = this.store.getConversation(conv.id)!;
     for (const up of ups) {

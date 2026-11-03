@@ -3,6 +3,9 @@ import type { Backend } from './util.js';
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
+/** The highest effort each CLI takes at all (Codex has no max), whatever its model list says or fails to say. */
+export const TOP_EFFORT: Record<Backend, string> = { codex: 'xhigh', claude: 'max' };
+
 /**
  * How strong a model is, from its name, on one scale for both CLIs (a sub-agent may run on the other one): 0 small
  * (haiku, *-mini), 1 mid (sonnet), 2 large (opus, gpt-*), 3 (fable). null: a name it does not know.

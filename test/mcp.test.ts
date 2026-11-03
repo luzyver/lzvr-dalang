@@ -387,6 +387,26 @@ describe('models of sub-agents', () => {
     expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude', model: 'haiku', effort: 'low' })).json).toMatchObject({ backend: 'claude', model: 'haiku', effort: 'low' });
   });
 
+  it('bring an inherited effort down to the highest the sub-agent\'s model takes', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    t.store.setBackend(a.id, 'claude');
+    t.store.setModel(a.id, 'claude-opus-5-5');
+    t.store.setEffort(a.id, 'max');
+    t.dispatcher.models = async (b) => b === 'codex'
+      ? [{ slug: 'gpt-5.5', name: '', description: '', efforts: ['low', 'medium', 'high', 'xhigh'] }, { slug: 'gpt-5.4-mini', name: '', description: '', efforts: ['low', 'medium'] }]
+      : [{ slug: 'claude-opus-5-5', name: '', description: '', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }];
+    const fromA = await t.connectAs(a.id);
+    // Codex has no max: the sub-agent runs on its highest instead of failing.
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.5' })).json).toMatchObject({ backend: 'codex', effort: 'xhigh' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.4-mini' })).json).toMatchObject({ effort: 'medium' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude' })).json).toMatchObject({ backend: 'claude', effort: 'max' });
+    // Without a model list (or a model not on it) the effort still comes down to the most its CLI takes at all.
+    t.dispatcher.models = async () => [];
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.5' })).json).toMatchObject({ effort: 'xhigh' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude' })).json).toMatchObject({ effort: 'max' });
+  });
+
   it('lists only the models and efforts up to the agent\'s own, weakest first', async () => {
     const t = await boot();
     const { a } = await twoConvs(await t.connect());

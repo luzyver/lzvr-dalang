@@ -143,6 +143,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     const b = backend ?? project.backend;
     // Left out, a sub-agent runs on the parent's effort, and on the parent's model when it is on the same CLI.
     const inherit = { model: ceiling && b === ceiling.backend ? ceiling.model : null, effort: ceiling?.effort ?? null };
+    // An effort the child's model does not take (max on Codex, xhigh on a small model) comes down to the highest it does.
+    if (!effort && inherit.effort) inherit.effort = await dispatcher.fitEffort(b, model || inherit.model || null, inherit.effort);
     const want = { backend: b, model: model || inherit.model || store.getDefaultModel(b) || null, effort: effort || inherit.effort || store.getDefaultEffort(b) || null };
     const why = refuseChoice(want, ceiling);
     if (why) return fail(why);
