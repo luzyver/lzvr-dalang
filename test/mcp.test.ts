@@ -468,6 +468,23 @@ describe('sub-agents', () => {
     expect(reports(t, a.id).length).toBe(before);
   });
 
+  it('join reports waiting in the queue, but never a person\'s prompt that starts like one', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const sub = t.store.createConversation(p.id, 'codex', a.id);
+    const report = (d: any) => d.reportToParent(sub.id, { from_conv: a.id, on_behalf: 'someone' }, 'completed', 'done');
+    (t.dispatcher as any).kick = () => {}; // nothing starts, so what is queued stays queued
+    t.store.enqueue(a.id, '[Sub-agent] typed by a person', ['notes.txt'], 'someone'); // on_behalf 'someone' too, like the reports
+    report(t.dispatcher);
+    report(t.dispatcher);
+    const queued = t.store.listQueue(a.id);
+    expect(queued).toHaveLength(2);
+    expect(queued[0]!.prompt).toBe('[Sub-agent] typed by a person');
+    expect(queued[0]!.author).toBe('someone');
+    expect(queued[0]!.attachments).toEqual(['notes.txt']);
+    expect(queued[1]!.prompt.match(/\[Sub-agent\] "/g)).toHaveLength(2);
+  });
+
   it('pass a grandchild\'s report up through its parent', async () => {
     const t = await boot();
     const { p, a } = await twoConvs(await t.connect());

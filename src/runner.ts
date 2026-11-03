@@ -25,6 +25,8 @@ export interface ProcessOpts {
   prompt: string;
   signal?: AbortSignal;
   killGraceMs?: number;
+  /** ms a process may stay alive after its turn.completed / turn.failed before it is killed (default 30000). */
+  exitGraceMs?: number;
 }
 
 /** Run a CLI that reads the prompt on stdin and prints one JSON event per line. Shared by every backend. */
@@ -67,6 +69,10 @@ export async function* runProcess(o: ProcessOpts): AsyncGenerator<CodexEvent> {
   if (o.signal?.aborted) onAbort();
   else o.signal?.addEventListener('abort', onAbort, { once: true });
 
+  // A CLI that reported its turn as over but does not exit (seen with codex after turn.completed) would keep the chat
+  // "running" for good, so it gets a grace period to exit by itself and is killed after it.
+  let lingered = false;
+  let lingerTimer: NodeJS.Timeout | undefined;
   try {
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -79,12 +85,17 @@ export async function* runProcess(o: ProcessOpts): AsyncGenerator<CodexEvent> {
         ev = { type: 'raw', line };
       }
       yield ev;
+      if ((ev.type === 'turn.completed' || ev.type === 'turn.failed') && !lingerTimer) {
+        lingerTimer = setTimeout(() => { lingered = true; killTree(child, 'SIGKILL'); release(); }, o.exitGraceMs ?? 30_000);
+        lingerTimer.unref();
+      }
     }
     const code = await exited;
-    if (code !== 0) yield { type: 'process.exit', code, stderr };
+    if (code !== 0 && !lingered) yield { type: 'process.exit', code, stderr };
   } finally {
     o.signal?.removeEventListener('abort', onAbort);
     clearTimeout(escalate);
+    clearTimeout(lingerTimer);
     if (child.exitCode === null && child.signalCode === null) killTree(child, 'SIGKILL');
   }
 }

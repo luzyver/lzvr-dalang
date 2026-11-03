@@ -127,6 +127,8 @@ export class Dispatcher {
   private running = new Map<string, QueueItem>();
   /** Chats holding back their report to their parent until the sub-agents they gave work to are done. */
   private awaiting = new Set<string>();
+  /** Per parent chat, the queue item of the last sub-agent report queued for it (see reportToParent). */
+  private lastReport = new Map<string, number>();
   private bus = new EventEmitter();
   private stopping = false;
   /** Shutting down but letting running turns finish: queued prompts wait in the queue for after the restart. */
@@ -789,7 +791,12 @@ export class Dispatcher {
       + `${status === 'completed' ? 'finished' : `stopped: ${status}`}.${busy ? ` ${busy} other sub-agent(s) of yours are still working.` : ''}\n\n`
       + `Its last answer:\n\n${answer || '(none)'}\n\n`
       + 'Check the work before relying on it. send_prompt gives it more to do; set_model moves it up a model if this fell short.';
-    this.store.enqueue(parent.id, text, [], '', item.on_behalf, parent.parent);
+    // A report still waiting behind a running turn is joined by this one, so the parent reads both in one turn.
+    // Only one this method queued itself (by id), never a person's prompt that happens to look like a report.
+    const last = this.store.listQueue(parent.id).at(-1);
+    const joined = last && last.id === this.lastReport.get(parent.id) && !last.resume && last.on_behalf === item.on_behalf;
+    if (joined) this.store.deleteQueueItem(last.id);
+    this.lastReport.set(parent.id, this.store.enqueue(parent.id, joined ? `${last.prompt}\n\n---\n\n${text}` : text, [], '', item.on_behalf, parent.parent));
     this.kick(parent.id);
   }
   /**
