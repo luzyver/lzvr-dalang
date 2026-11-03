@@ -28,6 +28,8 @@ All notable changes to this project are documented here. The format follows
   owner's commits failed with "empty ident name"; each request now gets only its own git context
 - Panel users other than the owner saw "Not a git repository" in the Changes tab of projects owned by another OS
   account: their own git config dropped the server's `safe.directory`, which is now passed on to them
+- A Merge Request whose target branch was changed on GitHub or GitLab kept the old one in the panel (commits ahead,
+  the description, syncing the base); the chat now follows the branch the forge says it goes into while it is open
 
 ## [0.1.0] - unreleased
 

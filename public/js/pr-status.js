@@ -29,7 +29,10 @@ export function PrStatus({ id, url, onDone, onState }) {
   const [error, setError] = useState('');
   const [method, setMethod] = useState('squash');
   const [comments, setComments] = useState(false);
-  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => { setS(r); setError(''); onState?.(r.state); }, (e) => { setError(e.message); onState?.(null); });
+  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => {
+    setS(r); setError(''); onState?.(r.state);
+    if (r.retargeted) onDone(); // its target branch was changed on the forge: show the one it goes into now
+  }, (e) => { setError(e.message); onState?.(null); });
   useEffect(() => { setS(null); load(); }, [id, url]);
 
   const merge = guarded(async () => {

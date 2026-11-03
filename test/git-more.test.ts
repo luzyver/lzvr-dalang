@@ -435,6 +435,27 @@ describe('pull request status', () => {
     expect(calls[1].args).toEqual(['pr', 'merge', 'https://github.com/acme/app/pull/7', '--squash']);
   });
 
+  it('follows a target branch changed on the forge while the pull request is open', async () => {
+    const t = await project();
+    t.cfg.forge = 'github';
+    t.cfg.ghCommand = [process.execPath, fakeGh, join(t.base, 'gh.log')];
+    const wt = await t.chat(true);
+    t.commitHere('b.txt', 'b\n', 'feat: Add b', wt.worktree);
+    expect((await t.call('POST', '/pull-request', { title: 'feat: Add b' }, wt.id)).statusCode).toBe(200);
+    const old = process.env.FAKE_GH_BASE;
+    try {
+      process.env.FAKE_GH_BASE = 'main';
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json()).toMatchObject({ base: 'main', retargeted: false });
+      process.env.FAKE_GH_BASE = 'release';
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json()).toMatchObject({ base: 'release', retargeted: true });
+      // Not fetched here, yet the target stays the branch the open pull request goes into.
+      expect((await t.status(wt.id)).mr).toMatchObject({ base: 'release', picked: true, baseMissing: true });
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json().retargeted).toBe(false);
+    } finally {
+      if (old === undefined) delete process.env.FAKE_GH_BASE; else process.env.FAKE_GH_BASE = old;
+    }
+  });
+
   it('opens it as the signed-in GitHub account that may push, not just the active one', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gh-accounts-'));
     const log = join(dir, 'gh.log');

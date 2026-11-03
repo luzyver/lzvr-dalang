@@ -1,7 +1,7 @@
 // Fake `gh` / `glab`: `fake-gh.mjs <log file> <args...>`. Appends its arguments and folder to the log as a JSON line and
 // prints a new pull request address; once the log has an entry, it answers like gh does for a branch that has one already.
 // `pr view` and `api` answer with a pull request that has checks, a review and comments (merged once `pr merge` ran);
-// `pr merge` is logged too.
+// `pr merge` is logged too. FAKE_GH_BASE: the branch `pr view` says it goes into (none given when unset).
 // Accounts: FAKE_GH_ACCOUNTS="ann,bob*" signs in ann and bob on github.com (* = active; none set = not signed in), each
 // with token `tok-<user>` (`old!` = a login whose token stopped working, which makes `auth status` exit 1 like gh);
 // FAKE_GH_WRITERS="bob" are the ones that may push to the repository. Every logged call records the GH_TOKEN it ran with.
@@ -38,7 +38,7 @@ if (args[0] === 'api' && /^repos\/[^/]+\/[^/]+$/.test(args[3] ?? '')) {
 
 if (args[0] === 'pr' && args[1] === 'view') {
   console.log(JSON.stringify({
-    title: 'feat: Add b', url, state: merged() ? 'MERGED' : 'OPEN', isDraft: false, mergeable: 'MERGEABLE', reviewDecision: 'CHANGES_REQUESTED',
+    title: 'feat: Add b', url, state: merged() ? 'MERGED' : 'OPEN', isDraft: false, baseRefName: process.env.FAKE_GH_BASE, mergeable: 'MERGEABLE', reviewDecision: 'CHANGES_REQUESTED',
     statusCheckRollup: [
       { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/1' },
       { __typename: 'CheckRun', name: 'lint', status: 'IN_PROGRESS', conclusion: '' },
