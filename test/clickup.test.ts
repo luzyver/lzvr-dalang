@@ -82,7 +82,7 @@ describe('ClickUp send', () => {
   it('sends to a channel found in any workspace, as markdown', async () => {
     const calls: string[] = [];
     const r = await fakeClient(calls).send({ channelId: 'd1', content: '  **done**, deployed  ' });
-    expect(r).toEqual({ sent: true, id: 'new1', workspace: 'Side', channel: 'Direct message', channel_id: 'd1', date: '2026-10-22', time: '09:30' });
+    expect(r).toEqual({ sent: true, id: 'new1', workspace: 'Side', channel: 'DM with Budi', channel_id: 'd1', date: '2026-10-22', time: '09:30' });
     expect(posts(calls)).toEqual(['POST /api/v3/workspaces/901/chat/channels/d1/messages {"type":"message","content":"**done**, deployed","content_format":"text/md"}']);
   });
 
@@ -102,6 +102,43 @@ describe('ClickUp send', () => {
     await expect(c.send({ channelId: 'c1', content: '   ' })).rejects.toThrow(/empty/);
     await expect(c.send({ channelId: 'c1', content: 'x'.repeat(4001) })).rejects.toThrow(/4000/);
     expect(posts(calls)).toEqual([]);
+  });
+
+  it('messages a person privately, opening their DM first', async () => {
+    const calls: string[] = [];
+    const r = await fakeClient(calls).send({ toUserId: '22', content: 'hi' });
+    expect(r).toMatchObject({ sent: true, channel: 'DM with sari', channel_id: 'c2', workspace: 'Acme' });
+    expect(posts(calls)).toEqual([
+      'POST /api/v3/workspaces/900/chat/channels/direct_message {"user_ids":["22"]}',
+      'POST /api/v3/workspaces/900/chat/channels/c2/messages {"type":"message","content":"hi","content_format":"text/md"}',
+    ]);
+    const c = fakeClient(calls);
+    await expect(c.send({ toUserId: '11', content: 'hi' })).rejects.toThrow(/no person 11/); // not oneself
+    await expect(c.send({ toUserId: '22', channelId: 'c1', content: 'hi' })).rejects.toThrow(/either/);
+    await expect(c.send({ toUserId: '22', replyTo: 'm3', content: 'hi' })).rejects.toThrow(/reply_to needs channel_id/);
+    expect(posts(calls)).toHaveLength(2);
+  });
+
+  it('names the destination and the thread replied to before anything is sent', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    expect(await c.destination({ channelId: 'c1', replyTo: 'm3' })).toEqual({
+      workspace_id: '900', workspace: 'Acme', channel_id: 'c1', channel: 'dev-team', reply_to: 'm3',
+      thread: { author: 'luz', date: '2026-10-08', time: '20:30', weekday: 'Thu', preview: 'still fixing the invoice export' },
+    });
+    // The reply endpoint takes no channel: a message of another channel (or none) must not pass for a thread of this one.
+    await expect(c.destination({ channelId: 'd1', replyTo: 'm3' })).rejects.toThrow(/m3 is not among the latest 500/);
+    await expect(c.destination({ channelId: 'c1', replyTo: 'old' })).rejects.toThrow(); // looked for, or could not be: refused either way
+    expect(posts(calls)).toEqual([]);
+    // A DM picked by id, without listing channels first, still says who it is with.
+    expect(await fakeClient().destination({ channelId: 'd1' })).toMatchObject({ channel_id: 'd1', channel: 'DM with Budi' });
+  });
+
+  it('lists threads to pick and people to message', async () => {
+    const c = fakeClient();
+    expect((await c.threads('c1')).messages.map((m) => [m.id, m.author, m.replies])).toEqual([['m4', 'luz', 0], ['m3', 'luz', 1]]);
+    expect(await c.people('SAR')).toEqual([{ id: '22', name: 'sari', email: '', workspace_id: '900', workspace: 'Acme' }]);
+    expect((await c.people()).map((p) => p.name)).toEqual(['sari', 'budi']);
   });
 
   it('reads everything it needs before posting, so a failure never leaves a sent message behind', async () => {

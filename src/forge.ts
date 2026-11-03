@@ -156,6 +156,8 @@ export interface PrStatus {
   url: string;
   title: string;
   state: 'open' | 'draft' | 'merged' | 'closed';
+  /** The branch it goes into, as the forge has it now (it may have been changed there); null when not given. */
+  base: string | null;
   /** Whether the forge would merge it now (no conflicts, nothing blocking); null when it has not worked that out yet. */
   mergeable: boolean | null;
   review: 'approved' | 'changes_requested' | 'review_required' | null;
@@ -181,7 +183,7 @@ export async function prStatus(forge: Forge, command: string[], cwd: string, url
   if (!p) throw new GitError(`not a pull request or Merge Request address: ${url}`);
   if (forge === 'github') {
     const env = await githubAccountEnv(command, cwd, p.host, p.repo);
-    const fields = 'title,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,comments,reviews';
+    const fields = 'title,url,state,isDraft,baseRefName,mergeable,reviewDecision,statusCheckRollup,comments,reviews';
     const [view, inline] = await Promise.all([
       runForge(forge, command, ['pr', 'view', url, '--json', fields], cwd, env).then(json),
       runForge(forge, command, ['api', '--hostname', p.host, `repos/${p.repo}/pulls/${p.number}/comments?per_page=100`], cwd, env).then(json).catch(() => []),
@@ -189,7 +191,7 @@ export async function prStatus(forge: Forge, command: string[], cwd: string, url
     const state = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : view.isDraft ? 'draft' : 'open';
     const review = ({ APPROVED: 'approved', CHANGES_REQUESTED: 'changes_requested', REVIEW_REQUIRED: 'review_required' } as const)[view.reviewDecision as string] ?? null;
     return {
-      url: view.url ?? url, title: view.title ?? '', state, review,
+      url: view.url ?? url, title: view.title ?? '', state, review, base: view.baseRefName || null,
       mergeable: view.mergeable === 'MERGEABLE' ? true : view.mergeable === 'CONFLICTING' ? false : null,
       checks: (view.statusCheckRollup ?? []).map((c: any) => (c.__typename === 'StatusContext'
         ? { name: c.context, state: checkState(c.state ?? ''), url: c.targetUrl || undefined }
@@ -215,7 +217,7 @@ export async function prStatus(forge: Forge, command: string[], cwd: string, url
   const state = mr.state === 'merged' ? 'merged' : mr.state === 'closed' ? 'closed' : mr.draft || mr.work_in_progress ? 'draft' : 'open';
   const status = String(mr.detailed_merge_status ?? mr.merge_status ?? '');
   return {
-    url: mr.web_url ?? url, title: mr.title ?? '', state,
+    url: mr.web_url ?? url, title: mr.title ?? '', state, base: mr.target_branch || null,
     mergeable: /^(mergeable|can_be_merged)$/.test(status) ? true : /conflict|cannot_be_merged|not_approved|ci_must_pass|discussions_not_resolved|blocked/.test(status) ? false : null,
     review: approvals ? (approvals.approved ? 'approved' : 'review_required') : null,
     checks: Array.isArray(jobs) && jobs.length

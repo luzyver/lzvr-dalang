@@ -1,7 +1,7 @@
 /**
  * ClickUp Chat client for the MCP gateway: lists chat channels, reads messages in a date range, each stamped with its
- * local date, time and weekday, and sends a message or thread reply. Uses a personal API token (pk_...), so it sees
- * what that ClickUp user sees and sends as them.
+ * local date, time and weekday, lists people and a channel's latest threads, and sends a message, DM or thread reply.
+ * Uses a personal API token (pk_...), so it sees what that ClickUp user sees and sends as them.
  */
 
 export interface ClickUpOpts {
@@ -29,17 +29,34 @@ export interface HistoryQuery {
 }
 
 export interface SendQuery {
-  channelId: string;
+  /** A channel, DM or group DM; or else `toUserId`. */
+  channelId?: string;
+  /** A person to message directly (their DM is opened, or made, on sending). */
+  toUserId?: string;
   /** Markdown. */
   content: string;
-  /** Reply in the thread of this message instead of posting to the channel. */
+  /** Reply in the thread of this message of the channel instead of posting to it. */
   replyTo?: string;
-  /** The channel's workspace; looked for among the workspaces read by default when unset. */
+  /** The channel's or person's workspace; looked for among the workspaces read by default when unset. */
   workspaceId?: string;
 }
 
+/** Where a message goes, checked and named before it is sent (for the approval card, and to send it later). */
+export interface Destination {
+  workspace_id: string;
+  workspace: string;
+  /** Unset for a person whose DM is opened only on sending. */
+  channel_id?: string;
+  channel: string;
+  to_user?: { id: string; name: string };
+  reply_to?: string;
+  /** The message replied to. */
+  thread?: { author: string; date: string; time: string; weekday: string; preview: string };
+}
+
 interface Channel { id: string; name: string; type: string; workspace_id: string; workspace: string }
-interface Workspace { id: string; name: string; members: Map<string, string> }
+interface Person { id: string; name: string; email: string }
+interface Workspace { id: string; name: string; members: Map<string, string>; people: Person[] }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; replies_count?: number; parent_message?: string }
 
 const DAY_MS = 86_400_000;
@@ -47,6 +64,7 @@ const MAX_DAYS = 93;
 const MAX_REQUESTS = 250; // per call, so one question cannot spend the whole ClickUp rate limit (100/min on most plans)
 const MAX_CONTENT = 1500;
 export const MAX_SEND = 4000;
+const PREVIEW = 200;
 const REPLY_LOOKBACK_MS = 7 * DAY_MS; // threads started this long before `from` are still read for replies
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -76,7 +94,12 @@ export function startOfDay(date: string, tz: string): number {
   return guess - localParts(first, tz).offsetMs; // second pass settles days where the offset changes (DST)
 }
 
-export class ClickUpError extends Error {}
+export class ClickUpError extends Error {
+  /** The HTTP status ClickUp answered with, for an error response. */
+  constructor(message: string, readonly status?: number) { super(message); }
+}
+/** Sending a message failed in a way that does not tell whether ClickUp kept it (a 5xx, a timeout, a lost connection). */
+export class ClickUpUncertain extends ClickUpError {}
 
 const channelName = (c: any): string =>
   c.name ? String(c.name) : c.type === 'DM' ? 'Direct message' : c.type === 'GROUP_DM' ? 'Group DM' : String(c.id);
@@ -119,7 +142,7 @@ export class ClickUp {
       }
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        throw new ClickUpError(`ClickUp ${res.status} on ${path}: ${body.slice(0, 300)}`);
+        throw new ClickUpError(`ClickUp ${res.status} on ${path}: ${body.slice(0, 300)}`, res.status);
       }
       return res.json();
     }
@@ -137,8 +160,14 @@ export class ClickUp {
   private allWorkspaces() {
     this.teams ??= this.get('/api/v2/team').then((r) => ((r.teams ?? []) as any[]).map((t) => {
       const members = new Map<string, string>();
-      for (const m of t.members ?? []) if (m.user) members.set(String(m.user.id), m.user.username || m.user.email || String(m.user.id));
-      return { id: String(t.id), name: String(t.name ?? ''), members };
+      const people: Person[] = [];
+      for (const m of t.members ?? []) {
+        if (!m.user) continue;
+        const p = { id: String(m.user.id), name: String(m.user.username || m.user.email || m.user.id), email: String(m.user.email ?? '') };
+        members.set(p.id, p.name);
+        people.push(p);
+      }
+      return { id: String(t.id), name: String(t.name ?? ''), members, people };
     }));
     this.teams.catch(() => { this.teams = undefined; });
     return this.teams;
@@ -301,27 +330,131 @@ export class ClickUp {
         if ((e as Error).message.startsWith('ClickUp 404 ')) continue;
         throw e;
       }
-      return { id, name: this.dmNames.get(id) ?? channelName({ ...c, id }), type: String(c?.type ?? ''), workspace_id: ws.id, workspace: ws.name };
+      const found: Channel = { id, name: this.dmNames.get(id) ?? channelName({ ...c, id }), type: String(c?.type ?? ''), workspace_id: ws.id, workspace: ws.name };
+      if (!c?.name) await this.nameDms([found], { left: 1 }); // a DM picked by id still shows who it is with
+      return found;
     }
     throw new ClickUpError(`channel ${id} not found (ids from clickup_list_channels)`);
   }
 
-  /** Send `content` (markdown) as the token's user to a channel or DM, or as a reply in one of its message's threads. */
+  /** People of the given workspaces (default: see `workspaces`) but the token's own user, by name or email containing `query`. */
+  async people(query?: string, workspaceIds?: string[]) {
+    const [me, workspaces] = await Promise.all([this.user(), this.workspaces(workspaceIds)]);
+    const q = query?.trim().toLowerCase();
+    return workspaces.flatMap((w) => w.people
+      .filter((p) => p.id !== me.id && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)))
+      .map((p) => ({ ...p, workspace_id: w.id, workspace: w.name })));
+  }
+
+  /** The latest top-level messages of a channel (newest first), to pick one to reply to in its thread. */
+  async threads(channelId: string, workspaceId?: string, limit = 20) {
+    const [c, tz] = await Promise.all([this.findChannel(channelId, workspaceId ? [workspaceId] : undefined), this.timeZone()]);
+    const list = await this.latest(c, Math.min(Math.max(limit, 1), 100));
+    return {
+      workspace: c.workspace, channel: c.name, channel_id: c.id, time_zone: tz,
+      messages: list.map(({ m, author }) => ({ id: m.id, ...stamp(m.date, tz), author, replies: m.replies_count ?? 0, content: preview(m) })),
+    };
+  }
+
+  /** One page of a channel's newest top-level messages, with their authors' names. */
+  private async latest(c: Channel, limit: number) {
+    const members = (await this.allWorkspaces()).find((w) => w.id === c.workspace_id)?.members;
+    const r = await this.get(`/api/v3/workspaces/${c.workspace_id}/chat/channels/${encodeURIComponent(c.id)}/messages`,
+      { limit, content_format: 'text/plain' });
+    return ((r.data ?? []) as RawMessage[]).slice(0, limit)
+      .map((m) => ({ m, author: members?.get(String(m.user_id)) ?? String(m.user_id) }));
+  }
+
+  /** The top-level message `id` of a channel, looked for among its latest 500 (the reply endpoint takes no channel). */
+  private async topMessage(c: Channel, id: string) {
+    const members = (await this.allWorkspaces()).find((w) => w.id === c.workspace_id)?.members;
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const r = await this.get(`/api/v3/workspaces/${c.workspace_id}/chat/channels/${encodeURIComponent(c.id)}/messages`,
+        { limit: 100, cursor, content_format: 'text/plain' });
+      const m = ((r.data ?? []) as RawMessage[]).find((x) => x.id === id);
+      if (m) return { m, author: members?.get(String(m.user_id)) ?? String(m.user_id) };
+      cursor = r.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return undefined;
+  }
+
+  /**
+   * Checks where a message goes and names it, sending nothing: a channel (and the thread replied to, which must be one
+   * of its latest 500 messages), or a person of a workspace for a DM.
+   */
+  async destination(q: Omit<SendQuery, 'content'>): Promise<Destination> {
+    if (!q.channelId === !q.toUserId) throw new ClickUpError('give either channel_id or to_user_id');
+    const ws = q.workspaceId ? [q.workspaceId] : undefined;
+    if (q.toUserId) {
+      if (q.replyTo) throw new ClickUpError('reply_to needs channel_id: a thread is in a channel');
+      const p = (await this.people(undefined, ws)).find((x) => x.id === q.toUserId);
+      if (!p) throw new ClickUpError(`no person ${q.toUserId} in the workspace (ids from clickup_find_people)`);
+      return { workspace_id: p.workspace_id, workspace: p.workspace, channel: `DM with ${p.name}`, to_user: { id: p.id, name: p.name } };
+    }
+    const c = await this.findChannel(q.channelId!, ws);
+    const d: Destination = { workspace_id: c.workspace_id, workspace: c.workspace, channel_id: c.id, channel: c.name };
+    if (!q.replyTo) return d;
+    const [found, tz] = await Promise.all([this.topMessage(c, q.replyTo), this.timeZone()]);
+    if (!found) throw new ClickUpError(`message ${q.replyTo} is not among the latest 500 of "${c.name}" (ids from clickup_list_threads)`);
+    return { ...d, reply_to: q.replyTo, thread: { author: found.author, ...stamp(found.m.date, tz), preview: preview(found.m) } };
+  }
+
+  /** Send `content` (markdown) as the token's user to a channel, person or thread (see `destination`). */
   async send(q: SendQuery) {
-    const content = q.content.trim();
-    if (!content) throw new ClickUpError('the message is empty');
-    if (content.length > MAX_SEND) throw new ClickUpError(`at most ${MAX_SEND} characters per message`);
-    // Everything that can fail is read first: once the POST went through, a later failure would make a retry post twice.
-    const [c, tz] = await Promise.all([this.findChannel(q.channelId, q.workspaceId ? [q.workspaceId] : undefined), this.timeZone()]);
-    const path = q.replyTo
-      ? `/api/v3/workspaces/${c.workspace_id}/chat/messages/${encodeURIComponent(q.replyTo)}/replies`
-      : `/api/v3/workspaces/${c.workspace_id}/chat/channels/${encodeURIComponent(c.id)}/messages`;
-    const r = await this.request('POST', path, {}, { type: 'message', content, content_format: 'text/md' });
+    const content = checkContent(q.content);
+    return this.deliver(await this.destination(q), content);
+  }
+
+  /**
+   * Send `content` to a destination checked before. Everything that can fail is read first: once the message went
+   * through, a later failure would make a retry post twice. A person's DM is opened first (ClickUp gives back the one
+   * that exists).
+   */
+  async deliver(d: Destination, raw: string) {
+    const content = checkContent(raw);
+    const tz = await this.timeZone();
+    let channelId = d.channel_id;
+    if (!channelId) {
+      const r = await this.request('POST', `/api/v3/workspaces/${d.workspace_id}/chat/channels/direct_message`, {}, { user_ids: [d.to_user!.id] });
+      channelId = String((r?.data ?? r)?.id ?? '');
+      if (!channelId) throw new ClickUpError('ClickUp did not open the DM');
+    }
+    const path = d.reply_to
+      ? `/api/v3/workspaces/${d.workspace_id}/chat/messages/${encodeURIComponent(d.reply_to)}/replies`
+      : `/api/v3/workspaces/${d.workspace_id}/chat/channels/${encodeURIComponent(channelId)}/messages`;
+    let r: any;
+    try {
+      r = await this.request('POST', path, {}, { type: 'message', content, content_format: 'text/md' });
+    } catch (e) {
+      // Only a 4xx answer (but a timeout) says the message was refused; anything else may have been kept.
+      const s = e instanceof ClickUpError ? e.status : undefined;
+      if (s !== undefined && s >= 400 && s < 500 && s !== 408) throw e;
+      throw new ClickUpUncertain((e as Error).message, s);
+    }
     const m = r?.data ?? r ?? {};
     const p = localParts(typeof m.date === 'number' ? m.date : Date.now(), tz);
     return {
-      sent: true, id: m.id ? String(m.id) : null, workspace: c.workspace, channel: c.name, channel_id: c.id,
-      ...(q.replyTo && { reply_to: q.replyTo }), date: p.date, time: p.time,
+      sent: true, id: m.id ? String(m.id) : null, workspace: d.workspace, channel: d.channel, channel_id: channelId,
+      ...(d.reply_to && { reply_to: d.reply_to }), date: p.date, time: p.time,
     };
   }
+}
+
+function checkContent(raw: string): string {
+  const content = raw.trim();
+  if (!content) throw new ClickUpError('the message is empty');
+  if (content.length > MAX_SEND) throw new ClickUpError(`at most ${MAX_SEND} characters per message`);
+  return content;
+}
+
+function stamp(ms: number, tz: string) {
+  const p = localParts(ms, tz);
+  return { date: p.date, time: p.time, weekday: p.weekday };
+}
+
+function preview(m: RawMessage): string {
+  const t = (m.content ?? '').trim();
+  return t.length > PREVIEW ? `${t.slice(0, PREVIEW)}…` : t;
 }

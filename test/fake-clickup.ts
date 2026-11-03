@@ -35,9 +35,10 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
   return (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if ((init?.headers as Record<string, string>).authorization !== 'pk_test') return new Response('{"err":"Token invalid","ECODE":"OAUTH_025"}', { status: 401 });
-    // A sent message: "POST <path> <body>"; it gets id `new1`, sent at 2026-10-22 09:30 WIB.
+    // A sent message: "POST <path> <body>"; it gets id `new1`, sent at 2026-10-22 09:30 WIB. A DM with sari opens as c2.
     if (init?.method === 'POST') {
       calls.push(`POST ${url.pathname} ${init.body}`);
+      if (url.pathname === '/api/v3/workspaces/900/chat/channels/direct_message') return new Response(JSON.stringify({ data: { id: 'c2', type: 'DM' } }), { status: 201 });
       return /\/(messages|replies)$/.test(url.pathname)
         ? new Response(JSON.stringify({ id: 'new1', date: wib('2026-10-22T09:30:00'), type: 'message' }), { status: 201 })
         : new Response('{"err":"nope"}', { status: 404 });

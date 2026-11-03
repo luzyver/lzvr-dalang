@@ -25,6 +25,15 @@ export function isLimit(ev: Failure, re: RegExp = DEFAULT_LIMIT_RE): boolean {
   return !!marked(ev) || re.test(failureText(ev));
 }
 
+// The provider's side is full for this model ("Selected model is at capacity. Please try a different model.", Anthropic's
+// "Overloaded"): not the account's fault, so it is waited out instead of blocking the account. Bare "503"/"529" are not
+// matched, for the same reason as above.
+const BUSY_RE = /model is at capacity|\boverloaded|server is (currently )?busy|temporarily unavailable/i;
+
+export function isBusy(ev: Failure): boolean {
+  return !marked(ev) && BUSY_RE.test(failureText(ev));
+}
+
 const UNIT_MS = { second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 } as const;
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
