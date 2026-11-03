@@ -82,7 +82,7 @@ describe('ClickUp send', () => {
   it('sends to a channel found in any workspace, as markdown', async () => {
     const calls: string[] = [];
     const r = await fakeClient(calls).send({ channelId: 'd1', content: '  **done**, deployed  ' });
-    expect(r).toEqual({ sent: true, id: 'new1', workspace: 'Side', channel: 'Direct message', channel_id: 'd1', date: '2026-10-22', time: '09:30' });
+    expect(r).toEqual({ sent: true, id: 'new1', workspace: 'Side', channel: 'DM with Budi', channel_id: 'd1', date: '2026-10-22', time: '09:30' });
     expect(posts(calls)).toEqual(['POST /api/v3/workspaces/901/chat/channels/d1/messages {"type":"message","content":"**done**, deployed","content_format":"text/md"}']);
   });
 
@@ -130,6 +130,8 @@ describe('ClickUp send', () => {
     await expect(c.destination({ channelId: 'd1', replyTo: 'm3' })).rejects.toThrow(/m3 is not among the latest 500/);
     await expect(c.destination({ channelId: 'c1', replyTo: 'old' })).rejects.toThrow(); // looked for, or could not be: refused either way
     expect(posts(calls)).toEqual([]);
+    // A DM picked by id, without listing channels first, still says who it is with.
+    expect(await fakeClient().destination({ channelId: 'd1' })).toMatchObject({ channel_id: 'd1', channel: 'DM with Budi' });
   });
 
   it('lists threads to pick and people to message', async () => {

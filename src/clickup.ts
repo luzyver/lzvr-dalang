@@ -330,7 +330,9 @@ export class ClickUp {
         if ((e as Error).message.startsWith('ClickUp 404 ')) continue;
         throw e;
       }
-      return { id, name: this.dmNames.get(id) ?? channelName({ ...c, id }), type: String(c?.type ?? ''), workspace_id: ws.id, workspace: ws.name };
+      const found: Channel = { id, name: this.dmNames.get(id) ?? channelName({ ...c, id }), type: String(c?.type ?? ''), workspace_id: ws.id, workspace: ws.name };
+      if (!c?.name) await this.nameDms([found], { left: 1 }); // a DM picked by id still shows who it is with
+      return found;
     }
     throw new ClickUpError(`channel ${id} not found (ids from clickup_list_channels)`);
   }
