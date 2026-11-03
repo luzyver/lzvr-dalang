@@ -335,52 +335,87 @@ describe('cross-conversation sends', () => {
 });
 
 describe('models of sub-agents', () => {
-  const allow = (t: Booted, models: string[], maxEffort: string) =>
-    t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models, maxEffort } });
+  it('start on the parent\'s model and effort and never go above them', async () => {
+    const t = await boot();
+    const { p, a, b } = await twoConvs(await t.connect());
+    t.store.setModel(a.id, 'gpt-5.5');
+    t.store.setEffort(a.id, 'medium');
+    const fromA = await t.connectAs(a.id);
 
-  it('keeps agents on the default until an admin allows models', async () => {
+    const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
+    expect(sub).toMatchObject({ parent: a.id, model: 'gpt-5.5', effort: 'medium', effective_model: 'gpt-5.5' });
+    const small = (await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-5.4-mini', effort: 'low' })).json;
+    expect(small).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
+    // Another CLI compares on the same scale.
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude', model: 'sonnet' })).isError).toBe(false);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude', model: 'claude-fable-5-1' })).text).toMatch(/above your own \(gpt-5\.5\)/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, effort: 'high' })).text).toMatch(/effort high is above your own \(medium\)/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, model: 'mystery-1' })).text).toMatch(/cannot tell/);
+
+    // Up again, but only as far as the parent; the parent itself only down.
+    expect((await call(fromA, 'set_model', { conversation_id: small.id, model: 'gpt-5.5', effort: 'medium' })).json).toMatchObject({ model: 'gpt-5.5', effort: 'medium' });
+    expect((await call(fromA, 'set_model', { conversation_id: small.id, effort: 'xhigh' })).text).toMatch(/above your own/);
+    expect((await call(fromA, 'set_model', { conversation_id: a.id, effort: 'high' })).text).toMatch(/above your own/);
+    expect((await call(fromA, 'set_model', { conversation_id: a.id, model: 'gpt-5.4-mini' })).json.model).toBe('gpt-5.4-mini');
+
+    // A chat it did not start is not its to change, and an empty call changes nothing.
+    expect((await call(fromA, 'set_model', { conversation_id: b.id, model: 'gpt-5.4-mini' })).text).toMatch(/only change its own/);
+    expect((await call(fromA, 'set_model', { conversation_id: sub.id })).text).toMatch(/give model/);
+    expect(t.store.getConversation(b.id)!.model).toBe('');
+  });
+
+  it('keep a sub-agent on the parent\'s own model when that one cannot be ranked', async () => {
     const t = await boot();
     const { p, a } = await twoConvs(await t.connect());
     const fromA = await t.connectAs(a.id);
-    const r = await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-big' });
-    expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/not allowed any/);
-    const listed = (await call(fromA, 'list_models')).json;
-    expect(listed).toMatchObject({ backend: 'codex', models: [], efforts: [] });
-    // Without a model it still works, on the default, and remembers who made it.
     const sub = (await call(fromA, 'create_conversation', { project_id: p.id })).json;
     expect(sub).toMatchObject({ parent: a.id, model: '', effective_model: null });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-5.4-mini' })).text).toMatch(/cannot tell/);
+    expect((await call(fromA, 'list_models')).json).toMatchObject({ your_model: null, models: [], note: expect.stringMatching(/cannot be ranked/) });
   });
 
-  it('lets an agent pick and step up within the admin\'s list, for its own sub-agents only', async () => {
+  it('do not take one CLI\'s default for another\'s', async () => {
     const t = await boot();
-    const c = await t.connect();
-    const { p, a, b } = await twoConvs(c);
-    expect((await allow(t, ['gpt-small', 'gpt-mid'], 'medium')).statusCode).toBe(204);
-    t.store.setDefaultModel('gpt-small');
+    const { p, a } = await twoConvs(await t.connect());
     const fromA = await t.connectAs(a.id);
+    // Nothing set anywhere: on another CLI neither its default model nor its default effort compares with the parent's.
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude' })).text).toMatch(/cannot tell whether claude's default model/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, effort: 'medium' })).text).toMatch(/cannot tell whether effort medium/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, effort: 'low' })).isError).toBe(false); // nothing is below it
+    t.store.setModel(a.id, 'gpt-5.5');
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude', model: 'haiku' })).text).toMatch(/cannot tell whether effort claude's default/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude', model: 'haiku', effort: 'low' })).json).toMatchObject({ backend: 'claude', model: 'haiku', effort: 'low' });
+  });
 
-    const listed = (await call(fromA, 'list_models')).json;
-    expect(listed.models.map((m: { slug: string; rank: number }) => [m.rank, m.slug])).toEqual([[0, 'gpt-small'], [1, 'gpt-mid']]);
-    expect(listed.efforts).toEqual(['low', 'medium']);
-    expect(listed.default_model).toBe('gpt-small');
+  it('bring an inherited effort down to the highest the sub-agent\'s model takes', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    t.store.setBackend(a.id, 'claude');
+    t.store.setModel(a.id, 'claude-opus-5-5');
+    t.store.setEffort(a.id, 'max');
+    t.dispatcher.models = async (b) => b === 'codex'
+      ? [{ slug: 'gpt-5.5', name: '', description: '', efforts: ['low', 'medium', 'high', 'xhigh'] }, { slug: 'gpt-5.4-mini', name: '', description: '', efforts: ['low', 'medium'] }]
+      : [{ slug: 'claude-opus-5-5', name: '', description: '', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }];
+    const fromA = await t.connectAs(a.id);
+    // Codex has no max: the sub-agent runs on its highest instead of failing.
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.5' })).json).toMatchObject({ backend: 'codex', effort: 'xhigh' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.4-mini' })).json).toMatchObject({ effort: 'medium' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude' })).json).toMatchObject({ backend: 'claude', effort: 'max' });
+    // Without a model list (or a model not on it) the effort still comes down to the most its CLI takes at all.
+    t.dispatcher.models = async () => [];
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'codex', model: 'gpt-5.5' })).json).toMatchObject({ effort: 'xhigh' });
+    expect((await call(fromA, 'create_conversation', { project_id: p.id, backend: 'claude' })).json).toMatchObject({ effort: 'max' });
+  });
 
-    const sub = (await call(fromA, 'create_conversation', { project_id: p.id, effort: 'low' })).json;
-    expect(sub).toMatchObject({ parent: a.id, effective_model: 'gpt-small', effective_effort: 'low' });
-    expect((await call(fromA, 'create_conversation', { project_id: p.id, model: 'gpt-huge' })).text).toMatch(/gpt-small, gpt-mid/);
-    expect((await call(fromA, 'create_conversation', { project_id: p.id, effort: 'high' })).text).toMatch(/at most medium/);
-
-    const up = (await call(fromA, 'set_model', { conversation_id: sub.id, model: 'gpt-mid', effort: 'medium' })).json;
-    expect(up).toMatchObject({ model: 'gpt-mid', effort: 'medium', effective_model: 'gpt-mid' });
-    expect(t.store.getConversation(sub.id)).toMatchObject({ model: 'gpt-mid', effort: 'medium' });
-    expect((await call(fromA, 'get_conversation', { conversation_id: sub.id })).json.effective_model).toBe('gpt-mid');
-    expect((await call(fromA, 'set_model', { conversation_id: sub.id, model: '' })).json.effective_model).toBe('gpt-small');
-    expect((await call(fromA, 'set_model', { conversation_id: a.id, model: 'gpt-mid' })).isError).toBe(false);
-
-    // A chat it did not start is not its to change, and an empty call changes nothing.
-    expect((await call(fromA, 'set_model', { conversation_id: b.id, model: 'gpt-mid' })).text).toMatch(/only change its own/);
-    expect((await call(fromA, 'set_model', { conversation_id: sub.id })).text).toMatch(/give model/);
-    expect(t.store.getConversation(b.id)!.model).toBe('');
+  it('lists only the models and efforts up to the agent\'s own, weakest first', async () => {
+    const t = await boot();
+    const { a } = await twoConvs(await t.connect());
+    t.dispatcher.models = async () => ['gpt-5.5', 'gpt-5.4-mini', 'mystery-1'].map((slug) => ({ slug, name: slug, description: '', efforts: [] }));
+    t.store.setDefaultModel('gpt-5.5');
+    t.store.setEffort(a.id, 'high');
+    const listed = (await call(await t.connectAs(a.id), 'list_models')).json;
+    expect(listed.models.map((m: { slug: string; rank: number }) => [m.rank, m.slug])).toEqual([[0, 'gpt-5.4-mini'], [2, 'gpt-5.5']]);
+    expect(listed).toMatchObject({ your_model: 'gpt-5.5', your_effort: 'high', efforts: ['low', 'medium', 'high'] });
   });
 
   it('lets an outside client pick any model and backend', async () => {
@@ -393,17 +428,6 @@ describe('models of sub-agents', () => {
     expect((await call(c, 'create_conversation', { project_id: p.id, model: '--flag' })).isError).toBe(true);
   });
 
-  it('keeps the agent model list per backend and for admins only', async () => {
-    const t = await boot();
-    const put = await t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models: ['opus'], maxEffort: 'high', backend: 'claude' } });
-    expect(put.statusCode).toBe(204);
-    expect((await t.app.inject({ url: '/api/settings/agent-models?backend=claude', headers: AUTH })).json()).toEqual({ models: ['opus'], maxEffort: 'high' });
-    expect((await t.app.inject({ url: '/api/settings/agent-models', headers: AUTH })).json()).toEqual({ models: [], maxEffort: '' });
-    const bad = await t.app.inject({ method: 'PUT', url: '/api/settings/agent-models', headers: AUTH, payload: { models: ['-x'], maxEffort: '' } });
-    expect(bad.statusCode).toBe(400);
-    const dev = await mkUser(t, 'budi', 'dev');
-    expect((await t.app.inject({ url: '/api/settings/agent-models', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);
-  });
 });
 
 describe('sub-agents', () => {
@@ -503,10 +527,14 @@ describe('sub-agents', () => {
   it('keep their limits in admin settings', async () => {
     const t = await boot();
     expect((await t.app.inject({ url: '/api/settings/subagents', headers: AUTH })).json())
-      .toMatchObject({ maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '', defaultGuide: expect.stringContaining('create_conversation') });
-    expect((await policy(t, { mode: 'auto' } as never)).statusCode).toBe(204); // a part leaves the rest as it was
-    expect(t.store.getSubagentPolicy()).toMatchObject({ maxChildren: 5, mode: 'auto' });
-    expect((await policy(t, { mode: 'always' } as never)).statusCode).toBe(400);
+      .toEqual({ maxChildren: 5, maxDepth: 2, autoSend: true });
+    expect((await policy(t, { maxDepth: 1 } as never)).statusCode).toBe(204); // a part leaves the rest as it was
+    expect(t.store.getSubagentPolicy()).toEqual({ maxChildren: 5, maxDepth: 1, autoSend: true });
+    await policy(t, { mode: 'auto', guide: 'x' } as never); // the skill decides now: not kept
+    expect(t.store.getSubagentPolicy()).toEqual({ maxChildren: 5, maxDepth: 1, autoSend: true });
+    // What older settings kept beside the limits is dropped.
+    t.store.setKv('subagents', '{"maxChildren":3,"mode":"auto","guide":"x"}');
+    expect(t.store.getSubagentPolicy()).toEqual({ maxChildren: 3, maxDepth: 2, autoSend: true });
     expect((await policy(t, { maxChildren: 99, maxDepth: 1, autoSend: true })).statusCode).toBe(400);
     const dev = await mkUser(t, 'budi', 'dev');
     expect((await t.app.inject({ url: '/api/settings/subagents', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);

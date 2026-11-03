@@ -82,7 +82,7 @@ async function focusWanted(id, beforeSwap) {
  */
 export async function refreshConv(id = chat.id.value, watched = false) {
   const c = await api(`/api/conversations/${id}`);
-  patchConv(id, { status: c.status, last_at: c.last_at, ...(c.title && { title: c.title }) }, watched);
+  patchConv(id, { status: c.status, last_at: c.last_at, last_turn: c.turns?.at(-1)?.status ?? null, ...(c.title && { title: c.title }) }, watched);
   if (chat.id.value === id && !(chat.conv.value?.id === id && chat.conv.value.last_at > c.last_at)) chat.conv.value = c;
 }
 export async function refreshQueue(id = chat.id.value) {

@@ -1,12 +1,17 @@
 // Chats across projects by what they need from a person: waiting on an approval, failed, finished with an answer not
 // read yet, running. The sidebar's "by status" list and the overview on Home read these.
 import { computed } from '../vendor/signals.js';
-import { approvals, clickupApprovals, convs, dbApprovals, projects, route, seen, sshApprovals } from './store.js';
+import { approvals, clickupApprovals, dbApprovals, route, seen, sshApprovals } from './store.js';
+import { descendants, family, isTop } from './chat-family.js';
 import { toDate } from './format.js';
 
-/** Every chat with its project, newest activity first. */
-export const allChats = computed(() => projects.value
-  .flatMap((project) => (convs.value.get(project.id) || []).map((conv) => ({ project, conv })))
+/**
+ * The chats people started, each with its project and the chats under it (`agents`: sub-agents and reviewers, at any
+ * depth and in any project; they are not listed on their own), newest activity first.
+ */
+export const allChats = computed(() => [...family.value.byId.values()]
+  .filter(({ conv }) => isTop(conv))
+  .map(({ project, conv }) => ({ project, conv, agents: descendants(conv.id) }))
   .sort((a, b) => (b.conv.last_at || '').localeCompare(a.conv.last_at || '')));
 
 /** A chat that ended a turn since it was last open on this device (not the one in view). */
@@ -14,7 +19,7 @@ export const isUnread = (c) => !!c.last_at && c.status !== 'running' && !!seen.v
   && !(route.value.view === 'chat' && route.value.id === c.id);
 
 /** chat id -> how many approvals wait in it (messages to it, database writes, SSH commands and ClickUp messages it asked for). */
-const waitingIn = computed(() => {
+export const waitingIn = computed(() => {
   const n = new Map();
   const add = (id) => { if (id) n.set(id, (n.get(id) || 0) + 1); };
   for (const a of approvals.value) add(a.to_conv);
@@ -24,12 +29,16 @@ const waitingIn = computed(() => {
   return n;
 });
 
-/** Why a chat needs a person, or '' when it does not: 'approval' | 'failed' | 'unread'. */
-export function needs(c) {
-  if (waitingIn.value.get(c.id)) return 'approval';
+/**
+ * Why a chat needs a person, or '' when it does not: 'approval' | 'failed' | 'unread'. An approval one of its agents
+ * waits for counts too; their failures and answers go to the chat above them, which reports on them.
+ */
+export function needs(c, agents = []) {
+  if (waitingIn.value.get(c.id) || agents.some((a) => waitingIn.value.get(a.id))) return 'approval';
   if (c.status === 'failed') return 'failed';
   return isUnread(c) ? 'unread' : '';
 }
+const waitingAll = (x) => [x.conv, ...x.agents].reduce((n, c) => n + (waitingIn.value.get(c.id) || 0), 0);
 
 const ORDER = { approval: 0, failed: 1, unread: 2 };
 
@@ -39,9 +48,9 @@ export const byStatus = computed(() => {
   const running = [];
   const rest = [];
   for (const x of allChats.value) {
-    const why = needs(x.conv);
-    if (why) attention.push({ ...x, why, count: waitingIn.value.get(x.conv.id) || 0 });
-    else if (x.conv.status === 'running') running.push(x);
+    const why = needs(x.conv, x.agents);
+    if (why) attention.push({ ...x, why, count: waitingAll(x) });
+    else if (x.conv.status === 'running' || x.agents.some((a) => a.status === 'running')) running.push(x);
     else rest.push(x);
   }
   attention.sort((a, b) => ORDER[a.why] - ORDER[b.why]);

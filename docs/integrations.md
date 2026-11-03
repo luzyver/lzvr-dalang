@@ -44,30 +44,38 @@ chat is held until you approve it in the panel (or `POST /api/approvals/:id/appr
 **Sub-agents and their models.** `create_conversation` takes `model`, `effort` and `backend`; `set_model` changes a
 chat's model or effort from its next turn on (its session carries on). `get_conversation` says what the chat runs with
 (`effective_model`, `effective_effort`: its own, else the panel's default; `null` leaves it to the CLI), and
-`list_models` lists the choices. An outside client may pick anything. An agent may pick only what an admin allows in
-**Settings → Model & effort** (*agents may pick*, per backend): a list of models, weakest first, and the highest
-effort. Until that is set, agents keep the default. An agent may change only its own chat and the chats it created
-(`parent` in the conversation), and the tools tell it to start with the weakest model that fits and go one step up
-only when a result falls short.
+`list_models` lists the choices. An outside client may pick anything. An agent may pick any model and effort that
+is not above its own chat's: a sub-agent never runs on a stronger model or a higher effort than the agent that starts
+it, and an agent never moves its own chat up. Strength comes from the model's name, on one scale for both CLIs (0:
+haiku, `*-mini`; 1: sonnet; 2: opus, `gpt-*`; 3: fable). A model whose name it does not know is allowed only when it
+is the agent's own, and a model or effort left to a CLI's own default compares only with the same CLI's default
+(effort `low` is always allowed). Left out, a sub-agent runs on its parent's effort, and on its parent's model when it
+is on the same CLI. The limit holds at every turn: when a chat above a sub-agent has moved down since, the sub-agent
+comes down to it from then on, model and effort apart, each only as far as the lowest chat above it needs (on another
+CLI, where the model cannot be carried over, its turn fails, and the reason is the report its parent gets). A CLI's own
+default model can differ per account (Claude's follows the plan), so for an exact limit set a default model in
+Settings → Model & effort. An agent may change only its own chat and the chats it created (`parent` in the
+conversation), and the tools tell it to start with the weakest model that fits and go one step up only when a result
+falls short.
 
-**Sub-agents.** When delegation is requested or enabled by the orchestrator mode below:
-`create_conversation` from inside a chat makes a sub-agent of it (with `prompt`, its first task starts at once;
-with `worktree`, it gets its own branch and folder). In the sidebar each sub-agent sits under the chat that started it,
-with its model, and folds away like a project. A prompt an agent sends its own sub-agent in the same project runs
-without approval, and when the sub-agent is done (with everything its parent queued) its last answer comes back to the
-parent as a new prompt, so the parent goes on without polling. A sub-agent that handed work to sub-agents of its own
-holds its report until they have all answered, and the turn that reads their last answer reports up instead, so a
-parent gets no "finished" while work below it still runs. Prompts someone else sends a sub-agent are not reported. **Settings → Model & effort → Orchestrator** sets how many
-sub-agents one chat may have (default 5, 0 turns them off), how many levels deep (default 2), and whether agents may
-send their own sub-agents work without approval (default on).
+**Sub-agents.** `create_conversation` from inside a chat makes a sub-agent of it (with `prompt`, its first task starts
+at once; with `worktree`, it gets its own branch and folder). In the sidebar each sub-agent sits under the chat that
+started it, with its model, and folds away like a project. A prompt an agent sends its own sub-agent in the same
+project runs without approval, and when the sub-agent is done (with everything its parent queued) its last answer
+comes back to the parent as a new prompt, so the parent goes on without polling. A sub-agent that handed work to
+sub-agents of its own holds its report until they have all answered, and the turn that reads their last answer reports
+up instead, so a parent gets no "finished" while work below it still runs. Prompts someone else sends a sub-agent are
+not reported. **Settings → Model & effort → Sub-agents** sets how many sub-agents one chat may have (default 5, 0 turns
+them off), how many levels deep (default 2), and whether agents may send their own sub-agents work without approval
+(default on).
 
-**Orchestrator mode.** By default (*Only when asked*) an agent starts sub-agents when someone tells it to: the tools
-are there, but nothing points it at them. With *Agents decide themselves*, every turn that may still start a sub-agent
-(gateway on, sub-agents allowed, chat above the depth limit) gets a guide on when and how to (split independent,
-sizeable parts; the weakest model that fits; a worktree for one that changes files; no polling; check the reports),
-followed by its project id, how many sub-agents it may still start and the models it may pick. Claude Code gets it with
-`--append-system-prompt`, Codex as `developer_instructions`. The guide can be edited there (empty = the built-in one).
-This mode can use noticeably more of the accounts' limits.
+**When agents use them.** The agent decides. Every turn that may still start a sub-agent (gateway on, sub-agents
+allowed, chat above the depth limit) gets one line with its project id, how many sub-agents it may still start and its
+own model and effort, and is pointed at the `orchestrating-subagents` skill
+([skills/orchestrating-subagents/SKILL.md](../skills/orchestrating-subagents/SKILL.md)): when to split and when not,
+picking the weakest model that fits, briefing a sub-agent, a worktree for one that changes files, no polling, and
+checking the reports. Claude Code gets the line with `--append-system-prompt`, Codex as `developer_instructions`.
+Sub-agents can use noticeably more of the accounts' limits.
 
 **What this does and does not protect.** It stops an agent from messaging other chats or widening sandboxes through the gateway.
 It is not a wall against a hostile agent on the same machine: an agent that

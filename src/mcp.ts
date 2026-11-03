@@ -13,6 +13,7 @@ import {
 import type { Dispatcher } from './dispatcher.js';
 import { createWorktreeChat, dropWorktrees } from './git-routes.js';
 import { cleanMemory, MEMORY_MAX, queryTerms, searchTerms } from './memory.js';
+import { EFFORTS, modelTier, refuseChoice, runOf } from './model-ceiling.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { reviewTools } from './review-tools.js';
@@ -29,29 +30,9 @@ type Deps = {
 const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
 
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 // Starts with a letter/digit so the value can never be read as a CLI flag (as in the REST API).
 const MODEL = z.string().regex(/^([A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,63})?$/, 'a model slug');
 const EFFORT = z.enum(['', ...EFFORTS]);
-
-/**
- * Whether the caller may give a chat on `backend` this model and effort ('' = back to the default). Outside clients
- * may pick anything; an agent only a model on the admin's list and an effort up to the admin's maximum.
- * Returns why not, or null.
- */
-function refuseChoice(store: Store, agent: boolean, backend: Backend, model?: string, effort?: string): string | null {
-  if (!agent) return null;
-  const allowed = store.getAgentModels(backend);
-  if (model && !allowed.includes(model)) {
-    return allowed.length ? `model ${model} is not allowed for agents; pick one of ${allowed.join(', ')} (see list_models)`
-      : 'agents may not choose a model here: an admin has not allowed any (they keep the default)';
-  }
-  const max = store.getAgentMaxEffort(backend);
-  if (effort && EFFORTS.indexOf(effort as never) > EFFORTS.indexOf(max as never)) {
-    return max ? `effort ${effort} is above what agents may use (at most ${max})` : 'agents may not choose an effort here: an admin has not allowed it';
-  }
-  return null;
-}
 
 // What an agent running inside a conversation may do. It runs in the Codex process, outside Codex's sandbox, so it
 // gets no way to widen its own powers: no new projects or sandbox levels, no approvals, no deleting.
@@ -92,6 +73,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     return c && getProject(c.project_id) ? c : null;
   };
   const noConv = (id: string) => fail(`no such conversation: ${id}`);
+  // The calling agent's own model and effort: the most it may give a chat (see refuseChoice).
+  const cap = () => { const own = source ? store.getConversation(source) : null; return own ? runOf(store, own) : null; };
   /**
    * Queue `prompt` in `c`. An agent's prompt into another chat waits for a person, except into its own sub-agents in
    * the same project (unless an admin turned that off), which run it at once and report back (see Dispatcher).
@@ -107,12 +90,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     dispatcher.kick(c.id);
     return { status: 'queued' as const, queue_id: queueId };
   };
-  // What the chat's next turn runs with: its own model/effort, else the panel's default, else (null) the CLI's own.
-  const withEffective = (c: Conversation) => ({
-    ...c,
-    effective_model: c.model || store.getDefaultModel(c.backend) || null,
-    effective_effort: c.effort || store.getDefaultEffort(c.backend) || null,
-  });
+  // What the chat's next turn runs with.
+  const withEffective = (c: Conversation) => { const r = runOf(store, c); return { ...c, effective_model: r.model, effective_effort: r.effort }; };
 
   s.registerTool('list_projects', { description: 'List registered projects.' }, async () => text(store.listProjects().filter(open)));
 
@@ -149,8 +128,9 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
       + 'you decide how many to start, for what, and with which model; give prompt to start its task at once (see send_prompt: '
       + 'its answer comes back to you as a message). With worktree, it works on its own git branch and folder, so parallel '
       + 'sub-agents do not write over each other. model, effort and backend choose what runs it (default: the project\'s backend '
-      + 'and the default model); see list_models for what you may pick. Pick the weakest model that fits the task, and move it up '
-      + 'with set_model only if its work falls short.',
+      + 'and the default model; from inside a chat, your own model and effort). It never runs above yours: see list_models. '
+      + 'Pick the weakest model that fits the task, and move it up with set_model only if its work falls short. '
+      + 'Before your first sub-agent in a chat, read the orchestrating-subagents skill (SKILL.md in the skills list) and follow it.',
     inputSchema: {
       project_id: z.string(), worktree: z.boolean().optional(),
       backend: z.enum(BACKENDS).optional(), model: MODEL.optional(), effort: EFFORT.optional(),
@@ -159,7 +139,14 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   }, async ({ project_id, worktree, backend, model, effort, prompt }) => {
     const project = getProject(project_id);
     if (!project) return fail(`no such project: ${project_id}`);
-    const why = refuseChoice(store, Boolean(source), backend ?? project.backend, model, effort);
+    const ceiling = cap();
+    const b = backend ?? project.backend;
+    // Left out, a sub-agent runs on the parent's effort, and on the parent's model when it is on the same CLI.
+    const inherit = { model: ceiling && b === ceiling.backend ? ceiling.model : null, effort: ceiling?.effort ?? null };
+    // An effort the child's model does not take (max on Codex, xhigh on a small model) comes down to the highest it does.
+    if (!effort && inherit.effort) inherit.effort = await dispatcher.fitEffort(b, model || inherit.model || null, inherit.effort);
+    const want = { backend: b, model: model || inherit.model || store.getDefaultModel(b) || null, effort: effort || inherit.effort || store.getDefaultEffort(b) || null };
+    const why = refuseChoice(want, ceiling);
     if (why) return fail(why);
     if (source) {
       const policy = store.getSubagentPolicy();
@@ -175,15 +162,16 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     try {
       c = worktree ? await createWorktreeChat(store, cfg, project, { backend, parent: source ?? '' }) : store.createConversation(project_id, backend, source ?? '');
     } catch (e) { return fail((e as Error).message); }
-    if (model) store.setModel(c.id, model);
-    if (effort) store.setEffort(c.id, effort);
+    if (model || inherit.model) store.setModel(c.id, model || inherit.model!);
+    if (effort || inherit.effort) store.setEffort(c.id, effort || inherit.effort!);
     const created = withEffective(store.getConversation(c.id)!);
     return text(prompt ? { ...created, prompt: deliver(created, prompt) } : created);
   });
 
   s.registerTool('set_model', {
     description: 'Change the model and/or reasoning effort of a conversation, from its next turn on (its session carries on). '
-      + 'An agent may change its own conversation and the ones it created, within what list_models allows; \'\' goes back to the default. '
+      + 'An agent may change its own conversation and the ones it created, never above its own model and effort (see list_models); '
+      + '\'\' goes back to the default. '
       + 'Move one step up at a time, when a result falls short (failing tests, unfinished or wrong work), not by default.',
     inputSchema: {
       conversation_id: z.string(), model: MODEL.optional(), effort: EFFORT.optional(),
@@ -197,7 +185,9 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     if (model === undefined && effort === undefined && backend === undefined) return fail('give model, effort, backend or a mix');
     const moving = backend !== undefined && backend !== c.backend;
     if (moving && dispatcher.isRunning(c.id)) return fail('a turn is running in that conversation: change its backend once it is done');
-    const why = refuseChoice(store, Boolean(source), backend ?? c.backend, model, effort);
+    // A move to another CLI drops the model and effort it had (see Store.setBackend).
+    const next = { backend: backend ?? c.backend, model: model ?? (moving ? '' : c.model), effort: effort ?? (moving ? '' : c.effort) };
+    const why = refuseChoice(runOf(store, next), cap());
     if (why) return fail(why);
     if (moving) store.setBackend(c.id, backend);
     if (model !== undefined) store.setModel(c.id, model);
@@ -207,27 +197,27 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
 
   s.registerTool('list_models', {
     description: 'The models and reasoning efforts a conversation on this backend can run with, weakest first, the defaults, '
-      + 'and (for an agent) which of them you may pick with create_conversation and set_model.',
+      + 'and (for an agent) which of them you may pick with create_conversation and set_model: none above your own.',
     inputSchema: { backend: z.enum(BACKENDS).optional().describe('default: your conversation\'s backend, else codex') },
   }, async ({ backend }) => {
     const b = backend ?? (source ? store.getConversation(source)?.backend : undefined) ?? 'codex';
     const known = await dispatcher.models(b);
     const defaults = { default_model: store.getDefaultModel(b) || null, default_effort: store.getDefaultEffort(b) || null };
-    if (!source) return text({ backend: b, ...defaults, models: known });
-    const allowed = store.getAgentModels(b);
-    const max = store.getAgentMaxEffort(b);
+    const own = cap();
+    if (!own) return text({ backend: b, ...defaults, models: known });
+    const top = own.model ? modelTier(own.model) : null;
+    const allowed = known.filter((m) => m.slug === own.model || (top !== null && (modelTier(m.slug) ?? Infinity) <= top))
+      .map((m) => ({ rank: modelTier(m.slug) ?? top ?? 0, ...m }))
+      .sort((x, y) => x.rank - y.rank);
     return text({
-      backend: b, ...defaults,
-      models: allowed.map((slug, rank) => {
-        const m = known.find((k) => k.slug === slug);
-        return { rank, slug, name: m?.name ?? slug, description: m?.description ?? '', efforts: m?.efforts ?? [] };
-      }),
-      efforts: max ? EFFORTS.slice(0, EFFORTS.indexOf(max as never) + 1) : [],
-      note: allowed.length ? 'Ranked weakest (0) to strongest. Start low; go one rank up only when the work falls short.'
-        : 'An admin has not allowed agents to choose a model on this backend: new conversations use the default.',
+      backend: b, ...defaults, your_model: own.model, your_effort: own.effort,
+      models: allowed,
+      efforts: own.effort ? EFFORTS.slice(0, EFFORTS.indexOf(own.effort as never) + 1) : [EFFORTS[0]],
+      note: top !== null
+        ? 'Ranked weakest (0) to strongest, none above your own model. Start low; go one rank up only when the work falls short.'
+        : 'Your own model cannot be ranked: leave model out and sub-agents run on yours.',
     });
   });
-
 
   s.registerTool('get_conversation', {
     description: 'Get a conversation with its most recent turns.',

@@ -178,3 +178,75 @@ dialog.diff-modal { width: min(1280px, calc(100vw - 24px)); height: min(860px, c
 .insp-resize:hover::after, .insp-resize:focus-visible::after, .resizing .insp-resize::after { background: var(--accent); width: 2px; }
 .insp-resize:focus-visible { outline: none; }
 .resizing, .resizing * { cursor: col-resize !important; user-select: none; }
+
+/* Agents: the open chat's tree. The chat a person started sits on a card; its agents hang under it on elbow lines,
+   one row each: title over what it runs on, where it stands on the right. */
+.agents { display: flex; flex-direction: column; gap: var(--s3); }
+.agents-note { margin: 0; font-size: var(--fs-sm); color: var(--text-faint); }
+.agents-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: var(--fs-sm); color: var(--text-faint); }
+.agents-count { color: var(--text); font-weight: 600; }
+.agents-tally { font-variant-numeric: tabular-nums; }
+.agents-tally.waiting { color: var(--warn); }
+.agents-tally.running { color: var(--accent-text); }
+.agents-tally.failed { color: var(--err); }
+.agent-tree, .agent-kids { list-style: none; margin: 0; padding: 0; }
+.agent-kids { position: relative; margin-left: 15px; padding-left: 14px; }
+/* Each child: an elbow from the rail into its row; every child but the last carries the rail on down. */
+.agent-kids > .agent-node { position: relative; }
+.agent-kids > .agent-node::before { content: ''; position: absolute; left: -14px; top: 0; width: 16px; height: 16px;
+  border: solid var(--line-strong); border-width: 0 0 1px 1px; border-bottom-left-radius: 7px; }
+.agent-kids > .agent-node:not(:last-child)::after { content: ''; position: absolute; left: -14px; top: 0; bottom: 0; border-left: 1px solid var(--line-strong); }
+
+.agent-row { position: relative; display: flex; align-items: flex-start; min-width: 0; margin: 1px 0; border-radius: var(--r-md); color: var(--text-dim); font-size: var(--fs-sm); }
+.agent-row:hover { background-color: var(--hover); }
+.agent-row.root { margin-bottom: 4px; background: var(--surface); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); color: var(--text); }
+.agent-row.active:not(.root) { background-color: var(--surface); box-shadow: 0 0 0 1px var(--line); color: var(--text); }
+.agent-row.root.active { box-shadow: var(--shadow-sm), 0 0 0 1px var(--accent-line); }
+.agent-fold { flex: none; display: grid; place-items: center; width: 22px; height: 22px; margin: 4px 0 0 4px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--text-faint); cursor: pointer; }
+span.agent-fold { cursor: default; }
+button.agent-fold:hover { background: var(--hover); color: var(--text); }
+.agent-link { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 8px 6px 4px; color: inherit; text-decoration: none; }
+.agent-link:hover { text-decoration: none; }
+.agent-main { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.agent-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text); }
+.agent-row.root .agent-title { font-weight: 600; }
+.agent-row.unread .agent-title { font-weight: 650; }
+.agent-row.unread .agent-title::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; vertical-align: middle; border-radius: 50%; background: var(--accent); }
+.agent-meta { display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-faint); }
+.agent-state { flex: none; align-self: center; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-size: var(--fs-xs); }
+.agent-state-label { display: inline-flex; align-items: center; gap: 4px; font-weight: 550; color: var(--text-faint); }
+.agent-state.running .agent-state-label { color: var(--accent-text); }
+.agent-state.waiting .agent-state-label { color: var(--warn); }
+.agent-state.failed .agent-state-label { color: var(--err); }
+.agent-state.done .agent-state-label { color: var(--ok); }
+.agent-when { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.agent-row .row-action { position: absolute; top: 50%; right: 6px; translate: 0 -50%; }
+.agent-row:hover .row-action, .agent-row:focus-within .row-action { opacity: 1; }
+.agent-row:hover:has(.row-action) .agent-state, .agent-row:focus-within:has(.row-action) .agent-state { visibility: hidden; }
+@media (hover: none) { .agent-row:has(.row-action) .agent-link { padding-right: 40px; } }
+
+/* Turns: under the tree, the started chat's turns, the ones that started agents marked with how many. */
+.turns { display: flex; flex-direction: column; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.turns-head { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-sm); color: var(--text-faint); }
+.turns-title { color: var(--text); font-weight: 600; }
+.turns-count { flex: 1; font-variant-numeric: tabular-nums; }
+.turns-toggle { padding: 0; border: 0; background: none; color: var(--accent-text); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
+.turns-toggle:hover { text-decoration: underline; }
+.turn-list, .turn-kids { list-style: none; margin: 0; padding: 0; }
+.turn-head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 5px 6px; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--text-dim); font: inherit; font-size: var(--fs-sm); text-align: left; }
+button.turn-head { cursor: pointer; }
+button.turn-head:hover { background: var(--hover); }
+.turn-spacer { flex: none; width: 14px; }
+.turn-no { flex: none; min-width: 52px; font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.turn-row.orch .turn-no { color: var(--text); font-weight: 550; }
+.turn-prompt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-agents { flex: none; display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-text); font-size: var(--fs-xs); font-weight: 550; font-variant-numeric: tabular-nums; }
+.turn-when { flex: none; font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.turn-when.running { color: var(--accent-text); }
+.turn-kids { margin: 0 0 4px 26px; padding-left: 10px; border-left: 1px solid var(--line-strong); }
+.turn-kids a { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: var(--r-sm); color: var(--text-dim); font-size: var(--fs-xs); text-decoration: none; }
+.turn-kids a:hover { background: var(--hover); color: var(--text); }
+.turn-kind { color: var(--text-faint); }
