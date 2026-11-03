@@ -362,7 +362,8 @@ describe('code memory', () => {
     await until(() => t.codeMemory.state(p.id)?.status === 'indexing');
     await t.settings({ enabled: false, command: 'cbm', cacheDir: '', runtimeDir: '' });
     expect(t.hold.closed).toBe(1);
-    await new Promise((r) => setTimeout(r, 100));
+    // The index ends once the closed session gives up on it, which a slow machine takes its time over.
+    await until(() => t.codeMemory.state(p.id)?.status !== 'indexing');
     expect(t.codeMemory.state(p.id)).toEqual(ready); // not "failed"
     expect(t.codeMemory.state(q.id)?.status).toBe('ready');
   });

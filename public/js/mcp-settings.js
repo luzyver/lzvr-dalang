@@ -46,7 +46,7 @@ function ClickUpCard() {
     <label class="check small"><input type="checkbox" checked=${s.allUsers} onChange=${(e) => setS({ ...s, allUsers: e.currentTarget.checked })} />
       All users: admins' and devs' chats get it too, reading your ClickUp messages</label>
     <label class="check small"><input type="checkbox" checked=${s.send} onChange=${(e) => setS({ ...s, send: e.currentTarget.checked })} />
-      Allow sending: chats that get these tools can also send ClickUp messages as you${s.allUsers ? ', including admins\' and devs\' chats' : ''}</label>
+      Allow sending: chats that get these tools can also ask to send ClickUp messages as you${s.allUsers ? ', including admins\' and devs\' chats' : ''}; each one waits for your approval</label>
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
       <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.configured}>Test connection<//>

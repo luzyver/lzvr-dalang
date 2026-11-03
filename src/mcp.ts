@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { type ClickUpApproval, createClickUpApproval, describeDestination, readClickUpApprovals } from './clickup-approvals.js';
 import { type ClickUp, MAX_SEND, startOfDay } from './clickup.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
@@ -408,7 +409,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   const hidden = source ? (name: string) => !AGENT_TOOLS.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
   const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
-  if (cu) clickupTools(server, cu, d.clickupSend?.() ?? false);
+  if (cu) clickupTools(server, store, push, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source });
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
@@ -447,9 +448,10 @@ const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 /**
  * ClickUp Chat tools. They use the owner's personal ClickUp token, so unless the owner marked them for all users only
  * the owner gets them: the main token or the owner's own sign-in from outside, and inside a chat only during a turn the
- * owner sent. They only read, unless the owner also allowed sending (clickup_send_message, which sends as the owner).
+ * owner sent. They only read, unless the owner also allowed sending: clickup_send_message then asks to send as the
+ * owner, and each message waits for the owner's approval.
  */
-function clickupTools(server: McpServer, cu: ClickUp, send: boolean): void {
+function clickupTools(server: McpServer, store: Store, push: Push, cu: ClickUp, send: boolean, by: { who: string; conv: string | null }): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
@@ -477,18 +479,60 @@ function clickupTools(server: McpServer, cu: ClickUp, send: boolean): void {
     includeReplies: a.include_replies, limit: a.limit,
   })));
 
-  if (!send) return;
-  server.registerTool('clickup_send_message', {
-    description: 'Send a ClickUp Chat message (markdown) to a channel, DM or group DM, or as a reply in a message\'s thread, '
-      + 'as the ClickUp user from clickup_whoami. Others see it at once and it cannot be taken back here: send only what '
-      + 'the person asked to send, with the wording they agreed to.',
+  server.registerTool('clickup_list_threads', {
+    description: 'The latest top-level messages of a ClickUp Chat channel or DM, newest first (id, local date and time, '
+      + 'author, how many replies, the start of the text), to pick one whose thread to reply in.',
     inputSchema: {
       channel_id: z.string().min(1).describe('from clickup_list_channels'),
-      content: z.string().min(1).max(MAX_SEND),
-      reply_to: z.string().optional().describe('a message id (from clickup_chat_history) to reply to in its thread'),
       workspace_id: z.string().optional().describe("the channel's workspace; default: looked up"),
+      limit: z.number().int().min(1).max(100).optional().describe('default 20'),
     },
-  }, async (a) => run(() => cu.send({ channelId: a.channel_id, content: a.content, replyTo: a.reply_to, workspaceId: a.workspace_id })));
+  }, async (a) => run(() => cu.threads(a.channel_id, a.workspace_id, a.limit)));
+
+  server.registerTool('clickup_find_people', {
+    description: 'People in the ClickUp workspaces (id, name, email, workspace), but the ClickUp user itself, whose name or '
+      + 'email contains query: whom to send a direct message to.',
+    inputSchema: { query: z.string().optional().describe('part of a name or email; empty lists everyone'), workspace_ids: WORKSPACES },
+  }, async (a) => run(() => cu.people(a.query, a.workspace_ids)));
+
+  if (!send) return;
+  server.registerTool('clickup_send_message', {
+    description: 'Ask to send a ClickUp Chat message (markdown) as the ClickUp user from clickup_whoami: to a channel, DM '
+      + 'or group DM (channel_id), as a reply in the thread of one of its messages (channel_id and reply_to), or privately '
+      + 'to a person (to_user_id; their DM is opened). Before calling, settle with the person where it goes: unless they '
+      + 'named it plainly, show the choices and let them pick: the channel (clickup_list_channels), then whether to post '
+      + 'in it or reply in a thread and which one (clickup_list_threads), or, for a private message, the person '
+      + '(clickup_find_people). Then show the text and send only what they agreed to. Nothing is sent at once: the '
+      + 'message waits for the owner to approve it in Dalang (status pending_approval), who may change the text; the '
+      + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits.',
+    inputSchema: {
+      channel_id: z.string().optional().describe('from clickup_list_channels'),
+      to_user_id: z.string().optional().describe('instead of channel_id: a person from clickup_find_people'),
+      reply_to: z.string().optional().describe('with channel_id: a message id (from clickup_list_threads) to reply to in its thread'),
+      content: z.string().min(1).max(MAX_SEND),
+      workspace_id: z.string().optional().describe("the channel's or person's workspace; default: looked up"),
+    },
+  }, async (a) => run(async () => {
+    if (!a.content.trim()) throw new Error('the message is empty');
+    const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
+    const p = createClickUpApproval(store, { dest, content: a.content.trim(), who: by.who, conv: by.conv });
+    void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { owner: true } });
+    return {
+      status: 'pending_approval', approval_id: p.id, to: dest,
+      note: 'Nothing was sent yet: the owner approves it in Dalang. The outcome will arrive in this chat as a message; do not send it again.',
+    };
+  }));
+
+  server.registerTool('clickup_send_status', {
+    description: 'The status of a ClickUp message asked for with clickup_send_message: pending, sending, sent, rejected, '
+      + 'failed, unknown (sending was cut off) or dismissed, with the text as sent. Never ask again for a sending, sent or unknown one.',
+    inputSchema: { approval_id: z.number().int() },
+  }, async ({ approval_id }) => {
+    // Only the one who asked: the same chat, or from outside a chat the same panel user.
+    const mine = (x: ClickUpApproval) => (by.conv ? x.conv === by.conv : x.conv === null && x.who === by.who);
+    const a = readClickUpApprovals(store).find((x) => x.id === approval_id && mine(x));
+    return a ? text(a) : fail(`no such approval: ${approval_id}`);
+  });
 }
 
 const AGENT_DB_TIMEOUT_MS = 30_000;

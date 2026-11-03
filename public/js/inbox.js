@@ -1,7 +1,7 @@
 // Chats across projects by what they need from a person: waiting on an approval, failed, finished with an answer not
 // read yet, running. The sidebar's "by status" list and the overview on Home read these.
 import { computed } from '../vendor/signals.js';
-import { approvals, convs, dbApprovals, projects, route, seen, sshApprovals } from './store.js';
+import { approvals, clickupApprovals, convs, dbApprovals, projects, route, seen, sshApprovals } from './store.js';
 import { toDate } from './format.js';
 
 /** Every chat with its project, newest activity first. */
@@ -13,13 +13,14 @@ export const allChats = computed(() => projects.value
 export const isUnread = (c) => !!c.last_at && c.status !== 'running' && !!seen.value && !(seen.value[c.id] >= c.last_at)
   && !(route.value.view === 'chat' && route.value.id === c.id);
 
-/** chat id -> how many approvals wait in it (messages to it, database writes and SSH commands it asked for). */
+/** chat id -> how many approvals wait in it (messages to it, database writes, SSH commands and ClickUp messages it asked for). */
 const waitingIn = computed(() => {
   const n = new Map();
   const add = (id) => { if (id) n.set(id, (n.get(id) || 0) + 1); };
   for (const a of approvals.value) add(a.to_conv);
   for (const a of dbApprovals.value) add(a.conv);
   for (const a of sshApprovals.value) add(a.conv);
+  for (const a of clickupApprovals.value) if (a.status === 'pending') add(a.conv);
   return n;
 });
 

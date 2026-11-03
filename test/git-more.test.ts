@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -433,6 +433,42 @@ describe('pull request status', () => {
     expect(m.state).toBe('merged');
     const calls = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(calls[1].args).toEqual(['pr', 'merge', 'https://github.com/acme/app/pull/7', '--squash']);
+  });
+
+  it('follows a target branch changed on the forge while the pull request is open', async () => {
+    const t = await project();
+    t.cfg.forge = 'github';
+    t.cfg.ghCommand = [process.execPath, fakeGh, join(t.base, 'gh.log')];
+    const wt = await t.chat(true);
+    t.commitHere('b.txt', 'b\n', 'feat: Add b', wt.worktree);
+    expect((await t.call('POST', '/pull-request', { title: 'feat: Add b' }, wt.id)).statusCode).toBe(200);
+    const old = process.env.FAKE_GH_BASE;
+    try {
+      process.env.FAKE_GH_BASE = 'main';
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json()).toMatchObject({ base: 'main', retargeted: false });
+      process.env.FAKE_GH_BASE = 'release';
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json()).toMatchObject({ base: 'release', retargeted: true });
+      // Not fetched here, yet the target stays the branch the open pull request goes into.
+      expect((await t.status(wt.id)).mr).toMatchObject({ base: 'release', picked: true, baseMissing: true });
+      expect((await t.call('GET', '/pull-request', undefined, wt.id)).json().retargeted).toBe(false);
+
+      // The forge answers after the chat moved on (another branch, then another pull request): its answer changes nothing.
+      const hold = join(t.base, 'hold');
+      process.env.FAKE_GH_HOLD = hold;
+      process.env.FAKE_GH_BASE = 'develop';
+      for (const [url, branch] of [['https://github.com/acme/app/pull/7', 'other'], ['https://github.com/acme/app/pull/8', wt.branch!]]) {
+        const asked = t.call('GET', '/pull-request', undefined, wt.id);
+        await until(() => existsSync(hold));
+        t.store.setPrUrl(wt.id, url, branch);
+        rmSync(hold);
+        expect((await asked).json()).toMatchObject({ base: 'develop', retargeted: false });
+        expect(t.store.getConversation(wt.id)?.mr_base).toBe('release');
+        t.store.setPrUrl(wt.id, 'https://github.com/acme/app/pull/7', wt.branch!);
+      }
+    } finally {
+      if (old === undefined) delete process.env.FAKE_GH_BASE; else process.env.FAKE_GH_BASE = old;
+      delete process.env.FAKE_GH_HOLD;
+    }
   });
 
   it('opens it as the signed-in GitHub account that may push, not just the active one', async () => {

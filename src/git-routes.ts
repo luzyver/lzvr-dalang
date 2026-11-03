@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
-import { createPullRequest, mergePr, parsePrUrl, parseRemote, prStatus, remoteRepo, sshHostName, type MergeMethod } from './forge.js';
+import { createPullRequest, mergePr, parsePrUrl, parseRemote, prStatus, remoteRepo, sshHostName, type MergeMethod, type PrStatus } from './forge.js';
 import * as git from './git.js';
 import type { GitUsers } from './git-users.js';
 import { gitContext } from './git.js';
@@ -973,6 +973,20 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const t = await mrTarget(c.conv, c.project);
     return t ? prFor(c.conv, t.branch) : null;
   };
+  // The target branch changed on the forge (GitHub's "Edit" next to the base, say): the chat follows it, so what it shows
+  // and compares against (commits ahead, the description, syncing the base) is the branch the merge really goes into.
+  // Only while the chat still has that Merge Request for the branch it is on now: the forge may answer after a switch of
+  // branch or a new Merge Request, and its answer is about the one asked for.
+  const follow = async (c: { conv: Conversation; project: Project }, url: string, p: PrStatus) => {
+    if (!p.base || (p.state !== 'open' && p.state !== 'draft')) return false;
+    const now = store.getConversation(c.conv.id);
+    const t = now && await mrTarget(now, c.project);
+    if (!t || t.base.name === p.base || p.base === t.branch) return false;
+    const fresh = store.getConversation(c.conv.id);
+    if (!fresh || prFor(fresh, t.branch) !== url || fresh.mr_base !== now!.mr_base) return false;
+    store.setMrBase(c.conv.id, p.base);
+    return true;
+  };
 
   // Where the chat's pull request / Merge Request stands: state, checks, review and comments, from the forge.
   app.get<{ Params: { id: string } }>('/api/conversations/:id/git/pull-request', async (req, reply) => {
@@ -983,7 +997,8 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const cli = prCli(url);
     if (!cli) return reply.code(400).send({ error: `cannot tell whether ${url} is GitHub or GitLab` });
     try {
-      return { ...(await prStatus(cli.forge, cli.command, c.cwd, url)), forge: cli.forge };
+      const p = await prStatus(cli.forge, cli.command, c.cwd, url);
+      return { ...p, forge: cli.forge, retargeted: await follow(c, url, p) };
     } catch (e) { return gitFailed(reply, e); }
   });
 

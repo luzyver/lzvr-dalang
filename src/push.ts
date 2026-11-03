@@ -9,7 +9,7 @@ export type PushSend = (sub: webpush.PushSubscription, payload: string) => Promi
 export interface Notification {
   title: string; body: string; convId: string;
   /** Internal audience constraints, never included in the push payload. */
-  audience?: { admin?: boolean; project?: string; conversation?: string; database?: string; host?: string };
+  audience?: { admin?: boolean; owner?: boolean; project?: string; conversation?: string; database?: string; host?: string };
 }
 
 export interface TurnEnd { convId: string; project: string; status: string; lastMessage: string }
@@ -49,7 +49,7 @@ export class Push {
     const payload = JSON.stringify(message);
     await Promise.allSettled(this.store.listPushSubs().map(async (s) => {
       const user = s.user_key === 'owner' ? { id: null, role: 'admin' as const } : this.store.getUser(s.user_key);
-      if (!user || (audience?.admin && user.role !== 'admin')) return;
+      if (!user || (audience?.admin && user.role !== 'admin') || (audience?.owner && user.id !== null)) return;
       const projects = [audience?.project];
       for (const id of [n.convId, audience?.conversation]) {
         if (!id) continue;
@@ -71,7 +71,7 @@ export class Push {
         if (!h || !canAccess(user, h.access)) return;
       }
       // A missing scope must never turn a private event into a broadcast.
-      if (!n.convId && !audience?.project && !audience?.database && !audience?.host) return;
+      if (!n.convId && !audience?.owner && !audience?.project && !audience?.database && !audience?.host) return;
       try {
         await this.send(JSON.parse(s.sub) as webpush.PushSubscription, payload);
       } catch (e) {

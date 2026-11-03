@@ -23,13 +23,19 @@ ${s.checks.filter((c) => c.state === 'fail').map((c) => `- ${c.name}${c.url ? ` 
 
 Find out why (run the same checks locally where you can) and fix it.`;
 
-/** `onState`: told the state ('open', 'draft', 'merged', 'closed') each time it is read, null when it could not be. */
-export function PrStatus({ id, url, onDone, onState }) {
+/**
+ * `onState`: told the state ('open', 'draft', 'merged', 'closed') each time it is read, null when it could not be.
+ * `onRetarget`: its target branch was changed on the forge, so the git status is to be read again.
+ */
+export function PrStatus({ id, url, onDone, onState, onRetarget }) {
   const [s, setS] = useState(null);
   const [error, setError] = useState('');
   const [method, setMethod] = useState('squash');
   const [comments, setComments] = useState(false);
-  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => { setS(r); setError(''); onState?.(r.state); }, (e) => { setError(e.message); onState?.(null); });
+  const load = () => api(`/api/conversations/${id}/git/pull-request`).then((r) => {
+    setS(r); setError(''); onState?.(r.state);
+    if (r.retargeted) onRetarget?.(); // show the branch it goes into now
+  }, (e) => { setError(e.message); onState?.(null); });
   useEffect(() => { setS(null); load(); }, [id, url]);
 
   const merge = guarded(async () => {
