@@ -17,6 +17,10 @@ All notable changes to this project are documented here. The format follows
   Windows, running turns get `DRAIN_MINUTES` (default 5) to finish while the panel stays up and new prompts wait in
   their queue; a turn still running then continues in its session after the restart. `update.sh` adds a systemd
   drop-in with `KillMode=mixed` and `TimeoutStopSec=10min` for it
+- ClickUp messages agents ask to send wait for the owner's approval: a card in the chat and in Approvals shows the
+  workspace, the channel or person and the thread replied to, and the owner may change the text before sending.
+  Agents can message a person privately (`to_user_id`), pick a thread with `clickup_list_threads`, find people with
+  `clickup_find_people` and follow a request with `clickup_send_status`
 
 ### Fixed
 

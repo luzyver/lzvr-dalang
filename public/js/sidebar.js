@@ -7,7 +7,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
+  approvals, clickupApprovals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   setGroupBy, toggleCollapsed, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -216,7 +216,7 @@ function NewChat() {
 export function Sidebar() {
   const user = me.value;
   const view = route.value.view;
-  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length;
+  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length + clickupApprovals.value.length;
   const by = ui.groupBy.value;
   const go = (name) => (e) => { e.preventDefault(); openView(name); };
   useEffect(() => {

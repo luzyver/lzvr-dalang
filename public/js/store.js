@@ -21,6 +21,8 @@ export const dbApprovals = signal([]);
 export const indexRequests = signal([]);
 /** Commands agents asked to run on SSH hosts set to "every command after approval" (admins). */
 export const sshApprovals = signal([]);
+/** ClickUp messages agents ask to send as the owner, waiting for the owner (empty for everyone else). */
+export const clickupApprovals = signal([]);
 
 const wide = () => innerWidth > 1280;
 const pref = (k, v) => { try { const s = localStorage.getItem(k); return s == null ? v : JSON.parse(s); } catch { return v; } };
@@ -205,8 +207,8 @@ export const newChat = (project, worktree = false) => guarded(async () => {
 export async function refreshApprovals() {
   if (!isAdmin.value) return;
   try {
-    const [chats, dbs, indexes, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals')]);
-    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; });
+    const [chats, dbs, indexes, ssh, clickup] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals'), api('/api/clickup/approvals')]);
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; clickupApprovals.value = clickup; });
   } catch { /* retried on the next tick */ }
 }
 

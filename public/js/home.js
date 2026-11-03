@@ -2,7 +2,7 @@
 // how much the accounts have left. Before the first project, a short welcome instead.
 import { html, cx } from './lib.js';
 import { Icon, Logo } from './ui.js';
-import { approvals, convs, dbApprovals, indexRequests, isAdmin, me, newChat, openChat, openSettings, openView, projects, sshApprovals, toggleSidebar, ui } from './store.js';
+import { approvals, clickupApprovals, convs, dbApprovals, indexRequests, isAdmin, me, newChat, openChat, openSettings, openView, projects, sshApprovals, toggleSidebar, ui } from './store.js';
 import { ago, byStatus, WHY } from './inbox.js';
 import { usage } from './sidebar.js';
 import { plural } from './format.js';
@@ -41,7 +41,7 @@ function Section({ title, count, action, children }) {
 export function Home() {
   const list = projects.value;
   const { attention, running, rest } = byStatus.value;
-  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length;
+  const waiting = approvals.value.length + dbApprovals.value.length + indexRequests.value.length + sshApprovals.value.length + clickupApprovals.value.length;
   const hour = new Date().getHours();
   const greet = hour < 11 ? 'Good morning' : hour < 15 ? 'Good afternoon' : hour < 19 ? 'Good evening' : 'Good night';
   const summary = [attention.length && `${plural(attention.length, 'chat')} need${attention.length === 1 ? 's' : ''} you`, running.length && `${running.length} running`]

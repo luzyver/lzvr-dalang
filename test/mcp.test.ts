@@ -514,11 +514,12 @@ describe('sub-agents', () => {
 });
 
 describe('ClickUp tools', () => {
-  const CLICKUP = ['clickup_chat_history', 'clickup_list_channels', 'clickup_whoami'];
+  const CLICKUP = ['clickup_chat_history', 'clickup_find_people', 'clickup_list_channels', 'clickup_list_threads', 'clickup_whoami'];
+  const SEND = ['clickup_send_message', 'clickup_send_status'];
   const clickupNames = async (c: C) => (await c.listTools()).tools.map((x) => x.name).filter((n) => n.startsWith('clickup_'));
   /** Boot with the fake ClickUp API and, unless told otherwise, a token saved in Settings → ClickUp. */
-  async function withClickUp(token = 'pk_test') {
-    const t = await boot({ clickupFetch: fakeClickUp() });
+  async function withClickUp(token = 'pk_test', calls?: string[]) {
+    const t = await boot({ clickupFetch: fakeClickUp(calls) });
     const r = await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token, workspaceId: '', timeZone: '' } });
     expect(r.statusCode).toBe(200);
     return t;
@@ -578,16 +579,86 @@ describe('ClickUp tools', () => {
 
     expect((await setSend(false, true)).json()).toMatchObject({ send: true, allUsers: false });
     const owner = await t.connect();
-    expect((await clickupNames(owner)).sort()).toEqual([...CLICKUP, 'clickup_send_message'].sort());
+    expect((await clickupNames(owner)).sort()).toEqual([...CLICKUP, ...SEND].sort());
     const r = await call(owner, 'clickup_send_message', { channel_id: 'c1', content: 'deploy done' });
-    expect(r.json).toMatchObject({ sent: true, id: 'new1', channel: 'dev-team', workspace: 'Acme' });
+    expect(r.json).toMatchObject({ status: 'pending_approval', to: { channel: 'dev-team', workspace: 'Acme' } });
     expect((await call(owner, 'clickup_send_message', { channel_id: 'nope', content: 'hi' })).isError).toBe(true);
     expect(await devNames()).toEqual([]);
 
     await setSend(true, true);
-    expect(await devNames()).toContain('clickup_send_message');
+    expect((await devNames()).sort()).toEqual([...CLICKUP, ...SEND].sort());
     await setSend(true, false);
     expect((await devNames()).sort()).toEqual(CLICKUP);
+  });
+
+  it('hold every message for the owner, who may change it before it goes out, and tell the chat', async () => {
+    const calls: string[] = [];
+    const t = await withClickUp('pk_test', calls);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    const posts = () => calls.filter((c) => c.startsWith('POST '));
+    const told = (re: RegExp) => until(() => [...t.store.listQueue(a.id), ...t.store.listTurns(a.id)].some((x) => re.test(x.prompt)));
+    const { a } = await twoConvs(await t.connect());
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+
+    const thread = await call(agent, 'clickup_send_message', { channel_id: 'c1', reply_to: 'm3', content: 'done' });
+    expect(thread.json).toMatchObject({ status: 'pending_approval', to: { reply_to: 'm3', thread: { author: 'luz', preview: 'still fixing the invoice export' } } });
+    const dm = await call(agent, 'clickup_send_message', { to_user_id: '22', content: 'hi sari' });
+    expect(dm.json).toMatchObject({ status: 'pending_approval', to: { channel: 'DM with sari', to_user: { id: '22', name: 'sari' } } });
+    expect((await call(agent, 'clickup_send_message', { channel_id: 'c1', to_user_id: '22', content: 'x' })).isError).toBe(true);
+    expect(posts()).toEqual([]);
+
+    // Other admins neither see nor decide them: the messages would go out as the owner.
+    const admin = { authorization: `Bearer ${(await mkUser(t, 'u-admin', 'admin')).token}` };
+    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: admin })).json()).toEqual([]);
+    const id = (thread.json as { approval_id: number }).approval_id;
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(403);
+    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json()).toHaveLength(2);
+
+    const ok = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH, payload: { content: 'done, deployed' } });
+    expect(ok.json()).toMatchObject({ status: 'sent', content: 'done, deployed', edited: true, messageId: 'new1' });
+    expect(posts()).toEqual(['POST /api/v3/workspaces/900/chat/messages/m3/replies {"type":"message","content":"done, deployed","content_format":"text/md"}']);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).statusCode).toBe(409);
+    await told(/approved your message[\s\S]*> done, deployed/);
+
+    const dmId = (dm.json as { approval_id: number }).approval_id;
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${dmId}/approve`, headers: AUTH })).json()).toMatchObject({ status: 'sent' });
+    expect(posts().slice(1)).toEqual([
+      'POST /api/v3/workspaces/900/chat/channels/direct_message {"user_ids":["22"]}',
+      'POST /api/v3/workspaces/900/chat/channels/c2/messages {"type":"message","content":"hi sari","content_format":"text/md"}',
+    ]);
+    expect((await call(agent, 'clickup_send_status', { approval_id: dmId })).json).toMatchObject({ status: 'sent' });
+
+    const no = await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'nope' });
+    const noId = (no.json as { approval_id: number }).approval_id;
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${noId}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
+    expect(posts()).toHaveLength(3);
+    await told(/did not send your message/);
+  });
+
+  it('show a request only to whoever asked, and call a 5xx on sending unknown, not failed', async () => {
+    const inner = fakeClickUp();
+    const status = { code: 502 };
+    const flaky = (async (input: string | URL, init?: RequestInit) => (init?.method === 'POST' && status.code
+      ? new Response('{"err":"bad gateway"}', { status: status.code }) : inner(input, init))) as typeof fetch;
+    const t = await boot({ clickupFetch: flaky });
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token: 'pk_test', workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    const { a } = await twoConvs(await t.connect());
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const asked = await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'secret draft' });
+    const id = (asked.json as { approval_id: number }).approval_id;
+
+    const dev = await t.connect({ authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` });
+    expect((await call(dev, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
+    const own = (await call(dev, 'clickup_send_message', { channel_id: 'c1', content: 'mine' })).json as { approval_id: number };
+    expect((await call(dev, 'clickup_send_status', { approval_id: own.approval_id })).json).toMatchObject({ status: 'pending' });
+    expect((await call(agent, 'clickup_send_status', { approval_id: own.approval_id })).isError).toBe(true);
+
+    const r = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH });
+    expect(r.json()).toMatchObject({ status: 'unknown' });
+    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json().map((x: { id: number }) => x.id)).toContain(id);
+    status.code = 400; // refused outright: nothing was posted
+    const r2 = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/approve`, headers: AUTH });
+    expect(r2.json()).toMatchObject({ status: 'failed' });
   });
 });
 

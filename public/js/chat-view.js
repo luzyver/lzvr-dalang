@@ -6,12 +6,12 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { confirmDialog, Icon } from './ui.js';
 import {
-  approvals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
+  approvals, clickupApprovals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Live } from './thread.js';
 import { Composer } from './composer.js';
-import { ApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
+import { ApprovalCard, ClickUpApprovalCard, DbApprovalCard, SshApprovalCard } from './approvals.js';
 import { MemoryButton } from './memory.js';
 import { tokens, usageText, usageTitle } from './format.js';
 
@@ -310,6 +310,7 @@ export function ChatView({ id, focusEvent }) {
   const waiting = approvals.value.filter((a) => a.to_conv === id);
   const writes = dbApprovals.value.filter((a) => a.conv === id);
   const commands = sshApprovals.value.filter((a) => a.conv === id);
+  const clickups = clickupApprovals.value.filter((a) => a.conv === id);
   const focus = route.value.focusEvent;
   const older = chat.older.value;
 
@@ -328,6 +329,7 @@ export function ChatView({ id, focusEvent }) {
         ${waiting.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} />`)}
         ${writes.map((a) => html`<${DbApprovalCard} key=${`db${a.id}`} a=${a} />`)}
         ${commands.map((a) => html`<${SshApprovalCard} key=${`ssh${a.id}`} a=${a} />`)}
+        ${clickups.map((a) => html`<${ClickUpApprovalCard} key=${`cu${a.id}`} a=${a} />`)}
         ${running && html`<${Live} live=${model.live} since=${model.startedAt} />`}
       </div>
     </div>
