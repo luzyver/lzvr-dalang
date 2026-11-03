@@ -92,6 +92,14 @@ describe('runTurn', () => {
     expect(Date.now() - start).toBeLessThan(5000);
   });
 
+  it('kills a process that stays alive after turn.completed, without reporting it as a failure', async () => {
+    const start = Date.now();
+    const ev = await collect({ prompt: 'x', env: { FAKE_MODE: 'linger' }, exitGraceMs: 300 });
+    expect(ev.at(-1)?.type).toBe('turn.completed');
+    expect(ev.map((e) => e.type)).not.toContain('process.exit');
+    expect(Date.now() - start).toBeLessThan(10000);
+  });
+
   it('ends a cancelled run even when an orphaned grandchild still holds its output open', async () => {
     const pidFile = join(dir, 'orphan.pid');
     const ac = new AbortController();

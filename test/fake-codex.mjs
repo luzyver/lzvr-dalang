@@ -1,4 +1,4 @@
-// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline | orphan. FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
+// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline | orphan | linger (stays alive after turn.completed). FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
@@ -110,4 +110,5 @@ process.stdin.on('end', async () => {
     type: 'turn.completed',
     usage: process.env.FAKE_USAGE ? JSON.parse(process.env.FAKE_USAGE) : { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
   });
+  if (mode === 'linger') await new Promise((r) => setTimeout(r, 30000)); // done, but does not exit
 });
