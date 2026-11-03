@@ -137,6 +137,43 @@ describe('SSE', () => {
     expect(lastAt).toBe(t.store.listConversations(conv.project_id)[0]!.last_at);
   });
 
+  it("tells in the chat list how each chat's last turn ended, so a stopped one does not read as done", () => {
+    const t = setupApp();
+    const p = t.store.createProject('p', t.root);
+    const done = t.store.createConversation(p.id);
+    const stopped = t.store.createConversation(p.id);
+    const fresh = t.store.createConversation(p.id);
+    t.store.endTurn(t.store.startTurn(done.id, 'a'), 'completed', null);
+    t.store.endTurn(t.store.startTurn(stopped.id, 'a'), 'completed', null);
+    t.store.endTurn(t.store.startTurn(stopped.id, 'b'), 'cancelled', null);
+    const byId = new Map(t.store.listConversations(p.id).map((c) => [c.id, c.last_turn]));
+    expect([byId.get(done.id), byId.get(stopped.id), byId.get(fresh.id)]).toEqual(['completed', 'cancelled', null]);
+  });
+
+  it('records every turn of the main chat that put an agent to work, also when the agent is used again later', async () => {
+    const t = setupApp();
+    const p = t.store.createProject('p', t.root);
+    const top = t.store.createConversation(p.id);
+    const sub = t.store.createConversation(p.id, undefined, top.id);
+    const leaf = t.store.createConversation(p.id, undefined, sub.id);
+    const run = (convId: string) => { const item = t.store.popQueue(convId)!; const id = t.store.startTurn(convId, item.prompt, item.from_turn); t.store.endTurn(id, 'completed', null); return id; };
+    const t1 = t.store.startTurn(top.id, 'one');
+    t.store.enqueue(sub.id, 'task 1', [], '', '', top.id);
+    run(sub.id);
+    t.store.enqueue(leaf.id, 'subtask', [], '', '', sub.id); // sent by the sub-agent while it works for turn 1
+    t.store.endTurn(t1, 'completed', null);
+    run(leaf.id);
+    const t2 = t.store.startTurn(top.id, 'two');
+    t.store.endTurn(t2, 'completed', null);
+    const t3 = t.store.startTurn(top.id, 'three');
+    t.store.enqueue(sub.id, 'task 2', [], '', '', top.id); // the same sub-agent again, still queued
+    t.store.enqueue(sub.id, 'from a person', []);
+    const r = await t.app.inject({ method: 'GET', url: `/api/conversations/${top.id}`, headers: AUTH });
+    expect(r.json().agent_turns).toEqual([
+      { turn: t1, conv: leaf.id }, { turn: t1, conv: sub.id }, { turn: t3, conv: sub.id },
+    ].sort((a, b) => a.turn - b.turn || a.conv.localeCompare(b.conv)));
+  });
+
   it('closes the app at once while an event stream is open', async () => {
     const t = setupApp();
     await t.app.listen({ host: '127.0.0.1', port: 0 });

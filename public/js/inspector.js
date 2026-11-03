@@ -1,4 +1,4 @@
-// The inspector beside an open chat: Changes, Schedules and Info tabs. A column on wide screens, a drawer on narrower
+// The inspector beside an open chat: Changes, Agents, Schedules and Info tabs. A column on wide screens, a drawer on narrower
 // ones and a bottom sheet on phones.
 import { html, cx } from './lib.js';
 import { Icon } from './ui.js';
@@ -6,6 +6,7 @@ import { findConv, setInspectorWidth, toggleInspector, ui } from './store.js';
 import { chat } from './chat-view.js';
 import { ChangesPane } from './git.js';
 import { SchedulesPane } from './schedules.js';
+import { AgentsPane, descendants, rootOf } from './agent-tree.js';
 
 function InfoPane({ id }) {
   const c = chat.conv.value;
@@ -27,7 +28,7 @@ function InfoPane({ id }) {
   return html`<dl class="info">${rows.map(([k, v]) => html`<dt>${k}</dt><dd class=${cx(/Folder|Session|Chat id|Branch/.test(k) && 'mono')}>${v}</dd>`)}</dl>`;
 }
 
-const TABS = [['changes', 'Changes'], ['schedules', 'Schedules'], ['info', 'Info']];
+const TABS = [['changes', 'Changes'], ['agents', 'Agents'], ['schedules', 'Schedules'], ['info', 'Info']];
 
 /** The inspector's left edge: drag it, or focus it and use the arrow keys, to make the column wider or narrower. */
 function ResizeHandle() {
@@ -60,13 +61,17 @@ function ResizeHandle() {
 export function Inspector({ id }) {
   const tab = ui.inspectorTab.value;
   const count = chat.git.value?.files?.length || 0;
+  const root = rootOf(id);
+  const agents = root ? descendants(root.conv.id) : [];
+  const busy = agents.some((a) => a.status === 'running');
   const max = ui.inspectorMax.value;
   return html`<aside class="inspector" aria-label="Inspector">
     ${!max && html`<${ResizeHandle} />`}
     <div class="insp-head">
       <div class="tabs" role="tablist">
         ${TABS.map(([k, label]) => html`<button key=${k} role="tab" aria-selected=${tab === k} class=${cx('tab', tab === k && 'active')} onClick=${() => { ui.inspectorTab.value = k; }}>
-          ${label}${k === 'changes' && count > 0 && html`<span class="tab-count">${count}</span>`}</button>`)}
+          ${label}${k === 'changes' && count > 0 && html`<span class="tab-count">${count}</span>`}
+          ${k === 'agents' && agents.length > 0 && html`<span class=${cx('tab-count', busy && 'busy')}>${agents.length}</span>`}</button>`)}
       </div>
       <div class="insp-actions">
         <button class="icon-btn insp-max-btn" aria-label=${max ? 'Restore inspector' : 'Maximize inspector'} title=${max ? 'Restore' : 'Maximize'} aria-pressed=${max}
@@ -76,6 +81,7 @@ export function Inspector({ id }) {
     </div>
     <div class="insp-body">
       ${tab === 'changes' && html`<${ChangesPane} id=${id} />`}
+      ${tab === 'agents' && html`<${AgentsPane} id=${id} />`}
       ${tab === 'schedules' && html`<${SchedulesPane} id=${id} />`}
       ${tab === 'info' && html`<${InfoPane} id=${id} />`}
     </div>

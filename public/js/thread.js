@@ -252,10 +252,10 @@ function Attachment({ path }) {
 }
 
 export function Live({ live, since }) {
-  return html`<div class="live">
+  return html`<div class="live" role="status" aria-label=${live?.label || 'Working'}>
     <${Spinner} />
-    <span>${live?.label || 'Working'}</span>
+    ${live?.label && html`<span>${live.label}</span>`}
     ${live?.detail && html`<code title=${live.detail}>${live.detail}</code>`}
-    ${since && html`<span class="dim">· <${Elapsed} since=${since} /></span>`}
+    ${since && html`<span class="dim">${live?.label && '· '}<${Elapsed} since=${since} /></span>`}
   </div>`;
 }

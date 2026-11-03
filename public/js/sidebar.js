@@ -8,10 +8,11 @@ import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
   approvals, clickupApprovals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
-  setGroupBy, toggleCollapsed, toggleSidebar, ui,
+  setGroupBy, toggleCollapsed, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
-import { ago, byStatus, isUnread, WHY } from './inbox.js';
+import { ago, allChats, byStatus, isUnread, WHY } from './inbox.js';
+import { removeChat, rootOf } from './agent-tree.js';
 
 /** Per backend, the first account that is ready and how much of its tightest usage window is left. */
 export const usage = signal([]);
@@ -82,37 +83,25 @@ function AddProject() {
 export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} label="Add project" class="dialog" onClose=${() => { ui.addProject.value = false; }}><${AddProject} /><//>`;
 
 /**
- * One chat in the sidebar. In a project with sub-agents (`tree`) every row gets a fold slot, so the dots line up, and is
- * indented by its depth with a guide line under each parent.
+ * One chat in the sidebar: a chat a person started. Its sub-agents and reviewers (`agents`) are not listed; a badge
+ * says how many there are and whether one is running, and opens the Agents tab. The row is marked while one of them
+ * is open.
  */
-function ChatRow({ c, active, tree = false, depth = 0, kids = 0, folded = false, project, why }) {
+function ChatRow({ c, active, agents = [], project, why }) {
   const title = c.title || 'New chat';
-  const remove = guarded(async () => {
-    if (!await confirmDialog({
-      title: 'Delete this chat and its history?',
-      message: c.worktree
-        ? `Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
-        : 'The project and its files stay.',
-      confirmText: 'Delete',
-      danger: true,
-    })) return;
-    await api(`/api/conversations/${c.id}`, { method: 'DELETE' });
-    if (active) goHome();
-    await loadProjects();
-  });
+  const remove = removeChat(c, active);
   const unread = isUnread(c);
   const status = why ? WHY[why].label : unread ? 'New answer' : c.status;
-  return html`<div class=${cx('chat-row', active && 'active', tree && 'in-tree', depth > 0 && 'sub', unread && 'unread')} style=${tree ? { '--depth': depth } : undefined}>
-    ${tree && (kids > 0
-      ? html`<button class="chat-fold" aria-expanded=${!folded} aria-label=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent(s) of ${title}`}
-          title=${`${folded ? 'Show' : 'Hide'} ${kids} sub-agent${kids > 1 ? 's' : ''}`} onClick=${() => toggleCollapsed(c.id)}>
-          <${Icon} name=${folded ? 'chevron-right' : 'chevron-down'} class="tiny" /></button>`
-      : html`<span class="chat-fold" aria-hidden="true"></span>`)}
+  const n = agents.length;
+  const busy = agents.filter((a) => a.status === 'running').length;
+  const showAgents = (e) => { e.preventDefault(); e.stopPropagation(); openChat(c.id); toggleInspector(true, 'agents'); };
+  return html`<div class=${cx('chat-row', active && 'active', unread && 'unread')}>
     <a class="chat" href=${`#c=${c.id}`} aria-current=${active ? 'page' : undefined} onClick=${(e) => { e.preventDefault(); openChat(c.id); }}>
       <span class=${cx('dot', c.status, why === 'approval' && 'waiting')} title=${status} role="img" aria-label=${status}></span>
       <span class="chat-title" title=${project ? `${title} · ${project.name}` : title}>${title}${project && html`<small class="chat-project">${project.name}</small>`}</span>
-      ${folded && html`<span class="chat-kids" title=${`${kids} sub-agent${kids > 1 ? 's' : ''} folded away`}>${kids}</span>`}
-      ${c.parent && c.model && html`<span class="chat-model" title=${`Sub-agent on ${c.model}${c.effort ? `, ${c.effort} effort` : ''}`}>${c.model}</span>`}
+      ${n > 0 && html`<span class=${cx('chat-kids', busy > 0 && 'busy')} onClick=${showAgents}
+        title=${`${n} agent${n > 1 ? 's' : ''}${busy ? `, ${busy} running` : ''}: click to show them`}>
+        <${Icon} name="bot" class="tiny" />${n}</span>`}
       ${c.worktree && html`<span class="chat-branch" title=${`Own worktree on ${c.branch}`}><${Icon} name="git-branch" class="tiny" /></span>`}
       ${c.status !== 'running' && c.last_at && html`<span class="chat-time">${ago(c.last_at)}</span>`}
     </a>
@@ -129,31 +118,11 @@ const SANDBOX_TAGS = {
 const Tag = ({ name, label, danger }) => name
   && html`<span class=${cx('project-tag', danger && 'danger')} title=${label} aria-label=${label} role="img"><${Icon} name=${name} /></span>`;
 
-/**
- * A project's chats as a tree: each sub-agent under the chat whose agent started it (one whose parent is gone sits at
- * the top). A chat with sub-agents folds them away like a project.
- */
-function chatTree(list, current) {
-  const ids = new Set(list.map((c) => c.id));
-  const kids = new Map();
-  for (const c of list) {
-    const up = c.parent && ids.has(c.parent) ? c.parent : '';
-    kids.set(up, [...(kids.get(up) || []), c]);
-  }
-  const tree = kids.size > 1; // more than the top level: some chat has sub-agents
-  const rows = (parent, depth) => (kids.get(parent) || []).flatMap((c) => {
-    const n = kids.get(c.id)?.length || 0;
-    const folded = n > 0 && ui.collapsed.value.has(c.id);
-    return [html`<${ChatRow} key=${c.id} c=${c} active=${c.id === current} tree=${tree} depth=${depth} kids=${n} folded=${folded} />`,
-      ...(folded ? [] : rows(c.id, depth + 1))];
-  });
-  return rows('', 0);
-}
-
 function Project({ p }) {
-  const list = convs.value.get(p.id) || [];
+  const top = new Map(allChats.value.filter((x) => x.project.id === p.id).map((x) => [x.conv.id, x]));
+  const list = (convs.value.get(p.id) || []).map((c) => top.get(c.id)).filter(Boolean);
   const collapsed = ui.collapsed.value.has(p.id);
-  const current = route.value.view === 'chat' ? route.value.id : null;
+  const current = openTop();
   const remove = guarded(async () => {
     if (!await confirmDialog({ title: `Remove project "${p.name}"?`, message: 'It and its chats leave the panel. Files stay untouched.', confirmText: 'Remove', danger: true })) return;
     await api(`/api/projects/${p.id}`, { method: 'DELETE' });
@@ -184,17 +153,20 @@ function Project({ p }) {
       <//>
     </div>
     ${!collapsed && html`<div class="chats">
-      ${list.length ? chatTree(list, current)
+      ${list.length ? list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} agents=${x.agents} active=${x.conv.id === current} />`)
         : html`<button class="chat ghost" onClick=${newChat(p)}><${Icon} name="plus" class="tiny" />Start a chat</button>`}
     </div>`}
   </div>`;
 }
 
+/** The sidebar row to mark: the open chat, or the chat a person started that it runs under. */
+const openTop = () => (route.value.view === 'chat' ? rootOf(route.value.id)?.conv.id ?? route.value.id : null);
+
 /** The chats across projects: what needs a person first, then what runs, then the rest by recent activity. */
 function StatusList() {
   const { attention, running, rest } = byStatus.value;
-  const current = route.value.view === 'chat' ? route.value.id : null;
-  const rows = (list) => list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} project=${x.project} why=${x.why} active=${x.conv.id === current} />`);
+  const current = openTop();
+  const rows = (list) => list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} agents=${x.agents} project=${x.project} why=${x.why} active=${x.conv.id === current} />`);
   const group = (label, list, cls) => list.length > 0 && html`<div class=${cx('status-group', cls)}>
     <div class="group-head"><span>${label}</span><span class="count">${list.length}</span></div>
     <div class="chats flat">${rows(list)}</div></div>`;

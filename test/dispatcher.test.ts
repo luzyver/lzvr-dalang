@@ -342,21 +342,89 @@ describe('Dispatcher', () => {
       return (JSON.parse(ev.payload) as { item: { args: string[] } }).item.args;
     };
     const guideArg = (args: string[]) => args.find((a) => a.startsWith('developer_instructions='));
-    expect(guideArg(await argsOf(conv.id, 1)) || '').not.toContain('create_conversation'); // 'asked' is the default
+    store.setModel(conv.id, 'small');
+    const text = JSON.parse(guideArg(await argsOf(conv.id, 1))!.slice('developer_instructions='.length)) as string;
+    expect(text).toContain(`project_id ${conv.project_id}; 5 more allowed (of 5)`);
+    expect(text).toContain('above your own model (small) and effort (the CLI default)');
+    expect(text).toContain('orchestrating-subagents');
 
-    store.setSubagentPolicy({ ...store.getSubagentPolicy(), mode: 'auto', maxDepth: 1 });
-    store.setAgentModels(['small', 'big']);
-    const arg = guideArg(await argsOf(conv.id, 2))!;
-    const text = JSON.parse(arg.slice('developer_instructions='.length)) as string;
-    expect(text).toContain('create_conversation');
-    expect(text).toContain(`project_id ${conv.project_id}; 5 more sub-agent(s) allowed`);
-    expect(text).toContain('weakest first: small, big');
-
-    // A sub-agent at the depth limit is not told, and an admin's own guide replaces the built-in one.
+    // Not past the depth limit, nor with sub-agents turned off.
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), maxDepth: 1 });
     const sub = store.createConversation(conv.project_id, undefined, conv.id);
-    expect(guideArg(await argsOf(sub.id, 1)) || '').not.toContain('create_conversation');
-    store.setSubagentPolicy({ ...store.getSubagentPolicy(), guide: 'Split big work.' });
-    expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toMatch(/^Split big work\.\n\nFor this chat: project_id .*4 more sub-agent\(s\) allowed/);
+    expect(guideArg(await argsOf(sub.id, 1)) || '').not.toContain('orchestrating-subagents');
+    expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toMatch(/4 more allowed \(of 5\)/);
+    store.setSubagentPolicy({ ...store.getSubagentPolicy(), maxChildren: 0 });
+    expect(d.orchestratorGuide(store.getConversation(conv.id)!, conv.project_id)).toBe('');
+  });
+
+  it('keeps a sub-agent below its parents when one of them moved down after starting it', async () => {
+    const { store, dispatcher: d, conv } = setupDispatcher();
+    const run = async (id: string) => {
+      const n = store.listTurns(id).length + 1;
+      store.enqueue(id, 'x', []);
+      d.kick(id);
+      await until(() => turnsDone(store, id, n));
+      return store.listTurns(id).at(-1)!;
+    };
+    store.setModel(conv.id, 'gpt-5.5');
+    store.setEffort(conv.id, 'high');
+    const sub = store.createConversation(conv.project_id, undefined, conv.id);
+    store.setModel(sub.id, 'gpt-5.5');
+    store.setEffort(sub.id, 'high');
+    const deeper = store.createConversation(conv.project_id, undefined, sub.id);
+    store.setModel(deeper.id, 'gpt-5.5');
+    store.setEffort(deeper.id, 'medium');
+    store.setModel(conv.id, 'gpt-5.4-mini');
+    store.setEffort(conv.id, 'low');
+
+    expect((await run(deeper.id)).status).toBe('completed');
+    expect(store.getConversation(deeper.id)).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' }); // the top chat, past its parent
+    expect((await run(sub.id)).status).toBe('completed');
+    expect(store.getConversation(sub.id)).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
+
+    // On another CLI the model cannot be carried over: the turn fails instead of running above.
+    const claude = store.createConversation(conv.project_id, 'claude', conv.id);
+    store.setModel(claude.id, 'opus');
+    store.setEffort(claude.id, 'low');
+    expect((await run(claude.id)).status).toBe('failed');
+    expect(store.eventsAfter(claude.id, 0).some((e) => e.payload.includes('may not run above chat'))).toBe(true);
+    expect(store.getConversation(claude.id)!.model).toBe('opus');
+
+    // Sent by its parent, the reason is the report the parent gets.
+    const n = store.listTurns(conv.id).length + 1;
+    store.enqueue(claude.id, 'x', [], '', '', conv.id);
+    d.kick(claude.id);
+    await until(() => turnsDone(store, conv.id, n));
+    const report = store.listTurns(conv.id).at(-1)!.prompt;
+    expect(report).toMatch(/^\[Sub-agent\].*stopped: failed/);
+    expect(report).toContain(`may not run above chat ${conv.id}`);
+    expect(report).not.toContain('(none)');
+  });
+
+  it('brings model and effort down apart, each to the lowest of the chats above', async () => {
+    const { store, dispatcher: d, conv } = setupDispatcher();
+    store.setModel(conv.id, 'gpt-5.5');
+    store.setEffort(conv.id, 'low');
+    const mid = store.createConversation(conv.project_id, undefined, conv.id);
+    store.setModel(mid.id, 'gpt-5.4-mini');
+    store.setEffort(mid.id, 'high');
+    const leaf = store.createConversation(conv.project_id, undefined, mid.id);
+    store.setModel(leaf.id, 'gpt-5.5');
+    store.setEffort(leaf.id, 'medium');
+    store.enqueue(leaf.id, 'x', []);
+    d.kick(leaf.id);
+    await until(() => turnsDone(store, leaf.id, 1));
+    expect(store.listTurns(leaf.id)[0]!.status).toBe('completed');
+    expect(store.getConversation(leaf.id)).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
+
+    // Only what is above moves: a lower model stays when just the effort is too high.
+    const low = store.createConversation(conv.project_id, undefined, conv.id);
+    store.setModel(low.id, 'gpt-5.4-mini');
+    store.setEffort(low.id, 'high');
+    store.enqueue(low.id, 'x', []);
+    d.kick(low.id);
+    await until(() => turnsDone(store, low.id, 1));
+    expect(store.getConversation(low.id)).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
   });
 
   it('gives Codex the code memory hook only when it knows the flag the hook needs', async () => {
@@ -421,7 +489,6 @@ describe('Dispatcher', () => {
     const text = (await guideOf(2))!;
     expect(text).toContain('db_list_connections');
     expect(text).toContain('psql');
-    expect(text).not.toContain('create_conversation'); // orchestrator mode is still 'asked'
   });
 
   it('adds no MCP config unless an MCP url is configured', async () => {

@@ -35,7 +35,7 @@ import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
-import { type Store, SUBAGENT_GUIDE, type SubagentPolicy } from './store.js';
+import { type Store, type SubagentPolicy } from './store.js';
 import { REVIEWER_GUIDE, type ReviewerPolicy } from './reviewer.js';
 
 declare module 'fastify' {
@@ -318,29 +318,13 @@ export function buildApp(
     store.setDefaultEffort(req.body.effort, backendOf(req.body.backend));
     return reply.code(204).send();
   });
-  // What agents may pick for chats over MCP (create_conversation, set_model): models weakest first, and the highest effort.
-  app.get<{ Querystring: { backend?: string } }>('/api/settings/agent-models', { onRequest: requireAdmin }, (req) =>
-    ({ models: store.getAgentModels(backendOf(req.query.backend)), maxEffort: store.getAgentMaxEffort(backendOf(req.query.backend)) }));
-  app.put<{ Body: { models: string[]; maxEffort: string; backend?: Backend } }>('/api/settings/agent-models', {
-    onRequest: requireAdmin,
-    schema: { body: { type: 'object', required: ['models', 'maxEffort'], additionalProperties: false,
-      properties: {
-        models: { type: 'array', maxItems: 20, uniqueItems: true, items: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63}$' } },
-        maxEffort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] }, backend: { enum: [...BACKENDS] },
-      } } },
-  }, (req, reply) => {
-    store.setAgentModels(req.body.models, backendOf(req.body.backend));
-    store.setAgentMaxEffort(req.body.maxEffort, backendOf(req.body.backend));
-    return reply.code(204).send();
-  });
   // How far agents may go with sub-agents (see SubagentPolicy).
-  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => ({ ...store.getSubagentPolicy(), defaultGuide: SUBAGENT_GUIDE }));
+  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => store.getSubagentPolicy());
   app.put<{ Body: Partial<SubagentPolicy> }>('/api/settings/subagents', {
     onRequest: requireAdmin,
     schema: { body: { type: 'object', additionalProperties: false,
       properties: {
         maxChildren: { type: 'integer', minimum: 0, maximum: 50 }, maxDepth: { type: 'integer', minimum: 0, maximum: 5 }, autoSend: { type: 'boolean' },
-        mode: { enum: ['asked', 'auto'] }, guide: { type: 'string', maxLength: 8000 },
       } } },
   }, (req, reply) => {
     store.setSubagentPolicy({ ...store.getSubagentPolicy(), ...req.body });
@@ -628,7 +612,7 @@ export function buildApp(
 
   app.get<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
-    return conv ? { ...conv, last_at: store.lastAt(conv.id), turns: store.listTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
+    return conv ? { ...conv, last_at: store.lastAt(conv.id), turns: store.listTurns(conv.id), agent_turns: store.agentTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
   });
 
   // Serve links from agent answers only from this chat's own worktree/project.

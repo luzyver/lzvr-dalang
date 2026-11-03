@@ -81,6 +81,8 @@ export interface Conversation {
   auto_title?: string | null;
   /** In a project's list of chats: when its last turn ended, or started while it runs (null before any turn). */
   last_at?: string | null;
+  /** In a project's list of chats: how its last turn ended (completed|cancelled|interrupted|failed, running while it runs; null before any turn). */
+  last_turn?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
   /** Codex model for this chat; empty = Codex's own default. */
   model: string;
@@ -112,32 +114,17 @@ export interface QueueItem {
   id: number; conversation_id: string; prompt: string; attachments: string[]; author: string; on_behalf: string;
   /** The chat whose agent sent this prompt over MCP, or ''. A sub-agent's answer to its parent goes back to it. */
   from_conv: string;
+  /** The turn of `from_conv` it was sent in (its latest when queued; for a review, the turn under review), or null. */
+  from_turn: number | null;
   /** Set on the turn a restart cut off, queued again so it continues in the same session after the restart. */
   resume?: boolean;
 }
 /**
  * How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked.
- * `mode`: 'asked' = they start sub-agents only when told to; 'auto' = every turn that still may start one is told how and
- * when to, so the agent decides itself (`guide`, or the built-in SUBAGENT_GUIDE when empty).
+ * When and how to use them is up to the agent: the orchestrating-subagents skill says how (see Dispatcher.orchestratorGuide).
  */
-export interface SubagentPolicy { maxChildren: number; maxDepth: number; autoSend: boolean; mode: 'asked' | 'auto'; guide: string }
-export const SUBAGENT_DEFAULTS: SubagentPolicy = { maxChildren: 5, maxDepth: 2, autoSend: true, mode: 'asked', guide: '' };
-export const SUBAGENT_GUIDE = `You are running inside Dalang, and you may act as an orchestrator: hand parts of your task to sub-agents.
-Use the dalang MCP tools for this (in Claude Code they may need loading first: search your tools for "mcp__dalang").
-Prefer them over any built-in sub-agent tool for real work: Dalang sub-agents show up in the panel, keep their own session and follow the model limits.
-
-When to: the task has parts that are independent of each other and big enough to be worth a fresh session (a separate
-module, a review, a test run, research across many files). Do small or tightly coupled work yourself; do not split for its own sake.
-
-How:
-- list_models first: pick the weakest model that fits each part, with the lowest effort that fits.
-- create_conversation with project_id, model, effort and the task as prompt. Give each sub-agent everything it needs
-  (it does not see this chat), what it may change, and what its last answer must contain.
-- worktree: true for a sub-agent that changes files, so parallel sub-agents never write over each other or you.
-- Do not poll. When a sub-agent finishes, its last answer comes to this chat as a new message starting with [Sub-agent].
-  End your turn after starting them; continue when the reports arrive.
-- Check each report before relying on it. If one fell short, send_prompt it a correction, or set_model it one step up.
-- At the end, sum up for the person what each sub-agent did and what you checked.`;
+export interface SubagentPolicy { maxChildren: number; maxDepth: number; autoSend: boolean }
+export const SUBAGENT_DEFAULTS: SubagentPolicy = { maxChildren: 5, maxDepth: 2, autoSend: true };
 /**
  * Project and personal memory (see memory.ts). `auto`: after each finished turn of a person's chat, a small read-only
  * request picks what is worth keeping from it; `user`: that request may also keep the preferences the person states for
@@ -148,6 +135,8 @@ export const MEMORY_DEFAULTS: MemoryPolicy = { auto: true, user: true, models: {
 export interface Turn {
   id: number; conversation_id: string; prompt: string; status: string;
   usage: string | null; started_at: string; ended_at: string | null;
+  /** The turn of another chat whose agent sent this one's prompt, or null. */
+  from_turn?: number | null;
 }
 /** A prompt queued into a chat on a cron schedule. Times are epoch milliseconds; `next_run_at` is null when off. */
 export interface Schedule {
@@ -182,6 +171,7 @@ export interface StoredEvent { id: number; conversation_id: string; type: string
 const TITLE = `COALESCE(c.auto_title, (SELECT substr(prompt, 1, 80) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id LIMIT 1))`;
 /** When the chat's last turn ended, or started while it runs (UTC, `YYYY-MM-DD HH:MM:SS`); null before any turn. */
 const LAST_AT = `(SELECT COALESCE(t.ended_at, t.started_at) FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id DESC LIMIT 1)`;
+const LAST_TURN = `(SELECT t.status FROM turns t WHERE t.conversation_id=c.id ORDER BY t.id DESC LIMIT 1)`;
 
 /** A LIKE pattern (used with `ESCAPE '\'`) in which `%`, `_` and `\` match themselves. */
 const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
@@ -189,7 +179,7 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; resume: number }
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; from_turn: number | null; resume: number }
 const toItem = ({ resume, ...r }: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}) });
 
 export class Store {
@@ -242,6 +232,13 @@ export class Store {
     this.db.exec('CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id); CREATE INDEX IF NOT EXISTS events_turn ON events(turn_id)');
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
     this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
+    this.ensureColumn('queue', 'from_turn', 'INTEGER');
+    if (this.ensureColumn('turns', 'from_turn', 'INTEGER')) {
+      // Turns of sub-chats from before this was recorded: the parent's last turn that had started by then.
+      this.run(`UPDATE turns SET from_turn=(SELECT MAX(p.id) FROM turns p JOIN conversations c ON p.conversation_id=c.parent
+        WHERE c.id=turns.conversation_id AND p.started_at <= turns.started_at)
+        WHERE conversation_id IN (SELECT id FROM conversations WHERE parent<>'')`);
+    }
     this.fts = this.memoryIndex();
   }
 
@@ -272,9 +269,12 @@ export class Store {
     }
   }
 
-  private ensureColumn(table: string, column: string, ddl: string): void {
+  /** Add a column earlier databases lack; true when it was added now. */
+  private ensureColumn(table: string, column: string, ddl: string): boolean {
     const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
-    if (!cols.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    if (cols.some((c) => c.name === column)) return false;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    return true;
   }
 
   private get<T>(sql: string, ...args: (string | number)[]): T | null {
@@ -386,16 +386,12 @@ export class Store {
   setDefaultModel(model: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_model', backend), model); }
   getDefaultEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('default_effort', backend)) ?? ''; }
   setDefaultEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('default_effort', backend), effort); }
-  /** The models agents may pick for chats over MCP, weakest first; empty = agents keep the default. */
-  getAgentModels(backend: Backend = 'codex'): string[] {
-    try { return JSON.parse(this.getKv(this.defaultKey('agent_models', backend)) ?? '[]') as string[]; } catch { return []; }
-  }
-  setAgentModels(models: string[], backend: Backend = 'codex'): void { this.setKv(this.defaultKey('agent_models', backend), JSON.stringify(models)); }
-  /** The highest reasoning effort agents may pick over MCP; empty = they keep the default. */
-  getAgentMaxEffort(backend: Backend = 'codex'): string { return this.getKv(this.defaultKey('agent_max_effort', backend)) ?? ''; }
-  setAgentMaxEffort(effort: string, backend: Backend = 'codex'): void { this.setKv(this.defaultKey('agent_max_effort', backend), effort); }
   getSubagentPolicy(): SubagentPolicy {
-    try { return { ...SUBAGENT_DEFAULTS, ...(JSON.parse(this.getKv('subagents') ?? '{}') as Partial<SubagentPolicy>) }; } catch { return SUBAGENT_DEFAULTS; }
+    let saved: Partial<SubagentPolicy> = {};
+    try { saved = JSON.parse(this.getKv('subagents') ?? '{}') as Partial<SubagentPolicy>; } catch { /* the defaults */ }
+    // Only the known fields: older settings also held a mode and a guide, which the skill replaced.
+    const { maxChildren, maxDepth, autoSend } = { ...SUBAGENT_DEFAULTS, ...saved };
+    return { maxChildren, maxDepth, autoSend };
   }
   setSubagentPolicy(p: SubagentPolicy): void { this.setKv('subagents', JSON.stringify(p)); }
   /** Whether chat agents may commit and push themselves (see agent-git.ts); by default neither. */
@@ -445,7 +441,7 @@ export class Store {
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
-    return this.all(`SELECT c.*, ${TITLE} AS title, ${LAST_AT} AS last_at FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
+    return this.all(`SELECT c.*, ${TITLE} AS title, ${LAST_AT} AS last_at, ${LAST_TURN} AS last_turn FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
   }
   /** The sub-agents a chat's agent started (that still exist); its automatic reviewer does not count. */
   countChildren(id: string): number { return this.get<{ n: number }>("SELECT count(*) AS n FROM conversations WHERE parent=? AND role=''", id)!.n; }
@@ -481,14 +477,15 @@ export class Store {
     this.run("UPDATE conversations SET backend=?, thread_id=NULL, model='', effort='' WHERE id=? AND backend<>?", backend, id, backend);
   }
   enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = ''): number {
-    const r = this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv) VALUES (?,?,?,?,?,?)',
-      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv);
+    const r = this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn)
+      VALUES (?,?,?,?,?,?,(SELECT MAX(id) FROM turns WHERE conversation_id=?))`,
+      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv, fromConv);
     return Number(r.lastInsertRowid);
   }
   /** Queue a turn a restart cut off again, ahead of what was waiting behind it (see QueueItem.resume). */
   requeueResume(item: QueueItem): void {
-    this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,resume) VALUES (?,?,?,?,?,?,1)',
-      item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv);
+    this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume) VALUES (?,?,?,?,?,?,?,1)',
+      item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv, item.from_turn ?? null);
   }
   listQueue(convId: string): QueueItem[] {
     return this.all<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id', convId).map(toItem);
@@ -505,11 +502,25 @@ export class Store {
     return toItem(row);
   }
 
-  startTurn(convId: string, prompt: string): number {
-    return Number(this.run('INSERT INTO turns (conversation_id,prompt) VALUES (?,?)', convId, prompt).lastInsertRowid);
+  /** `fromTurn`: the turn of another chat whose agent sent this prompt (QueueItem.from_turn). */
+  startTurn(convId: string, prompt: string, fromTurn: number | null = null): number {
+    return Number(this.run('INSERT INTO turns (conversation_id,prompt,from_turn) VALUES (?,?,?)', convId, prompt, fromTurn).lastInsertRowid);
   }
   endTurn(turnId: number, status: string, usage: unknown): void {
     this.run('UPDATE turns SET status=?, usage=?, ended_at=CURRENT_TIMESTAMP WHERE id=?', status, usage == null ? null : JSON.stringify(usage), turnId);
+  }
+  /**
+   * Which agents each turn of `rootId` put to work: the chats that got a prompt sent in it (queued or run), and the
+   * chats those turns sent prompts to in turn, at any depth. One row per turn and agent, oldest turn first.
+   */
+  agentTurns(rootId: string): { turn: number; conv: string }[] {
+    return this.all(`WITH RECURSIVE link(root_turn, turn_id, conv) AS (
+        SELECT t.from_turn, t.id, t.conversation_id FROM turns t JOIN turns r ON r.id=t.from_turn
+          WHERE r.conversation_id=? AND t.conversation_id<>?
+        UNION SELECT l.root_turn, t.id, t.conversation_id FROM turns t JOIN link l ON t.from_turn=l.turn_id WHERE t.conversation_id<>?)
+      SELECT root_turn AS turn, conv FROM link
+      UNION SELECT q.from_turn, q.conversation_id FROM queue q JOIN turns r ON r.id=q.from_turn WHERE r.conversation_id=? AND q.conversation_id<>?
+      ORDER BY turn, conv`, rootId, rootId, rootId, rootId, rootId);
   }
   listTurns(convId: string): Turn[] { return this.all('SELECT * FROM turns WHERE conversation_id=? ORDER BY id', convId); }
   /** A chat's turns before turn `before`, oldest first: what was asked and the agent's last answer in it ('' when none). */

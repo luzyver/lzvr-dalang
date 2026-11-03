@@ -20,7 +20,8 @@ import type { McpLaunch } from './mcp-servers.js';
 import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, reviewDiffDir, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey, writeChangeFile } from './reviewer.js';
 import { RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
-import { type Conversation, type Project, type QueueItem, type Store, SUBAGENT_GUIDE } from './store.js';
+import { CeilingError, refuseChoice, refuseEffort, refuseModel, runOf } from './model-ceiling.js';
+import { type Conversation, type Project, type QueueItem, type Store } from './store.js';
 import type { Backend } from './util.js';
 
 export { withHistory } from './chat-context.js';
@@ -429,9 +430,10 @@ export class Dispatcher {
   }
 
   private async run(convId: string, item: QueueItem, ac: AbortController): Promise<void> {
-    const conv = this.store.getConversation(convId);
-    const project = conv && this.store.getProject(conv.project_id);
-    if (!conv || !project) return; // deleted while queued
+    const found = this.store.getConversation(convId);
+    const project = found && this.store.getProject(found.project_id);
+    if (!found || !project) return; // deleted while queued
+    let conv = found;
 
     const claude = conv.backend === 'claude';
     // A reviewer reads its chat's folder and never writes: read-only, so no checkpoints either.
@@ -448,7 +450,7 @@ export class Dispatcher {
       ? `${item.prompt}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
       : item.prompt;
 
-    const turnId = this.store.startTurn(convId, item.prompt);
+    const turnId = this.store.startTurn(convId, item.prompt, item.from_turn ?? null);
     let failed = false;
     let usage: unknown = null;
     let lastMessage = '';
@@ -456,6 +458,7 @@ export class Dispatcher {
     let mcpToken: string | null = null;
     try {
       this.store.setStatus(convId, 'running');
+      if (!reviewer) conv = this.holdBelowParents(conv);
       const model = conv.model || this.store.getDefaultModel(conv.backend);
       const effort = conv.effort || this.store.getDefaultEffort(conv.backend);
       const current = { backend: conv.backend, model };
@@ -652,6 +655,7 @@ export class Dispatcher {
       }
     } catch (e) {
       failed = true;
+      if (e instanceof CeilingError) lastMessage = e.message;
       this.emit(convId, turnId, { type: 'process.exit', code: -1, stderr: String(e) });
     } finally {
       if (mcpToken) this.revokeMcpToken(mcpToken);
@@ -696,14 +700,42 @@ export class Dispatcher {
     return loadHosts(this.store).some((h) => h.agent !== 'off') ? SSH_GUIDE : '';
   }
 
+  /**
+   * A sub-agent never runs above any chat over it, also when one of those moved down after starting it (or a person
+   * moved it up). Model and effort come down apart, each to the lowest of the chats above: the model only on the same
+   * CLI (a name means nothing to the other one), the effort anywhere. What still runs above then fails the turn with
+   * the reason, which goes to its parent as the report.
+   */
+  private holdBelowParents(conv: Conversation): Conversation {
+    const ups: Conversation[] = [];
+    for (let up = this.store.getConversation(conv.parent); up && ups.length < 100; up = this.store.getConversation(up.parent)) ups.push(up);
+    for (const up of ups) {
+      const cap = runOf(this.store, up);
+      const same = up.backend === conv.backend;
+      if (same && refuseModel(runOf(this.store, this.store.getConversation(conv.id)!), cap)) this.store.setModel(conv.id, cap.model ?? '');
+      if (refuseEffort(runOf(this.store, this.store.getConversation(conv.id)!), cap)) this.store.setEffort(conv.id, cap.effort ?? (same ? '' : 'low'));
+    }
+    const c = this.store.getConversation(conv.id)!;
+    for (const up of ups) {
+      const why = refuseChoice(runOf(this.store, c), runOf(this.store, up));
+      if (why) throw new CeilingError(`This sub-agent did not run: it may not run above chat ${up.id} (${why}). Lower it with set_model, then send the task again.`);
+    }
+    return c;
+  }
+
+  /**
+   * While a turn may still start a sub-agent, one line on the limits it works in. When and how to is the
+   * orchestrating-subagents skill's to say: the agent reads it when the task looks like it could be split.
+   */
   orchestratorGuide(conv: Conversation, projectId: string): string {
     const p = this.store.getSubagentPolicy();
-    if (p.mode !== 'auto' || !p.maxChildren || this.store.depthOf(conv.id) + 1 > p.maxDepth) return '';
-    const models = this.store.getAgentModels(conv.backend);
+    if (!p.maxChildren || this.store.depthOf(conv.id) + 1 > p.maxDepth) return '';
     const left = Math.max(0, p.maxChildren - this.store.countChildren(conv.id));
-    return `${p.guide.trim() || SUBAGENT_GUIDE}\n\nFor this chat: project_id ${projectId}; ${left} more sub-agent(s) allowed (of ${p.maxChildren}); `
-      + `models you may pick, weakest first: ${models.length ? models.join(', ') : 'none, they run on the default'}`
-      + `${p.autoSend ? '' : '; every prompt to a sub-agent waits for a person to approve it'}.`;
+    const model = conv.model || this.store.getDefaultModel(conv.backend) || 'the CLI default';
+    const effort = conv.effort || this.store.getDefaultEffort(conv.backend) || 'the CLI default';
+    return `Sub-agents (dalang MCP tools create_conversation and send_prompt): project_id ${projectId}; ${left} more allowed (of ${p.maxChildren}); `
+      + `none may run above your own model (${model}) and effort (${effort})${p.autoSend ? '' : '; every prompt to one waits for a person to approve it'}. `
+      + 'Whether to use them is yours to decide: read the orchestrating-subagents skill before you start one.';
   }
 
   /**
