@@ -309,7 +309,7 @@ function MergeRequest({ id, s, creds, onCheck, onDone }) {
       ${w.baseMissing && html`<span class="chip warn" title=${`${w.base} is not in this repository (nor fetched from the remote): fetch, or pick another branch once the Merge Request is closed`}>not here</span>`}</div>
     <div class="dim small">${s.worktree ? 'Own worktree' : 'Project folder'} · ${w.ahead ? `${plural(w.ahead, 'commit')} not in ${w.base || 'the project folder'} yet` : 'nothing to propose yet'}</div>
     ${w.pr && html`<a class="mr-link" href=${w.pr} target="_blank" rel="noopener noreferrer"><${Icon} name="git-pull-request" /><span>${w.pr}</span><${Icon} name="external-link" class="tiny" /></a>`}
-    ${w.pr && html`<${PrStatus} id=${id} url=${w.pr} onDone=${onDone} onState=${setPrState} />`}
+    ${w.pr && html`<${PrStatus} id=${id} url=${w.pr} onDone=${onDone} onState=${setPrState} onRetarget=${() => refreshGit(id).catch(() => {})} />`}
     ${w.ahead > 0 && free && html`<${MrCredentials} c=${creds} onCheck=${onCheck} />`}
     ${w.ahead > 0 && html`<div class="mr-box">
       <textarea rows="4" value=${mrText} onInput=${(e) => setMrText(e.currentTarget.value)}

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -451,8 +451,23 @@ describe('pull request status', () => {
       // Not fetched here, yet the target stays the branch the open pull request goes into.
       expect((await t.status(wt.id)).mr).toMatchObject({ base: 'release', picked: true, baseMissing: true });
       expect((await t.call('GET', '/pull-request', undefined, wt.id)).json().retargeted).toBe(false);
+
+      // The forge answers after the chat moved on (another branch, then another pull request): its answer changes nothing.
+      const hold = join(t.base, 'hold');
+      process.env.FAKE_GH_HOLD = hold;
+      process.env.FAKE_GH_BASE = 'develop';
+      for (const [url, branch] of [['https://github.com/acme/app/pull/7', 'other'], ['https://github.com/acme/app/pull/8', wt.branch!]]) {
+        const asked = t.call('GET', '/pull-request', undefined, wt.id);
+        await until(() => existsSync(hold));
+        t.store.setPrUrl(wt.id, url, branch);
+        rmSync(hold);
+        expect((await asked).json()).toMatchObject({ base: 'develop', retargeted: false });
+        expect(t.store.getConversation(wt.id)?.mr_base).toBe('release');
+        t.store.setPrUrl(wt.id, 'https://github.com/acme/app/pull/7', wt.branch!);
+      }
     } finally {
       if (old === undefined) delete process.env.FAKE_GH_BASE; else process.env.FAKE_GH_BASE = old;
+      delete process.env.FAKE_GH_HOLD;
     }
   });
 

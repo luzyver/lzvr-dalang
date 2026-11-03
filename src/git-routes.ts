@@ -975,10 +975,15 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   };
   // The target branch changed on the forge (GitHub's "Edit" next to the base, say): the chat follows it, so what it shows
   // and compares against (commits ahead, the description, syncing the base) is the branch the merge really goes into.
-  const follow = async (c: { conv: Conversation; project: Project }, p: PrStatus) => {
+  // Only while the chat still has that Merge Request for the branch it is on now: the forge may answer after a switch of
+  // branch or a new Merge Request, and its answer is about the one asked for.
+  const follow = async (c: { conv: Conversation; project: Project }, url: string, p: PrStatus) => {
     if (!p.base || (p.state !== 'open' && p.state !== 'draft')) return false;
-    const t = await mrTarget(c.conv, c.project);
+    const now = store.getConversation(c.conv.id);
+    const t = now && await mrTarget(now, c.project);
     if (!t || t.base.name === p.base || p.base === t.branch) return false;
+    const fresh = store.getConversation(c.conv.id);
+    if (!fresh || prFor(fresh, t.branch) !== url || fresh.mr_base !== now!.mr_base) return false;
     store.setMrBase(c.conv.id, p.base);
     return true;
   };
@@ -993,7 +998,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!cli) return reply.code(400).send({ error: `cannot tell whether ${url} is GitHub or GitLab` });
     try {
       const p = await prStatus(cli.forge, cli.command, c.cwd, url);
-      return { ...p, forge: cli.forge, retargeted: await follow(c, p) };
+      return { ...p, forge: cli.forge, retargeted: await follow(c, url, p) };
     } catch (e) { return gitFailed(reply, e); }
   });
 

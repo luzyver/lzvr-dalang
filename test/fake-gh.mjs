@@ -1,11 +1,12 @@
 // Fake `gh` / `glab`: `fake-gh.mjs <log file> <args...>`. Appends its arguments and folder to the log as a JSON line and
 // prints a new pull request address; once the log has an entry, it answers like gh does for a branch that has one already.
 // `pr view` and `api` answer with a pull request that has checks, a review and comments (merged once `pr merge` ran);
-// `pr merge` is logged too. FAKE_GH_BASE: the branch `pr view` says it goes into (none given when unset).
+// `pr merge` is logged too. FAKE_GH_BASE: the branch `pr view` says it goes into (none given when unset); with
+// FAKE_GH_HOLD set, `pr view` creates that file and answers once it is gone.
 // Accounts: FAKE_GH_ACCOUNTS="ann,bob*" signs in ann and bob on github.com (* = active; none set = not signed in), each
 // with token `tok-<user>` (`old!` = a login whose token stopped working, which makes `auth status` exit 1 like gh);
 // FAKE_GH_WRITERS="bob" are the ones that may push to the repository. Every logged call records the GH_TOKEN it ran with.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const [log, ...args] = process.argv.slice(2);
 const url = 'https://github.com/acme/app/pull/7';
@@ -37,6 +38,11 @@ if (args[0] === 'api' && /^repos\/[^/]+\/[^/]+$/.test(args[3] ?? '')) {
 }
 
 if (args[0] === 'pr' && args[1] === 'view') {
+  const hold = process.env.FAKE_GH_HOLD;
+  if (hold) {
+    writeFileSync(hold, '');
+    while (existsSync(hold)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
   console.log(JSON.stringify({
     title: 'feat: Add b', url, state: merged() ? 'MERGED' : 'OPEN', isDraft: false, baseRefName: process.env.FAKE_GH_BASE, mergeable: 'MERGEABLE', reviewDecision: 'CHANGES_REQUESTED',
     statusCheckRollup: [
