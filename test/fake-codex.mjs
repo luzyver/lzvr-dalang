@@ -2,6 +2,7 @@
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
+// FAKE_BUSY_TIMES=n with FAKE_BUSY_FILE=path: the first n execs fail with "Selected model is at capacity" (counted in that file).
 // login: `login status` succeeds iff $CODEX_HOME/auth.json exists; `login --device-auth` behaves per
 // FAKE_LOGIN = succeed (default) | succeed-noauth | fail | hang.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -58,6 +59,16 @@ process.stdin.on('end', async () => {
     if (process.env.FAKE_LIMIT_AFTER_WORK) out({ type: 'item.completed', item: { type: 'command_execution', command: 'ls' } });
     out({ type: 'turn.failed', error: { message: process.env.FAKE_LIMIT_MESSAGE || 'You have reached your usage limit' } });
     process.exit(1);
+  }
+  const busyFile = process.env.FAKE_BUSY_FILE;
+  if (busyFile) {
+    const n = existsSync(busyFile) ? Number(readFileSync(busyFile, 'utf8')) : 0;
+    writeFileSync(busyFile, String(n + 1));
+    if (n < Number(process.env.FAKE_BUSY_TIMES || 0)) {
+      out({ type: 'error', message: 'Selected model is at capacity. Please try a different model.' });
+      out({ type: 'turn.failed', error: { message: 'Selected model is at capacity. Please try a different model.' } });
+      process.exit(1);
+    }
   }
   if (mode === 'rawline') { // a line whose exact text would not survive JSON.parse + JSON.stringify
     console.log('{"type":"item.completed","item":{"type":"agent_message","text":"x","big":12345678901234567890}}');

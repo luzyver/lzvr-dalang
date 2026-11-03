@@ -194,6 +194,7 @@ export class ThreadModel {
       case 'turn.status': this.#endTurn(); break;
       case 'account.selected': this.account = d.account || ''; break;
       case 'account.switched': this.#note(`Usage limit on ${d.from}: switching account`, 'warn', e.id); break;
+      case 'model.busy': this.#note(`The model is at capacity: trying again in ${Math.round(d.retryInMs / 1000)}s`, 'warn', e.id); break;
       case 'account.exhausted': this.#note(d.message || 'Every account is at its usage limit', 'err', e.id); break;
       case 'context.compacting': this.#closeSteps(); this.live = { label: 'Compacting context', detail: '' }; break;
       case 'context.compacted': this.live = null; this.#closeSteps(); this.#note('Context compacted; continuing in the same session. Full history remains available.', 'dim', e.id); break;

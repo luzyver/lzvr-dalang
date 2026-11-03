@@ -1,3 +1,5 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { saveConnections } from '../src/databases.js';
@@ -457,6 +459,30 @@ describe('Dispatcher', () => {
     expect(store.listTurns(conv.id)[1]!.status).toBe('failed');
     dispatcher.accounts.unblockAll();
     expect(dispatcher.accounts.pick()).not.toBeNull();
+  });
+
+  it('waits and tries again when the model is at capacity, without blocking the account', async () => {
+    const busy = join(mkdtempSync(join(tmpdir(), 'lzvr-busy-')), 'count');
+    const { store, dispatcher, conv } = setupDispatcher(
+      { FAKE_BUSY_FILE: busy, FAKE_BUSY_TIMES: '2' }, undefined, ['a', 'b'], { busyRetryMs: [10, 10, 10] });
+    store.enqueue(conv.id, 'x', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.listTurns(conv.id)[0]!.status).toBe('completed');
+    const ev = store.eventsAfter(conv.id, 0).map((e) => JSON.parse(e.payload) as Record<string, any>);
+    expect(ev.filter((e) => e.type === 'model.busy')).toHaveLength(2);
+    expect(ev.map((e) => e.type)).not.toContain('account.switched');
+    expect(dispatcher.accounts.list().every((a) => a.blockedUntil === null)).toBe(true);
+  });
+
+  it('fails the turn once the waits for a model at capacity are used up', async () => {
+    const busy = join(mkdtempSync(join(tmpdir(), 'lzvr-busy-')), 'count');
+    const { store, dispatcher, conv } = setupDispatcher({ FAKE_BUSY_FILE: busy, FAKE_BUSY_TIMES: '9' }, undefined, ['a'], { busyRetryMs: [10] });
+    store.enqueue(conv.id, 'x', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.listTurns(conv.id)[0]!.status).toBe('failed');
+    expect(store.eventsAfter(conv.id, 0).filter((e) => e.type === 'model.busy')).toHaveLength(1);
   });
 
   it('does not switch accounts for an ordinary failure', async () => {

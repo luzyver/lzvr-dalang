@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
-import { Accounts, DEFAULT_LIMIT_RE, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
+import { Accounts, DEFAULT_LIMIT_RE, isBusy, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
@@ -56,6 +56,8 @@ export interface DispatcherOpts {
   env?: Record<string, string>;
   blockMs?: number;
   limitRe?: RegExp;
+  /** The waits before trying a turn again when the model is at capacity (see isBusy); one retry per entry. */
+  busyRetryMs?: number[];
   /** When set, each turn gets this MCP endpoint and a token bound to its conversation (see issueMcpToken). */
   mcpUrl?: string;
   /** Have the chat's agent give each new chat a short title from its first prompt (else the prompt itself is the title). */
@@ -97,6 +99,15 @@ export function parseClaudeModels(out: string): ModelInfo[] {
     }));
   }
   return [];
+}
+
+/** Wait `ms`, or less when `signal` aborts first (the turn was cancelled or Dalang is stopping). */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((done) => {
+    const t = setTimeout(finish, ms);
+    function finish() { clearTimeout(t); signal.removeEventListener('abort', finish); done(); }
+    signal.addEventListener('abort', finish, { once: true });
+  });
 }
 
 /** The first line of an answer, without the quotes, heading marks or final full stop agents like to add. */
@@ -265,12 +276,23 @@ export class Dispatcher {
   /**
    * The models the CLI offers, cached 10 minutes. Empty if it cannot say (the panel falls back to free text).
    * Codex: `codex debug models`. Claude Code: the `initialize` reply of its stream-json control protocol (what /model lists).
+   * Every account is asked and the longest list wins: the CLI's server-side experiments can give one account a picker
+   * with only the aliases (opus/sonnet/haiku) while the others list every model.
    */
-  models(backend: Backend = 'codex'): Promise<ModelInfo[]> {
+  async models(backend: Backend = 'codex'): Promise<ModelInfo[]> {
     const cached = this.modelCache.get(backend);
-    if (cached && Date.now() - cached.at < 600_000) return Promise.resolve(cached.list);
+    if (cached && Date.now() - cached.at < 600_000) return cached.list;
+    const homes = this.accountsOf(backend).homes;
+    const answers = await Promise.all((homes.length ? homes : [null]).map((home) => this.modelsOf(backend, home)));
+    const ok = answers.filter((a) => a.ok || a.list.length);
+    const list = ok.reduce<ModelInfo[]>((best, a) => (a.list.length > best.length ? a.list : best), []);
+    if (ok.length) this.modelCache.set(backend, { at: Date.now(), list });
+    return list;
+  }
+
+  /** What one account's CLI lists; `ok` is false when the CLI failed (missing, timed out). */
+  private modelsOf(backend: Backend, home: string | null): Promise<{ ok: boolean; list: ModelInfo[] }> {
     const claude = backend === 'claude';
-    const home = this.accountsOf(backend).primary();
     const [cmd, ...pre] = (claude ? this.opts.claudeCommand : this.opts.command) ?? [claude ? 'claude' : 'codex'];
     const args = claude ? ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['debug', 'models'];
     const homeEnv = home ? { [claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: home } : {};
@@ -278,8 +300,7 @@ export class Dispatcher {
       const child = execFile(cmd!, [...pre, ...args], { env: { ...process.env, ...this.opts.env, ...homeEnv }, timeout: 30_000, maxBuffer: 8e6 }, (err, out) => {
         let list: ModelInfo[] = [];
         try { list = claude ? parseClaudeModels(out) : parseCodexModels(out); } catch { /* not JSON / CLI missing */ }
-        if (!err || list.length) this.modelCache.set(backend, { at: Date.now(), list });
-        done(list);
+        done({ ok: !err, list });
       });
       // Claude answers `initialize` and exits at end of input; Codex reads nothing, so it must not wait on stdin either.
       child.stdin?.on('error', () => {}); // EPIPE when the CLI is missing or exits early
@@ -454,6 +475,7 @@ export class Dispatcher {
       // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
       let workDone = !!item.resume;
       let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
+      const busyWaits = [...(this.opts.busyRetryMs ?? [15_000, 30_000, 60_000])]; // what is left of them for this turn
       // Optional: let the agent call this gateway's MCP endpoint, as exactly this conversation.
       mcpToken = this.opts.mcpUrl ? this.issueMcpToken(convId, item.author) : null;
       // The agent's own git commands (commit, push) work as the user this turn runs for, never as someone else.
@@ -533,6 +555,7 @@ export class Dispatcher {
         failed = false;
         let completed = false;
         let limited = false;
+        let busy = false;
         let limitMs: number | null = null; // how long the limit lasts, when the failure says
         let windows: LimitWindow[] = []; // the account's usage as the CLI last reported it in this attempt
         let worked = false;
@@ -590,6 +613,7 @@ export class Dispatcher {
                 limited = true;
                 limitMs = retryAfter(ev);
               }
+              if (!limited && isBusy(ev)) busy = true;
             }
             this.emit(convId, turnId, ev);
           }
@@ -613,6 +637,15 @@ export class Dispatcher {
           this.emit(convId, turnId, { type: 'account.switched', from: basename(home) });
           workDone ||= worked;
           cutBy = 'its account hit a usage limit';
+          continue;
+        }
+        // The model is full on the provider's side: every account would get the same answer, so wait and try again.
+        const wait = busy && !limited && !completed && !ac.signal.aborted ? busyWaits.shift() : undefined;
+        if (wait !== undefined) {
+          this.emit(convId, turnId, { type: 'model.busy', retryInMs: wait });
+          await abortableSleep(wait, ac.signal);
+          workDone ||= worked;
+          cutBy = 'the model was at capacity';
           continue;
         }
         break;
