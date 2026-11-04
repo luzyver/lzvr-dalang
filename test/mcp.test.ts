@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { reviewDiffDir } from '../src/reviewer.js';
@@ -678,6 +678,63 @@ describe('ClickUp tools', () => {
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${noId}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
     expect(posts()).toHaveLength(3);
     await told(/did not send your message/);
+  });
+
+  it('send files from the chat folder by uploading them to a task, as they were when asked, and link them', async () => {
+    const calls: string[] = [];
+    const t = await withClickUp('pk_test', calls);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    const { p, a } = await twoConvs(await t.connect());
+    const dir = t.store.getProject(p.id)!.path;
+    writeFileSync(join(dir, 'rekap.xlsx'), 'xlsx-bytes');
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const ask = (args: Record<string, unknown>) => call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'rekap terlampir', ...args });
+
+    expect((await ask({ files: ['rekap.xlsx'] })).text).toMatch(/task_id/);
+    expect((await ask({ files: ['nope.xlsx'], task_id: 't1' })).text).toMatch(/no file nope.xlsx/);
+    expect((await ask({ files: ['../outside.txt'], task_id: 't1' })).isError).toBe(true);
+    expect((await ask({ files: ['rekap.xlsx'], task_id: 't2' })).text).toMatch(/no task t2/);
+    const ok = await ask({ files: ['rekap.xlsx'], task_id: 'https://app.clickup.com/t/t1' });
+    expect(ok.json).toMatchObject({ status: 'pending_approval', files: [{ name: 'rekap.xlsx', size: 10 }], task: { id: 't1', name: 'Rekap transaksi' } });
+    writeFileSync(join(dir, 'rekap.xlsx'), 'changed after asking'); // what the owner approved is what goes
+    expect(calls.filter((c) => /^(POST|UPLOAD) /.test(c))).toEqual([]);
+
+    const id = (ok.json as { approval_id: number }).approval_id;
+    const r = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH });
+    expect(r.json()).toMatchObject({ status: 'sent' });
+    expect(calls.filter((c) => /^(POST|UPLOAD) /.test(c))).toEqual([
+      'UPLOAD /api/v2/task/t1/attachment rekap.xlsx 10',
+      `POST /api/v3/workspaces/900/chat/channels/c1/messages ${JSON.stringify({ type: 'message', content: 'rekap terlampir\n\n📎 [rekap.xlsx](https://files.example/rekap.xlsx)', content_format: 'text/md' })}`,
+    ]);
+  });
+
+  it('keep files whose names differ only in case apart, and keep the files of an upload cut off midway until dismissed', async () => {
+    const calls: string[] = [];
+    const t = await withClickUp('pk_test', calls);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    const { p, a } = await twoConvs(await t.connect());
+    const dir = t.store.getProject(p.id)!.path;
+    for (const [sub, name, body] of [['a', 'rekap.xlsx', 'first'], ['b', 'REKAP.xlsx', 'second one'], ['b', 'bad-502.xlsx', 'x']]) {
+      mkdirSync(join(dir, sub!), { recursive: true });
+      writeFileSync(join(dir, sub!, name!), body!);
+    }
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const ask = async (files: string[]) => ((await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'rekap', files, task_id: 't1' })).json as { approval_id: number }).approval_id;
+    const approve = async (id: number) => (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
+    const filesOf = (id: number) => join(t.cfg.stateDir, 'clickup-files', String(id));
+
+    const both = await ask(['a/rekap.xlsx', 'b/REKAP.xlsx']);
+    expect(await approve(both)).toMatchObject({ status: 'sent' });
+    expect(calls.filter((c) => c.startsWith('UPLOAD '))).toEqual(['UPLOAD /api/v2/task/t1/attachment rekap.xlsx 5', 'UPLOAD /api/v2/task/t1/attachment REKAP.xlsx 10']);
+    expect(existsSync(filesOf(both))).toBe(false);
+
+    const cut = await ask(['a/rekap.xlsx', 'b/bad-502.xlsx']);
+    const r = await approve(cut);
+    expect(r).toMatchObject({ status: 'unknown' });
+    expect(r.outcome).toMatch(/Already on task "Rekap transaksi".*rekap\.xlsx/);
+    expect(existsSync(filesOf(cut))).toBe(true);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${cut}/dismiss`, headers: AUTH })).json()).toMatchObject({ status: 'dismissed' });
+    expect(existsSync(filesOf(cut))).toBe(false);
   });
 
   it('show a request only to whoever asked, and call a 5xx on sending unknown, not failed', async () => {

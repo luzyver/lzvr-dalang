@@ -448,6 +448,14 @@ export class Store {
   setRole(id: string, role: string): void { this.run('UPDATE conversations SET role=? WHERE id=?', role, id); }
   /** The sub-agents a chat's agent started, in any project. */
   listChildren(id: string): Conversation[] { return this.all(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE parent=? ORDER BY c.rowid`, id); }
+  /** Every chat under `id` at any depth and in any project (sub-agents may run in another project than their parent). */
+  listDescendants(id: string): Conversation[] {
+    const out: Conversation[] = [];
+    const seen = new Set([id]);
+    const walk = (p: string) => { for (const c of this.listChildren(p)) if (!seen.has(c.id)) { seen.add(c.id); out.push(c); walk(c.id); } };
+    walk(id);
+    return out;
+  }
   /** How many sub-agent levels a chat is below a chat a person started (0 for that one). */
   depthOf(id: string): number {
     let depth = 0;

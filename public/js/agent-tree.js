@@ -12,13 +12,16 @@ import { TurnsSection } from './agent-turns.js';
 
 export { descendants, rootOf };
 
-/** Delete a chat after asking (its worktree, if it has one, goes too); from the open one, go home. */
+/** Delete a chat after asking (its worktree, if it has one, and its sub-agents go too); from the open one, go home. */
 export const removeChat = (c, active) => guarded(async () => {
+  const under = descendants(c.id);
+  const worktrees = [c, ...under].filter((x) => x.worktree).length;
+  const agents = under.length ? ` Its ${under.length === 1 ? 'sub-agent is' : `${under.length} sub-agents are`} deleted with it.` : '';
   if (!await confirmDialog({
     title: 'Delete this chat and its history?',
-    message: c.worktree
+    message: (c.worktree
       ? `Its worktree is removed too: uncommitted changes there are lost. Branch ${c.branch} is deleted here and on the remote if it is merged, otherwise it stays.`
-      : 'The project and its files stay.',
+      : worktrees ? 'Sub-agent worktrees are removed too: uncommitted changes there are lost.' : 'The project and its files stay.') + agents,
     confirmText: 'Delete',
     danger: true,
   })) return;

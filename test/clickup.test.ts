@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ClickUp, localParts, startOfDay } from '../src/clickup.js';
+import { ClickUp, ClickUpError, ClickUpUncertain, localParts, startOfDay } from '../src/clickup.js';
 import { fakeClickUp, fakeClient, wib } from './fake-clickup.js';
 
 describe('time helpers', () => {
@@ -150,5 +150,48 @@ describe('ClickUp send', () => {
     const c = new ClickUp({ token: 'pk_test', fetch: flaky });
     await expect(c.send({ channelId: 'c1', content: 'hi' })).rejects.toThrow(/503/);
     expect(posts(calls)).toEqual([]);
+  });
+});
+
+describe('ClickUp files', () => {
+  const file = (name: string) => ({ name, data: Buffer.from(name) });
+  const uploads = (calls: string[]) => calls.filter((c) => c.startsWith('UPLOAD ')).map((c) => c.split(' ')[2]);
+
+  it('finds a task by id, by link, and by a custom id link only together with its workspace', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    const t1 = { id: 't1', name: 'Rekap transaksi', url: 'https://app.clickup.com/t/t1' };
+    expect(await c.task('t1')).toEqual(t1);
+    expect(await c.task('https://app.clickup.com/t/t1')).toEqual(t1);
+    expect(await c.task('https://app.clickup.com/t/900/DEV-42')).toEqual(t1); // uploads then go to t1, its own id
+    expect(calls).toContain('/api/v2/task/DEV-42?custom_task_ids=true&team_id=900');
+    await expect(c.task('DEV-42')).rejects.toThrow(/no task DEV-42/);
+    await expect(c.task('not a task')).rejects.toThrow(/not a task id or link/);
+  });
+
+  it('calls an upload refused up front failed, posting nothing', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    const err = await c.deliver(await c.destination({ channelId: 'c1' }), 'hi', [file('bad-400.xlsx')], await c.task('t1')).catch((e) => e);
+    expect(err).toBeInstanceOf(ClickUpError);
+    expect(err).not.toBeInstanceOf(ClickUpUncertain);
+    expect(calls.filter((x) => x.startsWith('POST '))).toEqual([]);
+  });
+
+  it('calls a failure once a file may be on the task uncertain, naming the files already uploaded', async () => {
+    const calls: string[] = [];
+    const c = fakeClient(calls);
+    const dest = await c.destination({ channelId: 'c1' });
+    const task = await c.task('t1');
+    // the second upload is refused after the first went through
+    const partial = await c.deliver(dest, 'hi', [file('a.xlsx'), file('bad-400.xlsx')], task).catch((e) => e);
+    expect(partial).toBeInstanceOf(ClickUpUncertain);
+    expect(partial.message).toMatch(/Already on task "Rekap transaksi".*a\.xlsx\]\(https:\/\/files\.example\/a\.xlsx\)/);
+    // a 5xx says nothing about whether ClickUp kept it
+    const lost = await c.deliver(dest, 'hi', [file('bad-502.xlsx')], task).catch((e) => e);
+    expect(lost).toBeInstanceOf(ClickUpUncertain);
+    expect(lost.message).toMatch(/Check the task before sending them again/);
+    expect(uploads(calls)).toEqual(['a.xlsx', 'bad-400.xlsx', 'bad-502.xlsx']);
+    expect(calls.filter((x) => x.startsWith('POST '))).toEqual([]);
   });
 });
