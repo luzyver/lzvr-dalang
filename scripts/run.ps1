@@ -83,6 +83,20 @@ foreach ($key in $bins.Keys) {
   elseif ($key -eq 'CODEX_BIN') { Write-Host 'codex.exe not found: Codex chats fail until you install it (npm i -g @openai/codex) or set CODEX_BIN in .env.' -ForegroundColor Yellow }
 }
 
+# ---------- temp folder ----------
+# Windows always sets TEMP / TMP (to C:\Users\<you>\AppData\Local\Temp), so --env-file cannot move them. Point them at
+# the state folder instead: Dalang's own temp files, the agents' scratch scripts and Git Bash's /tmp then stay with the
+# repo. A TEMP set in .env picks another folder.
+$stateDir = if ($env:STATE_DIR) { $env:STATE_DIR } elseif ($envFile.STATE_DIR) { $envFile.STATE_DIR } else { 'state' }
+$tmpDir = if ($envFile.TEMP) { $envFile.TEMP } else { Join-Path $stateDir 'tmp' }
+try {
+  New-Item -ItemType Directory -Force $tmpDir -ErrorAction Stop | Out-Null
+  $tmpDir = (Resolve-Path $tmpDir -ErrorAction Stop).Path
+} catch { Fail "Cannot use $tmpDir as the temp folder: $($_.Exception.Message)" }
+if (-not (Test-Path $tmpDir -PathType Container)) { Fail "Temp folder $tmpDir is not a directory." }
+$env:TEMP = $tmpDir; $env:TMP = $tmpDir
+Info "TEMP = $tmpDir"
+
 # ---------- run ----------
 $hostName = if ($env:HOST) { $env:HOST } elseif ($envFile.HOST) { $envFile.HOST } else { '127.0.0.1' }
 $port = if ($env:PORT) { $env:PORT } elseif ($envFile.PORT) { $envFile.PORT } else { '9876' }
