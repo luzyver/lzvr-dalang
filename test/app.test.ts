@@ -265,6 +265,18 @@ describe('deleting a chat', () => {
     const left = (await t.app.inject({ url: `/api/projects/${project.id}/conversations`, headers: AUTH })).json();
     expect(left.map((c: { id: string }) => c.id)).toEqual([other.id]);
   });
+
+  it('takes the sub-agents under it along, in any project, so none is left without its parent', async () => {
+    const t = setupApp();
+    const { project, conv } = await makeConv(t);
+    const sibling = t.store.createConversation(project.id);
+    const kid = t.store.createConversation(project.id, undefined, conv.id);
+    const elsewhere = t.store.createProject('other', project.path + '-other');
+    const grandkid = t.store.createConversation(elsewhere.id, undefined, kid.id);
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/conversations/${conv.id}`, headers: AUTH })).statusCode).toBe(204);
+    for (const c of [kid, grandkid]) expect(t.store.getConversation(c.id)).toBeNull();
+    expect(t.store.getConversation(sibling.id)).not.toBeNull();
+  });
 });
 
 describe('reasoning effort', () => {

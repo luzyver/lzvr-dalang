@@ -31,6 +31,7 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
     '/api/v3/workspaces/900/chat/messages/m3/replies': { data: [msg('r1', '2026-10-08T22:15:00', ME, 'done, deployed')], next_cursor: '' },
     '/api/v3/workspaces/900/chat/channels/c1': { data: { id: 'c1', name: 'dev-team', type: 'CHANNEL' } },
     '/api/v3/workspaces/901/chat/channels/d1': { data: { id: 'd1', name: '', type: 'DM' } },
+    '/api/v2/task/t1': { id: 't1', name: 'Rekap transaksi', url: 'https://app.clickup.com/t/t1' },
   };
   return (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -39,11 +40,26 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
     if (init?.method === 'POST') {
       calls.push(`POST ${url.pathname} ${init.body}`);
       if (url.pathname === '/api/v3/workspaces/900/chat/channels/direct_message') return new Response(JSON.stringify({ data: { id: 'c2', type: 'DM' } }), { status: 201 });
+      // An upload to task t1: "UPLOAD <path> <name> <bytes>"; it is kept as att-<name>.
+      if (url.pathname === '/api/v2/task/t1/attachment') {
+        calls.pop();
+        const f = (init.body as FormData).get('attachment') as File;
+        calls.push(`UPLOAD ${url.pathname} ${f.name} ${f.size}`);
+        // A file named bad-<status>.* is answered with that status.
+        const failing = /^bad-(\d{3})\./.exec(f.name);
+        if (failing) return new Response('{"err":"upload failed"}', { status: Number(failing[1]) });
+        return new Response(JSON.stringify({ id: `att-${f.name}`, title: f.name, url: `https://files.example/${f.name}` }), { status: 200 });
+      }
       return /\/(messages|replies)$/.test(url.pathname)
         ? new Response(JSON.stringify({ id: 'new1', date: wib('2026-10-22T09:30:00'), type: 'message' }), { status: 201 })
         : new Response('{"err":"nope"}', { status: 404 });
     }
     calls.push(url.pathname + url.search);
+    // Custom task id DEV-42 of workspace 900 is task t1, found only with both query parameters.
+    if (url.pathname === '/api/v2/task/DEV-42') {
+      return url.searchParams.get('custom_task_ids') === 'true' && url.searchParams.get('team_id') === '900'
+        ? new Response(JSON.stringify(routes['/api/v2/task/t1']), { status: 200 }) : new Response('{"err":"Task not found"}', { status: 404 });
+    }
     const cursor = url.searchParams.get('cursor');
     if (cursor === 'p3') throw new Error('read past the start of the range');
     const body = routes[url.pathname + (cursor ? `?${cursor}` : '')];

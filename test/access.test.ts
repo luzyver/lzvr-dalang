@@ -54,6 +54,18 @@ describe('project access', () => {
     expect((await call(t, 'GET', '/api/schedules', AUTH)).json()).toHaveLength(1);
   });
 
+  it('refuses to delete a chat or project whose sub-agents run in a project the person may not open, and deletes nothing', async () => {
+    const { t, admin, p } = await world();
+    const kid = t.store.createConversation(p.owner!.id, undefined, p.all!.conv);
+    expect((await call(t, 'DELETE', `/api/conversations/${p.all!.conv}`, admin)).statusCode).toBe(403);
+    expect((await call(t, 'DELETE', `/api/projects/${p.all!.id}`, admin)).statusCode).toBe(403);
+    expect(t.store.getConversation(p.all!.conv)).not.toBeNull();
+    expect(t.store.getConversation(kid.id)).not.toBeNull();
+    expect(t.store.getProject(p.all!.id)).not.toBeNull();
+    expect((await call(t, 'DELETE', `/api/conversations/${p.all!.conv}`, AUTH)).statusCode).toBe(204);
+    expect(t.store.getConversation(kid.id)).toBeNull();
+  });
+
   it('leaves hidden chats out of search', async () => {
     const { t, dev, p } = await world();
     for (const k of ['all', 'admin']) t.store.db.prepare('UPDATE conversations SET auto_title=? WHERE id=?').run(`secret ${k}`, p[k]!.conv);

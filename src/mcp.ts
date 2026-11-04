@@ -1,9 +1,11 @@
+import { readFileSync, statSync } from 'node:fs';
+import { basename } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUpApproval, createClickUpApproval, describeDestination, readClickUpApprovals } from './clickup-approvals.js';
-import { type ClickUp, MAX_SEND, startOfDay } from './clickup.js';
+import { type ClickUp, MAX_SEND, type OutFile, startOfDay } from './clickup.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
 import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, dbTarget, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
@@ -399,7 +401,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   const hidden = source ? (name: string) => !AGENT_TOOLS.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
   const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
-  if (cu) clickupTools(server, store, push, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source });
+  if (cu) clickupTools(server, store, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source });
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
@@ -441,7 +443,28 @@ const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
  * owner sent. They only read, unless the owner also allowed sending: clickup_send_message then asks to send as the
  * owner, and each message waits for the owner's approval.
  */
-function clickupTools(server: McpServer, store: Store, push: Push, cu: ClickUp, send: boolean, by: { who: string; conv: string | null }): void {
+const MAX_FILES = 5;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/** Files an agent sends along, read now from its chat's folder (paths relative to it): each once, at most 5 of 25 MB. */
+function readChatFiles(store: Store, conv: string | null, paths: string[]): OutFile[] {
+  const c = conv ? store.getConversation(conv) : null;
+  const project = c && store.getProject(c.project_id);
+  if (!c || !project) throw new Error('files can be sent only from inside a chat, from its folder');
+  const root = c.worktree ?? project.path;
+  const out: OutFile[] = [];
+  for (const p of paths) {
+    const real = insideRoot(root, p);
+    if (!real || !statSync(real).isFile()) throw new Error(`no file ${p} in this chat's folder`);
+    if (statSync(real).size > MAX_FILE_BYTES) throw new Error(`${p} is over 25 MB`);
+    const name = basename(real);
+    if (out.some((f) => f.name === name)) throw new Error(`two files are named ${name}`);
+    out.push({ name, data: readFileSync(real) });
+  }
+  return out;
+}
+
+function clickupTools(server: McpServer, store: Store, push: Push, stateDir: string, cu: ClickUp, send: boolean, by: { who: string; conv: string | null }): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
@@ -494,21 +517,30 @@ function clickupTools(server: McpServer, store: Store, push: Push, cu: ClickUp, 
       + 'in it or reply in a thread and which one (clickup_list_threads), or, for a private message, the person '
       + '(clickup_find_people). Then show the text and send only what they agreed to. Nothing is sent at once: the '
       + 'message waits for the owner to approve it in Dalang (status pending_approval), who may change the text; the '
-      + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits.',
+      + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits. Files '
+      + '(files, paths in this chat folder) cannot go into ClickUp Chat itself: they are uploaded to a ClickUp task '
+      + '(task_id, an id or link the person gives you; ask which one) when the message is sent, and the message ends with '
+      + 'a link to each, which whoever may open the task can follow.',
     inputSchema: {
       channel_id: z.string().optional().describe('from clickup_list_channels'),
       to_user_id: z.string().optional().describe('instead of channel_id: a person from clickup_find_people'),
       reply_to: z.string().optional().describe('with channel_id: a message id (from clickup_list_threads) to reply to in its thread'),
       content: z.string().min(1).max(MAX_SEND),
       workspace_id: z.string().optional().describe("the channel's or person's workspace; default: looked up"),
+      files: z.array(z.string().min(1)).max(MAX_FILES).optional()
+        .describe(`files to send along: paths in this chat's folder, at most ${MAX_FILES} of 25 MB each (needs task_id)`),
+      task_id: z.string().optional().describe('with files: the ClickUp task (id or https://app.clickup.com/t/... link) they are uploaded to'),
     },
   }, async (a) => run(async () => {
     if (!a.content.trim()) throw new Error('the message is empty');
+    if (a.files?.length && !a.task_id) throw new Error('files need task_id: ClickUp Chat takes no files over its API, so they go to a task and the message links them');
+    const files = a.files?.length ? readChatFiles(store, by.conv, a.files) : [];
     const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
-    const p = createClickUpApproval(store, { dest, content: a.content.trim(), who: by.who, conv: by.conv });
+    const task = files.length ? await cu.task(a.task_id!) : undefined;
+    const p = createClickUpApproval(store, { dest, content: a.content.trim(), who: by.who, conv: by.conv, files, task, stateDir });
     void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { owner: true } });
     return {
-      status: 'pending_approval', approval_id: p.id, to: dest,
+      status: 'pending_approval', approval_id: p.id, to: dest, ...(task && { files: p.files, task }),
       note: 'Nothing was sent yet: the owner approves it in Dalang. The outcome will arrive in this chat as a message; do not send it again.',
     };
   }));

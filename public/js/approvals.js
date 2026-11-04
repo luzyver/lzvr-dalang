@@ -7,6 +7,8 @@ import { api } from './api.js';
 import { AsyncButton, Empty, Icon } from './ui.js';
 import { approvals, clickupApprovals, dbApprovals, findConv, sshApprovals, guarded, indexRequests, openChat, refreshApprovals, toast, toggleSidebar } from './store.js';
 
+const size = (n) => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
+
 const chatName = (id) => {
   const f = findConv(id);
   return f ? `${f.project.name} / ${f.conv.title || 'New chat'}` : `chat ${id.slice(0, 8)}`;
@@ -113,6 +115,10 @@ export function ClickUpApprovalCard({ a, showChat }) {
       <strong>${a.who || 'An agent'} wants to send a ClickUp message as you
         ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
       <${ClickUpWhere} d=${a.dest} />
+      ${a.files?.length > 0 && html`<div class="small">
+        <div><span class="dim">Files</span> ${a.files.map((f) => `${f.name} (${size(f.size)})`).join(', ')}</div>
+        <div><span class="dim">Uploaded to task</span> <a href=${a.task.url} target="_blank" rel="noopener">${a.task.name}</a>, linked at the end of the message</div>
+      </div>`}
       ${pending
         ? html`<textarea rows="4" value=${text} aria-label="Message text" onInput=${(e) => setText(e.currentTarget.value)}></textarea>`
         : html`<div class="card-text">${a.content}</div>`}

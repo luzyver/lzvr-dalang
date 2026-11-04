@@ -1,5 +1,7 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { type ClickUp, ClickUpUncertain, type Destination, MAX_SEND } from './clickup.js';
+import { type ClickUp, ClickUpUncertain, type Destination, MAX_SEND, type OutFile, type TaskRef } from './clickup.js';
 import type { Dispatcher } from './dispatcher.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
@@ -16,7 +18,14 @@ export interface ClickUpApproval {
   /** What sending gave (or why it failed). */
   outcome?: string;
   messageId?: string | null;
+  /** Files sent with it: copied when asked (see `filesDir`), uploaded to `task` on sending and linked from the message. */
+  files?: { name: string; size: number }[];
+  task?: TaskRef;
 }
+
+/** Where an approval's files wait: what the owner approves is what goes, even if the agent changes them meanwhile. */
+const filesDir = (stateDir: string, id: number) => join(stateDir, 'clickup-files', String(id));
+const dropFiles = (stateDir: string, id: number) => rmSync(filesDir(stateDir, id), { recursive: true, force: true });
 
 const KEY = 'clickup_approvals';
 const KEEP = 200;
@@ -30,9 +39,20 @@ function save(store: Store, list: ClickUpApproval[]): void {
   const decided = list.filter((a) => !unresolved(a)).slice(-KEEP);
   store.setKv(KEY, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
-export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'dest' | 'content' | 'who' | 'conv'>): ClickUpApproval {
+export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'dest' | 'content' | 'who' | 'conv'> & {
+  files?: OutFile[]; task?: TaskRef; stateDir?: string;
+}): ClickUpApproval {
+  const { files = [], task, stateDir, ...rest } = a;
   const list = readClickUpApprovals(store);
-  const next: ClickUpApproval = { ...a, id: Math.max(0, ...list.map((x) => x.id)) + 1, at: Date.now(), status: 'pending' };
+  const next: ClickUpApproval = { ...rest, id: Math.max(0, ...list.map((x) => x.id)) + 1, at: Date.now(), status: 'pending' };
+  if (files.length) {
+    if (!stateDir || !task) throw new Error('files need a task and a place to wait');
+    const dir = filesDir(stateDir, next.id);
+    rmSync(dir, { recursive: true, force: true }); // left by an approval of the same id from before a reset
+    mkdirSync(dir, { recursive: true });
+    files.forEach((f, i) => writeFileSync(join(dir, String(i)), f.data)); // by place: names may differ only in case
+    Object.assign(next, { files: files.map((f) => ({ name: f.name, size: f.data.length })), task });
+  }
   save(store, [...list, next]);
   return next;
 }
@@ -65,7 +85,7 @@ export function describeDestination(d: Destination): string {
  * The owner's ClickUp approvals. Other admins see none: the messages would go out as the owner. Approve sends the text
  * (as the owner may have changed it) and tells the chat that asked.
  */
-export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; dispatcher: Dispatcher; client: () => ClickUp | undefined }): void {
+export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher; client: () => ClickUp | undefined }): void {
   const { store } = d;
   recover(store);
   const isOwner = (u?: AuthUser) => !!u && u.id === null;
@@ -92,6 +112,7 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; d
     const done = (patch: Partial<ClickUpApproval>) => {
       Object.assign(a, { decidedAt: Date.now(), ...patch });
       update(store, a.id, a);
+      if (!unresolved(a)) dropFiles(d.stateDir, a.id); // decided for good: its files are not sent again
     };
     const where = describeDestination(a.dest);
     if (verb === 'dismiss') {
@@ -109,13 +130,19 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; d
     const asked = (req.body as { content?: unknown } | null | undefined)?.content;
     const content = typeof asked === 'string' && asked.trim() ? asked.trim() : a.content; // the owner's own wording, if changed
     if (content.length > MAX_SEND) return reply.code(400).send({ error: `at most ${MAX_SEND} characters per message` });
+    let files: OutFile[];
+    try {
+      files = (a.files ?? []).map((f, i) => ({ name: f.name, data: readFileSync(join(filesDir(d.stateDir, a.id), String(i))) }));
+    } catch {
+      return reply.code(409).send({ error: 'its files are gone from the server; reject it instead' });
+    }
     const edited = content !== a.content;
     done({ status: 'sending', content, ...(edited && { edited: true }) }); // persisted before the message goes out
     sending.add(a.id);
     try {
-      const r = await cu.deliver(a.dest, content);
+      const r = await cu.deliver(a.dest, content, files, a.task);
       done({ status: 'sent', messageId: r.id, outcome: `Sent ${r.date} ${r.time}` });
-      tellChat(a, `[ClickUp] The owner approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'}).${quote(a)}`);
+      tellChat(a, `[ClickUp] The owner approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) uploaded to task "${a.task!.name}" and linked at its end` : ''}.${quote(a)}`);
     } catch (e) {
       const msg = (e as Error).message;
       // Failing before the message went out, or ClickUp refusing it, means nothing was posted; a 5xx or timeout does not say.

@@ -35,7 +35,7 @@ import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
-import { type Store, type SubagentPolicy } from './store.js';
+import { type Conversation, type Store, type SubagentPolicy } from './store.js';
 import { REVIEWER_GUIDE, type ReviewerPolicy } from './reviewer.js';
 
 declare module 'fastify' {
@@ -205,7 +205,7 @@ export function buildApp(
   memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
   dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup });
-  clickupApprovalRoutes(app, { store, dispatcher, client: clickup });
+  clickupApprovalRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, client: clickup });
   mcpServerRoutes(app, { store });
   databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, noteFailure });
   sshRoutes(app, { store, dispatcher });
@@ -535,23 +535,46 @@ export function buildApp(
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
     const convs = store.listConversations(project.id);
+    // Sub-agents its chats started in other projects go too: without their parent they would turn up in the sidebar.
+    const elsewhere = convs.flatMap((c) => store.listDescendants(c.id)).filter((c) => c.project_id !== project.id);
+    if (!mayRemove(req.user!, elsewhere)) return reply.code(403).send({ error: HIDDEN_AGENTS });
     for (const c of convs) { dispatcher.cancel(c.id); terminals.killConv(c.id); }
     store.deleteProject(project.id);
+    removeChats(elsewhere);
     void dropWorktrees(dispatcher, project, convs);
     void codeMemory.forget(project);
     return reply.code(204).send();
   });
 
+  // Deleting a chat takes its sub-agents along, which may run in a project this person may not open: then nothing goes.
+  const HIDDEN_AGENTS = 'some of its sub-agents run in a project you may not open';
+  const mayRemove = (user: AuthUser, chats: Conversation[]) =>
+    chats.every((c) => { const p = store.getProject(c.project_id); return !p || canAccess(user, p.access); });
+
+  /** Stop and delete these chats, with their worktrees, checkpoints and terminals, whatever projects they are in. */
+  const removeChats = (chats: Conversation[]) => {
+    const byProject = new Map<string, Conversation[]>();
+    for (const c of chats) {
+      dispatcher.cancel(c.id);
+      terminals.killConv(c.id);
+      store.deleteConversation(c.id);
+      byProject.set(c.project_id, [...(byProject.get(c.project_id) || []), c]);
+    }
+    for (const [id, list] of byProject) {
+      const project = store.getProject(id);
+      if (project) void dropWorktrees(dispatcher, project, list);
+    }
+  };
+
   // Chats only: the project and the other chats stay. Any signed-in user may, as any may create one.
-  // A chat's own worktree goes with it (uncommitted work there is lost; its branch stays if not merged).
+  // A chat's own worktree goes with it (uncommitted work there is lost; its branch stays if not merged), and so do the
+  // sub-agents and reviewers under it, which the sidebar does not list and nothing could reach once it is gone.
   app.delete<{ Params: { id: string } }>('/api/conversations/:id', (req, reply) => {
     const conv = store.getConversation(req.params.id);
-    const project = conv && store.getProject(conv.project_id);
     if (!conv) return notFound(reply);
-    dispatcher.cancel(conv.id);
-    terminals.killConv(conv.id);
-    store.deleteConversation(conv.id);
-    if (project) void dropWorktrees(dispatcher, project, [conv]);
+    const under = store.listDescendants(conv.id);
+    if (!mayRemove(req.user!, under)) return reply.code(403).send({ error: HIDDEN_AGENTS });
+    removeChats([conv, ...under]);
     return reply.code(204).send();
   });
 
