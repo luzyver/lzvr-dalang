@@ -8,6 +8,7 @@
  * SQLite opens the file read-only. A read-only run gets a fresh connection per statement, so a `COMMIT` or `SET` in one
  * statement cannot loosen the next. A database user with SELECT rights only is safer still.
  */
+import { elasticQuery, elasticRun, elasticSchema, elasticStream, elasticTest } from './elasticsearch.js';
 import { DatabaseSync } from 'node:sqlite';
 import mysql from 'mysql2';
 import pg from 'pg';
@@ -20,10 +21,10 @@ import { openTunnel, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import type { ProjectAccess } from './util.js';
 
-export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite', 'mongodb', 'redis'] as const;
+export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite', 'mongodb', 'redis', 'elasticsearch'] as const;
 export type Driver = (typeof DRIVERS)[number];
 /** MongoDB and Redis: not SQL (nosql.ts); no row editing, DDL or SQL-only checks. */
-export const isNoSql = (d: Driver): d is 'mongodb' | 'redis' => d === 'mongodb' || d === 'redis';
+export const isNoSql = (d: Driver): d is 'mongodb' | 'redis' | 'elasticsearch' => d === 'mongodb' || d === 'redis' || d === 'elasticsearch';
 /**
  * What an agent may do on a connection (through the gateway's MCP tools). 'approve': read freely; a script the
  * database refuses as a write waits for an admin, who runs it or not.
@@ -74,6 +75,8 @@ export interface QueryResult {
   affected: number | null;
   /** More rows than `limit` came back; only `limit` are here. */
   truncated: boolean;
+  /** Whether a truncated result supports rerunning the statement to export all rows. */
+  canExportAll?: boolean;
   ms: number;
   /** A line about it beside the rows (a Redis SCAN's next cursor, the _id a MongoDB insert gave). */
   note?: string;
@@ -110,7 +113,7 @@ const CANCELLED = 'cancelled';
 const checkAborted = (o: RunOpts) => { if (o.signal?.aborted) throw new Error(CANCELLED); };
 
 const KEY = 'db_connections';
-export const DEFAULT_PORT: Record<Driver, number> = { postgres: 5432, mysql: 3306, mariadb: 3306, sqlite: 0, mongodb: 27017, redis: 6379 };
+export const DEFAULT_PORT: Record<Driver, number> = { postgres: 5432, mysql: 3306, mariadb: 3306, sqlite: 0, mongodb: 27017, redis: 6379, elasticsearch: 9200 };
 const CONNECT_TIMEOUT_MS = 10_000;
 const MAX_STATEMENTS = 100;
 
@@ -130,6 +133,7 @@ export const saveConnections = (store: Store, list: DbConnection[]) => store.set
  * and E'...' escapes.
  */
 export function splitStatements(script: string, driver: Driver = 'postgres'): { from: number; to: number }[] {
+  if (driver === 'elasticsearch') return script.trim() ? [{ from: 0, to: script.length }] : [];
   if (isNoSql(driver)) return splitNoSql(script, driver);
   const my = driver === 'mysql' || driver === 'mariadb';
   const out: { from: number; to: number }[] = [];
@@ -484,6 +488,9 @@ export async function runScript(c: DbConnection, script: string, o: RunOpts): Pr
   if (tunneled(c)) {
     try { return await withTunnel(c, (t) => runScript(t, script, o)); } catch (e) { throw withResults(e, [], o); }
   }
+  if (c.driver === 'elasticsearch') {
+    try { return await elasticRun(c, script, o); } catch (e) { throw withResults(e, [], o); }
+  }
   const statements = statementsOf(script, c.driver);
   if (!statements.length) throw new QueryError('nothing to run', [], 0);
   if (statements.length > MAX_STATEMENTS) throw new QueryError(`at most ${MAX_STATEMENTS} statements at a time`, [], 0);
@@ -517,6 +524,7 @@ export const NOSQL_STREAM_MAX = 1_000_000;
  */
 export async function streamStatement(c: DbConnection, sql: string, o: Omit<RunOpts, 'readOnly' | 'limit'>, sink: RowSink): Promise<void> {
   if (tunneled(c)) return withTunnel(c, (t) => streamStatement(t, sql, o, sink));
+  if (c.driver === 'elasticsearch') return elasticStream(c, sql, o, sink);
   const statements = statementsOf(sql, c.driver);
   if (statements.length !== 1) throw new Error(statements.length ? 'a download reads one statement at a time' : 'nothing to run');
   const st = statements[0]!;
@@ -676,6 +684,7 @@ export async function testConnection(c: DbConnection): Promise<{ version: string
       : r.warnings;
     return { ...r, warnings, sshHostKey };
   }
+  if (c.driver === 'elasticsearch') return elasticTest(c);
   if (c.driver === 'mongodb') return mongoTest(c);
   if (c.driver === 'redis') return redisTest(c);
   const o: RunOpts = { readOnly: true, limit: 200, timeoutMs: 15_000 };
@@ -720,6 +729,7 @@ const SYSTEM_SCHEMAS: Record<Driver, string[]> = {
   sqlite: [],
   mongodb: [],
   redis: [],
+  elasticsearch: [],
 };
 
 /** A string literal for a catalog query (MySQL and MariaDB read backslashes as escapes). */
@@ -732,6 +742,7 @@ const catalogLiteral = (driver: Driver, s: string) => `'${(isMy(driver) ? s.repl
  */
 export async function readSchema(c: DbConnection, timeoutMs = 30_000, only?: string): Promise<SchemaInfo> {
   if (tunneled(c)) return withTunnel(c, (t) => readSchema(t, timeoutMs, only));
+  if (c.driver === 'elasticsearch') return elasticSchema(c, timeoutMs);
   if (c.driver === 'mongodb') return mongoSchema(c, timeoutMs, only);
   if (c.driver === 'redis') return redisSchema(c, timeoutMs, only);
   const o: RunOpts = { readOnly: true, limit: MAX_TABLES * 50, timeoutMs, maxCell: 500 };
@@ -896,6 +907,7 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
 export async function readDdl(c: DbConnection, schema: string, name: string): Promise<string> {
   if (tunneled(c)) return withTunnel(c, (t) => readDdl(t, schema, name));
   if (c.driver === 'mongodb') return mongoDdl(c, schema, name);
+  if (c.driver === 'elasticsearch') throw new Error('Elasticsearch mappings are shown in the index tree');
   if (c.driver === 'redis') throw new Error('Redis keys have no DDL');
   const q = (n: string) => quoteIdent(c.driver, n);
   if (c.driver === 'sqlite') {
@@ -967,6 +979,7 @@ const AGENT_REFUSED_READ_ONLY: [RegExp, string][] = [[/^\s*do\b/i, 'DO blocks']]
 
 /** Why an agent may not run this script, or null. */
 export function agentRefusal(script: string, driver: Driver, readOnly: boolean): string | null {
+  if (driver === 'elasticsearch') { try { elasticQuery(script); return null; } catch (e) { return (e as Error).message; } }
   if (isNoSql(driver)) return noSqlAgentRefusal(statementsOf(script, driver), driver);
   const rules = readOnly ? [...AGENT_REFUSED, ...AGENT_REFUSED_READ_ONLY] : AGENT_REFUSED;
   for (const sql of statementsOf(script, driver)) {
@@ -1040,6 +1053,7 @@ const TRUNCATE_TABLE = new RegExp(String.raw`^\s*(?:table\s+)?(?:only\s+)?(${NAM
 
 /** The statements of a script that hit every row of a table: UPDATE or DELETE without a WHERE, and TRUNCATE. */
 export function findUnsafe(script: string, driver: Driver): UnsafeStatement[] {
+  if (driver === 'elasticsearch') return [];
   if (isNoSql(driver)) return noSqlUnsafe(statementsOf(script, driver), driver);
   const out: UnsafeStatement[] = [];
   statementsOf(script, driver).forEach((sql, index) => {
@@ -1109,6 +1123,7 @@ const NO_SUCH_TABLE = /\brelation\b[\s\S]*\bdoes not exist\b|\btable\b[\s\S]*\bd
  * same WHERE, joins and CTEs), and the writes it cannot read that way. Inserts change nothing that was there.
  */
 export function planBackup(script: string, driver: Driver): BackupPlan {
+  if (driver === 'elasticsearch') return { reads: [], skipped: [] };
   if (isNoSql(driver)) return noSqlBackupPlan(statementsOf(script, driver), driver);
   const my = isMy(driver);
   const reads: BackupRead[] = [];
