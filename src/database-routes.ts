@@ -263,9 +263,9 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     const c: DbConnection = {
       id, label: b.label.trim(), driver: b.driver, host: b.host?.trim() ?? '', port: b.port || DEFAULT_PORT[b.driver],
       user: b.user?.trim() ?? '', password: b.password === undefined ? old?.password ?? '' : b.password,
-      database: b.database?.trim() ?? '', ssl: b.ssl ?? 'disable', file: '', access: b.access, readOnly: b.readOnly,
+      database: b.database?.trim() ?? '', ssl: b.ssl ?? 'disable', file: '', access: b.access, readOnly: b.driver === 'elasticsearch' || b.readOnly,
       // A connection read-only for everyone cannot let agents write, not even after an approval.
-      agent: b.readOnly && (b.agent === 'read-write' || b.agent === 'approve') ? 'read-only' : b.agent,
+      agent: (b.driver === 'elasticsearch' || b.readOnly) && (b.agent === 'read-write' || b.agent === 'approve') ? 'read-only' : b.agent,
       ...(b.driver === 'postgres' && b.allDatabases && { allDatabases: true }),
     };
     if (b.driver === 'sqlite') {
@@ -461,7 +461,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
     const b = req.body;
-    if (b.format === 'sql' && (c.driver === 'mongodb' || c.driver === 'redis')) return reply.code(400).send({ error: 'SQL INSERT statements are for SQL databases' });
+    if (b.format === 'sql' && (c.driver === 'mongodb' || c.driver === 'redis' || c.driver === 'elasticsearch')) return reply.code(400).send({ error: 'SQL INSERT statements are for SQL databases' });
     let target: DbConnection;
     try { target = onDatabase(c, b.database); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
     const ac = new AbortController();

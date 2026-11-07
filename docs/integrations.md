@@ -23,6 +23,33 @@ REST: `/api/projects`, `/api/projects/:id/conversations` (body `{"worktree": tru
 `/api/accounts`, `/api/approvals`, `/api/uploads`, `/api/push/*`.
 Design notes and diagrams: [Architecture and execution flow](design.md).
 
+## Elasticsearch in the SQL editor
+
+Add a connection with engine **Elasticsearch**. Enter the host and port separately (for example
+`192.168.72.111` and `9200`), select HTTP with SSL Off or HTTPS with SSL On, and supply a username/password
+if the cluster uses Basic authentication. Blank credentials mean no authentication. A default index pattern is optional.
+Connections support searches only; panel access and agent access use the existing connection permissions.
+
+Double-click an index in the tree to start a JSON search, or enter a search body:
+
+```json
+{"index":"books","query":{"match_all":{}}}
+```
+
+`index` selects the index/pattern; other properties are Elasticsearch search-body options. The editor accepts one
+JSON object per run/selection. Use `from` and `size` for a specific page. Preview is limited to 9,999 documents
+within Elasticsearch's default 10,000-result window; Rows still applies. Nested document values are JSON cells
+that can be inspected in the value panel. Aggregations and suggestions appear in a separate result tab.
+
+Download supports Excel, CSV and JSON through the existing export menu. A truncated document result can be
+downloaded as displayed, or in full for supported queries using batches of 2,000 and a server-side scroll, cleared after completion or cancellation.
+An explicit `size` limits the export too. Download-all requires a document search without `from`, `search_after`,
+`collapse`, `pit`, aggregations or suggestions; those results can be downloaded as displayed. Responses over
+64 MB are refused, as are timed-out, failed-shard and early-terminated results (including exports). Agent queries honor the cell-length limit; editor results retain full cell values. Narrow `_source` or reduce `size`. SQL (`_sql`), API-key authentication and write APIs are not supported.
+
+The configured host must be reachable from the Dalang server. Test connection reports the cluster version.
+No connection to the example endpoint is created automatically.
+
 ## MCP
 
 Point an MCP client at `https://<host>/mcp` with the bearer token (Streamable HTTP, stateless). Tools: `list_projects`,

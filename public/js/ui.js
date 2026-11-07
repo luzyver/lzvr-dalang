@@ -14,9 +14,9 @@ export function Icon({ name, class: cls, spin }) {
  * branching like the agents one dalang drives. Coloured by the theme, so it follows the accent palette.
  */
 /** The database engines' names, by driver. */
-export const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis' };
+export const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', mongodb: 'MongoDB', redis: 'Redis', elasticsearch: 'Elasticsearch' };
 /** Each engine's logo (public/icons/db-*.svg, from Simple Icons), in its own colour (public/css). */
-export const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis' };
+export const ENGINE_ICONS = { postgres: 'db-postgresql', mysql: 'db-mysql', mariadb: 'db-mariadb', sqlite: 'db-sqlite', mongodb: 'db-mongodb', redis: 'db-redis', elasticsearch: 'search' };
 export const EngineIcon = ({ driver, class: cls }) => html`<${Icon} name=${ENGINE_ICONS[driver] || 'database'} class=${cx('engine', `engine-${driver}`, cls)} />`;
 
 export const Logo = ({ size = 26 }) => html`<svg class="logo" width=${size} height=${size} viewBox="0 0 32 32" aria-hidden="true">

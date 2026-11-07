@@ -21,8 +21,8 @@ const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const mobile = () => innerWidth <= 760;
 
 /** MongoDB (mongosh-style commands) and Redis (its commands, one per line): no SQL, so no SQL-only features. */
-const noSql = (conn) => conn?.driver === 'mongodb' || conn?.driver === 'redis';
-const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379 };
+const noSql = (conn) => conn?.driver === 'mongodb' || conn?.driver === 'redis' || conn?.driver === 'elasticsearch';
+const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379, elasticsearch: 9200 };
 const DIALECTS = { postgres: cm.PostgreSQL, mysql: cm.MySQL, mariadb: cm.MariaSQL, sqlite: cm.SQLite };
 const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
 const AGENT = { off: 'Off', 'read-only': 'Read-only', approve: 'Write with approval', 'read-write': 'Read and write' };
@@ -136,6 +136,7 @@ function persist() {
 
 /** Where each statement starts and ends, split on `;` outside strings and comments (as the server splits them). */
 export function splitStatements(script, driver = 'postgres') {
+  if (driver === 'elasticsearch') return script.trim() ? [{ from: 0, to: script.length }] : [];
   if (driver === 'mongodb' || driver === 'redis') return splitNoSql(script, driver);
   const my = driver === 'mysql' || driver === 'mariadb';
   const out = [];
@@ -429,6 +430,7 @@ function applyLanguage() {
     view.dispatch({ effects: langs.get(c.id).reconfigure(support) });
     states.set(c.id, view.state);
   };
+  if (conn?.driver === 'elasticsearch') { cm.LanguageDescription.matchLanguageName(cm.languages, 'JSON')?.load().then(set, () => set([])); return; }
   if (conn?.driver === 'redis') { set([]); return; }
   if (conn?.driver === 'mongodb') {
     cm.LanguageDescription.matchLanguageName(cm.languages, 'JavaScript')?.load().then(set, () => set([]));
@@ -723,7 +725,8 @@ function withResults(cur, conn, db, results, schema) {
   for (const result of results) {
     if (!result.columns.length) { out.push({ sql: result.sql, text: result.note ? `${summary(result)} · ${result.note}` : summary(result), ms: result.ms }); continue; }
     const meta = tableMeta(conn, db, result, schema);
-    const key = meta ? `t:${db}:${meta.schema}.${meta.table}` : `q:${squash(result.sql)}`;
+    const suffix = conn.driver === 'elasticsearch' && result.columns[0]?.name === 'aggregations / suggestions' ? ':aggregations' : '';
+    const key = meta ? `t:${db}:${meta.schema}.${meta.table}` : `q:${squash(result.sql)}${suffix}`;
     const tab = { key, result, meta, at };
     const i = tabs.findIndex((t) => t.key === key);
     if (i >= 0) tabs[i] = tab; else tabs.push(tab);
@@ -791,7 +794,7 @@ async function formatSql() {
     const { format } = await import('../vendor/code/sqlfmt.js');
     const sel = view.state.selection.main;
     const [from, to] = sel.empty ? [0, view.state.doc.length] : [sel.from, sel.to];
-    const out = format(view.state.sliceDoc(from, to), { language: FORMAT_LANG[conn?.driver] || 'sql', keywordCase: 'upper', tabWidth: 2 });
+    const out = conn?.driver === 'elasticsearch' ? JSON.stringify(JSON.parse(view.state.sliceDoc(from, to)), null, 2) : format(view.state.sliceDoc(from, to), { language: FORMAT_LANG[conn?.driver] || 'sql', keywordCase: 'upper', tabWidth: 2 });
     view.dispatch({ changes: { from, to, insert: out } });
   } catch (e) { toast(`cannot format this: ${e.message}`, 'err'); }
 }
@@ -835,13 +838,14 @@ async function downloadAll(c, conn, result, format, ctx, name, signal) {
   a.remove();
 }
 
-/** Copy and Download, each a menu of the formats in sql-export.js. Download writes every row, not only those shown. */
+/** Copy and Download, each a menu of the formats in sql-export.js. Download offers displayed rows and, when supported, every row. */
 function ExportMenus({ result, tab, conn, c }) {
   const ctx = { driver: conn?.driver, table: tab.meta ? { schema: tab.meta.schema, table: tab.meta.table } : null, sheet: tabLabel(tab) };
   // The suggested name: the tab's, and when (the dialog lets one change it).
   const d = new Date();
   const p2 = (n) => String(n).padStart(2, '0');
   const name = `${safeFileName(tabLabel(tab)).replace(/\s+/g, '_') || 'result'}_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`;
+  const canDownloadAll = result.truncated && result.canExportAll !== false;
   const rows = `${result.rows.length}${result.truncated ? ' (the row limit)' : ''} row${result.rows.length === 1 ? '' : 's'}`;
   return html`
     <${Menu} icon="copy" label="Copy rows as…" buttonClass="xs">
@@ -849,17 +853,18 @@ function ExportMenus({ result, tab, conn, c }) {
       ${FORMATS.filter((f) => f.copy).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => copyText(f.build(result, ctx), `copied as ${f.label.replace(/ \(.*/, '')}`)}>${f.label}<//>`)}
     <//>
     <${Menu} icon="arrow-down-to-line" label="Download as…" buttonClass="xs">
-      <div class="menu-label">Download ${result.truncated ? 'all rows' : rows} as</div>
-      ${FORMATS.filter((f) => !(f.id === 'sql' && noSql(conn))).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name, all: result.truncated ? (file, signal) => downloadAll(c, conn, result, f, ctx, file, signal) : null }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
+      <div class="menu-label">Download as</div>
+      ${FORMATS.filter((f) => !(f.id === 'sql' && noSql(conn))).map((f) => html`<${MenuItem} key=${f.id} onClick=${() => { sq.download.value = { format: f, result, ctx, name, all: canDownloadAll ? (file, signal) => downloadAll(c, conn, result, f, ctx, file, signal) : null }; }}>${f.label}<span class="dim mono menu-ext">.${f.ext}</span><//>`)}
     <//>`;
 }
 
 /**
- * The file name of a download, suggested and changeable, then Download. `all`: the result was cut at the row limit, so
- * the server writes the file of all its rows (the statement runs again, read-only); the dialog waits until it starts.
+ * Choose a file name and displayed rows or, when supported, all rows. `all` reruns the statement read-only
+ * on the server; the dialog waits until the download starts.
  */
 function DownloadDialog({ format, result, ctx, name, all }) {
   const [file, setFile] = useState(name);
+  const [scope, setScope] = useState(all ? 'all' : 'shown');
   const [busy, setBusy] = useState(false);
   const ctrl = useRef(null);
   // Closing the dialog before the file starts cancels the statement.
@@ -867,7 +872,7 @@ function DownloadDialog({ format, result, ctx, name, all }) {
   const close = () => { sq.download.value = null; };
   const go = async () => {
     if (busy || !safeFileName(file)) return;
-    if (!all) { download(format, result, ctx, file); close(); return; }
+    if (!all || scope === 'shown') { download(format, result, ctx, file); close(); return; }
     setBusy(true);
     ctrl.current = new AbortController();
     try {
@@ -881,11 +886,12 @@ function DownloadDialog({ format, result, ctx, name, all }) {
       setBusy(false);
     }
   };
-  const hint = all
+  const hint = all && scope === 'all'
     ? `All rows: the statement runs again (read-only, up to 30 minutes) and the browser saves the file as it comes.${format.id === 'xlsx' ? ' Excel holds at most 1 048 575 rows; CSV has no limit.' : ''}`
-    : `${result.rows.length} row${result.rows.length === 1 ? '' : 's'}.`;
+    : `${result.rows.length} displayed row${result.rows.length === 1 ? '' : 's'}.${result.truncated && !all ? ' Only the displayed rows can be downloaded for this query.' : ''}`;
   return html`<div class="dialog-body">
     <div class="dialog-head"><h2>Download ${format.label.replace(/ \(.*/, '')}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    ${all && html`<${Seg} small label="Rows to download" value=${scope} options=${[['all', 'All rows'], ['shown', 'Displayed rows']]} onChange=${(v) => { if (!busy) setScope(v); }} />`}
     <${Field} label="File name" hint=${`${hint} Characters a file name cannot hold become _.`}>
       <div class="sql-file-name">
         <input class="mono" value=${file} autofocus onFocus=${(e) => e.currentTarget.select()} onInput=${(e) => setFile(e.currentTarget.value)}
@@ -908,6 +914,12 @@ const firstWord = (sql) => (/^\s*(\w+)/.exec(sql)?.[1] || 'SQL').toUpperCase();
 function tabLabel(t) {
   if (t.key === 'out') return 'Output';
   if (t.meta) return t.meta.table;
+  if (t.result.sql.trim().startsWith('{')) {
+    try {
+      const query = JSON.parse(t.result.sql);
+      return t.key.endsWith(':aggregations') ? 'Aggregations' : query.index || 'Search';
+    } catch { /* use the ordinary statement label for non-JSON text */ }
+  }
   // MongoDB: the collection and the method (users.find), or the database's method (getCollectionNames).
   const mongo = /^\s*db\s*(?:\.\s*getCollection\(\s*["']([^"']+)["']\s*\)|\[\s*["']([^"']+)["']\s*\]|\.\s*([\w$.]+?))\s*\.\s*(\w+)\s*\(/.exec(t.result.sql);
   if (mongo) return `${mongo[1] ?? mongo[2] ?? mongo[3]}.${mongo[4]}`;
@@ -1010,6 +1022,7 @@ function redisType(conn, schema, key) {
 }
 /** What opens a collection or key: its first documents, or the command that reads that type of key. */
 function browseCommand(conn, schema, table) {
+  if (conn.driver === 'elasticsearch') return JSON.stringify({ index: table, query: { match_all: {} } }, null, 2);
   if (conn.driver === 'mongodb') return `db.${/^[A-Za-z_$][\w$]*$/.test(table) ? table : `getCollection(${JSON.stringify(table)})`}.find({}).limit(100)`;
   const k = redisWord(table);
   return ({ string: `GET ${k}`, hash: `HGETALL ${k}`, list: `LRANGE ${k} 0 99`, set: `SSCAN ${k} 0 COUNT 100`, zset: `ZRANGE ${k} 0 99 WITHSCORES`,
@@ -1028,7 +1041,7 @@ const dbKey = (conn, db) => (!db || db === ownDb(conn) ? '' : db);
 function openTable(conn, db, schema, table) {
   const sql = selectFrom(conn, schema, table);
   // MongoDB and Redis run in the console's database: the schema the collection or key is in.
-  const target = noSql(conn) ? dbKey(conn, schema) : db;
+  const target = noSql(conn) && conn.driver !== 'elasticsearch' ? dbKey(conn, schema) : db;
   const a = activeConsole();
   const c = a?.connId === conn.id && (a.database || '') === target ? a : newConsole(conn.id, '', target);
   if (c && view && sq.active.value === c.id) {
@@ -1106,8 +1119,8 @@ const schemaItems = (conn, db, name) => html`
   <${MenuItem} icon="copy" onClick=${() => copyText(name, 'name copied')}>Copy name<//>`;
 
 const tableItems = (conn, db, schema, t) => html`
-  <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>${conn.driver === 'redis' ? 'Read it' : conn.driver === 'mongodb' ? 'Find its first documents' : 'Select first rows'}<//>
-  ${conn.driver !== 'redis' && html`<${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>${conn.driver === 'mongodb' ? 'Show indexes and options' : 'Show DDL'}<//>`}
+  <${MenuItem} icon="play" onClick=${() => openTable(conn, db, schema, t.name)}>${conn.driver === 'redis' ? 'Read it' : (conn.driver === 'mongodb' || conn.driver === 'elasticsearch') ? 'Find its first documents' : 'Select first rows'}<//>
+  ${conn.driver !== 'redis' && conn.driver !== 'elasticsearch' && html`<${MenuItem} icon="file" onClick=${() => openDdl(conn, db, schema, t.name)}>${conn.driver === 'mongodb' ? 'Show indexes and options' : 'Show DDL'}<//>`}
   <${MenuItem} icon="bot" onClick=${() => askAboutTable(conn, db, schema, t.name)}>Ask the agent about it<//>
   <div class="menu-sep"></div>
   <${MenuItem} icon="copy" onClick=${() => copyText(t.name, 'name copied')}>Copy name<//>
@@ -1470,7 +1483,9 @@ function ConnectionForm({ conn }) {
   return html`<div class="dialog-body sql-form">
     <div class="dialog-head"><h2>${conn ? `Edit ${conn.label}` : 'Add a connection'}</h2>
       <button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
-    <${Seg} label="Database engine" value=${f.driver} options=${Object.entries(DRIVERS).map(([k, label]) => [k, label, ENGINE_ICONS[k]])} onChange=${(v) => setF({ ...f, driver: v, port: '' })} />
+    <${Field} label="Database engine"><select aria-label="Database engine" value=${f.driver} onChange=${(e) => { const v = e.currentTarget.value; setF({ ...f, driver: v, port: '', ...(v === 'elasticsearch' && { readOnly: true, agent: f.agent === 'off' ? 'off' : 'read-only' }) }); }}>
+      ${Object.entries(DRIVERS).map(([value, label]) => html`<option key=${value} value=${value}>${label}</option>`)}
+    </select><//>
     <div class="row wrap">
       ${!conn && html`<${Field} label="Name" hint="Lowercase letters, digits, - and _. Agents name it so.">
         <input class="mono" value=${f.id} onInput=${set('id')} placeholder="app-prod" autofocus /><//>`}
@@ -1480,14 +1495,14 @@ function ConnectionForm({ conn }) {
         <input class="mono" value=${f.file} onInput=${set('file')} placeholder="/srv/data/app.db" /><//>`
     : html`
       <div class="row wrap">
-        <${Field} label=${noSql(f) ? 'Host or URI' : 'Host'}><input class="mono" value=${f.host} onInput=${set('host')}
+        <${Field} label=${noSql(f) && f.driver !== 'elasticsearch' ? 'Host or URI' : 'Host'}><input class="mono" value=${f.host} onInput=${set('host')}
           placeholder=${f.driver === 'mongodb' ? 'localhost or mongodb+srv://cluster…' : f.driver === 'redis' ? 'localhost or rediss://…' : 'localhost'} /><//>
         <${Field} label="Port"><input class="mono sql-port" inputmode="numeric" value=${f.port} onInput=${set('port')} placeholder=${String(PORTS[f.driver])} /><//>
       </div>
       <div class="row wrap">
-        <${Field} label=${f.driver === 'postgres' && f.allDatabases ? 'Default database' : f.driver === 'redis' ? 'Database number' : f.driver === 'mongodb' ? 'Default database' : 'Database'}>
+        <${Field} label=${f.driver === 'elasticsearch' ? 'Default index pattern' : f.driver === 'postgres' && f.allDatabases ? 'Default database' : f.driver === 'redis' ? 'Database number' : f.driver === 'mongodb' ? 'Default database' : 'Database'}>
           <input class="mono" value=${f.database} onInput=${set('database')}
-            placeholder=${f.driver === 'postgres' ? 'postgres' : f.driver === 'redis' ? '0' : f.driver === 'mongodb' ? 'none: pick one per console' : 'all databases'} /><//>
+            placeholder=${f.driver === 'elasticsearch' ? '*' : f.driver === 'postgres' ? 'postgres' : f.driver === 'redis' ? '0' : f.driver === 'mongodb' ? 'none: pick one per console' : 'all databases'} /><//>
         <${Field} label="SSL"><select value=${f.ssl} onChange=${set('ssl')}>
           <option value="disable">Off</option><option value="require">On, any certificate</option><option value="verify-full">On, verified certificate</option></select><//>
       </div>
@@ -1529,8 +1544,8 @@ function ConnectionForm({ conn }) {
       <${Field} label="Who may open it"><select value=${f.access} onChange=${set('access')}>
         ${access.map((k) => html`<option value=${k}>${ACCESS[k]}</option>`)}</select><//>
     </div>
-    <label class="check small"><input type="checkbox" checked=${f.readOnly} onChange=${(e) => setF({ ...f, readOnly: e.currentTarget.checked, agent: e.currentTarget.checked && (f.agent === 'read-write' || f.agent === 'approve') ? 'read-only' : f.agent })} />
-      Read-only for everyone: the database refuses anything that writes</label>
+    <label class="check small"><input type="checkbox" checked=${f.readOnly || f.driver === 'elasticsearch'} disabled=${f.driver === 'elasticsearch'} onChange=${(e) => setF({ ...f, readOnly: e.currentTarget.checked, agent: e.currentTarget.checked && (f.agent === 'read-write' || f.agent === 'approve') ? 'read-only' : f.agent })} />
+      ${f.driver === 'elasticsearch' ? 'Read-only: Elasticsearch connections support searches only' : 'Read-only for everyone: the database refuses anything that writes'}</label>
     <div class="field"><span class="field-label">Agent access</span>
       <${Seg} small label="Agent access" value=${f.agent} onChange=${(v) => setF({ ...f, agent: v })}
         options=${Object.entries(AGENT).filter(([k]) => !(f.readOnly && (k === 'read-write' || k === 'approve')))} />
@@ -1739,7 +1754,7 @@ function Toolbar() {
   const conn = c && connOf(c.connId);
   const running = c && sq.runs.value.get(c.id)?.running;
   // A picker of the database the console runs in: MySQL/MariaDB (USE), MongoDB (db.), Redis (SELECT).
-  const my = conn && (conn.driver === 'mysql' || conn.driver === 'mariadb' || noSql(conn));
+  const my = conn && (conn.driver === 'mysql' || conn.driver === 'mariadb' || (noSql(conn) && conn.driver !== 'elasticsearch'));
   // MySQL: its databases are the schemas of its table list; PostgreSQL: the schemas of the console's database.
   useEffect(() => { if (conn) loadSchema(conn.id, my ? '' : c.database || ''); }, [conn?.id, c?.database]);
   const myDatabases = conn?.driver === 'redis' ? Array.from({ length: 16 }, (_, i) => `db${i}`)
@@ -1761,11 +1776,12 @@ function Toolbar() {
       ]} />`}
     ${conn?.driver === 'postgres' && pgSchemas.length > 1 && html`<${Picker} label="Schema" title="The schema unqualified table names are looked up in first (search_path)"
       value=${c.schema || 'public'} onPick=${setConsoleSchema} options=${names(['public', ...(c.schema ? [c.schema] : []), ...pgSchemas])} />`}
+    ${conn?.driver === 'elasticsearch' && html`<span class="small dim" title='JSON search body: {"index":"my-index","query":{"match_all":{}}}. Double-click an index to start.'>JSON search</span>`}
     ${running ? html`<button class="btn sm" title="Stop the running statement" onClick=${cancelRun}><${Spinner} />Cancel</button>`
       : html`<button class="btn primary sm" disabled=${!conn} title="Run the statement at the cursor, or the selection (Ctrl+Enter)" onClick=${() => run(false)}>
         <${Icon} name="play" />Run</button>`}
     <button class="btn sm" disabled=${!conn || running} title="Run every statement in this console (Ctrl+Shift+Enter)" onClick=${() => run(true)}>Run all</button>
-    ${!noSql(conn) && html`<button class="icon-btn sm" title="Format the selection or the console (Shift+Alt+F)" aria-label="Format SQL" onClick=${formatSql}><${Icon} name="wrap-text" /></button>`}
+    ${(!noSql(conn) || conn?.driver === 'elasticsearch') && html`<button class="icon-btn sm" title="Format the selection or the console (Shift+Alt+F)" aria-label="Format query" onClick=${formatSql}><${Icon} name="wrap-text" /></button>`}
     <button class="icon-btn sm" title="Query history" aria-label="Query history" onClick=${() => { sq.history.value = true; }}><${Icon} name="history" /></button>
     <div class="spacer"></div>
     ${conn?.readOnly && html`<span class="ide-chip" title="The database refuses writes on this connection"><${Icon} name="eye" />read-only</span>`}
