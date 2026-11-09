@@ -10,6 +10,7 @@
  */
 import { Binary, BSON, BSONRegExp, Decimal128, Double, Int32, Long, MinKey, MaxKey, MongoClient, ObjectId, Timestamp, UUID } from 'mongodb';
 import { Redis } from 'ioredis';
+import { tlsServer } from './ssh-tunnel.js';
 import type { BackupPlan, BackupRead, DbConnection, QueryResult, RunOpts, SchemaInfo, SchemaTable } from './databases.js';
 
 const { EJSON } = BSON;
@@ -543,7 +544,7 @@ function redisClient(c: DbConnection, timeoutMs: number, db: number): Redis {
     // ioredis 6 opens with HELLO 3 (RESP3); a proxy or a tight ACL user may refuse it where AUTH worked. Nothing here needs RESP3.
     protocol: 2 as const,
     ...(c.user && { username: c.user }), ...(c.password && { password: c.password }),
-    ...(c.ssl !== 'disable' && { tls: { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) } }),
+    ...(c.ssl !== 'disable' && { tls: { rejectUnauthorized: c.ssl === 'verify-full', ...tlsServer(c.tunneledFrom) } }),
   };
   return /^rediss?:\/\//i.test(c.host) ? new Redis(c.host, opts) : new Redis({ host: c.host || 'localhost', port: c.port || 6379, ...opts });
 }

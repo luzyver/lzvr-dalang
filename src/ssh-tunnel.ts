@@ -6,10 +6,20 @@
  * use, as `ssh` asks "are you sure you want to continue connecting?"), and a different key is refused afterwards.
  */
 import { createHash } from 'node:crypto';
-import { type AddressInfo, createServer, type Socket } from 'node:net';
+import { type AddressInfo, createServer, isIP, type Socket } from 'node:net';
+import { checkServerIdentity, type PeerCertificate } from 'node:tls';
 import ssh2 from 'ssh2';
 
 const { Client, utils } = ssh2;
+
+/**
+ * TLS options naming the database by its own host rather than the address dialled (a tunnel's 127.0.0.1): the
+ * certificate is checked against that host, and it is sent as SNI unless it is an IP, which Node refuses as servername.
+ */
+export function tlsServer(host: string | undefined): { servername?: string; checkServerIdentity?: (name: string, cert: PeerCertificate) => Error | undefined } {
+  if (!host) return {};
+  return { ...(!isIP(host) && { servername: host }), checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert) };
+}
 
 export interface SshConf {
   enabled: boolean;

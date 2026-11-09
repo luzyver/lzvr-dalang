@@ -17,7 +17,7 @@ import {
   mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlUnsafe, redisSchema, redisScript,
   redisTest, splitNoSql,
 } from './nosql.js';
-import { openTunnel, type SshConf } from './ssh-tunnel.js';
+import { openTunnel, type SshConf, tlsServer } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import type { ProjectAccess } from './util.js';
 
@@ -218,7 +218,7 @@ function pgClient(c: DbConnection, timeoutMs: number): pg.Client {
   const client = new pg.Client({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT.postgres, user: c.user || undefined,
     password: c.password || undefined, database: c.database || (c.allDatabases ? 'postgres' : undefined), application_name: 'dalang',
-    ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
+    ssl: c.ssl === 'disable' ? false : { rejectUnauthorized: c.ssl === 'verify-full', ...tlsServer(c.tunneledFrom) },
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS, statement_timeout: timeoutMs, query_timeout: timeoutMs + 5000,
     types: pgTypes as never,
   });
@@ -308,7 +308,7 @@ function myConnection(c: DbConnection): mysql.Connection {
   const conn = mysql.createConnection({
     host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver], user: c.user || undefined,
     password: c.password || undefined, database: c.database || undefined,
-    ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full', ...(c.tunneledFrom && { servername: c.tunneledFrom }) },
+    ssl: c.ssl === 'disable' ? undefined : { rejectUnauthorized: c.ssl === 'verify-full', ...tlsServer(c.tunneledFrom) },
     connectTimeout: CONNECT_TIMEOUT_MS, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true,
     multipleStatements: false,
   });
