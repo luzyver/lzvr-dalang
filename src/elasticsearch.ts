@@ -1,6 +1,7 @@
 /** Read-only Elasticsearch transport. Query text is a JSON search body plus an optional index. */
 import { request as http } from 'node:http';
 import { request as https } from 'node:https';
+import { tlsServer } from './ssh-tunnel.js';
 import type { Column, DbConnection, QueryResult, RowSink, RunOpts, SchemaColumn, SchemaInfo } from './databases.js';
 
 const columns: Column[] = ['_index', '_id', '_score', '_source', 'fields', 'highlight', 'sort'].map(name => ({ name, type: name === '_score' ? 'number' : name === '_index' || name === '_id' ? 'string' : 'json' }));
@@ -26,7 +27,7 @@ function request(c: DbConnection, path: string, method: string, body: unknown, s
   const data = body === undefined ? undefined : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const req = (c.ssl === 'disable' ? http : https)({ hostname: c.host, port: c.port || 9200, path, method, signal,
-      ...(c.ssl !== 'disable' && { rejectUnauthorized: c.ssl !== 'require', servername: c.tunneledFrom || c.host }),
+      ...(c.ssl !== 'disable' && { rejectUnauthorized: c.ssl !== 'require', ...tlsServer(c.tunneledFrom || c.host) }),
       headers: { accept: 'application/json', ...(data && { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) }),
         ...(c.user || c.password ? { authorization: `Basic ${Buffer.from(`${c.user}:${c.password}`).toString('base64')}` } : {}) },
     }, res => {
