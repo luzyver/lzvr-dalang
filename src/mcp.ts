@@ -142,7 +142,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     const project = getProject(project_id);
     if (!project) return fail(`no such project: ${project_id}`);
     const ceiling = cap();
-    const b = backend ?? project.backend;
+    // Left out, a sub-agent runs on its parent's CLI (a model name like 'opus' means nothing to another one), else the project's.
+    const b = backend ?? ceiling?.backend ?? project.backend;
     // Left out, a sub-agent runs on the parent's effort, and on the parent's model when it is on the same CLI.
     const inherit = { model: ceiling && b === ceiling.backend ? ceiling.model : null, effort: ceiling?.effort ?? null };
     // An effort the child's model does not take (max on Codex, xhigh on a small model) comes down to the highest it does.
@@ -162,7 +163,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     }
     let c: Conversation;
     try {
-      c = worktree ? await createWorktreeChat(store, cfg, project, { backend, parent: source ?? '' }) : store.createConversation(project_id, backend, source ?? '');
+      c = worktree ? await createWorktreeChat(store, cfg, project, { backend: b, parent: source ?? '' }) : store.createConversation(project_id, b, source ?? '');
     } catch (e) { return fail((e as Error).message); }
     if (model || inherit.model) store.setModel(c.id, model || inherit.model!);
     if (effort || inherit.effort) store.setEffort(c.id, effort || inherit.effort!);

@@ -7,7 +7,19 @@ import { toast } from './store.js';
 
 const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+|sandbox:[^\s)]+|<(?:sandbox:|\/)[^>]+>|\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
+const OWN_DOWNLOAD = /^\/api\/conversations\/[^/]+\/files\/download$/;
+
+/** A full URL to this panel's own download route (an agent may write it out): a plain link would carry no token. */
+function ownDownload(url) {
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  const path = u.searchParams.get('path');
+  if (u.origin !== location.origin || !OWN_DOWNLOAD.test(u.pathname) || !path) return null;
+  return { href: u.pathname + u.search, filename: path.split('/').pop() || 'download' };
+}
+
 function localDownload(path, conversationId) {
+  if (/^https?:\/\//i.test(path)) return ownDownload(path);
   if (!conversationId) return null;
   if (path.startsWith('<') && path.endsWith('>')) path = path.slice(1, -1);
   if (path.startsWith('sandbox:')) path = path.slice('sandbox:'.length);
@@ -39,7 +51,14 @@ function inline(text, conversationId) {
       else if (/^https?:\/\//i.test(m[5])) out.push(html`<a href=${m[5]} target="_blank" rel="noopener noreferrer">${m[4]}</a>`);
       else out.push(m[0]);
     }
-    else out.push(html`<a href=${m[6]} target="_blank" rel="noopener noreferrer">${m[6]}</a>`);
+    else {
+      const file = ownDownload(m[6]);
+      if (file) out.push(html`<a href=${file.href} download=${file.filename} onClick=${(event) => {
+        event.preventDefault();
+        void downloadFile(file.href, file.filename).catch((error) => toast(`Could not download file: ${error.message}`, 'err'));
+      }}>${m[6]}</a>`);
+      else out.push(html`<a href=${m[6]} target="_blank" rel="noopener noreferrer">${m[6]}</a>`);
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push(text.slice(last));
