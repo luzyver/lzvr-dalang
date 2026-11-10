@@ -1,4 +1,4 @@
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 import { loadConnections } from './databases.js';
 import { loadHosts } from './ssh-hosts.js';
 import { canAccess } from './util.js';
