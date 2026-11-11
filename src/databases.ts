@@ -189,16 +189,30 @@ export const statementsOf = (script: string, driver?: Driver) => splitStatements
 
 // ---------- values ----------
 
-/** A value as JSON can carry it: dates and big numbers as text, bytes as \x hex, long text cut. */
+// ignoreBOM: a leading BOM stays in the text, so a backup keeps every byte.
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+/** The text in bytes that hold text (a blob column of settings or JSON): valid UTF-8 without control characters. */
+function textOf(v: Uint8Array): string | null {
+  try {
+    const s = utf8.decode(v);
+    return /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(s) ? null : s;
+  } catch { return null; }
+}
+
+/** A value as JSON can carry it: dates and big numbers as text, bytes as their text or \x hex, long text cut. */
 function cell(v: unknown, maxCell: number): unknown {
   if (v === null || v === undefined) return null;
   if (typeof v === 'bigint') return v.toString();
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? String(v) : v.toISOString();
   if (v instanceof Uint8Array) {
-    // An unbounded maxCell (a backup) keeps every byte.
-    const max = Number.isFinite(maxCell) ? 256 : Infinity;
-    const hex = Buffer.from(v.subarray(0, max)).toString('hex');
-    return `\\x${hex}${v.length > max ? '…' : ''}`;
+    const s = textOf(v);
+    if (s === null) {
+      // An unbounded maxCell (a backup) keeps every byte.
+      const max = Number.isFinite(maxCell) ? 256 : Infinity;
+      const hex = Buffer.from(v.subarray(0, max)).toString('hex');
+      return `\\x${hex}${v.length > max ? '…' : ''}`;
+    }
+    v = s;
   }
   if (typeof v === 'object') v = JSON.stringify(v);
   if (typeof v === 'string' && v.length > maxCell) return `${v.slice(0, maxCell)}…`;
