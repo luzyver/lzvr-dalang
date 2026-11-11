@@ -638,7 +638,8 @@ export function buildApp(
     return conv ? { ...conv, last_at: store.lastAt(conv.id), turns: store.listTurns(conv.id), agent_turns: store.agentTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
   });
 
-  // Serve links from agent answers only from this chat's own worktree/project.
+  // Serve links from agent answers only from this chat's own worktree/project; an admin, who can read the whole
+  // machine through an agent anyway, may fetch a file anywhere on it (an agent often writes its output to /tmp).
   app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/files/download', {
     schema: { querystring: { type: 'object', required: ['path'], additionalProperties: false,
       properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } },
@@ -646,7 +647,11 @@ export function buildApp(
     const conv = store.getConversation(req.params.id);
     const project = conv && store.getProject(conv.project_id);
     if (!conv || !project) return notFound(reply);
-    const real = insideRoot(conv.worktree ?? project.path, req.query.path);
+    const root = conv.worktree ?? project.path;
+    let real = insideRoot(root, req.query.path);
+    if (!real && req.user?.role === 'admin') {
+      try { real = realpathSync(resolve(root, req.query.path)); } catch { /* no such file */ }
+    }
     if (!real) return notFound(reply);
     let stat;
     try { stat = statSync(real); } catch { return notFound(reply); }
