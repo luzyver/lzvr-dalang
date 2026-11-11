@@ -55,6 +55,16 @@ show dbs`, 'mongodb')).toEqual(['db.a.find({\n  x: 1;\n})', 'db.b.find({ s: "db.
     expect(agentRefusal('db.u.find({})', 'mongodb', true)).toBeNull();
   });
 
+  it('sees server-side JavaScript however its key is written, and not in a value that only says it', () => {
+    for (const s of ['db.u.find({ "\x24where": "sleep(1000)" })', 'db.u.find({ "\u0024where": "1" })', "db.u.find({ '$where': '1' })",
+      'db.u.aggregate([{ $match: { $expr: { "\x24function": { body: "1", args: [], lang: "js" } } } }])']) {
+      expect(agentRefusal(s, 'mongodb', true), s).toMatch(/refused for agents/);
+    }
+    for (const s of ['db.u.find({ note: "$where" })', 'db.u.find({ "$wherever": 1 })', 'db.u.find({ note: "a $function b" })']) {
+      expect(agentRefusal(s, 'mongodb', true), s).toBeNull();
+    }
+  });
+
   it('sees $out and $merge in an aggregate whether its stages come in an array or one by one', () => {
     const writes = (s: string) => pipelineWrites(aggregateArgs(parseMongo(s).calls[0]!.args).pipeline);
     expect(writes('db.u.aggregate([{ $match: {} }, { $out: "copy" }])')).toBe(true);

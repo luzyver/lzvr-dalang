@@ -299,7 +299,7 @@ Known limits:
 | `LZVR_TOKEN` | required | Access token, min 32 chars. Treat it like a root password. |
 | `WORKSPACE_ROOT` | required | Projects must live under this folder (`/` allows everything). |
 | `STATE_DIR` | `./state` | Database and uploads. |
-| `LZVR_SECRET_KEY` | `<STATE_DIR>/secret.key` | Encrypts the passwords, keys and tokens stored in the database (see "Security"). Any text; keep it, since without it they cannot be read. |
+| `LZVR_SECRET_KEY` | `<STATE_DIR>/secret.key` | Encrypts the passwords, keys and tokens stored in the database (see "Security"). Use a long random value (`openssl rand -base64 32`); keep it, since without it they cannot be read. |
 | `HOST` / `PORT` | `127.0.0.1` / `9876` | Listen address. Keep loopback and put a TLS proxy in front. |
 | `TRUST_PROXY` | off | Set `1` when a reverse proxy **on this machine** (nginx/Caddy) fronts the gateway, or list its IPs/CIDRs (`10.0.0.5,10.0.1.0/24`). Rate limiting then uses the client address that proxy saw. Without it, every visitor looks like `127.0.0.1` and ten bad tokens from anyone lock everyone out. Never trust addresses that are not your proxy. |
 | `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset. |
@@ -332,7 +332,8 @@ token, other MCP servers' tokens and environment, and the push key are stored wi
 copy, a backup, an agent reading it) does not give them away. The key is `LZVR_SECRET_KEY`, which no agent, terminal
 or git process Dalang starts receives (no `LZVR_*` variable does). Without it, Dalang makes `<STATE_DIR>/secret.key`
 and warns at start: that file sits next to the database, so for agents that can read the state folder, put its content
-in `LZVR_SECRET_KEY` (the systemd unit's `Environment=` or `.env`) and delete the file. Values stored in clear by an
+in `LZVR_SECRET_KEY` (the systemd unit's `Environment=` or `.env`) and delete the file. The key is hashed once with SHA-256, not stretched, so a chosen
+word or phrase can be guessed from a copy of the database: use a random one (`openssl rand -base64 32`). Values stored in clear by an
 earlier version are encrypted at the next start and the database is compacted; older copies and backups of it still
 hold them in clear. A wrong key stops the start instead of losing anything. This is not a wall against an agent
 running as the same OS user, which can still read Dalang's service file or process environment; only running agents

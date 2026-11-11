@@ -1,13 +1,17 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
-import { SESSION_TTL_MS, sessionHash } from './auth.js';
+import { SESSION_TTL_MS, ownerSessionToken, sessionHash } from './auth.js';
 import type { Store } from './store.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const COOLDOWN_MS = 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const MAX_CHALLENGES = 1000;
+// Wrong codes per email across all codes and addresses: the per-address block alone lets many addresses guess on.
+const MAX_MISSES = 20;
+const MISS_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_TRACKED = 100_000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface Mail { to: string; subject: string; text: string; html: string; from?: string }
@@ -38,8 +42,22 @@ export function otpRoutes(
   const key = randomBytes(32); // codes are kept only as an HMAC, valid until this process restarts
   const hash = (email: string, code: string) => createHmac('sha256', key).update(`${email}\n${code}`).digest();
 
-  // email -> pending code. Single process, so memory is enough.
+  // email -> pending code. Single process, so memory is enough. A code used up by wrong tries stays until it expires,
+  // so its cooldown still holds.
   const pending = new Map<string, { hash: Buffer; expires: number; sentAt: number; attempts: number }>();
+  // email -> wrong codes since `since`. Oldest entries go first when full, so one flood cannot wipe every count.
+  const misses = new Map<string, { count: number; since: number }>();
+  const locked = (email: string, now: number) => {
+    const m = misses.get(email);
+    if (m && now - m.since >= MISS_WINDOW_MS) misses.delete(email);
+    return (misses.get(email)?.count ?? 0) >= MAX_MISSES;
+  };
+  const miss = (email: string, now: number) => {
+    const m = misses.get(email);
+    if (m) { m.count++; return; }
+    while (misses.size >= MAX_TRACKED) misses.delete(misses.keys().next().value as string);
+    misses.set(email, { count: 1, since: now });
+  };
 
   /** null: not an address that may sign in. Otherwise the user it signs in as (null id = the owner). */
   const whoIs = (email: string): { userId: string | null } | null => {
@@ -68,7 +86,8 @@ export function otpRoutes(
     pending.set(email, { hash: hash(email, code), expires: now + CODE_TTL_MS, sentAt: now, attempts: 0 });
     // Keep the same cooldown and response timing for every address, including mailer failures.
     // Delivery runs in the background; awaiting SMTP here would disclose which addresses exist.
-    if (whoIs(email)) void Promise.resolve().then(() => send({
+    // A locked email gets the same answer but no mail: no code would be taken.
+    if (!locked(email, now) && whoIs(email)) void Promise.resolve().then(() => send({
       to: email,
       from: cfg.mailFrom,
       subject: `Dalang sign-in code: ${code}`,
@@ -86,16 +105,19 @@ export function otpRoutes(
   }, (req, reply) => {
     const email = req.body.email.trim().toLowerCase();
     const p = pending.get(email);
+    const now = Date.now();
     const fail = () => { noteFailure(req.ip); return reply.code(401).send({ error: 'wrong or expired code' }); };
-    if (!p || p.expires <= Date.now()) { pending.delete(email); return fail(); }
+    if (!p || p.expires <= now) { pending.delete(email); return fail(); }
+    if (p.attempts >= MAX_ATTEMPTS || locked(email, now)) return fail(); // a new code has to be asked for
     if (!timingSafeEqual(hash(email, req.body.code.trim()), p.hash)) {
-      if (++p.attempts >= MAX_ATTEMPTS) pending.delete(email); // a new code has to be asked for
+      p.attempts++;
+      miss(email, now);
       return fail();
     }
     pending.delete(email);
     const who = whoIs(email); // the user may have been deleted or changed email meanwhile
     if (!who) return fail();
-    const token = randomBytes(32).toString('hex');
+    const token = who.userId === null ? ownerSessionToken(cfg, email) : randomBytes(32).toString('hex');
     store.createSession(sessionHash(token), Date.now() + SESSION_TTL_MS, who.userId);
     return { token };
   });

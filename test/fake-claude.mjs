@@ -1,4 +1,5 @@
 // Fake `claude -p --output-format stream-json`. A CLAUDE_CONFIG_DIR basename listed in FAKE_LIMIT_HOMES hits a usage limit.
+// FAKE_MODE=linger: stays alive after its result (like a stuck MCP server or a background job keeping Claude Code up).
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
@@ -34,3 +35,4 @@ out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text',
 if (context) out({ type: 'assistant', message: { model: 'claude-x', content: [], usage: { input_tokens: context.tokens - 100, cache_read_input_tokens: 100 } } });
 if (context) out({ type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: `compact-window:${process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 'unset'}` }] } });
 out({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 2 }, ...(context && { modelUsage: { 'claude-x': { contextWindow: context.window } } }) });
+if (process.env.FAKE_MODE === 'linger') await new Promise((r) => setTimeout(r, 30000)); // done, but does not exit

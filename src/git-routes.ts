@@ -5,6 +5,7 @@ import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
 import { createPullRequest, mergePr, parsePrUrl, parseRemote, prStatus, remoteRepo, sshHostName, type MergeMethod, type PrStatus } from './forge.js';
 import * as git from './git.js';
+import { shownUrl } from './git-auth.js';
 import type { GitUsers } from './git-users.js';
 import { gitContext } from './git.js';
 import type { AuthUser, Backend } from './util.js';
@@ -533,7 +534,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       if (forge) target = await remoteRepo(url, forge);
     }
     if (!target) {
-      return reply.code(400).send({ error: `cannot tell whether ${url || remote} is GitHub or GitLab: sign gh or glab in to that host (Settings → Git & forges), or set GIT_FORGE` });
+      return reply.code(400).send({ error: `cannot tell whether ${shownUrl(url) || remote} is GitHub or GitLab: sign gh or glab in to that host (Settings → Git & forges), or set GIT_FORGE` });
     }
     const { forge, repo } = target;
 

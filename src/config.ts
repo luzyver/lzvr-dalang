@@ -82,6 +82,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const host = env.HOST ?? '127.0.0.1';
   const authBypass = env.AUTH_BYPASS === 'true' || env.AUTH_BYPASS === '1';
   if (authBypass && !LOOPBACK.has(host)) throw new Error('AUTH_BYPASS is for local development only: HOST must be 127.0.0.1, ::1 or localhost');
+  const trustProxy = parseTrustProxy(env.TRUST_PROXY);
+  // Behind a reverse proxy every visitor arrives from loopback, so a loopback HOST would not keep the panel local.
+  if (authBypass && trustProxy.length) throw new Error('AUTH_BYPASS cannot be used with TRUST_PROXY: behind a proxy the panel is reachable from outside, so unset one of them');
   if (env.GIT_FORGE && env.GIT_FORGE !== 'github' && env.GIT_FORGE !== 'gitlab') throw new Error('GIT_FORGE must be github or gitlab');
   return {
     token,
@@ -89,7 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     stateDir: resolve(env.STATE_DIR ?? 'state'),
     port,
     host,
-    trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    trustProxy,
     codexCommand: [env.CODEX_BIN ?? 'codex'],
     claudeCommand: [env.CLAUDE_BIN ?? 'claude'],
     ghCommand: [env.GH_BIN ?? 'gh'],

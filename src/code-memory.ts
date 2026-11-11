@@ -19,6 +19,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z, type ZodTypeAny } from 'zod';
 import { git, isRepo } from './git.js';
+import { inheritedEnv } from './runner.js';
 import type { Project, Store } from './store.js';
 import type { Backend } from './util.js';
 
@@ -94,7 +95,7 @@ function cbmEnv(s: CodeMemorySettings): Record<string, string> {
 
 /** The CBM session over stdio. Its folder is Dalang's state dir, so CBM never watches or auto-indexes a project itself. */
 export async function connectCbm(s: CodeMemorySettings, cwd: string): Promise<CbmClient> {
-  const env: Record<string, string> = { ...process.env as Record<string, string>, ...cbmEnv(s) };
+  const env: Record<string, string> = { ...inheritedEnv(), ...cbmEnv(s) };
   const transport = new StdioClientTransport({ command: s.command, args: [], env, cwd, stderr: 'ignore' });
   const client = new Client({ name: 'dalang', version: '0.1.0' });
   await client.connect(transport);

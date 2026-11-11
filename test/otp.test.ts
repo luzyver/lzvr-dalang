@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { sessionHash } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
 import type { Mail } from '../src/otp.js';
 import { AUTH } from './helpers.js';
@@ -30,6 +31,30 @@ describe('email sign-in (OTP)', () => {
     expect(me.json()).toEqual({ name: 'owner', role: 'admin', main: false });
     // a code works once
     expect((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: t.codeOf(t.sent[0]!) })).statusCode).toBe(401);
+  });
+
+  // The email and LZVR_TOKEN are checked on every request, so taking either away ends the owner's sessions.
+  it('ends an owner session when its email leaves the owner list or the main token changes', async () => {
+    const signIn = async (t: ReturnType<typeof withMail>) => {
+      t.sent.length = 0;
+      await t.post('/api/auth/otp/request', { email: 'boss@example.com' });
+      return bearer((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: t.codeOf(t.sent[0]!) })).json().token);
+    };
+    const me = (t: ReturnType<typeof withMail>, h: Record<string, string>) => t.app.inject({ url: '/api/me', headers: h }).then((r) => r.statusCode);
+    const a = withMail();
+    const h = await signIn(a);
+    expect(await me(a, h)).toBe(200);
+    a.cfg.ownerEmails = ['other@example.com'];
+    expect(await me(a, h)).toBe(401);
+    a.cfg.ownerEmails = ['boss@example.com'];
+    expect(await me(a, h)).toBe(200); // put back: the session was not deleted, only refused
+    a.cfg.token = 'y'.repeat(32);
+    expect(await me(a, h)).toBe(401);
+
+    // a session from before this check (no email bound to it) needs one new sign-in
+    const b = withMail();
+    b.store.createSession(sessionHash('old-owner-session'), Date.now() + 60_000, null);
+    expect(await me(b, bearer('old-owner-session'))).toBe(401);
   });
 
   it('signs a panel user in as themselves, by the email set on the user', async () => {
@@ -65,6 +90,37 @@ describe('email sign-in (OTP)', () => {
     const wrong = right === '000000' ? '111111' : '000000';
     for (let i = 0; i < 5; i++) expect((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: wrong })).statusCode).toBe(401);
     expect((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: right })).statusCode).toBe(401);
+  });
+
+  it('keeps the cooldown when wrong tries drop the code', async () => {
+    const t = withMail();
+    await t.post('/api/auth/otp/request', { email: 'boss@example.com' });
+    const wrong = t.codeOf(t.sent[0]!) === '000000' ? '111111' : '000000';
+    for (let i = 0; i < 5; i++) await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: wrong });
+    expect((await t.post('/api/auth/otp/request', { email: 'boss@example.com' })).statusCode).toBe(429);
+    expect(t.sent).toHaveLength(1);
+  });
+
+  // From many addresses the per-address block does not hold; a budget of wrong codes per email does.
+  it('stops taking codes for an email after 20 wrong ones in a day, from any address', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t = withMail();
+      const from = (i: number) => ({ remoteAddress: `10.0.${i}.1` });
+      const post = (url: string, payload: object, i: number) => t.app.inject({ method: 'POST', url, payload, ...from(i) });
+      for (let round = 0; round < 4; round++) {
+        await post('/api/auth/otp/request', { email: 'boss@example.com' }, round);
+        const wrong = t.codeOf(t.sent.at(-1)!) === '000000' ? '111111' : '000000';
+        for (let i = 0; i < 5; i++) expect((await post('/api/auth/otp/verify', { email: 'boss@example.com', code: wrong }, round)).statusCode).toBe(401);
+        vi.advanceTimersByTime(61_000);
+      }
+      expect((await post('/api/auth/otp/request', { email: 'boss@example.com' }, 9)).json()).toEqual({ cooldown: 60 }); // same answer
+      expect(t.sent).toHaveLength(4); // but nothing sent: no code could be used
+      vi.advanceTimersByTime(24 * 60 * 60_000);
+      await post('/api/auth/otp/request', { email: 'boss@example.com' }, 9);
+      const ok = await post('/api/auth/otp/verify', { email: 'boss@example.com', code: t.codeOf(t.sent.at(-1)!) }, 9);
+      expect(ok.statusCode).toBe(200);
+    } finally { vi.useRealTimers(); }
   });
 
   it('does not expose delivery failure or latency, and keeps its cooldown', async () => {
@@ -123,5 +179,12 @@ describe('AUTH_BYPASS', () => {
     expect(loadConfig({ ...base, AUTH_BYPASS: 'true' }).authBypass).toBe(true);
     expect(loadConfig(base).authBypass).toBe(false);
     expect(() => loadConfig({ ...base, AUTH_BYPASS: 'true', HOST: '0.0.0.0' })).toThrow(/AUTH_BYPASS/);
+  });
+
+  // Behind a proxy every request reaches the panel from loopback, so the loopback-only rule above would not hold.
+  it('is refused together with TRUST_PROXY', () => {
+    const base = { LZVR_TOKEN: 'x'.repeat(32), WORKSPACE_ROOT: '/w', AUTH_BYPASS: 'true' };
+    expect(() => loadConfig({ ...base, TRUST_PROXY: '127.0.0.1' })).toThrow(/AUTH_BYPASS.*TRUST_PROXY/);
+    expect(loadConfig({ ...base, TRUST_PROXY: '' }).authBypass).toBe(true);
   });
 });

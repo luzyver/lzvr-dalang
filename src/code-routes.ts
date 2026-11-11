@@ -32,6 +32,29 @@ export function badName(name: string): string | null {
   return null;
 }
 
+/** A path part as Windows opens it: any case, trailing dots/spaces and a `:stream` suffix ignored. */
+const asOpened = (part: string) => part.replace(/:.*$/, '').replace(/[. ]+$/, '').toLowerCase();
+
+/**
+ * Whether `real` (an absolute path inside `root`, existing or about to be made) is or lies in a `.git`. By name in any
+ * spelling Windows accepts (`.GIT`, `.git.`; Node's realpath keeps the spelling asked for), and by identity with the
+ * root's own `.git`, so another name for it (an 8.3 short name such as GIT~1) counts too.
+ */
+export function inGitDir(root: string, real: string): boolean {
+  const parts = relative(root, real).split(sep).filter(Boolean);
+  if (parts.some((p) => asOpened(p) === '.git')) return true;
+  let git;
+  try { git = statSync(join(root, '.git'), { bigint: true }); } catch { return false; }
+  let at = root;
+  for (const p of parts) {
+    at = join(at, p);
+    let s;
+    try { s = statSync(at, { bigint: true }); } catch { return false; } // not made yet: neither is anything under it
+    if (s.ino === git.ino && s.dev === git.dev) return true;
+  }
+  return false;
+}
+
 const MAX_MATCHES = 2000;
 const MAX_SEARCH_BYTES = 1024 * 1024;
 
@@ -64,7 +87,8 @@ export function codeRoutes(app: FastifyInstance, deps: {
 
   /** Path relative to the root with forward slashes, as the panel names files. */
   const rel = (root: string, real: string) => relative(root, real).split(sep).join('/');
-  const inGit = (p: string) => p.split('/').includes('.git');
+  /** Every write, rename, delete and new path goes through this, always with the resolved real path. */
+  const inGit = (c: Loaded, real: string) => inGitDir(c.root, real);
   /** An existing file or folder inside the root (symlinks resolved), or null. */
   const existing = (c: Loaded, p: string) => insideRoot(c.root, p || '.');
   /** A path to create: its parent must exist inside the root and its name be valid. */
@@ -75,7 +99,7 @@ export function codeRoutes(app: FastifyInstance, deps: {
     const parent = insideRoot(c.root, dirname(p) || '.');
     if (!parent) { reply.code(400).send({ error: 'that folder does not exist' }); return null; }
     const target = join(parent, name);
-    if (inGit(rel(c.root, target))) { reply.code(403).send({ error: '.git is managed by git, not the editor' }); return null; }
+    if (inGit(c, target)) { reply.code(403).send({ error: '.git is managed by git, not the editor' }); return null; }
     return target;
   };
 
@@ -91,7 +115,7 @@ export function codeRoutes(app: FastifyInstance, deps: {
     if (!real) { notFound(reply); return null; }
     const r = rel(c.root, real);
     if (!r) { reply.code(400).send({ error: 'the root folder cannot be changed' }); return null; }
-    if (inGit(r)) { reply.code(403).send({ error: '.git is managed by git, not the editor' }); return null; }
+    if (inGit(c, real)) { reply.code(403).send({ error: '.git is managed by git, not the editor' }); return null; }
     return real;
   };
   const statOf = (p: string): Stats | null => { try { return statSync(p); } catch { return null; } };
@@ -238,9 +262,9 @@ export function codeRoutes(app: FastifyInstance, deps: {
       let bytes = 0;
       // Prepare the entire batch before writing: an invalid/slow regex must not leave a partial replacement.
       for (const path of new Set(req.body.paths)) {
-        if (!allowed.has(path) || inGit(path)) continue;
+        if (!allowed.has(path)) continue;
         const file = await readText(c, path);
-        if (!file) continue;
+        if (!file || inGit(c, file.real)) continue; // a symlink's target, not its name, is what gets written
         const result = await worker.run({ query: req.body, text: file.text, replace: req.body.replace });
         if (!result.replacements || result.text === file.text) continue;
         bytes += Buffer.byteLength(file.text) + Buffer.byteLength(result.text!);

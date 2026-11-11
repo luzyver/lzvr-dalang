@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as databases from '../src/databases.js';
-import { agentRefusal, type DbConnection, findUnsafe, loadConnections, onDatabase, planBackup, previewEdits, QueryError, readBackup, statementsOf } from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, loadConnections, onDatabase, panelRefusal, planBackup, previewEdits, QueryError, readBackup, statementsOf } from '../src/databases.js';
 import { createDbApproval, dbTarget, readDbApprovals, recoverDbApprovals } from '../src/database-routes.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -173,6 +173,63 @@ describe('agent refusals', () => {
     expect(agentRefusal('DO $$ BEGIN END $$', 'postgres', false)).toBeNull();
     expect(agentRefusal("SELECT * FROM users WHERE note = 'copy'; VACUUM", 'postgres', true)).toBeNull();
   });
+
+  it('sees through comments, quoted names and parentheses', () => {
+    const pg = ["/**/COPY (SELECT 1) TO PROGRAM 'id'", "-- hi\nCOPY users TO '/tmp/x'", "SELECT \"pg_read_file\"('/etc/passwd')",
+      "SELECT pg_catalog.\"pg_read_file\" /* x */ ('/etc/passwd')", "SELECT \"dblink_exec\"('x', 'y')", "SELECT U&\"\\0070g_read_file\"('/etc/passwd')",
+      "SELECT U&\"!0070g_ls_dir\" UESCAPE '!' ('/')", '/* x */ DO $$ BEGIN END $$', '(DO $$ BEGIN END $$)'];
+    for (const sql of pg) expect(agentRefusal(sql, 'postgres', true), sql).toMatch(/refused for agents/);
+    const my = ["SELECT 1 INTO/**/OUTFILE '/tmp/x'", 'SET/**/GLOBAL max_connections = 1', 'SET @@persist.max_connections = 1',
+      "SELECT `load_file`('/etc/passwd')", "SELECT 1--1 INTO OUTFILE '/tmp/x'", "SELECT 1 /*!50000 INTO OUTFILE '/tmp/x' */",
+      "SELECT \"a\\\"\", 1 INTO OUTFILE '/tmp/x' FROM t WHERE \"\" = \"\""];
+    for (const sql of my) expect(agentRefusal(sql, 'mysql', true), sql).toMatch(/refused for agents/);
+    for (const sql of ["SELECT [load_extension]('x')", "/**/ATTACH DATABASE '/tmp/x.db' AS x"]) expect(agentRefusal(sql, 'sqlite', true), sql).toMatch(/refused for agents/);
+  });
+
+  it('reads PostgreSQL as PostgreSQL does: nested comments, \\r, $ in names, any dollar tag, backslashes in plain strings', () => {
+    const pg = ["/* outer /* inner */ ' */ SELECT pg_read_file('/etc/passwd') -- '",
+      "/* /* */ ' */ SELECT 1; COPY users TO PROGRAM 'id' -- '",
+      "SELECT 1 -- x\r, pg_read_file('/etc/passwd')",
+      "SELECT 1 AS x$$$, pg_read_file('/etc/passwd') -- $$",
+      "SELECT 1$$ ' $$, pg_read_file('/etc/passwd') -- '",
+      "SELECT $é$ ' $é$, pg_read_file('/etc/passwd') -- '",
+      // standard_conforming_strings off (a server's setting, or SET earlier in the session): '\'' does not end there.
+      "SELECT '\\', ' , pg_read_file('/etc/passwd') -- '"];
+    for (const sql of pg) for (const ro of [true, false]) expect(agentRefusal(sql, 'postgres', ro), sql).toMatch(/refused for agents/);
+    expect(statementsOf("/* /* */ ' */ SELECT 1; COPY users TO PROGRAM 'id' -- '", 'postgres')).toHaveLength(2);
+    expect(statementsOf('/* a /* b */ c */ SELECT 1; SELECT 2\r--;\nSELECT 3', 'postgres')).toEqual(['/* a /* b */ c */ SELECT 1', 'SELECT 2\r--;\nSELECT 3']);
+    expect(agentRefusal("SELECT 1 /* a /* b */ pg_read_file('/x') */", 'postgres', true)).toBeNull();
+    expect(agentRefusal("SELECT 1 AS x$y, $tag$ pg_read_file('/x') $tag$, $1", 'postgres', true)).toBeNull();
+  });
+
+  it('reads a UESCAPE clause past the comments around it, for agents and the read-only panel', () => {
+    const pg = ["SELECT U&\"!0070g_read_file\" /*c*/ UESCAPE '!'('/etc/passwd')",
+      "SELECT U&\"!0070g_read_file\" UESCAPE /*c*/ '!'('/etc/passwd')",
+      "SELECT U&\"!0070g_read_file\" -- c\n UESCAPE /* a /* b */ */ -- d\r '!' ('/etc/passwd')"];
+    for (const sql of pg) {
+      for (const ro of [true, false]) expect(agentRefusal(sql, 'postgres', ro), sql).toMatch(/refused for agents/);
+      expect(panelRefusal(sql, 'postgres'), sql).toMatch(/refused on a read-only connection/);
+    }
+    expect(agentRefusal("SELECT U&\"!0061\" /*c*/ UESCAPE /*d*/ '!' FROM t", 'postgres', true)).toBeNull();
+  });
+
+  it('keeps comments flat for MySQL and SQLite, as they do', () => {
+    expect(statementsOf('/* a /* b */ SELECT 1', 'sqlite')).toEqual(['/* a /* b */ SELECT 1']);
+    expect(statementsOf('/* a /* b */ SELECT 1', 'mysql')).toHaveLength(1);
+    expect(statementsOf('/* a /* b */ SELECT 1', 'postgres')).toEqual([]);
+    expect(agentRefusal("SELECT 1 /* a /* b */, load_file('/etc/passwd')", 'mysql', true)).toMatch(/refused for agents/);
+    expect(agentRefusal("SELECT 1 /* a /* b */, load_extension('/tmp/x')", 'sqlite', true)).toMatch(/refused for agents/);
+  });
+
+  it('lets reads that only mention those words pass', () => {
+    const pg = ["SELECT 'COPY users TO PROGRAM ''id''' AS s", "SELECT * FROM t WHERE note = 'pg_read_file(x)'", 'SELECT copy, "load" FROM t',
+      'SELECT "pg_read_file" FROM t', "SELECT 1 AS \"pg_read_file(\"", "SELECT $$ COPY x TO PROGRAM 'id' $$", "SELECT E'\\' COPY'",
+      '-- COPY users TO PROGRAM\nSELECT 1', "SELECT * FROM t /* pg_read_file('/x') */", 'SELECT "do", "copy" FROM t'];
+    for (const sql of pg) expect(agentRefusal(sql, 'postgres', true), sql).toBeNull();
+    const my = ["SELECT 'INTO OUTFILE' FROM t", 'SELECT `load_file` FROM t', "SELECT \"set global x\" FROM t", '# SET GLOBAL x\nSELECT 1'];
+    for (const sql of my) expect(agentRefusal(sql, 'mysql', true), sql).toBeNull();
+    expect(agentRefusal('SELECT [copy] FROM t', 'sqlite', true)).toBeNull();
+  });
 });
 
 describe('SQL editor connections', () => {
@@ -185,8 +242,32 @@ describe('SQL editor connections', () => {
     const list = await t.app.inject({ url: '/api/db/connections', headers: AUTH });
     expect(list.body).not.toContain('s3cret-pass');
     // An edit without a password keeps the saved one.
-    await t.app.inject({ method: 'PUT', url: '/api/db/connections/pg', headers: AUTH, payload: { label: 'PG', driver: 'postgres', host: 'db.local', access: 'all', readOnly: false, agent: 'off' } });
+    await t.app.inject({ method: 'PUT', url: '/api/db/connections/pg', headers: AUTH, payload: { label: 'PG', driver: 'postgres', host: 'db.local', user: 'app', access: 'all', readOnly: false, agent: 'off' } });
     expect(t.store.getKv('db_connections')).toContain('s3cret-pass');
+  });
+
+  it('keeps saved passwords only for the server they were saved for', async () => {
+    const t = await boot();
+    const pg = { label: 'PG', driver: 'postgres', host: 'db.local', user: 'app', access: 'all', readOnly: false, agent: 'off' };
+    const tunnel = { enabled: true, host: 'bastion.local', port: 22, user: 'ops', auth: 'password' };
+    const save = (body: object) => t.app.inject({ method: 'PUT', url: '/api/db/connections/pg', headers: AUTH, payload: { ...pg, ...body } });
+    const saved = () => loadConnections(t.store).find((c) => c.id === 'pg')!;
+    await save({ password: 'db-pass', ssh: { ...tunnel, password: 'ssh-pass' } });
+    await save({ ssh: tunnel });
+    expect(saved()).toMatchObject({ password: 'db-pass', ssh: { password: 'ssh-pass' } });
+    // Another database server, port or user: its password must be given again.
+    for (const other of [{ host: 'evil.local' }, { port: 5433 }, { user: 'root' }]) {
+      await save({ password: 'db-pass', ssh: tunnel });
+      await save({ ...other, ssh: tunnel });
+      expect(saved().password, JSON.stringify(other)).toBe('');
+    }
+    // Another SSH server: neither its password nor the database's (127.0.0.1 there is another machine) is kept.
+    for (const other of [{ host: 'evil.local' }, { port: 2222 }, { user: 'root' }]) {
+      await save({ password: 'db-pass', ssh: { ...tunnel, password: 'ssh-pass' } });
+      await save({ ssh: { ...tunnel, ...other } });
+      expect(saved().ssh!.password, JSON.stringify(other)).toBe('');
+      if (!('user' in other)) expect(saved().password, JSON.stringify(other)).toBe('');
+    }
   });
 
   it('allows Dalang\'s own state files only for owner-only connections', async () => {
@@ -213,6 +294,42 @@ describe('SQL editor connections', () => {
     expect(ro.statusCode).toBe(400);
     expect(ro.json()).toMatchObject({ index: 1, results: [{ rows: [[1]] }] });
     expect(ro.json().error).toMatch(/readonly/i);
+  });
+
+  it('refuses what reaches past the tables for non-admins on a read-only connection, query and export alike', async () => {
+    const t = await boot();
+    await t.put('app', { readOnly: true });
+    const dev = await mkUser(t, 'dana', 'dev');
+    const bad = "SELECT [load_extension]('/tmp/x')";
+    const ro = await t.query('app', bad, bearer(dev.token));
+    expect(ro.statusCode).toBe(400);
+    expect(ro.json().error).toMatch(/read-only connection: functions that reach files/);
+    const ex = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/export', headers: bearer(dev.token), payload: { sql: bad, format: 'csv' } });
+    expect(ex.statusCode).toBe(400);
+    expect(ex.json().error).toMatch(/read-only connection/);
+    expect((await t.query('app', 'SELECT name FROM users', bearer(dev.token))).statusCode).toBe(200);
+    // An admin may (the connection being read-only holds it to reads); so may anyone on a read-write connection.
+    expect((await t.query('app', bad)).json().error).not.toMatch(/read-only connection/);
+    await t.put('app', { readOnly: false });
+    expect((await t.query('app', bad, bearer(dev.token))).json().error ?? '').not.toMatch(/read-only connection/);
+  });
+
+  it('refuses server-side JavaScript to non-admins on a read-only MongoDB connection, before reaching the server', async () => {
+    const t = await boot();
+    // Nothing listens there: a refusal comes before any connection.
+    expect((await t.put('mongo', { driver: 'mongodb', host: '127.0.0.1', port: 1, readOnly: true })).statusCode).toBe(200);
+    const dev = await mkUser(t, 'dana', 'dev');
+    const bad = 'db.u.find({ $where: "sleep(1000) || true" })';
+    const ro = await t.query('mongo', bad, bearer(dev.token));
+    expect(ro.statusCode).toBe(400);
+    expect(ro.json().error).toMatch(/read-only connection: \$where/);
+    const ex = await t.app.inject({ method: 'POST', url: '/api/db/connections/mongo/export', headers: bearer(dev.token), payload: { sql: bad, format: 'csv' } });
+    expect(ex.statusCode).toBe(400);
+    expect(ex.json().error).toMatch(/read-only connection: \$where/);
+    expect((await t.query('mongo', 'db.u.aggregate([{ $group: { _id: 1, x: { $accumulator: {} } } }])', bearer(dev.token))).json().error).toMatch(/read-only connection/);
+    // A read that only mentions it is no refusal. Read-only Redis runs only reads already; KEYS is one, the person's to run.
+    expect(panelRefusal('db.u.find({ note: "$where" })', 'mongodb')).toBeNull();
+    expect(panelRefusal('KEYS *', 'redis')).toBeNull();
   });
 
   it('reads up to 100 000 rows of a statement (the row limit All)', async () => {
@@ -381,6 +498,27 @@ describe('SQL editor connections', () => {
     ]);
     const rows = (await t.query('app', 'SELECT name FROM users ORDER BY id')).json().results[0].rows;
     expect(rows).toEqual([['ann'], ['bob']]);
+  });
+
+  it('gives up on a MySQL grid edit the server never answers', async () => {
+    // A MySQL server (mysql2's own) that answers START TRANSACTION and ROLLBACK, and never the UPDATE.
+    const mysql = (await import('mysql2')).default as any;
+    const seen: string[] = [];
+    const conns: any[] = [];
+    const server = mysql.createServer((conn: any) => {
+      conns.push(conn);
+      conn.serverHandshake({ protocolVersion: 10, serverVersion: '8.0.0-fake', connectionId: 1, statusFlags: 2, characterSet: 8, capabilityFlags: 0xffffff });
+      conn.on('query', (sql: string) => { seen.push(sql); if (!/^UPDATE/i.test(sql)) conn.writeOk(); });
+      conn.on('error', () => {});
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    opened.push({ close: () => { for (const x of conns) x.stream.destroy(); return new Promise<void>((r) => server.close(() => r())); } });
+    const c = { id: 'my', label: 'my', driver: 'mysql', host: '127.0.0.1', port: server._server.address().port, user: 'u', password: '', database: 'app',
+      ssl: 'disable', file: '', access: 'all', readOnly: false, agent: 'off' } as DbConnection;
+    const t0 = Date.now();
+    await expect(databases.editRows(c, 'app', 'users', [{ kind: 'update', key: { id: '1' }, set: { name: 'x' } }], 300)).rejects.toThrow(/timeout|timed out/i);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(seen[0]).toMatch(/START TRANSACTION/);
   });
 
   it('writes MySQL literals with backslashes escaped', () => {

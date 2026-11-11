@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS memories (
   text TEXT NOT NULL, source_conv TEXT NOT NULL DEFAULT '', source_title TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CHECK ((project_id IS NULL) <> (user_key = '')));
+CREATE TABLE IF NOT EXISTS running_items (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  prompt TEXT NOT NULL, attachments TEXT NOT NULL, author TEXT NOT NULL, on_behalf TEXT NOT NULL, from_conv TEXT NOT NULL,
+  from_turn INTEGER, resume INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS held_chats (conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE);
 `;
 
 export interface Approval {
@@ -118,6 +123,11 @@ export interface QueueItem {
   from_turn: number | null;
   /** Set on the turn a restart cut off, queued again so it continues in the same session after the restart. */
   resume?: boolean;
+  /**
+   * 'report': an agent's report coming back (a sub-agent's or reviewer's), queued by the dispatcher itself. A prompt a
+   * person or an agent wrote that only starts like one ("[Sub-agent] ...") is none.
+   */
+  kind?: 'report';
 }
 /**
  * How far agents may go with sub-agents: chats per parent, levels below a person's chat, and sending to them unasked.
@@ -179,8 +189,9 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; from_turn: number | null; resume: number }
-const toItem = ({ resume, ...r }: QueueRow): QueueItem => ({ ...r, attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}) });
+interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; from_turn: number | null; resume: number; kind: string }
+const toItem = ({ resume, kind, ...r }: QueueRow): QueueItem =>
+  ({ ...r, attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}), ...(kind === 'report' ? { kind } : {}) });
 
 export class Store {
   readonly db: DatabaseSync;
@@ -230,9 +241,19 @@ export class Store {
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)'); // ALTER TABLE cannot add UNIQUE
     // A chat's history is read by its turns: without these, reading one chat scans the events of every chat.
     this.db.exec('CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id); CREATE INDEX IF NOT EXISTS events_turn ON events(turn_id)');
+    // Sub-agents, a project's chats and a chat's queue are looked up on every turn's end (reports, reviews, kicks).
+    this.db.exec(`CREATE INDEX IF NOT EXISTS conversations_parent ON conversations(parent);
+      CREATE INDEX IF NOT EXISTS conversations_project ON conversations(project_id); CREATE INDEX IF NOT EXISTS queue_conversation ON queue(conversation_id)`);
     this.db.exec('DROP TABLE IF EXISTS passkeys'); // passkey sign-in was removed
-    this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
+    // Events from before created_at existed get their turn's start, once: every event since is written with its time,
+    // and the scan of the whole table must not run at every start.
+    if (!this.getKv('events_created_at_filled')) {
+      this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
+      this.setKv('events_created_at_filled', '1');
+    }
     this.ensureColumn('queue', 'from_turn', 'INTEGER');
+    this.ensureColumn('queue', 'kind', "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn('running_items', 'kind', "TEXT NOT NULL DEFAULT ''");
     if (this.ensureColumn('turns', 'from_turn', 'INTEGER')) {
       // Turns of sub-chats from before this was recorded: the parent's last turn that had started by then.
       this.run(`UPDATE turns SET from_turn=(SELECT MAX(p.id) FROM turns p JOIN conversations c ON p.conversation_id=c.parent
@@ -431,7 +452,11 @@ export class Store {
     this.deleteKv(`review:${id}`);
     return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0;
   }
-  deleteProject(id: string): boolean { return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0; }
+  deleteProject(id: string): boolean {
+    // Its chats go by cascade, which never reaches their review state in kv.
+    this.run("DELETE FROM kv WHERE key IN (SELECT 'review:' || id FROM conversations WHERE project_id=?)", id);
+    return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0;
+  }
 
   /** The chat runs on the project's backend unless told otherwise. */
   createConversation(projectId: string, backend?: Backend, parent = ''): Conversation {
@@ -484,16 +509,19 @@ export class Store {
   setBackend(id: string, backend: Backend): void {
     this.run("UPDATE conversations SET backend=?, thread_id=NULL, model='', effort='' WHERE id=? AND backend<>?", backend, id, backend);
   }
-  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = ''): number {
-    const r = this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn)
-      VALUES (?,?,?,?,?,?,(SELECT MAX(id) FROM turns WHERE conversation_id=?))`,
-      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv, fromConv);
+  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = '', kind: QueueItem['kind'] = undefined): number {
+    const r = this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,kind)
+      VALUES (?,?,?,?,?,?,(SELECT MAX(id) FROM turns WHERE conversation_id=?),?)`,
+      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv, fromConv, kind ?? '');
     return Number(r.lastInsertRowid);
   }
   /** Queue a turn a restart cut off again, ahead of what was waiting behind it (see QueueItem.resume). */
   requeueResume(item: QueueItem): void {
-    this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume) VALUES (?,?,?,?,?,?,?,1)',
-      item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv, item.from_turn ?? null);
+    this.atomically(() => {
+      this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind) VALUES (?,?,?,?,?,?,?,1,?)',
+        item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv, item.from_turn ?? null, item.kind ?? '');
+      this.endRunning(item.conversation_id); // queued again already: a crash before the turn is gone must not add a second
+    });
   }
   listQueue(convId: string): QueueItem[] {
     return this.all<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id', convId).map(toItem);
@@ -503,11 +531,34 @@ export class Store {
     return this.get<{ conversation_id: string }>('SELECT conversation_id FROM queue WHERE id=?', id)?.conversation_id ?? null;
   }
   deleteQueueItem(id: number): boolean { return Number(this.run('DELETE FROM queue WHERE id=?', id).changes) > 0; }
+  /**
+   * Take the next prompt to run. It leaves the queue but is kept in running_items until its turn is over (endRunning), so
+   * a crash that gives the turn no chance to be queued again (resetRunning) does not lose it.
+   */
   popQueue(convId: string): QueueItem | null {
     const row = this.get<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id LIMIT 1', convId);
     if (!row) return null;
-    this.run('DELETE FROM queue WHERE id=?', row.id);
+    this.atomically(() => {
+      this.run(`INSERT OR REPLACE INTO running_items (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind)
+        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind FROM queue WHERE id=?`, row.id);
+      this.run('DELETE FROM queue WHERE id=?', row.id);
+    });
     return toItem(row);
+  }
+  /** The chat's running turn is over (ended, cancelled or queued again): a crash from now on does not run it again. */
+  endRunning(convId: string): void { this.run('DELETE FROM running_items WHERE conversation_id=?', convId); }
+  /**
+   * A chat a person stopped: reports queued for it wait until something else is queued (see Dispatcher.kick). Kept here
+   * so a restart does not start it again on a report; gone with the chat.
+   */
+  isHeld(convId: string): boolean { return !!this.get('SELECT 1 AS x FROM held_chats WHERE conversation_id=?', convId); }
+  setHeld(convId: string, held: boolean): void {
+    if (held) this.run('INSERT OR IGNORE INTO held_chats (conversation_id) VALUES (?)', convId);
+    else this.run('DELETE FROM held_chats WHERE conversation_id=?', convId);
+  }
+  private atomically(fn: () => void): void {
+    this.db.exec('SAVEPOINT atomically');
+    try { fn(); this.db.exec('RELEASE atomically'); } catch (e) { this.db.exec('ROLLBACK TO atomically; RELEASE atomically'); throw e; }
   }
 
   /** `fromTurn`: the turn of another chat whose agent sent this prompt (QueueItem.from_turn). */
@@ -724,8 +775,17 @@ export class Store {
     return [...titles.map((t) => ({ ...t, text: t.title ?? '' })), ...events].slice(0, limit);
   }
 
-  /** Mark rows left `running` by a crash as failed; return conversations that still have queued prompts. */
+  /**
+   * Mark rows left `running` by a crash as failed, and queue the prompts they ran again to resume in their session
+   * (QueueItem.resume), ahead of the rest; return conversations that still have queued prompts. A prompt that was
+   * itself resuming is not tried a third time: it may be what brings the server down.
+   */
   resetRunning(): string[] {
+    this.atomically(() => {
+      this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind)
+        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,1,kind FROM running_items WHERE resume=0 ORDER BY rowid`);
+      this.run('DELETE FROM running_items');
+    });
     // Close each stale turn in the event stream too, or a replaying client would show it as still live.
     this.run(`INSERT INTO events (turn_id,type,payload,created_at) SELECT id, 'turn.failed',
       '{"type":"turn.failed","error":{"message":"gateway restarted while this turn was running"}}', ?

@@ -393,6 +393,19 @@ describe('which credentials a commit and push use', () => {
     });
   });
 
+  it('never shows a password or token written into the remote\'s URL', async () => {
+    for (const [remote, username] of [['https://ci:s3cret-pass@gitlab.example.com/acme/app.git', 'ci'],
+      ['https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/acme/app.git', null],
+      ['https://x-access-token:ghs_abc123@github.com/acme/app.git', 'x-access-token'], ['https://alice@github.com/acme/app.git', 'alice']] as const) {
+      const t = repo(remote);
+      const c = await t.auth.credentials(t.cwd);
+      const host = new URL(remote).host;
+      expect(c.remote!.url, remote).toBe(`https://${host}/acme/app.git`);
+      expect(JSON.stringify(c), remote).not.toMatch(/s3cret-pass|ghp_abc|ghs_abc/);
+      expect(c.https!.username, remote).toBe(username);
+    }
+  });
+
   it('tells GitLab from GitHub for a neutrally named host by which CLI is signed in to it', async () => {
     const t = repo('https://git.example.com/acme/app.git');
     expect((await t.auth.credentials(t.cwd)).forge).toBeUndefined();

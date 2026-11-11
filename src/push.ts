@@ -12,6 +12,25 @@ export interface Notification {
   audience?: { admin?: boolean; owner?: boolean; project?: string; conversation?: string; database?: string; host?: string };
 }
 
+/** Most subscriptions one user keeps; subscribing past it drops their oldest. */
+export const MAX_SUBS_PER_USER = 10;
+
+/**
+ * The push services browsers subscribe with: Chrome and the other Chromium browsers (FCM), Firefox (Mozilla autopush),
+ * Safari (Apple) and Edge on Windows (WNS). A leading dot means any name under it. Only these are posted to: any other
+ * name could resolve to this machine or a private network, now or after a DNS change.
+ */
+export const PUSH_SERVICES = ['fcm.googleapis.com', 'updates.push.services.mozilla.com', '.push.apple.com', '.notify.windows.com'];
+
+/** Whether the server may post notifications to this endpoint: https on a browser push service (PUSH_SERVICES). */
+export function pushEndpointOk(endpoint: string): boolean {
+  let url: URL;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  return PUSH_SERVICES.some((h) => (h.startsWith('.') ? host.endsWith(h) : host === h));
+}
+
 export interface TurnEnd { convId: string; project: string; status: string; lastMessage: string }
 
 /** What to tell the user when a turn ends; null means stay quiet. */
@@ -72,8 +91,11 @@ export class Push {
       }
       // A missing scope must never turn a private event into a broadcast.
       if (!n.convId && !audience?.owner && !audience?.project && !audience?.database && !audience?.host) return;
+      const sub = JSON.parse(s.sub) as webpush.PushSubscription;
+      // Stored before the allowlist, or the stored JSON points elsewhere than its key: never post there.
+      if (!pushEndpointOk(s.endpoint) || sub.endpoint !== s.endpoint) { this.store.removePushSub(s.endpoint, s.user_key); return; }
       try {
-        await this.send(JSON.parse(s.sub) as webpush.PushSubscription, payload);
+        await this.send(sub, payload);
       } catch (e) {
         const code = (e as { statusCode?: number }).statusCode;
         if (code === 404 || code === 410) this.store.removePushSub(s.endpoint, s.user_key); // subscription is gone for good

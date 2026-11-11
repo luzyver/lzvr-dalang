@@ -67,12 +67,14 @@ const watchLogins = () => Promise.all([logins, claudeLogins].map((l) => l.refres
 await watchLogins(); // first check done before queues restart, so no turn is sent to an account that is already signed out
 setInterval(() => void watchLogins(), 60_000).unref();
 
-// A crash can leave turns `running`; fail them and restart any leftover queues.
-for (const id of store.resetRunning()) dispatcher.kick(id);
+// A crash can leave turns `running`: fail them, queue again what they ran (resetRunning), and restart the leftover
+// queues once the app is listening, so their turns find the MCP endpoint and the app's hooks (git, MCP servers) set.
+const leftover = store.resetRunning();
 
 const codeMemory = new CodeMemory(store, { cwd: cfg.stateDir });
 const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins, codeMemory });
 await app.listen({ host: cfg.host, port: cfg.port });
+for (const id of leftover) dispatcher.kick(id);
 codeMemory.start();
 const scheduler = new Scheduler(store, dispatcher);
 scheduler.start();

@@ -13,6 +13,9 @@ const userKeys = utils.generateKeyPairSync('ed25519', { passphrase: 'pp', cipher
 const allowedUserKey = utils.parseKey(userKeys.public) as ReturnType<typeof utils.parseKey> & { getPublicSSH(): Buffer; verify(d: Buffer, s: Buffer, h?: string): boolean };
 const serverFingerprint = fingerprint((utils.parseKey(hostKeys.public) as unknown as { getPublicSSH(): Buffer }).getPublicSSH());
 
+/** The passwords the SSH servers of servers() were sent. */
+const passwords: string[] = [];
+
 /** An SSH server (user u, password p or the user key) forwarding to anything, and a TCP echo server to reach through it. */
 async function servers(): Promise<{ sshPort: number; echoPort: number }> {
   const echo: NetServer = createServer((s) => s.pipe(s));
@@ -20,6 +23,7 @@ async function servers(): Promise<{ sshPort: number; echoPort: number }> {
   const ssh = new Server({ hostKeys: [hostKeys.private] }, (client) => {
     client.on('authentication', (ctx) => {
       if (ctx.username !== 'u') return ctx.reject();
+      if (ctx.method === 'password') passwords.push(ctx.password);
       if (ctx.method === 'password' && ctx.password === 'p') return ctx.accept();
       if (ctx.method === 'publickey' && ctx.key.data.equals(allowedUserKey.getPublicSSH())) {
         if (!ctx.signature) return ctx.accept();
@@ -71,6 +75,25 @@ describe('SSH tunnel', () => {
     expect(t.hostKey).toBe(serverFingerprint);
     await t.close();
     await expect(openTunnel(conf(sshPort, { hostKey: 'SHA256:somethingElse' }), target)).rejects.toThrow(/key changed/);
+    // trustNew is for a server not trusted yet: a changed key needs that very key accepted.
+    await expect(openTunnel(conf(sshPort, { hostKey: 'SHA256:somethingElse' }), target, { trustNew: true })).rejects.toThrow(/key changed/);
+    const again = await openTunnel(conf(sshPort, { hostKey: 'SHA256:somethingElse' }), target, { accept: serverFingerprint });
+    expect(again.hostKey).toBe(serverFingerprint);
+    await again.close();
+  });
+
+  it('tests a connection whose SSH key changed without logging in, and shows the new key', async () => {
+    const { sshPort, echoPort } = await servers();
+    const t = setupApp();
+    passwords.length = 0;
+    const body = { label: 'PG', driver: 'postgres', host: '127.0.0.1', port: echoPort, user: 'app', password: 'db', access: 'all', readOnly: false, agent: 'off',
+      ssh: { enabled: true, host: '127.0.0.1', port: sshPort, user: 'u', auth: 'password', password: 'p', hostKey: 'SHA256:theOneTrusted' } };
+    expect((await t.app.inject({ method: 'PUT', url: '/api/db/connections/pg', headers: AUTH, payload: body })).statusCode).toBe(200);
+    const { password: _p, ...form } = body;
+    const r = await t.app.inject({ method: 'POST', url: '/api/db/test', headers: AUTH, payload: { ...form, id: 'pg', ssh: { ...form.ssh, password: undefined, hostKey: undefined } } });
+    expect(r.statusCode).toBe(400);
+    expect(r.json()).toMatchObject({ error: expect.stringMatching(/key changed/), changedKey: serverFingerprint });
+    expect(passwords).toEqual([]);
   });
 
   it('reports a wrong password', async () => {
@@ -90,9 +113,10 @@ describe('SSH settings of a connection', () => {
     const list = (await t.app.inject({ url: '/api/db/connections', headers: AUTH })).body;
     expect(list).not.toContain('PRIVATE KEY');
     expect(list).not.toContain('"pp"');
-    // Saving again without the secrets keeps them; another SSH host forgets the trusted key.
+    // Saving again without the secrets keeps them; another SSH host forgets the trusted key and is not given the saved one.
     expect((await put({ enabled: true, host: 'bastion', user: 'deploy', auth: 'key' })).json().ssh).toMatchObject({ hasKey: true, hostKey: 'SHA256:abc' });
-    expect((await put({ enabled: true, host: 'other', user: 'deploy', auth: 'key' })).json().ssh).toMatchObject({ hasKey: true, hostKey: '' });
+    expect((await put({ enabled: true, host: 'other', user: 'deploy', auth: 'key' })).json().error).toMatch(/needs a private key/);
+    expect((await put({ enabled: true, host: 'other', user: 'deploy', auth: 'key', privateKey: userKeys.private, passphrase: 'pp' })).json().ssh).toMatchObject({ hasKey: true, hostKey: '' });
     expect((await put({ enabled: true, host: 'bastion', user: 'deploy', auth: 'key', privateKey: 'not a key' })).json().error).toMatch(/cannot be read/);
     expect((await put({ enabled: true, host: 'bastion', user: 'deploy', auth: 'key', privateKey: userKeys.private, passphrase: 'wrong' })).json().error).toMatch(/cannot be read/);
   });

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -50,6 +51,9 @@ const ALL_TOOLS = [
   'get_conversation', 'send_prompt', 'list_queue', 'remove_queue_item',
   'cancel_turn', 'set_draft', 'get_events', 'list_accounts', 'unblock_accounts', 'get_approval',
   'list_models', 'set_model', 'memory_search', 'memory_save', 'memory_update', 'memory_forget',
+];
+const REVIEWER_TOOLS = [
+  'get_conversation', 'get_events', 'list_conversations', 'list_projects', 'list_queue', 'memory_search',
 ];
 const AGENT_TOOLS = [
   'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
@@ -263,6 +267,9 @@ describe('reviewer tools', () => {
       expect(await names(await t.connectAs(a.id))).not.toContain('review_diff');
       const c = await t.connectAs(rev.id);
       expect(await names(c)).toEqual(expect.arrayContaining(['review_diff', 'review_read_file']));
+      // It only reads: nothing that writes, starts or messages a chat, or reaches a server or database.
+      expect((await names(c)).sort()).toEqual([...REVIEWER_TOOLS, 'review_diff', 'review_read_file'].sort());
+      expect((await call(c, 'send_prompt', { conversation_id: a.id, prompt: 'x' })).isError).toBe(true);
       const first = (await call(c, 'review_diff')).json;
       expect(first).toMatchObject({ total_lines: 2500, offset: 1, next_offset: 2001 });
       const rest = (await call(c, 'review_diff', { offset: first.next_offset })).json;
@@ -525,6 +532,24 @@ describe('sub-agents', () => {
     expect((await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).text).toMatch(/1 level\(s\) deep/);
     await policy(t, { maxChildren: 0, maxDepth: 2, autoSend: true });
     expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/turned sub-agents off/);
+  });
+
+  it('stay within the limit when an agent asks for several worktree sub-agents at once', async () => {
+    const t = await boot();
+    const { p, a } = await twoConvs(await t.connect());
+    const path = t.store.getProject(p.id)!.path;
+    const git = (...args: string[]) => execFileSync('git', ['-C', path, ...args]);
+    git('init', '-q');
+    writeFileSync(join(path, 'a.txt'), 'a\n');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+    await policy(t, { maxChildren: 2, maxDepth: 1, autoSend: true });
+    const fromA = await t.connectAs(a.id);
+    // Each call waits on git before its chat exists, so all of them passed a count taken before any was created.
+    const out = await Promise.all([1, 2, 3, 4].map(() => call(fromA, 'create_conversation', { project_id: p.id, worktree: true })));
+    expect(out.filter((r) => !r.isError)).toHaveLength(2);
+    expect(out.filter((r) => r.isError)[0]!.text).toMatch(/already has 2 sub-agents/);
+    expect(t.store.countChildren(a.id)).toBe(2);
   });
 
   it('wait for approval when sending unasked is off, or the sub-agent is in another project', async () => {

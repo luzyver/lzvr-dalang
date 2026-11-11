@@ -262,9 +262,12 @@ function sudoWithoutPassword(client: Awaited<ReturnType<typeof sshConnect>>['cli
   });
 }
 
-/** Logs in (trusting a host seen for the first time) and asks what it is: for Test connection. */
-export async function testHost(h: SshHost): Promise<{ hostKey: string; info: string }> {
-  const { client, hostKey } = await sshConnect(h, { trustNew: true });
+/**
+ * Logs in (trusting a host seen for the first time, or a changed key only when it is `accept`) and asks what it is:
+ * for Test connection.
+ */
+export async function testHost(h: SshHost, accept?: string): Promise<{ hostKey: string; info: string }> {
+  const { client, hostKey } = await sshConnect(h, { trustNew: true, accept });
   client.end();
   const r = await runCommand({ ...h, hostKey }, 'uname -srm; id -un', { timeoutMs: 15_000, maxOutput: 4000 }).catch(() => null);
   return { hostKey, info: r?.stdout.trim().replace(/\n/g, ' · ') ?? '' };

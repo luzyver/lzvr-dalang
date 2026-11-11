@@ -18,16 +18,13 @@ import { codexDiffs, rolloutFileChanges, type FileDiff } from './diff.js';
 import { checkpoint as gitCheckpoint, isRepo, saveCheckpoint } from './git.js';
 import type { McpLaunch } from './mcp-servers.js';
 import { buildReviewPrompt, collectChange, isEarlierReview, parseVerdict, promptReview, reviewDiffDir, REVIEWER_ROLE, REVIEWER_TITLE, reviewerMessage, reviewKey, writeChangeFile } from './reviewer.js';
-import { RAW, type CodexEvent } from './runner.js';
+import { inheritedEnv, RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
 import { CeilingError, EFFORTS, refuseChoice, refuseEffort, refuseModel, runOf, TOP_EFFORT } from './model-ceiling.js';
 import { type Conversation, type Project, type QueueItem, type Store } from './store.js';
 import type { Backend } from './util.js';
 
 export { withHistory } from './chat-context.js';
-
-/** A prompt that is an agent's report coming back (from a reviewer or sub-agent), not something a person asked. */
-const isContinuation = (item: QueueItem) => !item.author && /^\[(Reviewer|Sub-agent)\]/.test(item.prompt);
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const DB_GUIDE = `Databases: when asked to check, query or change data in a database, use the dalang MCP tools db_list_connections,
@@ -41,6 +38,10 @@ const SSH_GUIDE = `Servers: when asked to run something on a server or VM, use t
 for SSH keys, passwords or addresses yourself, and do not run ssh, scp or sshpass unless the person asks for that
 explicitly. If the server is not in ssh_list_hosts, say so. A command that answers pending_approval waits for an admin:
 do not send it again.`;
+/** The abort reason of a turn shutdown() stopped (a person's cancel has the default one). */
+const SHUTDOWN = 'shutdown';
+/** Codex rollout files remembered by thread (see withCodexDiffs); the oldest is forgotten past this. */
+const ROLLOUTS_KEPT = 500;
 /** How much of a sub-agent's last answer goes into its report to the parent. */
 const REPORT_MAX = 6000;
 
@@ -74,6 +75,11 @@ export interface DispatcherOpts {
   checkpoints?: boolean;
   /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
   skillsDir?: string;
+  /**
+   * The longest a turn waits for its project's code graph to be reindexed (default 10 minutes): a reindex stuck past it
+   * (a hung CBM, a huge repo) must not hold the chat, so the agent starts on the graph it has and the index goes on.
+   */
+  reindexWaitMs?: number;
   /** Called after every turn (completed, failed or cancelled), e.g. to send a push notification. */
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
@@ -125,10 +131,10 @@ export class Dispatcher {
   private active = new Map<string, AbortController>();
   /** The queue item each running turn came from (who asked for it). */
   private running = new Map<string, QueueItem>();
+  /** Chats whose running turn is over and only finishing up (checkpoint, report): shutdown must not run it again. */
+  private finishing = new Set<string>();
   /** Chats holding back their report to their parent until the sub-agents they gave work to are done. */
   private awaiting = new Set<string>();
-  /** Per parent chat, the queue item of the last sub-agent report queued for it (see reportToParent). */
-  private lastReport = new Map<string, number>();
   private bus = new EventEmitter();
   private stopping = false;
   /** Shutting down but letting running turns finish: queued prompts wait in the queue for after the restart. */
@@ -147,7 +153,7 @@ export class Dispatcher {
     hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
     refresh?(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'>;
   };
-  private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file
+  private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file (the newest ROLLOUTS_KEPT)
   /** Per project, the memory extraction running last: they run one after another, each seeing what the one before kept. */
   private remembering = new Map<string, Promise<void>>();
   private hookTrustFlag: Promise<boolean> | null = null;
@@ -165,7 +171,7 @@ export class Dispatcher {
   private codexTrustsHooks(): Promise<boolean> {
     this.hookTrustFlag ??= new Promise((resolve) => {
       const [cmd, ...pre] = this.opts.command ?? ['codex'];
-      execFile(cmd!, [...pre, 'exec', '--help'], { env: { ...process.env, ...this.opts.env }, timeout: 15_000, maxBuffer: 4e6 },
+      execFile(cmd!, [...pre, 'exec', '--help'], { env: { ...inheritedEnv(), ...this.opts.env }, timeout: 15_000, maxBuffer: 4e6 },
         (err, out) => resolve(!err && String(out).includes('--dangerously-bypass-hook-trust')));
     });
     return this.hookTrustFlag;
@@ -206,8 +212,19 @@ export class Dispatcher {
   /** Start the next queued prompt if this conversation is idle. Safe to call any time. */
   kick(convId: string): void {
     if (this.stopping || this.draining || this.active.has(convId)) return;
+    // A chat a person stopped (cancel): a report (QueueItem.kind) arriving after that waits in its queue instead of
+    // starting it again, until something else is queued (the person going on), which then runs after it. Both are
+    // kept in the store, so a restart holds it too.
+    if (this.store.isHeld(convId)) {
+      if (this.store.listQueue(convId).every((q) => q.kind === 'report')) return;
+      this.store.setHeld(convId, false);
+    }
     const item = this.store.popQueue(convId);
-    if (!item) return;
+    if (!item) {
+      // Nothing more will run in a chat that was deleted: forget what was kept for it.
+      if (!this.store.getConversation(convId)) this.awaiting.delete(convId);
+      return;
+    }
     const ac = new AbortController();
     this.active.set(convId, ac);
     this.running.set(convId, item);
@@ -216,7 +233,8 @@ export class Dispatcher {
       .finally(() => {
         this.active.delete(convId);
         this.running.delete(convId);
-        try { this.kick(convId); } catch (e) { console.error('dispatcher kick failed', e); } // must not become an unhandled rejection
+        this.finishing.delete(convId);
+        try { this.store.endRunning(convId); this.kick(convId); } catch (e) { console.error('dispatcher kick failed', e); } // must not become an unhandled rejection
       });
   }
 
@@ -254,10 +272,10 @@ export class Dispatcher {
       // Queued again before the kill: stopping the agent and the checkpoint after it may outlast `timeoutMs`, and the
       // process exits then. One the person cancelled meanwhile is not resumed.
       const item = this.running.get(convId);
-      if (item && !ac.signal.aborted) {
+      if (item && !ac.signal.aborted && !this.finishing.has(convId)) {
         try { this.store.requeueResume(item); } catch (e) { console.error(`cannot queue chat ${convId} to resume`, e); }
       }
-      ac.abort();
+      ac.abort(SHUTDOWN);
     }
     await idle(timeoutMs);
   }
@@ -268,6 +286,8 @@ export class Dispatcher {
     const ac = this.active.get(convId);
     if (!ac) return false;
     ac.abort();
+    // Held (see kick); stopped on purpose: a crash now must not run it again.
+    try { this.store.setHeld(convId, true); this.store.endRunning(convId); } catch { /* the chat is being deleted */ }
     return true;
   }
 
@@ -318,7 +338,7 @@ export class Dispatcher {
     const args = claude ? ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['debug', 'models'];
     const homeEnv = home ? { [claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: home } : {};
     return new Promise((done) => {
-      const child = execFile(cmd!, [...pre, ...args], { env: { ...process.env, ...this.opts.env, ...homeEnv }, timeout: 30_000, maxBuffer: 8e6 }, (err, out) => {
+      const child = execFile(cmd!, [...pre, ...args], { env: { ...inheritedEnv(), ...this.opts.env, ...homeEnv }, timeout: 30_000, maxBuffer: 8e6 }, (err, out) => {
         let list: ModelInfo[] = [];
         try { list = claude ? parseClaudeModels(out) : parseCodexModels(out); } catch { /* not JSON / CLI missing */ }
         done({ ok: !err, list });
@@ -437,6 +457,7 @@ export class Dispatcher {
       const file = this.rollouts.get(threadId) ?? findRollout(home, threadId);
       if (!file) continue;
       this.rollouts.set(threadId, file);
+      if (this.rollouts.size > ROLLOUTS_KEPT) this.rollouts.delete(this.rollouts.keys().next().value!);
       const changes = codexDiffs(item.changes, rolloutFileChanges(file, sinceMs), used);
       if (changes) return { ...ev, item: { ...item, changes } };
     }
@@ -494,7 +515,7 @@ export class Dispatcher {
       if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
       // A new request of the person (not a reviewer's or sub-agent's report coming back, nor a turn a restart cut off
       // going on) starts what the reviewer checks.
-      if (!conv.parent && !item.resume && !isContinuation(item)) this.store.setReview(convId, { request: item.prompt, base: `${turnId}-before`, rounds: 0, reviewer: '' });
+      if (!conv.parent && !item.resume && item.kind !== 'report') this.store.setReview(convId, { request: item.prompt, base: `${turnId}-before`, rounds: 0, reviewer: '' });
       // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
       let workDone = !!item.resume;
       let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
@@ -525,24 +546,29 @@ export class Dispatcher {
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
       // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
-      // first, and the turn waits for it (a cancel stops the wait, not the index).
+      // first, and the turn waits for it (a cancel stops the wait, not the index), up to reindexWaitMs.
       if (this.codeMemory?.refresh) {
+        let waited: NodeJS.Timeout | undefined;
         const cancelled = new Promise<'cancelled'>((r) => {
           if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
         });
+        const late = new Promise<'late'>((r) => { waited = setTimeout(() => r('late'), this.opts.reindexWaitMs ?? 600_000); });
         const refreshed = await Promise.race([
           // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
           this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
             .catch(() => 'failed' as const),
           cancelled,
-        ]);
+          late,
+        ]).finally(() => clearTimeout(waited));
         if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });
         if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
+        if (refreshed === 'late') this.emit(convId, turnId, { type: 'code_memory.failed', reason: 'timeout' });
       }
       const guide = [
-        ...(mcpToken ? [reviewer ? '' : this.orchestratorGuide(conv, project.id), this.databaseGuide(), this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+        // A reviewer's MCP only reads (see REVIEWER_TOOLS in mcp.ts): no sub-agents, databases, servers or memory_save.
+        ...(mcpToken ? [reviewer ? '' : this.orchestratorGuide(conv, project.id), reviewer ? '' : this.databaseGuide(), reviewer ? '' : this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
-        memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
+        memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
         agentGitGuide(agentGit),
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
@@ -680,11 +706,15 @@ export class Dispatcher {
     } finally {
       if (mcpToken) this.revokeMcpToken(mcpToken);
     }
+    // From here the turn has ended: a shutdown now lets it finish up instead of queuing it to run again.
+    this.finishing.add(convId);
+    this.store.endRunning(convId);
     const cancelled = ac.signal.aborted;
-    const interrupted = cancelled && this.stopping;
+    const interrupted = cancelled && ac.signal.reason === SHUTDOWN;
     const status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : failed ? 'failed' : 'completed';
     if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-after`);
     this.store.endTurn(turnId, status, usage);
+    if (!this.store.getConversation(convId)) return; // deleted while it ran: no one to tell, nothing to report
     const conversationStatus = failed && !cancelled ? 'failed' : 'idle';
     this.store.setStatus(convId, conversationStatus);
     this.emit(convId, turnId, { type: 'turn.status', status: conversationStatus });
@@ -792,11 +822,11 @@ export class Dispatcher {
       + `Its last answer:\n\n${answer || '(none)'}\n\n`
       + 'Check the work before relying on it. send_prompt gives it more to do; set_model moves it up a model if this fell short.';
     // A report still waiting behind a running turn is joined by this one, so the parent reads both in one turn.
-    // Only one this method queued itself (by id), never a person's prompt that happens to look like a report.
+    // Only one this method queued itself (QueueItem.kind), never a person's prompt that happens to look like a report.
     const last = this.store.listQueue(parent.id).at(-1);
-    const joined = last && last.id === this.lastReport.get(parent.id) && !last.resume && last.on_behalf === item.on_behalf;
+    const joined = last?.kind === 'report' && last.prompt.startsWith('[Sub-agent]') && !last.resume && last.on_behalf === item.on_behalf;
     if (joined) this.store.deleteQueueItem(last.id);
-    this.lastReport.set(parent.id, this.store.enqueue(parent.id, joined ? `${last.prompt}\n\n---\n\n${text}` : text, [], '', item.on_behalf, parent.parent));
+    this.store.enqueue(parent.id, joined ? `${last.prompt}\n\n---\n\n${text}` : text, [], '', item.on_behalf, parent.parent, 'report');
     this.kick(parent.id);
   }
   /**
@@ -863,7 +893,7 @@ export class Dispatcher {
     this.emit(main.id, turn.id, { type: 'review.issues', ...note });
     const maxRounds = this.store.getReviewerPolicy().maxRounds;
     const message = reviewerMessage({ reviewer: conv.id, issues: verdict.issues, round, maxRounds, earlier: !awaited });
-    this.store.enqueue(main.id, message, [], '', item.on_behalf, main.parent);
+    this.store.enqueue(main.id, message, [], '', item.on_behalf, main.parent, 'report');
     this.kick(main.id);
   }
 }
