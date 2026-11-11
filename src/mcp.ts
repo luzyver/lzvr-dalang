@@ -19,6 +19,7 @@ import { EFFORTS, modelTier, refuseChoice, runOf } from './model-ceiling.js';
 import { insideRoot } from './paths.js';
 import type { Push } from './push.js';
 import { reviewTools } from './review-tools.js';
+import { REVIEWER_ROLE } from './reviewer.js';
 import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
 import { compactPayload, CUT } from './event-view.js';
 import type { Conversation, Memory, MemoryScope, Project, Store, StoredEvent } from './store.js';
@@ -44,9 +45,22 @@ const AGENT_TOOLS = new Set([
   'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ]);
 
+// A reviewer is a read-only chat: through MCP too it only reads (its own review_* tools and code memory come on top), so
+// it cannot start, message or retune a chat that writes, save memories, or reach a database, server or ClickUp.
+const REVIEWER_TOOLS = new Set([
+  'list_projects', 'list_conversations', 'get_conversation', 'list_queue', 'get_events', 'memory_search',
+]);
+
 // A dev user connecting from outside gets the everyday tools only: no new projects, no unblocking
 // accounts (the same things the REST API keeps for admins).
 const DEV_BLOCKED = new Set(['create_project', 'delete_project', 'unblock_accounts']);
+
+/**
+ * Sub-agents a chat is creating right now, by parent. A worktree chat waits on git before its row exists, so parallel
+ * create_conversation calls would all pass a count taken before any of them was made. Kept here, not in buildServer:
+ * every MCP request builds its own server.
+ */
+const creating = new Map<string, number>();
 
 /**
  * `source` is the conversation the calling agent runs in, taken from its per-turn token (never from a header it
@@ -157,14 +171,23 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
       if (store.depthOf(source) + 1 > policy.maxDepth) {
         return fail(`sub-agents may go ${policy.maxDepth} level(s) deep and this chat is at the limit: do this part yourself`);
       }
-      if (store.countChildren(source) >= policy.maxChildren) {
+      if (store.countChildren(source) + (creating.get(source) ?? 0) >= policy.maxChildren) {
         return fail(`this chat already has ${policy.maxChildren} sub-agents, the most allowed: give one of them the work (send_prompt), or ask a person to delete one`);
       }
+      // Held from the check (no await between) until the chat exists or failed; one whose row is already in counts twice
+      // for that moment, which only ever refuses, never lets one too many through.
+      creating.set(source, (creating.get(source) ?? 0) + 1);
     }
     let c: Conversation;
     try {
       c = worktree ? await createWorktreeChat(store, cfg, project, { backend: b, parent: source ?? '' }) : store.createConversation(project_id, b, source ?? '');
-    } catch (e) { return fail((e as Error).message); }
+    } catch (e) { return fail((e as Error).message); } finally {
+      if (source) {
+        const n = (creating.get(source) ?? 1) - 1;
+        if (n > 0) creating.set(source, n);
+        else creating.delete(source);
+      }
+    }
     if (model || inherit.model) store.setModel(c.id, model || inherit.model!);
     if (effort || inherit.effort) store.setEffort(c.id, effort || inherit.effort!);
     const created = withEffective(store.getConversation(c.id)!);
@@ -399,8 +422,15 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
   });
 
   // An agent inside a conversation is restricted most; otherwise the caller's role decides.
-  const hidden = source ? (name: string) => !AGENT_TOOLS.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
+  const reviewer = !!source && store.getConversation(source)?.role === REVIEWER_ROLE;
+  const allowed = reviewer ? REVIEWER_TOOLS : AGENT_TOOLS;
+  const hidden = source ? (name: string) => !allowed.has(name) : role === 'dev' ? (name: string) => DEV_BLOCKED.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
+  if (reviewer) {
+    if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
+    reviewTools(server, store, source);
+    return server;
+  }
   const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
   if (cu) clickupTools(server, store, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source });
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.

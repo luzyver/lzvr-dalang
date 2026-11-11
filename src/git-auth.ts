@@ -554,14 +554,16 @@ export class GitAuth {
     const t = await pushTarget(cwd);
     if (!t) return out;
     const url = (await g(['remote', 'get-url', '--push', t.remote])) ?? '';
-    out.remote = { name: t.remote, url, branch: `${t.remote}/${t.target.replace(/^refs\/heads\//, '')}` };
+    out.remote = { name: t.remote, url: shownUrl(url), branch: `${t.remote}/${t.target.replace(/^refs\/heads\//, '')}` };
 
     let realHost: string | null = null;
     if (/^https?:\/\//i.test(url)) {
       const u = new URL(url);
       realHost = u.host.toLowerCase();
       const helper = (await g(['config', '--get-urlmatch', 'credential.helper', url])) || null;
-      const username = decodeURIComponent(u.username) || (await g(['config', '--get-urlmatch', 'credential.username', url])) || null;
+      // A name alone before the @ may be the token itself (https://ghp_...@github.com): not shown then.
+      const named = u.password || !looksLikeToken(decodeURIComponent(u.username)) ? decodeURIComponent(u.username) : '';
+      const username = named || (await g(['config', '--get-urlmatch', 'credential.username', url])) || null;
       out.transport = 'https';
       out.https = { host: realHost, scheme: u.protocol === 'http:' ? 'http' : 'https', helper, helperKind: helperKind(helper), username };
     } else {
@@ -619,6 +621,19 @@ export interface Credentials {
 type HelperKind = 'gh' | 'glab' | 'manager' | 'store' | 'cache' | 'osxkeychain' | 'other' | null;
 
 /** What kind of credential helper a `credential.helper` value is. */
+/**
+ * A remote's URL to show: a password or token written into it (https://user:token@host, https://token@host) never
+ * leaves the server. HTTP(S) URLs lose the whole user part (the username is shown apart, see Credentials.https);
+ * others (ssh://git@host) keep the user, which names the account, and lose only a password.
+ */
+export function shownUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url.replace(/^(https?:\/\/)[^/@]*@/i, '$1');
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/:@]*):[^/@]*@/i, '$1@');
+}
+
+/** A URL's username that reads as an access token (gh*_, github_pat_, glpat-, or a long run of token characters). */
+const looksLikeToken = (s: string) => /^(gh[opsur]_|github_pat_|glpat-)/.test(s) || /^[\w-]{32,}$/.test(s);
+
 export function helperKind(helper: string | null): HelperKind {
   if (!helper) return null;
   if (/\bgh(\.exe)?["']?\s+auth\s+git-credential/i.test(helper)) return 'gh';

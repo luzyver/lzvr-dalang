@@ -30,6 +30,31 @@ All notable changes to this project are documented here. The format follows
   account: their own git config dropped the server's `safe.directory`, which is now passed on to them
 - A Merge Request whose target branch was changed on GitHub or GitLab kept the old one in the panel (commits ahead,
   the description, syncing the base); the chat now follows the branch the forge says it goes into while it is open
+- A Claude Code turn whose CLI did not exit after its answer, or whose CLI died while a program it started kept its
+  output open, left the chat "running" for good; both now end by themselves
+- A crash or reboot lost the prompt that was running; it now continues once in its session after the restart. A
+  restart no longer runs a turn again that had just finished
+- A chat a person stopped is no longer started again by a sub-agent's or Reviewer's late report: the report waits
+  for the person's next prompt
+- Several `create_conversation` calls at once could go over the limit of sub-agents
+- A turn no longer waits without limit for the code graph: after 10 minutes it runs on the previous one
+- Schedules fired on every tick during the hour that repeats when clocks go back
+
+### Security
+
+- The code editor could write into `.git` through another spelling of it on Windows (`.GIT`) or a symlink
+- The statements agents are refused on a database (`COPY ... PROGRAM`, `pg_read_file`, `INTO OUTFILE`, `$where`)
+  passed when written with comments, quoted names or escapes; panel users other than admins get the same refusals
+  on a read-only connection
+- Test connection sent the saved password to an SSH server whose key had changed; a changed key now has to be
+  accepted first. Saved passwords of a database connection are kept only for the server they were saved for
+- Sign-in codes: an email takes 20 wrong codes a day, and a used-up code keeps its cooldown
+- A session of an owner email ends when the email leaves `LZVR_OWNER_EMAILS` or `LZVR_TOKEN` changes. Owners signed
+  in by email sign in once more after this update
+- Web Push is sent only to the browsers' push services (Chrome, Firefox, Safari, Edge), 10 subscriptions per user;
+  a subscription stored for another address is removed
+- `AUTH_BYPASS` is refused together with `TRUST_PROXY`; `TERMINAL_USER` may not be in docker, lxd, incus, disk or
+  libvirt; the Reviewer gets read-only MCP tools; a token written into a remote's URL is no longer shown in the panel
 
 ## [0.1.0] - unreleased
 

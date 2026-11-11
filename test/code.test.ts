@@ -1,7 +1,9 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { badName, globList, searchRegExp } from '../src/code-routes.js';
+import { badName, globList, inGitDir, searchRegExp } from '../src/code-routes.js';
 import { asUser, shellUser, Terminals, userShell } from '../src/terminals.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -107,6 +109,34 @@ describe('code editor: files', () => {
     expect((await call('POST', '/fs/rename', { from: 'README.md', to: '.git/README.md' })).statusCode).toBe(403);
     expect((await call('POST', '/fs/delete', { path: '.' })).statusCode).toBe(400);
     expect(readFileSync(join(root, 'outside.txt'), 'utf8')).toBe('x');
+  });
+
+  // Windows opens `.GIT`, `.git.` and `.git::$INDEX_ALLOCATION` as .git, and Node's realpath keeps the spelling asked for.
+  it('treats other spellings of .git as .git', async () => {
+    const { call, dir } = await withChat();
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n');
+    for (const path of ['.GIT/config', '.Git/config', '.git./config', 'src/../.GIT/config']) {
+      expect((await call('PUT', '/fs/file', { path, content: '[core]\n\tfsmonitor = evil\n' })).statusCode, path).not.toBe(200);
+      expect((await call('POST', '/fs/delete', { path })).statusCode, path).not.toBe(204);
+    }
+    for (const path of ['.GIT/hooks', '.Git/pre-commit']) expect((await call('POST', '/fs/new', { path })).statusCode, path).not.toBe(201);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: '.GIT/README.md' })).statusCode).not.toBe(200);
+    expect((await call('POST', '/fs/new', { path: '.GIT' })).statusCode).toBe(403); // not even as a new folder of its own
+    expect(readFileSync(join(dir, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    expect(existsSync(join(dir, '.git', 'hooks'))).toBe(false);
+  });
+
+  // Another name for the same .git (an 8.3 short name like GIT~1 on Windows; here a hard link to a worktree's .git file).
+  it('knows .git by identity, not only by name', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dalang-gitdir-'));
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n');
+    linkSync(join(root, '.git'), join(root, 'alias'));
+    mkdirSync(join(root, 'src'));
+    expect(inGitDir(root, join(root, 'alias'))).toBe(true);
+    expect(inGitDir(root, join(root, '.GIT'))).toBe(true);
+    expect(inGitDir(root, join(root, 'src', 'new.ts'))).toBe(false);
+    expect(inGitDir(root, join(root, '.github', 'x.yml'))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
   });
 
   it('refuses names that do not work on Linux or Windows', () => {
@@ -246,6 +276,17 @@ describe('code editor: search and replace in files', () => {
     expect(readFileSync(join(dir, 'src', 'b.ts'), 'utf8')).toBe('let x = call(1, 0);\ncall(2, 0);\n');
   });
 
+  it('does not replace through a symlink into .git', async (ctx) => {
+    const { call, dir } = await withChat();
+    rmSync(join(dir, '.git'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    const config = readFileSync(join(dir, '.git', 'config'), 'utf8');
+    try { symlinkSync(join(dir, '.git', 'config'), join(dir, 'cfg'), 'file'); } catch { ctx.skip(); } // Windows without the symlink right
+    const r = await call('POST', '/fs/replace', { query: '[core]', replace: '[core]\n\tfsmonitor = evil', paths: ['cfg'] });
+    expect(r.json()).toEqual({ files: 0, replacements: 0 });
+    expect(readFileSync(join(dir, '.git', 'config'), 'utf8')).toBe(config);
+  });
+
   it('replaces nothing in a read-only project or while an agent works there', async () => {
     const ro = await withChat({ sandbox: 'read-only' });
     expect((await ro.call('POST', '/fs/replace', { query: 'hi', replace: 'x', paths: ['README.md'] })).statusCode).toBe(403);
@@ -378,6 +419,12 @@ describe('code editor: terminals as another account (TERMINAL_USER)', () => {
     expect(() => shellUser('boss', files())).toThrow(/sudo group/); // sudo as primary group
     expect(() => shellUser('dalang', files(['# comment\ndalang ALL=(ALL) NOPASSWD: ALL\n']))).toThrow(/sudoers/);
     expect(() => shellUser('dalang', files(['# dalang ALL=(ALL) ALL\n%admins ALL=(ALL) ALL\n']))).not.toThrow();
+  });
+
+  // Members of these can become root without sudo (a root container, raw disk, a VM with host mounts).
+  it.each(['docker', 'lxd', 'incus', 'disk', 'libvirt'])('refuses a member of the %s group', (g) => {
+    expect(() => shellUser('dalang', { passwd, group: `${group}\n${g}:x:500:svc,dalang`, sudoers: [] })).toThrow(new RegExp(`${g} group`));
+    expect(() => shellUser('boss', { passwd: passwd.replace('1003:27', '1003:500'), group: `${group}\n${g}:x:500:`, sudoers: [] })).toThrow(new RegExp(`${g} group`));
   });
 
   it('starts the shell through setpriv with no_new_privs, so sudo can never work there', () => {

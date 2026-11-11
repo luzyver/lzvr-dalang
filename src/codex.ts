@@ -16,6 +16,8 @@ export interface TurnOpts {
   killGraceMs?: number;
   /** ms the process may stay alive after its turn is over before it is killed (default 30000). */
   exitGraceMs?: number;
+  /** ms to keep reading after codex exited while an orphan holds its output open (default 3000). */
+  drainGraceMs?: number;
 }
 
 /** `-i` is variadic in the Codex CLI, so images go first and are followed directly by `--json`. */
@@ -31,6 +33,6 @@ export function buildArgs(o: Pick<TurnOpts, 'cwd' | 'sandbox' | 'threadId' | 'im
 export function runTurn(o: TurnOpts): AsyncGenerator<CodexEvent> {
   return runProcess({
     command: o.command ?? ['codex'], args: buildArgs(o), env: { ...o.env, CODEX_HOME: o.home },
-    cwd: o.cwd, prompt: o.prompt, signal: o.signal, killGraceMs: o.killGraceMs, exitGraceMs: o.exitGraceMs,
+    cwd: o.cwd, prompt: o.prompt, signal: o.signal, killGraceMs: o.killGraceMs, exitGraceMs: o.exitGraceMs, drainGraceMs: o.drainGraceMs,
   });
 }

@@ -46,12 +46,15 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env, platform = pr
 /** The account terminals run as when TERMINAL_USER is set (Linux), from /etc/passwd. */
 export interface ShellUser { name: string; uid: number; gid: number; home: string; shell: string }
 
-/** Groups whose members may use sudo on the usual distributions. */
-const SUDO_GROUPS = ['sudo', 'wheel', 'admin', 'root'];
+/**
+ * Groups whose members may use sudo on the usual distributions, or become root without it: docker, lxd and incus run
+ * a root container with the host mounted, disk reads and writes raw block devices, libvirt starts VMs with host mounts.
+ */
+const SUDO_GROUPS = ['sudo', 'wheel', 'admin', 'root', 'docker', 'lxd', 'incus', 'disk', 'libvirt'];
 
 /**
- * Look up the account terminals run as, and refuse one that is root or may use sudo: a member (primary or
- * supplementary) of sudo/wheel/admin/root, or named in a sudoers file. `files` is for tests.
+ * Look up the account terminals run as, and refuse one that is root or may gain root: a member (primary or
+ * supplementary) of one of SUDO_GROUPS, or named in a sudoers file. `files` is for tests.
  */
 export function shellUser(name: string, files?: { passwd: string; group: string; sudoers: string[] }): ShellUser {
   const read = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
@@ -70,7 +73,7 @@ export function shellUser(name: string, files?: { passwd: string; group: string;
     const [g, , gid, members = ''] = line.split(':');
     if (!g || !SUDO_GROUPS.includes(g)) continue;
     if (Number(gid) === user.gid || members.trim().split(',').includes(name)) {
-      throw new TerminalError(`TERMINAL_USER ${name} is in the ${g} group and could use sudo: remove it (gpasswd -d ${name} ${g})`);
+      throw new TerminalError(`TERMINAL_USER ${name} is in the ${g} group and could gain root rights: remove it (gpasswd -d ${name} ${g})`);
     }
   }
   const named = new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`, 'm');

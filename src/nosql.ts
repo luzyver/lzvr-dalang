@@ -755,22 +755,40 @@ function tighten(script: string, r: { from: number; to: number }): { from: numbe
 
 /** Why an agent may not run this, or null: commands that reach the server itself, or run code on it. */
 export function noSqlAgentRefusal(statements: string[], driver: 'mongodb' | 'redis'): string | null {
+  const hit = noSqlRefused(statements, driver);
+  return hit && `refused for agents: ${hit}. Ask a human to run it in the SQL editor if it is needed.`;
+}
+
+/** What in these statements reaches the server itself or runs code on it (see noSqlAgentRefusal), or null. */
+export function noSqlRefused(statements: string[], driver: 'mongodb' | 'redis'): string | null {
   if (driver === 'redis') {
     const never = new Set(['CONFIG', 'DEBUG', 'SHUTDOWN', 'FLUSHALL', 'FLUSHDB', 'MODULE', 'SCRIPT', 'EVAL', 'EVALSHA', 'EVAL_RO', 'EVALSHA_RO',
       'FUNCTION', 'FCALL', 'FCALL_RO', 'REPLICAOF', 'SLAVEOF', 'MIGRATE', 'CLIENT', 'ACL', 'CLUSTER', 'MONITOR', 'SYNC', 'PSYNC', 'BGSAVE',
       'BGREWRITEAOF', 'SAVE', 'FAILOVER', 'KEYS', 'SWAPDB', 'MOVE', 'LATENCY', 'SLOWLOG']);
     for (const s of statements) {
       const head = (redisWords(s)[0] ?? '').toUpperCase();
-      if (never.has(head)) return `refused for agents: ${head}${head === 'KEYS' ? ' (use SCAN with MATCH)' : ' reaches the server itself'}. Ask a human to run it in the SQL editor if it is needed.`;
+      if (never.has(head)) return `${head}${head === 'KEYS' ? ' (use SCAN with MATCH)' : ' reaches the server itself'}`;
     }
     return null;
   }
   for (const s of statements) {
+    // Read as it runs: a key written "\x24where" or '$where' is $where too, and "$where" as a value is only text. One
+    // that does not read does not run either.
+    let cmd: MongoCommand;
+    try { cmd = parseMongo(s); } catch { continue; }
     // Server-side JavaScript, whatever the command.
-    if (/\$(where|function|accumulator)\b/.test(s)) return 'refused for agents: $where, $function and $accumulator run JavaScript on the server. Ask a human to run it in the SQL editor if it is needed.';
-    if (/^\s*db\s*\.\s*dropDatabase\b/.test(s)) return 'refused for agents: dropDatabase. Ask a human to run it in the SQL editor if it is needed.';
+    if (cmd.calls.some((c) => c.args.some(runsJs))) return '$where, $function and $accumulator run JavaScript on the server';
+    if (cmd.kind === 'db' && cmd.calls[0]?.name === 'dropDatabase') return 'dropDatabase';
   }
   return null;
+}
+
+/** Whether a command's argument holds a $where, $function or $accumulator key, at any depth. */
+function runsJs(v: unknown): boolean {
+  if (Array.isArray(v)) return v.some(runsJs);
+  // Only plain objects: an ObjectId or a Date has no keys of a query.
+  if (!v || typeof v !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(v))) return false;
+  return Object.entries(v).some(([k, x]) => k === '$where' || k === '$function' || k === '$accumulator' || runsJs(x));
 }
 
 /** Commands that change every document of a collection (or a whole Redis database), to ask about first. */

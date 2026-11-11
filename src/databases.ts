@@ -14,7 +14,7 @@ import mysql from 'mysql2';
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import {
-  mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlUnsafe, redisSchema, redisScript,
+  mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlRefused, noSqlUnsafe, redisSchema, redisScript,
   redisTest, splitNoSql,
 } from './nosql.js';
 import { openTunnel, type SshConf, tlsServer } from './ssh-tunnel.js';
@@ -127,57 +127,83 @@ export const saveConnections = (store: Store, list: DbConnection[]) => store.set
 
 // ---------- statements ----------
 
+// How the databases read a script differs in places; reading it otherwise than the database does would let a checked
+// script hide what runs (in what looks like a comment or a string) or run two statements as one.
+
+/** Where the block comment at `i` ends: PostgreSQL nests them, MySQL and SQLite end it at the first `*\/`. */
+function commentEnd(s: string, i: number, driver: Driver): number {
+  if (driver !== 'postgres') { const close = s.indexOf('*/', i + 2); return close < 0 ? s.length : close + 2; }
+  let depth = 1;
+  let j = i + 2;
+  while (j < s.length) {
+    if (s[j] === '/' && s[j + 1] === '*') { depth++; j += 2; } else if (s[j] === '*' && s[j + 1] === '/') { if (--depth === 0) return j + 2; j += 2; } else j++;
+  }
+  return s.length;
+}
+
+/** Where the `--` (or MySQL `#`) comment at `i` ends: at the line break, which for PostgreSQL is a \r too. */
+function lineEnd(s: string, i: number, driver: Driver): number {
+  const re = driver === 'postgres' ? /[\r\n]/g : /\n/g;
+  re.lastIndex = i;
+  return re.exec(s)?.index ?? s.length;
+}
+
+/** A PostgreSQL name (non-ASCII letters, and `$` after the first character, included) or number, read whole. */
+const PG_WORD = /[A-Za-z_\u0080-￿][A-Za-z0-9_$\u0080-￿]*|\d[\d_]*(?:\.[\d_]*)?(?:[Ee][-+]?\d+)?/y;
+/** A PostgreSQL dollar quote's opening: $$ or $tag$ (a tag of name characters, without `$`). */
+const PG_DOLLAR = /\$(?:[A-Za-z_\u0080-￿][A-Za-z0-9_\u0080-￿]*)?\$/y;
+const sticky = (re: RegExp, s: string, i: number) => { re.lastIndex = i; return re.exec(s)?.[0] ?? null; };
+
+/** Where the string or quoted name opened by the quote at `i` ends (past its closing quote). */
+function quoteEnd(s: string, i: number, escapes: boolean): number {
+  const q = s[i];
+  let j = i + 1;
+  while (j < s.length) {
+    if (escapes && s[j] === '\\') { j += 2; continue; }
+    if (s[j] === q) { if (s[j + 1] === q) { j += 2; continue; } break; } // a doubled quote stays inside
+    j++;
+  }
+  return Math.min(j + 1, s.length);
+}
+
 /**
  * Where each statement of a script starts and ends (offsets into it), split on `;` outside strings and comments, the
- * way `driver` reads them: MySQL/MariaDB know `#` comments, backticks and backslash escapes, PostgreSQL dollar quotes
- * and E'...' escapes.
+ * way `driver` reads them: MySQL/MariaDB know `#` comments, backticks and backslash escapes, PostgreSQL nested
+ * comments, dollar quotes and E'...' escapes. `loose`: PostgreSQL with standard_conforming_strings off, where a
+ * plain '...' takes backslash escapes too.
  */
-export function splitStatements(script: string, driver: Driver = 'postgres'): { from: number; to: number }[] {
+export function splitStatements(script: string, driver: Driver = 'postgres', loose = false): { from: number; to: number }[] {
   if (driver === 'elasticsearch') return script.trim() ? [{ from: 0, to: script.length }] : [];
   if (isNoSql(driver)) return splitNoSql(script, driver);
   const my = driver === 'mysql' || driver === 'mariadb';
+  const pg = driver === 'postgres';
   const out: { from: number; to: number }[] = [];
   let start = 0;
   let code = false; // the current statement has something besides blanks and comments
   let i = 0;
+  let word = ''; // PostgreSQL: the name or number that ends at `i` (E'...' takes escapes only after a lone E)
+  let wordEnd = -1;
   const n = script.length;
   const end = (at: number) => { if (code) out.push({ from: start, to: at }); start = at + 1; code = false; };
   while (i < n) {
     const ch = script[i]!;
     const next = script[i + 1];
-    if ((ch === '-' && next === '-') || (my && ch === '#')) {
-      const nl = script.indexOf('\n', i);
-      i = nl < 0 ? n : nl + 1;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const close = script.indexOf('*/', i + 2);
-      i = close < 0 ? n : close + 2;
-      continue;
-    }
+    if ((ch === '-' && next === '-') || (my && ch === '#')) { i = lineEnd(script, i, driver); continue; }
+    if (ch === '/' && next === '*') { i = commentEnd(script, i, driver); continue; }
     if (ch === ';') { end(i); i++; continue; }
     if (!/\s/.test(ch)) code = true;
+    const w = pg ? sticky(PG_WORD, script, i) : null;
+    if (w) { word = w; i += w.length; wordEnd = i; continue; }
     if (ch === '\'' || ch === '"' || (my && ch === '`')) {
-      const escapes = ch === '\'' && (my || (driver === 'postgres' && /[Ee]/.test(script[i - 1] ?? '') && !/\w/.test(script[i - 2] ?? '')));
-      i++;
-      while (i < n) {
-        if (escapes && script[i] === '\\') { i += 2; continue; }
-        if (script[i] === ch) {
-          if (script[i + 1] === ch) { i += 2; continue; } // a doubled quote
-          break;
-        }
-        i++;
-      }
-      i++;
+      const escapes = ch === '\'' && (my || (pg && (loose || (wordEnd === i && /^[Ee]$/.test(word)))));
+      i = quoteEnd(script, i, escapes);
       continue;
     }
-    if (ch === '$' && driver === 'postgres') { // $$...$$ or $tag$...$tag$
-      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(script.slice(i, i + 64));
-      if (m && !/\w/.test(script[i - 1] ?? '')) {
-        const close = script.indexOf(m[0], i + m[0].length);
-        i = close < 0 ? n : close + m[0].length;
-        continue;
-      }
+    const tag = ch === '$' && pg ? sticky(PG_DOLLAR, script, i) : null; // $$...$$ or $tag$...$tag$
+    if (tag) {
+      const close = script.indexOf(tag, i + tag.length);
+      i = close < 0 ? n : close + tag.length;
+      continue;
     }
     i++;
   }
@@ -185,7 +211,7 @@ export function splitStatements(script: string, driver: Driver = 'postgres'): { 
   return out;
 }
 
-export const statementsOf = (script: string, driver?: Driver) => splitStatements(script, driver).map((s) => script.slice(s.from, s.to).trim());
+export const statementsOf = (script: string, driver?: Driver, loose = false) => splitStatements(script, driver, loose).map((s) => script.slice(s.from, s.to).trim());
 
 // ---------- values ----------
 
@@ -486,11 +512,11 @@ const tunneled = (c: DbConnection) => !!c.ssh?.enabled && c.driver !== 'sqlite';
  * SSH settings, so nothing inside opens another). `trustNew`: testing, a server key not trusted yet is accepted and
  * handed to `onKey`.
  */
-async function withTunnel<T>(c: DbConnection, fn: (t: DbConnection) => Promise<T>, trustNew = false, onKey?: (key: string) => void): Promise<T> {
+async function withTunnel<T>(c: DbConnection, fn: (t: DbConnection) => Promise<T>, trustNew = false, onKey?: (key: string) => void, accept?: string): Promise<T> {
   const ssh = c.ssh!;
   if (!ssh.host || !ssh.user) throw new Error('the SSH tunnel needs a host and a user');
   if (/^(mongodb(\+srv)?|rediss?):\/\//i.test(c.host)) throw new Error('through SSH, give the database\'s host and port rather than a URI');
-  const t = await openTunnel(ssh, { host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver] }, { trustNew });
+  const t = await openTunnel(ssh, { host: c.host || 'localhost', port: c.port || DEFAULT_PORT[c.driver] }, { trustNew, accept });
   onKey?.(t.hostKey);
   try {
     return await fn({ ...c, host: t.host, port: t.port, ssh: undefined, tunneledFrom: c.host || 'localhost' });
@@ -686,12 +712,12 @@ export async function listDatabases(c: DbConnection): Promise<string[]> {
  * The server's version, to show that the connection works, and what about its user deserves a warning: rights that
  * reach past the tables (superuser, server files, other sessions). Read-only does not take those away.
  */
-export async function testConnection(c: DbConnection): Promise<{ version: string; warnings: string[]; sshHostKey?: string }> {
-  // Testing is where an SSH server's key is first seen and shown, to be trusted when the connection is saved.
+export async function testConnection(c: DbConnection, acceptKey?: string): Promise<{ version: string; warnings: string[]; sshHostKey?: string }> {
+  // Testing is where an SSH server's key is first seen and shown, to be trusted when the connection is saved. One whose
+  // trusted key changed fails before logging in (HostKeyChanged, with the key it showed) unless that is `acceptKey`.
   if (tunneled(c)) {
     let sshHostKey = '';
-    // Any key is accepted here (the one trusted is compared below), so a server whose key changed can be trusted again.
-    const r = await withTunnel({ ...c, ssh: { ...c.ssh!, hostKey: '' } }, testConnection, true, (k) => { sshHostKey = k; });
+    const r = await withTunnel(c, (t) => testConnection(t), true, (k) => { sshHostKey = k; }, acceptKey);
     const was = c.ssh!.hostKey;
     const warnings = was && was !== sshHostKey
       ? [`The SSH server's key changed: it is ${sshHostKey}, and ${was} was trusted. If you did not expect that (a reinstalled server), someone may be in between: do not save.`, ...r.warnings]
@@ -863,8 +889,8 @@ export function previewEdits(c: DbConnection, schema: string, table: string, edi
  * Applies the edits to `schema.table` in one transaction: all of them or none. An update or delete that does not hit
  * exactly one row undoes everything. Returns how many rows changed.
  */
-export async function editRows(c: DbConnection, schema: string, table: string, edits: RowEdit[]): Promise<number> {
-  if (tunneled(c)) return withTunnel(c, (t) => editRows(t, schema, table, edits));
+export async function editRows(c: DbConnection, schema: string, table: string, edits: RowEdit[], timeoutMs = 30_000): Promise<number> {
+  if (tunneled(c)) return withTunnel(c, (t) => editRows(t, schema, table, edits, timeoutMs));
   if (isNoSql(c.driver)) throw new Error('rows are edited in SQL databases only');
   const ref = tableRef(c, schema, table);
   const stmts = edits.map((e) => editSql(c.driver, ref, e));
@@ -873,7 +899,7 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
   };
   let total = 0;
   if (c.driver === 'postgres') {
-    const client = pgClient(c, 30_000);
+    const client = pgClient(c, timeoutMs);
     try {
       await client.connect();
       await client.query('BEGIN');
@@ -887,7 +913,7 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { await client.end().catch(() => {}); }
   }
   if (c.driver === 'sqlite') {
-    const db = sqliteOpen(c, false, 30_000);
+    const db = sqliteOpen(c, false, timeoutMs);
     try {
       db.exec('BEGIN');
       for (const [i, s] of stmts.entries()) {
@@ -900,8 +926,9 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
     } catch (e) { try { db.exec('ROLLBACK'); } catch { /* not in a transaction */ } throw e; } finally { db.close(); }
   }
   const conn = myConnection(c);
+  // Each statement within the time PostgreSQL gets (a row lock held elsewhere would otherwise wait for ever).
   const run = (sql: string, params: unknown[] = []) => new Promise<number>((res, rej) =>
-    conn.query(sql, params, (err, r: any) => (err ? rej(err) : res(Number(r?.affectedRows ?? 0)))));
+    conn.query({ sql, timeout: timeoutMs }, params, (err, r: any) => (err ? rej(err) : res(Number(r?.affectedRows ?? 0)))));
   try {
     await myConnect(conn);
     await run('START TRANSACTION');
@@ -912,7 +939,12 @@ export async function editRows(c: DbConnection, schema: string, table: string, e
     }
     await run('COMMIT');
     return total;
-  } catch (e) { await run('ROLLBACK').catch(() => {}); throw e; } finally { conn.destroy(); }
+  } catch (e) {
+    // After a timeout the connection is gone (a statement on it would never answer): the server rolls back on its own.
+    const fatal = (e as { fatal?: boolean; code?: string }).fatal || (e as { code?: string }).code === 'PROTOCOL_SEQUENCE_TIMEOUT';
+    if (!fatal) await run('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { conn.destroy(); }
 }
 
 // ---------- DDL ----------
@@ -978,29 +1010,56 @@ export async function readDdl(c: DbConnection, schema: string, name: string): Pr
  * before reaching the database. A list cannot be complete; a user without such rights is the real limit.
  */
 const AGENT_REFUSED: [RegExp, string][] = [
-  [/^\s*copy\b/i, 'COPY (server files and programs)'],
+  [/^[\s(]*copy\b/i, 'COPY (server files and programs)'],
   [/\binto\s+(out|dump)file\b/i, 'INTO OUTFILE / DUMPFILE (server files)'],
-  [/^\s*vacuum\b[\s\S]*\binto\b/i, 'VACUUM INTO (writes a file)'],
-  [/^\s*(attach|detach)\b/i, 'ATTACH / DETACH (other database files)'],
-  [/^\s*load\b/i, 'LOAD (files and extensions)'],
-  [/^\s*(kill|shutdown|install\s+plugin|alter\s+system)\b/i, 'server administration'],
-  [/^\s*create\s+(or\s+replace\s+)?(extension|language)\b/i, 'CREATE EXTENSION / LANGUAGE'],
-  [/\bset\s+(global|persist|persist_only)\b|@@global\./i, 'SET GLOBAL (server settings)'],
+  [/^[\s(]*vacuum\b[\s\S]*\binto\b/i, 'VACUUM INTO (writes a file)'],
+  [/^[\s(]*(attach|detach)\b/i, 'ATTACH / DETACH (other database files)'],
+  [/^[\s(]*load\b/i, 'LOAD (files and extensions)'],
+  [/^[\s(]*(kill|shutdown|install\s+plugin|alter\s+system)\b/i, 'server administration'],
+  [/^[\s(]*create\s+(or\s+replace\s+)?(extension|language)\b/i, 'CREATE EXTENSION / LANGUAGE'],
+  [/\bset\s+(global|persist|persist_only)\b|@@(global|persist|persist_only)\s*\./i, 'SET GLOBAL (server settings)'],
   [/\b(pg_read_file|pg_read_binary_file|pg_ls_dir|pg_ls_\w+dir|pg_stat_file|pg_file_write|lo_import|lo_export|dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_promote|query_to_xml\w*|cursor_to_xml\w*|load_file|load_extension|sys_exec|sys_eval)\s*\(/i, 'functions that reach files, programs or other sessions'],
 ];
 /** Only while read-only: DO blocks run SQL built from strings, past the checks above. */
-const AGENT_REFUSED_READ_ONLY: [RegExp, string][] = [[/^\s*do\b/i, 'DO blocks']];
+const AGENT_REFUSED_READ_ONLY: [RegExp, string][] = [[/^[\s(]*do\b/i, 'DO blocks']];
+
+/**
+ * What in `script` reaches past the tables (AGENT_REFUSED; DO blocks too when `readOnly`), or null. Read as the
+ * database reads it (see topLevel's `screen`): comments and strings do not count, quoted names count as names.
+ * PostgreSQL's reading of '\'' depends on standard_conforming_strings (a server's setting, which an earlier SET in the
+ * session may change too), so each statement is read both ways.
+ */
+export function refusedStatement(script: string, driver: Driver, readOnly: boolean): string | null {
+  const rules = readOnly ? [...AGENT_REFUSED, ...AGENT_REFUSED_READ_ONLY] : AGENT_REFUSED;
+  for (const statement of statementsOf(script, driver)) {
+    for (const loose of driver === 'postgres' ? [false, true] : [false]) {
+      for (const sql of statementsOf(statement, driver, loose)) {
+        const text = topLevel(sql, driver, true, true, loose);
+        const hit = rules.find(([re]) => re.test(text));
+        if (hit) return hit[1];
+      }
+    }
+  }
+  return null;
+}
 
 /** Why an agent may not run this script, or null. */
 export function agentRefusal(script: string, driver: Driver, readOnly: boolean): string | null {
   if (driver === 'elasticsearch') { try { elasticQuery(script); return null; } catch (e) { return (e as Error).message; } }
   if (isNoSql(driver)) return noSqlAgentRefusal(statementsOf(script, driver), driver);
-  const rules = readOnly ? [...AGENT_REFUSED, ...AGENT_REFUSED_READ_ONLY] : AGENT_REFUSED;
-  for (const sql of statementsOf(script, driver)) {
-    const hit = rules.find(([re]) => re.test(sql));
-    if (hit) return `refused for agents: ${hit[1]}. Ask a human to run it in the SQL editor if it is needed.`;
-  }
-  return null;
+  const hit = refusedStatement(script, driver, readOnly);
+  return hit && `refused for agents: ${hit}. Ask a human to run it in the SQL editor if it is needed.`;
+}
+
+/**
+ * Why the SQL editor refuses a non-admin's script on a read-only connection, or null. Read-only holds such a user to
+ * reads, but a read-only transaction still runs COPY TO, pg_read_file() and the like, and MongoDB's find() a $where's
+ * JavaScript, so they get the agents' screen. Read-only Redis already runs nothing but REDIS_READS.
+ */
+export function panelRefusal(script: string, driver: Driver): string | null {
+  if (driver === 'elasticsearch' || driver === 'redis') return null;
+  const hit = driver === 'mongodb' ? noSqlRefused(statementsOf(script, driver), driver) : refusedStatement(script, driver, true);
+  return hit && `refused on a read-only connection: ${hit}. Ask an admin to run it if it is needed.`;
 }
 
 // ---------- statements that hit every row ----------
@@ -1012,44 +1071,101 @@ export interface UnsafeStatement { index: number; sql: string; kind: 'update' | 
  * The statement with string literals, comments and everything inside parentheses blanked out, so only its top level
  * is left to read (a WHERE in a subquery or a string does not count). Quoted identifiers stay. `nested`: what is inside
  * parentheses (and the parentheses) stays too; only strings and comments are blanked.
+ *
+ * `screen` (for AGENT_REFUSED): the statement as the database runs it. Quoted names are unquoted ("x", `x`, SQLite's
+ * [x], PostgreSQL's U&"\0078"), one that is no plain word becomes `_` (it cannot name a function the list knows), and
+ * what MySQL runs inside a comment (`/*! ... *\/`, MariaDB's `/*M! ... *\/`) stays as code.
  */
-function topLevel(sql: string, driver: Driver, nested = false): string {
+function topLevel(sql: string, driver: Driver, nested = false, screen = false, loose = false): string {
   const my = isMy(driver);
+  const pg = driver === 'postgres';
   let out = '';
   let depth = 0;
   let i = 0;
   const n = sql.length;
   const blank = (s: string) => s.replace(/[^\n]/g, ' ');
   const put = (s: string) => { out += depth > 0 && !nested ? blank(s) : s; };
+  let runs = false; // inside a MySQL /*! comment, whose content runs
+  let word = ''; // as in splitStatements
+  let wordEnd = -1;
   while (i < n) {
     const ch = sql[i]!;
     const next = sql[i + 1];
     let end = -1;
-    if ((ch === '-' && next === '-') || (my && ch === '#')) { const nl = sql.indexOf('\n', i); end = nl < 0 ? n : nl; }
-    else if (ch === '/' && next === '*') { const close = sql.indexOf('*/', i + 2); end = close < 0 ? n : close + 2; }
-    else if (ch === '\'') {
-      const escapes = my || (driver === 'postgres' && /[Ee]/.test(sql[i - 1] ?? '') && !/\w/.test(sql[i - 2] ?? ''));
+    const w = pg ? sticky(PG_WORD, sql, i) : null;
+    if (w) { put(w); word = w; i += w.length; wordEnd = i; continue; }
+    if (runs && ch === '*' && next === '/') { runs = false; out += '  '; i += 2; continue; }
+    if (screen && my && ch === '/' && next === '*') {
+      const m = /^\/\*M?!\d*/.exec(sql.slice(i, i + 16));
+      if (m) { runs = true; out += blank(m[0]); i += m[0].length; continue; }
+    }
+    if (screen && driver === 'sqlite' && ch === '[') {
+      const close = sql.indexOf(']', i + 1);
+      const j = close < 0 ? n : close;
+      put(` ${plainName(sql.slice(i + 1, j))} `);
+      i = Math.min(j + 1, n);
+      continue;
+    }
+    // MySQL takes `--` for a comment only before a space (`1--1` is arithmetic).
+    if ((ch === '-' && next === '-' && (!my || i + 2 >= n || /\s/.test(sql[i + 2]!))) || (my && ch === '#')) end = lineEnd(sql, i, driver);
+    else if (ch === '/' && next === '*') end = commentEnd(sql, i, driver);
+    else if (ch === '\'') end = quoteEnd(sql, i, my || (pg && (loose || (wordEnd === i && /^[Ee]$/.test(word)))));
+    else if (ch === '$' && pg) {
+      const tag = sticky(PG_DOLLAR, sql, i);
+      if (tag) { const close = sql.indexOf(tag, i + tag.length); end = close < 0 ? n : close + tag.length; }
+    } else if (ch === '"' || (my && ch === '`')) {
+      // A quoted identifier: kept (the table's name may be one). MySQL's "..." is a string, with backslash escapes.
       let j = i + 1;
       while (j < n) {
-        if (escapes && sql[j] === '\\') { j += 2; continue; }
-        if (sql[j] === '\'') { if (sql[j + 1] === '\'') { j += 2; continue; } break; }
+        if (my && ch === '"' && sql[j] === '\\') { j += 2; continue; }
+        if (sql[j] === ch) { if (sql[j + 1] === ch) { j += 2; continue; } break; }
         j++;
       }
-      end = Math.min(j + 1, n);
-    } else if (ch === '$' && driver === 'postgres' && !/\w/.test(sql[i - 1] ?? '')) {
-      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 64));
-      if (m) { const close = sql.indexOf(m[0], i + m[0].length); end = close < 0 ? n : close + m[0].length; }
-    } else if (ch === '"' || (my && ch === '`')) {
-      // A quoted identifier: kept (the table's name may be one).
-      let j = i + 1;
-      while (j < n) { if (sql[j] === ch) { if (sql[j + 1] === ch) { j += 2; continue; } break; } j++; }
-      put(sql.slice(i, Math.min(j + 1, n)));
+      if (!screen) put(sql.slice(i, Math.min(j + 1, n)));
+      else {
+        let name = sql.slice(i + 1, Math.min(j, n)).split(ch + ch).join(ch);
+        let tail = '';
+        if (pg && ch === '"' && sql[i - 1] === '&' && wordEnd === i - 1 && /^[Uu]$/.test(word)) {
+          // The UESCAPE clause goes with the name. Comments count as whitespace around it, as PostgreSQL reads them.
+          const gap = (k: number) => {
+            for (;;) {
+              if (/\s/.test(sql[k] ?? '')) k++;
+              else if (sql[k] === '-' && sql[k + 1] === '-') k = lineEnd(sql, k, driver);
+              else if (sql[k] === '/' && sql[k + 1] === '*') k = commentEnd(sql, k, driver);
+              else return k;
+            }
+          };
+          const kw = gap(j + 1);
+          const lit = /^uescape(?![\w$])/i.test(sql.slice(kw, kw + 8)) ? gap(kw + 7) : -1;
+          const esc = lit >= 0 && sql[lit] === '\'' && sql[lit + 2] === '\'' && sql[lit + 1] !== '\'' ? sql[lit + 1]! : null;
+          name = unicodeEscapes(name, esc ?? '\\');
+          out = out.slice(0, -2) + '  ';
+          if (esc) { tail = blank(sql.slice(j + 1, lit + 3)); j = lit + 2; }
+        }
+        put(` ${plainName(name)} ${tail}`);
+      }
       i = Math.min(j + 1, n);
       continue;
     }
     if (end >= 0) { out += blank(sql.slice(i, end)); i = end; continue; }
     if (ch === '(') { depth++; out += nested ? ch : ' '; } else if (ch === ')') { depth = Math.max(0, depth - 1); out += nested ? ch : ' '; } else put(ch);
     i++;
+  }
+  return out;
+}
+
+/** A quoted name as the word it is, or `_` when it is no plain word. */
+const plainName = (s: string) => (/^[\w$]+$/.test(s) ? s : '_');
+/** PostgreSQL's U&"..." escapes: `<esc>XXXX`, `<esc>+XXXXXX` and a doubled `<esc>`. */
+function unicodeEscapes(s: string, esc: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== esc) { out += s[i]; continue; }
+    if (s[i + 1] === esc) { out += esc; i++; continue; }
+    const m = /^\+([0-9a-f]{6})|^([0-9a-f]{4})/i.exec(s.slice(i + 1));
+    if (!m) return '_';
+    out += String.fromCodePoint(parseInt(m[1] ?? m[2]!, 16));
+    i += m[0].length;
   }
   return out;
 }

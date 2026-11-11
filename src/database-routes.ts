@@ -12,12 +12,12 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import {
   AGENT_MODES, agentRefusal, countRows, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, findUnsafe, listDatabases, loadConnections, onDatabase,
-  planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
+  panelRefusal, planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
   streamStatement, testConnection,
 } from './databases.js';
 import { EXPORT_FORMATS, EXPORT_TYPES, type ExportFormat, exportSink } from './db-export.js';
 import type { Dispatcher } from './dispatcher.js';
-import { keyProblem, type SshConf } from './ssh-tunnel.js';
+import { HostKeyChanged, keyProblem, type SshConf } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import { type AuthUser, canAccess, PROJECT_ACCESS } from './util.js';
 
@@ -257,12 +257,12 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   /** The connection, if this caller may open it (one they may not does not exist for them). */
   const find = (user: AuthUser, id: string) => loadConnections(store).find((c) => c.id === id && canAccess(user, c.access));
 
-  /** A connection from a form, or an error message. `old` gives the saved password when none is sent. */
+  /** A connection from a form, or an error message. `old` gives the saved passwords when none is sent (for the same server). */
   const build = (id: string, b: Body, user: AuthUser, old?: DbConnection): DbConnection | string => {
     if (b.access === 'owner' && user.id !== null) return 'only the owner can make a connection owner-only';
     const c: DbConnection = {
       id, label: b.label.trim(), driver: b.driver, host: b.host?.trim() ?? '', port: b.port || DEFAULT_PORT[b.driver],
-      user: b.user?.trim() ?? '', password: b.password === undefined ? old?.password ?? '' : b.password,
+      user: b.user?.trim() ?? '', password: b.password ?? '',
       database: b.database?.trim() ?? '', ssl: b.ssl ?? 'disable', file: '', access: b.access, readOnly: b.driver === 'elasticsearch' || b.readOnly,
       // A connection read-only for everyone cannot let agents write, not even after an approval.
       agent: (b.driver === 'elasticsearch' || b.readOnly) && (b.agent === 'read-write' || b.agent === 'approve') ? 'read-only' : b.agent,
@@ -281,14 +281,19 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     if (b.driver !== 'sqlite' && (b.ssh || old?.ssh)) {
       const s = b.ssh ?? { enabled: false };
       const was = old?.ssh;
+      const host = (s.host ?? was?.host ?? '').trim();
+      const port = s.port || was?.port || 22;
+      const user = (s.user ?? was?.user ?? '').trim();
+      // As for SSH hosts: the saved secrets go only to the server they were saved for.
+      const same = !!was && was.host === host && was.port === port && was.user === user;
+      const keep = (sent: string | undefined, saved: string | undefined) => (sent === undefined ? (same ? saved ?? '' : '') : sent);
       const ssh: SshConf = {
-        enabled: s.enabled, host: (s.host ?? was?.host ?? '').trim(), port: s.port || was?.port || 22, user: (s.user ?? was?.user ?? '').trim(),
-        auth: s.auth ?? was?.auth ?? 'password',
-        password: s.password === undefined ? was?.password ?? '' : s.password,
-        privateKey: s.privateKey === undefined ? was?.privateKey ?? '' : s.privateKey.trim() ? `${s.privateKey.trim()}\n` : '',
-        passphrase: s.passphrase === undefined ? was?.passphrase ?? '' : s.passphrase,
+        enabled: s.enabled, host, port, user, auth: s.auth ?? was?.auth ?? 'password',
+        password: keep(s.password, was?.password),
+        privateKey: s.privateKey === undefined ? keep(undefined, was?.privateKey) : s.privateKey.trim() ? `${s.privateKey.trim()}\n` : '',
+        passphrase: keep(s.passphrase, was?.passphrase),
         // A key trusted for one server says nothing about another: a new address starts untrusted.
-        hostKey: s.hostKey ?? (was && was.host === (s.host ?? was.host).trim() && was.port === (s.port || was.port) ? was.hostKey : ''),
+        hostKey: s.hostKey ?? (was && was.host === host && was.port === port ? was.hostKey : ''),
       };
       if (ssh.enabled) {
         if (!ssh.host || !ssh.user) return 'the SSH tunnel needs a host and a user';
@@ -301,6 +306,12 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
       }
       c.ssh = ssh;
     }
+    // The saved password goes only to the database it was saved for: another address or user, or another tunnel in
+    // front of it (127.0.0.1 there is another machine), must be given it again (an admin could otherwise point the
+    // connection at a server of their own and read the password there).
+    const via = (x?: SshConf) => (x?.enabled ? `${x.host}:${x.port}` : '');
+    if (b.password === undefined && old && b.driver !== 'sqlite' && old.driver === c.driver && old.host === c.host && old.port === c.port
+      && old.user === c.user && via(old.ssh) === via(c.ssh)) c.password = old.password;
     return c;
   };
 
@@ -380,16 +391,20 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     return reply.code(204).send();
   });
 
-  // Tries a connection as the form has it (a saved one's password is used when the form leaves it empty).
-  app.post<{ Body: Body & { id?: string } }>('/api/db/test', {
+  // Tries a connection as the form has it (a saved one's password is used when the form leaves it empty). Through SSH,
+  // a trusted key that changed fails before logging in and answers it in `changedKey`: only Test connection again with
+  // that key as `acceptKey` (the person saw it and accepted it) logs in.
+  app.post<{ Body: Body & { id?: string; acceptKey?: string } }>('/api/db/test', {
     onRequest: requireAdmin,
-    schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 } } } },
+    schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 }, acceptKey: { type: 'string', maxLength: 200 } } } },
   }, async (req, reply) => {
-    const { id, ...b } = req.body;
+    const { id, acceptKey, ...b } = req.body;
     const old = id ? find(req.user!, id) : undefined;
     const c = build(id || 'test', b, req.user!, old);
     if (typeof c === 'string') return reply.code(400).send({ error: c });
-    try { return await testConnection(c); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    try { return await testConnection(c, acceptKey); } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message, ...(e instanceof HostKeyChanged && { changedKey: e.seen }) });
+    }
   });
 
   // The databases a connection opens: only its own, unless it is a PostgreSQL one set to open every database.
@@ -421,6 +436,8 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   }, async (req, reply) => {
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
+    const refused = c.readOnly && req.user!.role !== 'admin' ? panelRefusal(req.body.sql, c.driver) : null;
+    if (refused) return reply.code(400).send({ error: refused, index: 0, results: [] });
     if (!c.readOnly && !req.body.confirmed) {
       const unsafe = findUnsafe(req.body.sql, c.driver);
       if (unsafe.length) {
@@ -461,6 +478,8 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
     const b = req.body;
+    const refused = c.readOnly && req.user!.role !== 'admin' ? panelRefusal(b.sql, c.driver) : null;
+    if (refused) return reply.code(400).send({ error: refused });
     if (b.format === 'sql' && (c.driver === 'mongodb' || c.driver === 'redis' || c.driver === 'elasticsearch')) return reply.code(400).send({ error: 'SQL INSERT statements are for SQL databases' });
     let target: DbConnection;
     try { target = onDatabase(c, b.database); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }

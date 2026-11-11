@@ -50,9 +50,10 @@ function HostForm({ h, taken, keys, onSaved, onCancel, onKeys }) {
     };
   };
   const id = (h?.id ?? f.id).trim();
-  const test = async () => {
-    try { setTested({ ok: true, ...(await api('/api/ssh/test', { method: 'POST', body: { ...body(), ...(h && { id: h.id }) } })) }); }
-    catch (e) { setTested({ ok: false, error: e.message }); }
+  // `acceptKey`: a changed server key the person accepted (the server refuses to log in to one otherwise).
+  const test = async (acceptKey) => {
+    try { setTested({ ok: true, ...(await api('/api/ssh/test', { method: 'POST', body: { ...body(), ...(h && { id: h.id }), ...(acceptKey && { acceptKey }) } })) }); }
+    catch (e) { setTested({ ok: false, error: e.message, changedKey: e.detail?.changedKey }); }
   };
   const save = guarded(async () => {
     if (!h && taken.includes(id)) throw new Error(`there already is a host named ${id}`);
@@ -107,10 +108,11 @@ function HostForm({ h, taken, keys, onSaved, onCancel, onKeys }) {
       : h?.hostKey ? html`Trusted server key: <span class="mono">${h.hostKey}</span>`
       : 'The server\'s key is trusted once you test the connection and save; until then agents cannot use it.'}</span>
     ${tested && (tested.ok ? html`<p class="small"><${Icon} name="circle-check" /> Logged in${tested.info ? html`: <span class="mono">${tested.info}</span>` : ''}</p>`
-      : html`<div class="form-error" role="alert">${tested.error}</div>`)}
+      : html`<div class="form-error" role="alert">${tested.error}</div>
+        ${tested.changedKey && html`<${AsyncButton} class="btn sm" icon="triangle-alert" onClick=${() => test(tested.changedKey)}>Accept the new key and test<//>`}`)}
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
-      <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test}>Test connection<//>
+      <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${() => test()}>Test connection<//>
       ${onCancel && html`<button class="btn ghost sm" onClick=${onCancel}>Cancel</button>`}
     </div>
   </section>`;

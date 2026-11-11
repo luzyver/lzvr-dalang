@@ -5,7 +5,7 @@ import { Dispatcher } from '../src/dispatcher.js';
 import { AUTH, FAKE, turnsDone, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
-const SUB = (n: number) => ({ endpoint: `https://push.example/${n}`, keys: { p256dh: 'p', auth: 'a' } });
+const SUB = (n: number) => ({ endpoint: `https://fcm.googleapis.com/fcm/send/${n}`, keys: { p256dh: 'p', auth: 'a' } });
 
 describe('push routes', () => {
   it('serves a stable VAPID public key and stores/removes subscriptions', async () => {
@@ -32,6 +32,46 @@ describe('push routes', () => {
     expect(bad.statusCode).toBe(400);
     expect((await t.app.inject({ url: '/api/push/key' })).statusCode).toBe(401);
   });
+
+  // The server posts to the endpoint itself, so it must not be pointed at the panel's own network.
+  it.each([
+    'http://push.example/1', 'ftp://push.example/1', 'https://localhost/x', 'https://a.localhost/x', 'https://127.0.0.1/x',
+    'https://10.1.2.3/x', 'https://172.20.0.1/x', 'https://192.168.1.1/x', 'https://169.254.169.254/latest', 'https://0.0.0.0/x',
+    'https://[::1]/x', 'https://[fd00::1]/x', 'https://[fe80::1]/x', 'https://[::ffff:127.0.0.1]/x', 'https://2130706433/x', 'not a url',
+  ])('refuses the endpoint %s', async (endpoint) => {
+    const t = setupApp();
+    const r = await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers: AUTH, payload: { subscription: { endpoint, keys: { p256dh: 'p', auth: 'a' } } } });
+    expect(r.statusCode).toBe(400);
+    expect(t.store.listPushSubs()).toHaveLength(0);
+  });
+
+  // A public name can resolve to a private address, today or after a DNS change: only the browsers' push services pass.
+  it.each([
+    'https://push.example/1', 'https://fcm.googleapis.com.evil.example/x', 'https://evilfcm.googleapis.com/x',
+    'https://notify.windows.com.evil.example/x', 'https://push.apple.com.evil.example/x',
+  ])('refuses %s, which is not a browser push service', async (endpoint) => {
+    const t = setupApp();
+    const r = await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers: AUTH, payload: { subscription: { endpoint, keys: { p256dh: 'p', auth: 'a' } } } });
+    expect(r.statusCode).toBe(400);
+    expect(t.store.listPushSubs()).toHaveLength(0);
+  });
+
+  it.each([
+    'https://fcm.googleapis.com/fcm/send/abc', 'https://updates.push.services.mozilla.com/wpush/v2/abc',
+    'https://web.push.apple.com/QAbc', 'https://wns2-par02p.notify.windows.com/w/?token=abc', 'https://FCM.googleapis.com./fcm/send/abc',
+  ])('takes the push service endpoint %s', async (endpoint) => {
+    const t = setupApp();
+    const r = await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers: AUTH, payload: { subscription: { endpoint, keys: { p256dh: 'p', auth: 'a' } } } });
+    expect(r.statusCode).toBe(204);
+  });
+
+  it('keeps at most 10 subscriptions per user, dropping the oldest', async () => {
+    const t = setupApp();
+    for (let n = 1; n <= 12; n++) {
+      expect((await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers: AUTH, payload: { subscription: SUB(n) } })).statusCode).toBe(204);
+    }
+    expect(t.store.listPushSubs().map((s) => s.endpoint)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => SUB(n).endpoint));
+  });
 });
 
 describe('Push.notify', () => {
@@ -53,6 +93,24 @@ describe('Push.notify', () => {
     expect(sent.map((s) => s.endpoint)).toEqual([SUB(1).endpoint]);
     expect(JSON.parse(sent[0]!.payload)).toEqual({ title: 'Done', body: 'p: finished', convId: conv.id });
     expect(store.listPushSubs().map((s) => s.endpoint).sort()).toEqual([SUB(1).endpoint, SUB(3).endpoint]);
+  });
+
+  // Subscriptions stored before the allowlist (or put there some other way) are never sent to, and are removed.
+  it('does not send to a stored subscription outside the push services, and drops it', async () => {
+    const store = new Store();
+    const sent: string[] = [];
+    const push = new Push(store, { send: async (sub) => { sent.push(sub.endpoint); } });
+    const conv = store.createConversation(store.createProject('p', process.cwd()).id);
+    const odd = { endpoint: 'https://internal.example/hook', keys: { p256dh: 'p', auth: 'a' } };
+    store.addPushSub(odd.endpoint, JSON.stringify(odd), 'owner', 'test');
+    store.addPushSub(SUB(1).endpoint, JSON.stringify(SUB(1)), 'owner', 'test');
+    // the stored JSON is what is sent to: a row whose key looks fine but whose JSON points elsewhere is dropped too
+    store.addPushSub(SUB(2).endpoint, JSON.stringify(odd), 'owner', 'test');
+
+    await push.notify({ title: 'Done', body: 'p: finished', convId: conv.id });
+
+    expect(sent).toEqual([SUB(1).endpoint]);
+    expect(store.listPushSubs().map((s) => s.endpoint)).toEqual([SUB(1).endpoint]);
   });
 
   it('checks current project, connection and host access for the subscribing user', async () => {

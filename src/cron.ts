@@ -46,17 +46,28 @@ function dayMatches(c: Cron, d: Date): boolean {
   return c.domAny || c.dowAny ? dom && dow : dom || dow;
 }
 
-/** The first minute strictly after `after` that the expression matches (ms), or null if it never does within 5 years. */
+/**
+ * The next minute in local time; inside the second pass of an hour a clock change repeats, a local minute names the
+ * first pass (back in time), so there it is the next minute in absolute time.
+ */
+function nextMinute(d: Date): Date {
+  const n = new Date(d);
+  n.setMinutes(d.getMinutes() + 1);
+  return n.getTime() > d.getTime() ? n : new Date(d.getTime() + 60_000);
+}
+
+/**
+ * The first minute strictly after `after` that the expression matches (ms), or null if it never does within 5 years.
+ * Around a clock change it runs as crontab does: once in an hour that repeats, never in one that is skipped.
+ */
 export function nextRun(c: Cron, after: number): number | null {
-  const d = new Date(after);
-  d.setSeconds(0, 0);
-  d.setMinutes(d.getMinutes() + 1);
+  let d = nextMinute(new Date(after - (((after % 60_000) + 60_000) % 60_000))); // its minute, cut in absolute time like nextMinute
   const end = after + 5 * 366 * 86_400_000;
   while (d.getTime() <= end) {
     if (!c.month.has(d.getMonth() + 1)) { d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0); continue; }
     if (!dayMatches(c, d)) { d.setDate(d.getDate() + 1); d.setHours(0, 0); continue; }
     if (!c.hour.has(d.getHours())) { d.setHours(d.getHours() + 1, 0); continue; }
-    if (!c.minute.has(d.getMinutes())) { d.setMinutes(d.getMinutes() + 1); continue; }
+    if (!c.minute.has(d.getMinutes())) { d = nextMinute(d); continue; }
     return d.getTime();
   }
   return null;

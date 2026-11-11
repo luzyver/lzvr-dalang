@@ -1,4 +1,4 @@
-// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline | orphan | linger (stays alive after turn.completed). FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
+// Fake `codex`. exec: FAKE_MODE ok (default) | fail | slow | stubborn | rawline | orphan | linger (stays alive after turn.completed) | orphan-exit (leaves an orphan holding stdout and dies without a turn event) | orphan-chatty (the same, and the orphan keeps writing to stdout) | flush (prints many events right before exiting). FAKE_ECHO_ARGS=1: answer with argv, not the prompt. FAKE_ANSWER: answer with this. FAKE_DELAY_MS: take that long.
 // FAKE_WRITE=name=content: write that file in the folder it was told to work in.
 // exec --help lists --dangerously-bypass-hook-trust unless FAKE_OLD_CODEX=1.
 // FAKE_LIMIT_HOMES=a,b: any exec whose CODEX_HOME basename is listed fails with a usage-limit error.
@@ -80,6 +80,15 @@ process.stdin.on('end', async () => {
     const middle = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref()`;
     spawn(process.execPath, ['-e', middle], { stdio: ['ignore', 'inherit', 'inherit'] });
   }
+  if (mode === 'orphan-exit' || mode === 'orphan-chatty') { // dies mid-turn, with a grandchild still holding our stdout open
+    // chatty: the grandchild (a dev server's log) writes a line every 50ms, far more often than the drain grace.
+    const keep = mode === 'orphan-chatty' ? "setInterval(() => console.log('dev server: ok'), 50)" : 'null';
+    const grandchild = `require('fs').writeFileSync(${JSON.stringify(process.env.FAKE_ORPHAN_PID)}, String(process.pid)); ${keep}; setTimeout(() => process.exit(0), 20000)`;
+    spawn(process.execPath, ['-e', grandchild], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref();
+    while (!existsSync(process.env.FAKE_ORPHAN_PID)) await new Promise((r) => setTimeout(r, 10));
+    out({ type: 'item.completed', item: { type: 'agent_message', text: 'half' } });
+    process.exit(3);
+  }
   if (mode === 'stubborn') process.on('SIGTERM', () => {}); // ignores polite kills
   if (mode === 'slow' || mode === 'stubborn' || mode === 'orphan') await new Promise((r) => setTimeout(r, 30000));
   if (process.env.FAKE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_DELAY_MS)));
@@ -110,5 +119,9 @@ process.stdin.on('end', async () => {
     type: 'turn.completed',
     usage: process.env.FAKE_USAGE ? JSON.parse(process.env.FAKE_USAGE) : { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
   });
+  if (mode === 'flush') { // a burst of output written right before a normal exit: none of it may be lost
+    for (let n = 0; n < 2000; n++) out({ type: 'item.completed', item: { type: 'agent_message', text: `line ${n} ${'x'.repeat(200)}` } });
+    out({ type: 'turn.completed', usage: { input_tokens: 2 } });
+  }
   if (mode === 'linger') await new Promise((r) => setTimeout(r, 30000)); // done, but does not exit
 });

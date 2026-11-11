@@ -9,7 +9,7 @@ import {
   clearSshLog, describeRun, generateKey, loadHosts, loadKeys, logSsh, publicOf, readSshApprovals, readSshLog, recoverSshApprovals, runCommand, saveHosts, saveKeys,
   SSH_AGENT_MODES, type SshApproval, type SshHost, type SshKey, targetOf, testHost, updateSshApproval,
 } from './ssh-hosts.js';
-import { keyProblem } from './ssh-tunnel.js';
+import { HostKeyChanged, keyProblem } from './ssh-tunnel.js';
 import type { Store } from './store.js';
 import { type AuthUser, canAccess, PROJECT_ACCESS } from './util.js';
 
@@ -147,15 +147,20 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     return reply.code(204).send();
   });
 
-  // Tries a host as the form has it (a saved one's secrets are used when the form leaves them empty), trusting its key.
-  app.post<{ Body: Body & { id?: string } }>('/api/ssh/test', {
-    onRequest: requireAdmin, schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 } } } },
+  // Tries a host as the form has it (a saved one's secrets are used when the form leaves them empty), trusting its key
+  // when none is trusted yet. A saved host's key that changed fails before logging in and answers it in `changedKey`:
+  // only Test connection again with that key as `acceptKey` (the person saw it and accepted it) logs in.
+  app.post<{ Body: Body & { id?: string; acceptKey?: string } }>('/api/ssh/test', {
+    onRequest: requireAdmin, schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 },
+      acceptKey: { type: 'string', maxLength: 200 } } } },
   }, async (req, reply) => {
-    const { id, hostKey: _ignored, ...b } = req.body;
+    const { id, hostKey: _ignored, acceptKey, ...b } = req.body;
     const old = id ? find(req.user!, id) : undefined;
-    const h = build(id || 'test', { ...b, hostKey: '' }, req.user!, old);
+    const h = build(id || 'test', b, req.user!, old);
     if (typeof h === 'string') return reply.code(400).send({ error: h });
-    try { return await testHost(h); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    try { return await testHost(h, acceptKey); } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message, ...(e instanceof HostKeyChanged && { changedKey: e.seen }) });
+    }
   });
 
   // Saved keys (Keys): a private key given once and picked by many hosts. The private half never goes back.

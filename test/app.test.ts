@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sessionHash } from '../src/auth.js';
+import { ownerSessionToken, sessionHash } from '../src/auth.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { mkUser, setupApp } from './setup-app.js';
 
@@ -26,6 +26,15 @@ describe('auth rate limit', () => {
     for (let i = 0; i < 3; i++) expect((await app.inject({ url: '/api/projects', headers: bad })).statusCode).toBe(401);
     expect((await app.inject({ url: '/api/projects', headers: bad })).statusCode).toBe(429);
     expect((await app.inject({ url: '/api/projects', headers: AUTH })).statusCode).toBe(429);
+  });
+
+  // A flood of other addresses (an IPv6 range, say) must not wipe the block of the one that keeps guessing.
+  it('keeps a blocked address blocked when the table of addresses is full', async () => {
+    const { app } = setupApp({}, { authMaxFailures: 3, authTrackedAddresses: 20 });
+    const bad = (ip: string) => app.inject({ url: '/api/projects', headers: { authorization: 'Bearer wrong' }, remoteAddress: ip });
+    for (let i = 0; i < 3; i++) await bad('5.5.5.5');
+    for (let i = 0; i < 50; i++) await bad(`10.0.0.${i}`);
+    expect((await app.inject({ url: '/api/projects', headers: AUTH, remoteAddress: '5.5.5.5' })).statusCode).toBe(429);
   });
 
   it('does not count successful requests', async () => {
@@ -105,8 +114,10 @@ describe('adding accounts from the panel', () => {
     expect((await t.app.inject({ method: 'DELETE', url: '/api/accounts/login/anything', headers: dev })).statusCode).toBe(403);
     expect((await t.app.inject({ url: '/api/accounts', headers: dev })).statusCode).toBe(200); // reading is fine
 
-    t.store.createSession(sessionHash('owner-session'), Date.now() + 60_000); // owner signed in by email
-    const bad = await login(t, '../x', { authorization: 'Bearer owner-session' });
+    t.cfg.ownerEmails = ['boss@example.com'];
+    const owner = ownerSessionToken(t.cfg, 'boss@example.com');
+    t.store.createSession(sessionHash(owner), Date.now() + 60_000); // owner signed in by email
+    const bad = await login(t, '../x', { authorization: `Bearer ${owner}` });
     expect(bad.statusCode).toBe(400); // got past the permission check, then failed name validation
     expect((await login(t, 'x', {})).statusCode).toBe(401);
   });

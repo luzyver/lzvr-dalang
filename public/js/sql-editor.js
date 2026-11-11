@@ -1470,9 +1470,11 @@ function ConnectionForm({ conn }) {
       close();
     } catch (e) { setError(e.message); }
   };
-  const test = async () => {
+  // `acceptKey`: a changed SSH server key the person accepted (the server refuses to log in to one otherwise).
+  const test = async (acceptKey) => {
     setTested(null);
-    try { setTested({ ok: true, ...(await api('/api/db/test', { method: 'POST', body: { ...body(), ...(conn && { id: conn.id }) } })) }); } catch (e) { setTested({ ok: false, error: e.message }); }
+    try { setTested({ ok: true, ...(await api('/api/db/test', { method: 'POST', body: { ...body(), ...(conn && { id: conn.id }), ...(acceptKey && { acceptKey }) } })) }); }
+    catch (e) { setTested({ ok: false, error: e.message, changedKey: e.detail?.changedKey }); }
   };
   const forgetPassword = guarded(async () => {
     await api(`/api/db/connections/${conn.id}`, { method: 'PUT', body: { ...body(), password: '' } });
@@ -1555,10 +1557,11 @@ function ConnectionForm({ conn }) {
     ${tested && (tested.ok ? html`<p class="small"><${Icon} name="circle-check" /> Connected: ${tested.version}</p>
       ${tested.sshHostKey && html`<p class="small dim">Through SSH. Server key <span class="mono">${tested.sshHostKey}</span>${tested.sshHostKey === conn?.ssh?.hostKey ? ' (trusted)' : ': trusted when you save.'}</p>`}
       ${tested.warnings?.map((w) => html`<div class="sql-warning small" role="alert"><${Icon} name="triangle-alert" /><span>${w}${f.agent !== 'off' ? ' Agents have these rights too, whatever the agent access says.' : ''}</span></div>`)}`
-      : html`<div class="form-error" role="alert">${tested.error}</div>`)}
+      : html`<div class="form-error" role="alert">${tested.error}</div>
+        ${tested.changedKey && html`<${AsyncButton} class="btn sm" icon="triangle-alert" onClick=${() => test(tested.changedKey)}>Accept the new SSH key and test<//>`}`)}
     ${error && html`<div class="form-error" role="alert">${error}</div>`}
     <div class="row wrap">
-      <${AsyncButton} class="btn" icon="refresh-cw" onClick=${test}>Test connection<//>
+      <${AsyncButton} class="btn" icon="refresh-cw" onClick=${() => test()}>Test connection<//>
       ${conn?.hasPassword && !sqlite && html`<button class="btn ghost danger sm" onClick=${forgetPassword}>Remove password</button>`}
       <div class="spacer"></div>
       <button class="btn" onClick=${close}>Cancel</button>

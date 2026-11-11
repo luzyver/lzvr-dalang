@@ -27,6 +27,7 @@ export interface AppExtras {
   clickupFetch?: typeof fetch;
   maxUploadBytes?: number;
   authMaxFailures?: number;
+  authTrackedAddresses?: number;
   pushSend?: PushSend;
   sendMail?: SendMail;
   gitAuth?: GitAuth;

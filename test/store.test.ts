@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Store } from '../src/store.js';
 
 function fresh() {
@@ -37,8 +37,10 @@ describe('Store', () => {
     expect(store.listProjects().map((p) => p.id)).toEqual([project.id]);
     expect(project.sandbox).toBe('workspace-write');
     expect(store.getConversation(conv.id)?.status).toBe('idle');
+    store.setReview(conv.id, { request: 'x', base: 'b', rounds: 0, reviewer: '' });
     expect(store.deleteProject(project.id)).toBe(true);
     expect(store.getConversation(conv.id)).toBeNull();
+    expect(store.getKv(`review:${conv.id}`)).toBeNull(); // its chats' review state goes with them
     expect(store.deleteProject(project.id)).toBe(false);
   });
 
@@ -109,6 +111,22 @@ describe('Store', () => {
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='passkeys'").get()).toBeUndefined();
   });
 
+  it('has indexes for sub-agents, a project\'s chats and a chat\'s queue, and dates old events once only', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'lzvr-idx-')), 'i.db');
+    const first = new Store(file);
+    const indexes = (first.db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(['conversations_parent', 'conversations_project', 'queue_conversation']));
+    const backfills = () => {
+      const run = vi.spyOn(Store.prototype as any, 'run');
+      try { new Store(file); return run.mock.calls.filter(([sql]) => String(sql).startsWith('UPDATE events SET created_at')).length; }
+      finally { run.mockRestore(); }
+    };
+    expect(backfills()).toBe(0); // the scan of every event ran with the first start
+    first.deleteKv('events_created_at_filled'); // a database from before the flag
+    expect(backfills()).toBe(1);
+    expect(backfills()).toBe(0);
+  });
+
   it('resetRunning fails stale rows and reports conversations that still have a queue', () => {
     const { store, conv } = fresh();
     store.setStatus(conv.id, 'running');
@@ -129,6 +147,39 @@ describe('Store', () => {
     expect(JSON.parse(last.payload).error.message).toMatch(/restarted/);
     store.resetRunning(); // a second reset must not add another
     expect(store.eventsAfter(conv.id, 0)).toHaveLength(2);
+  });
+
+  it('queues the prompt a crash cut off again, to resume in its session, once', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'lzvr-crash-')), 'c.db');
+    const before = new Store(file);
+    const project = before.createProject('p', '/w/p');
+    const conv = before.createConversation(project.id);
+    before.enqueue(conv.id, 'task', ['a.txt'], 'budi', 'budi', '');
+    before.enqueue(conv.id, 'next', []);
+    const item = before.popQueue(conv.id)!;
+    before.startTurn(conv.id, item.prompt);
+    expect(before.listQueue(conv.id).map((q) => q.prompt)).toEqual(['next']); // running, so not shown as waiting
+    before.db.close(); // the process dies here
+    const after = new Store(file);
+    expect(after.resetRunning()).toEqual([conv.id]);
+    expect(after.listQueue(conv.id)).toMatchObject([{ prompt: 'task', attachments: ['a.txt'], author: 'budi', resume: true }, { prompt: 'next' }]);
+    after.resetRunning();
+    expect(after.listQueue(conv.id)).toHaveLength(2);
+  });
+
+  it('does not queue again a prompt whose turn ended, that shutdown queued already, or that a crash cut off before', () => {
+    const { store, conv } = fresh();
+    store.enqueue(conv.id, 'done', []);
+    store.popQueue(conv.id);
+    store.endRunning(conv.id);
+    expect(store.resetRunning()).toEqual([]);
+    store.enqueue(conv.id, 'shut down', []);
+    store.requeueResume(store.popQueue(conv.id)!);
+    store.resetRunning();
+    expect(store.listQueue(conv.id).map((q) => q.prompt)).toEqual(['shut down']);
+    store.resetRunning();
+    store.popQueue(conv.id); // the resumed one runs and the server crashes again: it is not tried a third time
+    expect(store.resetRunning()).toEqual([]);
   });
 });
 

@@ -25,8 +25,8 @@ import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorkt
 import { compactPayload } from './event-view.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
-import { authRoutes, sessionHash } from './auth.js';
-import type { Push } from './push.js';
+import { authRoutes, ownerSessionValid, sessionHash } from './auth.js';
+import { MAX_SUBS_PER_USER, pushEndpointOk, type Push } from './push.js';
 import { LoginError, type Logins } from './login.js';
 import { mcpRoutes } from './mcp.js';
 import { mcpLaunch, mcpServerRoutes, mcpServersFor } from './mcp-servers.js';
@@ -80,7 +80,7 @@ export function snippet(text: string, terms: string[], width = 220): string {
 export function buildApp(
   deps: {
     cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; logins: Logins; claudeLogins?: Logins;
-    maxUploadBytes?: number; authMaxFailures?: number; sendMail?: SendMail; clickupFetch?: typeof fetch;
+    maxUploadBytes?: number; authMaxFailures?: number; authTrackedAddresses?: number; sendMail?: SendMail; clickupFetch?: typeof fetch;
     /** Settings → Git for the owner; by default the real git, ssh, gh and glab of the user Dalang runs as. */
     gitAuth?: GitAuth;
     /** Every other panel user's own git setup (tests: fake CLIs); by default under `<STATE_DIR>/git-users`. */
@@ -102,6 +102,7 @@ export function buildApp(
   const loginFlows = () => [logins, deps.claudeLogins].filter((l): l is Logins => !!l);
   const maxUpload = deps.maxUploadBytes ?? 50 * 1024 * 1024;
   const maxFailures = deps.authMaxFailures ?? 10;
+  const maxTracked = deps.authTrackedAddresses ?? 10_000;
   const WINDOW_MS = 60_000;
   const uploads = join(cfg.stateDir, 'uploads');
   mkdirSync(uploads, { recursive: true });
@@ -117,10 +118,18 @@ export function buildApp(
   const failures = new Map<string, { count: number; resetAt: number }>();
 
   const noteFailure = (ip: string) => {
-    if (failures.size > 10_000) failures.clear(); // bound memory under a spoofed-address flood
+    const now = Date.now();
     const cur = failures.get(ip);
-    if (cur) cur.count++;
-    else failures.set(ip, { count: 1, resetAt: Date.now() + WINDOW_MS });
+    if (cur && cur.resetAt > now) { cur.count++; return; }
+    failures.delete(ip);
+    // Bound memory under a flood of addresses: drop the oldest entry that is not blocking anyone, and only when every
+    // entry blocks, the oldest one. Clearing the table would also lift the block on whoever keeps guessing.
+    if (failures.size >= maxTracked) {
+      let drop = failures.keys().next().value as string;
+      for (const [k, v] of failures) if (v.resetAt <= now || v.count < maxFailures) { drop = k; break; }
+      failures.delete(drop);
+    }
+    failures.set(ip, { count: 1, resetAt: now + WINDOW_MS });
   };
 
   /**
@@ -135,7 +144,9 @@ export function buildApp(
     if (personal) return asUser(personal);
     const session = store.getSession(h, now);
     if (!session) return null;
-    if (session.user_id === null) return { id: null, name: 'owner', role: 'admin', main: false }; // owner signed in by email
+    if (session.user_id === null) { // owner signed in by email, while that email is still an owner's
+      return ownerSessionValid(cfg, token) ? { id: null, name: 'owner', role: 'admin', main: false } : null;
+    }
     const u = store.getUser(session.user_id);
     return u ? asUser(u) : null;
   };
@@ -273,7 +284,12 @@ export function buildApp(
       } },
     } },
   }, (req, reply) => {
-    store.addPushSub(req.body.subscription.endpoint, JSON.stringify(req.body.subscription), req.user!.id ?? 'owner',
+    const { endpoint } = req.body.subscription;
+    if (!pushEndpointOk(endpoint)) return reply.code(400).send({ error: 'the push endpoint is not a browser push service the panel sends to' });
+    const userKey = req.user!.id ?? 'owner';
+    const mine = store.listPushSubs().filter((s) => s.user_key === userKey && s.endpoint !== endpoint);
+    for (const old of mine.slice(0, Math.max(0, mine.length - MAX_SUBS_PER_USER + 1))) store.removePushSub(old.endpoint, userKey);
+    store.addPushSub(endpoint, JSON.stringify(req.body.subscription), userKey,
       sessionHash((req.headers.authorization ?? '').replace(/^Bearer /, '')));
     return reply.code(204).send();
   });

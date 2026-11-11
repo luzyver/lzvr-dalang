@@ -20,6 +20,8 @@ export interface ClaudeTurnOpts {
   extraArgs?: string[];
   signal?: AbortSignal;
   killGraceMs?: number;
+  /** ms Claude Code may stay alive after its result before it is killed (default 30000). */
+  exitGraceMs?: number;
 }
 
 // Claude Code has no OS sandbox, only tool permissions. In headless mode nothing can ask, so each project
@@ -206,7 +208,8 @@ export async function* runClaudeTurn(o: ClaudeTurnOpts): AsyncGenerator<CodexEve
   const events = new ClaudeEvents();
   for await (const ev of runProcess({
     command: o.command ?? ['claude'], args: buildClaudeArgs(o), env: { ...o.env, CLAUDE_CONFIG_DIR: o.home },
-    cwd: o.cwd, prompt: o.prompt, signal: o.signal, killGraceMs: o.killGraceMs,
+    cwd: o.cwd, prompt: o.prompt, signal: o.signal, killGraceMs: o.killGraceMs, exitGraceMs: o.exitGraceMs,
+    endTypes: ['result'], // its own name for the end of a turn, before it is mapped
   })) {
     if (ev.type === 'process.exit') yield events.exit(ev);
     else if (ev.type === 'raw') yield ev;

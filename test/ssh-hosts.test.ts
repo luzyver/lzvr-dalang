@@ -18,17 +18,19 @@ const PASSWORD = 'hunter2-secret';
 /**
  * An SSH server (user u, password PASSWORD) whose commands are: `leak` prints the password, `sudo -S ...` answers root
  * once it reads the password on stdin, `sudo -n ...` answers root without one only when `sudo.nopasswd`, `hang` never
- * ends, anything else is echoed and exits 3. `inputs[i]`: what command i got on its standard input.
+ * ends, anything else is echoed and exits 3. `inputs[i]`: what command i got on its standard input. `auths`: the
+ * passwords it was sent.
  */
-async function sshServer(): Promise<{ port: number; commands: string[]; inputs: string[]; sudo: { nopasswd: boolean }; authorized: ParsedKey[] }> {
+async function sshServer(): Promise<{ port: number; commands: string[]; inputs: string[]; sudo: { nopasswd: boolean }; authorized: ParsedKey[]; auths: string[] }> {
   const commands: string[] = [];
+  const auths: string[] = [];
   const authorized: ParsedKey[] = [];
   const inputs: string[] = [];
   const sudo = { nopasswd: false };
   const ssh = new Server({ hostKeys: [hostKeys.private] }, (client) => {
     client.on('authentication', (ctx) => {
       if (ctx.username !== 'u') return ctx.reject();
-      if (ctx.method === 'password') return ctx.password === PASSWORD ? ctx.accept() : ctx.reject();
+      if (ctx.method === 'password') { auths.push(ctx.password); return ctx.password === PASSWORD ? ctx.accept() : ctx.reject(); }
       if (ctx.method !== 'publickey') return ctx.reject();
       const k = authorized.find((x) => x.getPublicSSH().equals(ctx.key.data));
       if (!k || (ctx.signature && !k.verify(ctx.blob!, ctx.signature, ctx.hashAlgo))) return ctx.reject();
@@ -67,7 +69,7 @@ async function sshServer(): Promise<{ port: number; commands: string[]; inputs: 
   });
   await new Promise<void>((r) => ssh.listen(0, '127.0.0.1', () => r()));
   closers.push(() => new Promise((r) => ssh.close(r)));
-  return { port: (ssh.address() as AddressInfo).port, commands, inputs, sudo, authorized };
+  return { port: (ssh.address() as AddressInfo).port, commands, inputs, sudo, authorized, auths };
 }
 
 async function boot() {
@@ -176,6 +178,25 @@ describe('SSH hosts', () => {
     // Pointed somewhere else, the saved password is not sent there.
     expect((await t.put('vm', { password: undefined, host: 'elsewhere.example' })).json().error).toMatch(/password is needed \(the address or user changed/);
     expect((await t.put('vm', { password: undefined, user: 'other' })).statusCode).toBe(400);
+  });
+
+  it('logs in on Test connection only to the trusted key, or to the changed key the admin accepts', async () => {
+    const t = await boot();
+    await t.put('vm', { hostKey: 'SHA256:theOneTrusted' });
+    const test = (extra: object = {}) => t.app.inject({ method: 'POST', url: '/api/ssh/test', headers: AUTH, payload: {
+      id: 'vm', label: 'vm', host: '127.0.0.1', port: t.server.port, user: 'u', auth: 'password', access: 'all', agent: 'run', ...extra } });
+    // The key changed: the password is not sent, and the new key is shown to be accepted (or not).
+    const changed = await test();
+    expect(changed.statusCode).toBe(400);
+    expect(changed.json()).toMatchObject({ error: expect.stringMatching(/key changed/), changedKey: hostFingerprint });
+    expect((await test({ acceptKey: 'SHA256:anotherOne' })).json()).toMatchObject({ changedKey: hostFingerprint });
+    expect(t.server.auths).toEqual([]);
+    const ok = await test({ acceptKey: hostFingerprint });
+    expect(ok.json()).toEqual({ hostKey: hostFingerprint, info: expect.any(String) });
+    expect(t.server.auths).toContain(PASSWORD);
+    // A host without a trusted key yet is trusted on first sight, as before.
+    await t.put('fresh', { hostKey: '' });
+    expect((await test({ id: 'fresh', label: 'fresh' })).json()).toMatchObject({ hostKey: hostFingerprint });
   });
 
   it('logs hosts in with a saved key, never showing its private half', async () => {
