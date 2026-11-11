@@ -110,6 +110,22 @@ describe('statements', () => {
   });
 });
 
+describe('values', () => {
+  it('shows bytes that hold text as text, and other bytes as hex', async () => {
+    const c = { id: 'app', driver: 'sqlite', file: sampleDb() } as DbConnection;
+    const [r] = await databases.runScript(c, `SELECT CAST('60' AS BLOB), CAST('{"a": "é"}' AS BLOB), x'00ff10', x''`, { readOnly: true, limit: 10, timeoutMs: 5000 });
+    expect((r as { rows: unknown[][] }).rows).toEqual([['60', '{"a": "é"}', '\\x00ff10', '']]);
+  });
+
+  it('keeps a leading BOM of such text, in a result and in a backup', async () => {
+    const c = { id: 'app', driver: 'sqlite', file: sampleDb() } as DbConnection;
+    const [r] = await databases.runScript(c, "SELECT x'efbbbf3630'", { readOnly: true, limit: 10, timeoutMs: 5000 });
+    expect((r as { rows: unknown[][] }).rows).toEqual([['﻿60']]);
+    const plan = { reads: [{ index: 0, statement: '', table: 'users', read: "SELECT x'efbbbf3630' AS v" }], skipped: [] };
+    expect(await readBackup(c, plan, 100, 5000)).toMatchObject([{ rows: [['﻿60']] }]);
+  });
+});
+
 describe('other databases', () => {
   const pg: DbConnection = {
     id: 'pg', label: 'PG', driver: 'postgres', host: 'h', port: 5432, user: 'u', password: '', database: 'app', ssl: 'disable',
