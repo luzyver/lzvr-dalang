@@ -24,7 +24,8 @@ function localDownload(path, conversationId) {
   if (path.startsWith('<') && path.endsWith('>')) path = path.slice(1, -1);
   if (path.startsWith('sandbox:')) path = path.slice('sandbox:'.length);
   if (!path.startsWith('/')) return null;
-  path = path.replace(/:\d+$/, '');
+  // A line reference after the file: path:12, path:12:5, path#L12, path#L12C5, path#L12-L20.
+  path = path.replace(/(?::\d+(?::\d+)?|#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)$/, '');
   let filename = path.split('/').pop() || 'download';
   try { filename = decodeURIComponent(filename); } catch { /* keep the literal name */ }
   const query = new URLSearchParams({ path });

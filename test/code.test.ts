@@ -163,6 +163,20 @@ describe('code editor: files', () => {
     expect((await t.call('GET', '/code', undefined, bearer(dev.token))).json().terminal).toBe(false);
   });
 
+  it('lets only an admin download a file outside the chat folder', async () => {
+    const t = await withChat();
+    const outside = join(t.root, 'outside.txt');
+    writeFileSync(outside, 'out\n');
+    const url = `/files/download?path=${encodeURIComponent(outside)}`;
+    expect((await t.call('GET', url)).body).toBe('out\n');
+    expect((await t.call('GET', '/files/download?path=..%2Foutside.txt')).body).toBe('out\n');
+    expect((await t.call('GET', `/files/download?path=${encodeURIComponent(join(t.root, 'missing.txt'))}`)).statusCode).toBe(404);
+    expect((await t.call('GET', `/files/download?path=${encodeURIComponent(t.root)}`)).statusCode).toBe(404);
+    const dev = await mkUser(t, 'dev1', 'dev');
+    expect((await t.call('GET', url, undefined, bearer(dev.token))).statusCode).toBe(404);
+    expect((await t.call('GET', '/files/download?path=..%2Foutside.txt', undefined, bearer(dev.token))).statusCode).toBe(404);
+  });
+
   it('404s for an unknown chat', async () => {
     const { app } = setupApp();
     expect((await app.inject({ url: '/api/conversations/nope/fs/list', headers: AUTH })).statusCode).toBe(404);
