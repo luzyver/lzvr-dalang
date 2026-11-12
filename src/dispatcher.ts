@@ -22,7 +22,7 @@ import { inheritedEnv, RAW, type CodexEvent } from './runner.js';
 import { codexSessionInfo, findRollout, type LimitWindow } from './sessions.js';
 import { CeilingError, EFFORTS, refuseChoice, refuseEffort, refuseModel, runOf, TOP_EFFORT } from './model-ceiling.js';
 import { type Conversation, type Project, type QueueItem, type Store } from './store.js';
-import type { Backend } from './util.js';
+import { type Backend, BACKENDS } from './util.js';
 
 export { withHistory } from './chat-context.js';
 
@@ -178,6 +178,12 @@ export class Dispatcher {
   }
 
   private accountsOf(backend: Backend): Accounts { return backend === 'claude' ? this.claudeAccounts : this.accounts; }
+
+  /** The agent a new chat runs on: `prefer`, unless it has no account switched on and the other one does. */
+  backendFor(prefer: Backend = 'codex'): Backend {
+    const usable = (b: Backend) => this.accountsOf(b).list().some((a) => a.enabled);
+    return usable(prefer) ? prefer : BACKENDS.find(usable) ?? prefer;
+  }
 
   /** Usage windows last seen for an account (null until one of its turns reported them). */
   limitsFor(backend: Backend, name: string): { windows: LimitWindow[]; at: number } | null {

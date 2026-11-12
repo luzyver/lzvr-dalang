@@ -94,7 +94,7 @@ describe('code memory', () => {
     const t = await boot();
     mkdirSync(join(t.root, 'secret'));
     const p = t.store.createProject('proj', join(t.root, 'proj'));
-    const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, undefined, 'owner');
+    const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, 'owner');
     await mkUser(t, 'budi', 'dev');
     await t.turnOn();
     const conv = t.store.createConversation(p.id);
@@ -386,7 +386,7 @@ describe('code memory', () => {
     const t = await boot();
     mkdirSync(join(t.root, 'secret'));
     const p = t.store.createProject('proj', join(t.root, 'proj'));
-    const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, undefined, 'owner');
+    const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, 'owner');
     const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
     const admin = bearer((await mkUser(t, 'adi', 'admin')).token);
     const ask = (id: string, headers: Record<string, string>) => t.app.inject({ method: 'POST', url: `/api/projects/${id}/code-memory/index`, headers });

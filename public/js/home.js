@@ -70,11 +70,15 @@ export function Home() {
         <div class="ov-col side">
           <${Section} title="Start a chat"
             action=${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}>
-            <ul class="ov-list">${list.map((p) => html`<li key=${p.id}><button class="ov-row" onClick=${newChat(p)}>
-              <span class="ov-icon"><${Icon} name="folder" /></span>
-              <span class="ov-main"><strong>${p.name}</strong><span>${p.backend === 'claude' ? 'Claude Code' : 'Codex'} · ${plural((convs.value.get(p.id) || []).length, 'chat')}</span></span>
-              <${Icon} name="plus" class="ov-go" />
-            </button></li>`)}</ul>
+            <ul class="ov-list">${list.map((p) => {
+              const chats = convs.value.get(p.id) || [];
+              const last = chats.reduce((at, c) => ((c.last_at || '') > at ? c.last_at : at), '');
+              return html`<li key=${p.id}><button class="ov-row" onClick=${newChat(p)}>
+                <span class="ov-icon"><${Icon} name="folder" /></span>
+                <span class="ov-main"><strong>${p.name}</strong><span>${plural(chats.length, 'chat')}${last ? ` · last active ${ago(last)}` : ''}</span></span>
+                <${Icon} name="plus" class="ov-go" />
+              </button></li>`;
+            })}</ul>
           <//>
           ${usage.value.length > 0 && html`<${Section} title="Accounts">
             <ul class="ov-list">${usage.value.map((u) => html`<li key=${u.label}><button class="ov-row usage-line" onClick=${() => openSettings(u.label === 'Codex' ? 'codex' : 'claude')}>

@@ -169,6 +169,24 @@ describe('conversations and prompts', () => {
     expect(r.statusCode).toBe(404);
   });
 
+  it('starts a chat on the agent that has an account', async () => {
+    const t = setupApp({}, { homes: [] });
+    t.dispatcher.claudeAccounts.add(join(t.base, 'claude-home'));
+    const project = t.store.createProject('p', join(t.root, 'proj'));
+    const r = await t.app.inject({ method: 'POST', url: `/api/projects/${project.id}/conversations`, headers: AUTH });
+    expect(r.json().backend).toBe('claude');
+  });
+
+  it('starts a chat on the agent of the newest chat in the project', async () => {
+    const t = setupApp();
+    t.dispatcher.claudeAccounts.add(join(t.base, 'claude-home'));
+    const project = t.store.createProject('p', join(t.root, 'proj'));
+    const url = `/api/projects/${project.id}/conversations`;
+    expect((await t.app.inject({ method: 'POST', url, headers: AUTH })).json().backend).toBe('codex');
+    t.store.createConversation(project.id, 'claude');
+    expect((await t.app.inject({ method: 'POST', url, headers: AUTH })).json().backend).toBe('claude');
+  });
+
   it('runs a prompt end to end', async () => {
     const t = setupApp();
     const { conv } = await makeConv(t);

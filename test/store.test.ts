@@ -183,13 +183,13 @@ describe('Store', () => {
   });
 });
 
-describe('project backend', () => {
-  it('gives every chat of a project the project\'s backend', () => {
+describe('chat backend', () => {
+  it('is the chat\'s own: a project has none', () => {
     const store = new Store();
-    const claude = store.createProject('c', '/w/c', 'read-only', 'claude');
-    expect(store.getProject(claude.id)!.backend).toBe('claude');
-    expect(store.createConversation(claude.id).backend).toBe('claude');
-    expect(store.createConversation(store.createProject('x', '/w/x').id).backend).toBe('codex');
+    const project = store.createProject('c', '/w/c', 'read-only');
+    expect(store.getProject(project.id)).not.toHaveProperty('backend');
+    expect(store.createConversation(project.id, 'claude').backend).toBe('claude');
+    expect(store.createConversation(project.id).backend).toBe('codex');
   });
 });
 

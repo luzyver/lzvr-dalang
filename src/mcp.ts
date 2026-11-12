@@ -143,7 +143,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     description: 'Start a new conversation (a fresh agent session) in a project. From inside a chat it becomes your sub-agent: '
       + 'you decide how many to start, for what, and with which model; give prompt to start its task at once (see send_prompt: '
       + 'its answer comes back to you as a message). With worktree, it works on its own git branch and folder, so parallel '
-      + 'sub-agents do not write over each other. model, effort and backend choose what runs it (default: the project\'s backend '
+      + 'sub-agents do not write over each other. model, effort and backend choose what runs it (default: the agent that has an account '
       + 'and the default model; from inside a chat, your own model and effort). It never runs above yours: see list_models. '
       + 'Pick the weakest model that fits the task, and move it up with set_model only if its work falls short. '
       + 'Before your first sub-agent in a chat, read the orchestrating-subagents skill (SKILL.md in the skills list) and follow it.',
@@ -156,8 +156,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     const project = getProject(project_id);
     if (!project) return fail(`no such project: ${project_id}`);
     const ceiling = cap();
-    // Left out, a sub-agent runs on its parent's CLI (a model name like 'opus' means nothing to another one), else the project's.
-    const b = backend ?? ceiling?.backend ?? project.backend;
+    // Left out, a sub-agent runs on its parent's CLI (a model name like 'opus' means nothing to another one), else the one that has an account.
+    const b = backend ?? ceiling?.backend ?? dispatcher.backendFor();
     // Left out, a sub-agent runs on the parent's effort, and on the parent's model when it is on the same CLI.
     const inherit = { model: ceiling && b === ceiling.backend ? ceiling.model : null, effort: ceiling?.effort ?? null };
     // An effort the child's model does not take (max on Codex, xhigh on a small model) comes down to the highest it does.

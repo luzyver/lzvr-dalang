@@ -127,7 +127,7 @@ export function codeRoutes(app: FastifyInstance, deps: {
     const c = load(req.params.id, reply);
     if (!c) return;
     return {
-      project: { id: c.project.id, name: c.project.name, backend: c.project.backend },
+      project: { id: c.project.id, name: c.project.name },
       conv: { id: c.conv.id, title: c.conv.title, branch: c.conv.branch, worktree: !!c.conv.worktree },
       root: basename(c.root),
       readOnly: c.project.sandbox === 'read-only',
