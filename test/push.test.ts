@@ -121,7 +121,7 @@ describe('Push.notify', () => {
     for (const [n, headers] of [[1, AUTH], [2, bearer(admin.token)], [3, bearer(dev.token)]] as const) {
       await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers, payload: { subscription: SUB(n) } });
     }
-    const project = t.store.createProject('secret', t.root, 'workspace-write', 'codex', 'owner');
+    const project = t.store.createProject('secret', t.root, 'workspace-write', 'owner');
     const conv = t.store.createConversation(project.id);
     await t.push.notify({ title: 'Secret', body: 'private text', convId: conv.id });
     expect(sent.splice(0)).toEqual([SUB(1).endpoint]);

@@ -14,7 +14,7 @@ function InfoPane({ id }) {
   const project = findConv(id)?.project;
   const rows = [
     ['Project', project?.name],
-    ['Agent', (c?.backend || project?.backend) === 'claude' ? 'Claude Code' : 'Codex'],
+    ['Agent', c?.backend === 'claude' ? 'Claude Code' : 'Codex'],
     ['Account', chat.model.account || '—'],
     ['Folder', c?.worktree || project?.path],
     ['Branch', c?.branch && `${c.branch}${c.base_branch ? ` (from ${c.base_branch})` : ''}`],

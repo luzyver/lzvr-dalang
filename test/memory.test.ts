@@ -244,7 +244,7 @@ describe('memory', () => {
     await t.app.listen({ host: '127.0.0.1', port: 0 });
     const port = (t.app.server.address() as { port: number }).port;
     const p = t.store.createProject('proj', t.cfg.workspaceRoot);
-    const other = t.store.createProject('secret', t.cfg.workspaceRoot, undefined, undefined, 'owner');
+    const other = t.store.createProject('secret', t.cfg.workspaceRoot, undefined, 'owner');
     const conv = t.store.createConversation(p.id);
     const connect = async (author = '') => {
       const client = new Client({ name: 'test', version: '1.0.0' });

@@ -11,7 +11,7 @@ import type { Backend, ProjectAccess } from './util.js';
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
-  sandbox TEXT NOT NULL DEFAULT 'workspace-write', backend TEXT NOT NULL DEFAULT 'codex', access TEXT NOT NULL DEFAULT 'all');
+  sandbox TEXT NOT NULL DEFAULT 'workspace-write', access TEXT NOT NULL DEFAULT 'all');
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -75,8 +75,8 @@ export type Role = 'admin' | 'dev';
 export interface User { id: string; name: string; role: Role; email: string | null; created_at: string }
 export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string }
 
-/** `backend` is the agent CLI every chat in the project runs on; `access` who may open it (see canAccess). */
-export interface Project { id: string; name: string; path: string; sandbox: string; backend: Backend; access: ProjectAccess }
+/** `access`: who may open it (see canAccess). */
+export interface Project { id: string; name: string; path: string; sandbox: string; access: ProjectAccess }
 export interface TurnSelection { backend: Backend; model: string }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
@@ -218,7 +218,7 @@ export class Store {
     }
     this.ensureColumn('conversations', 'model', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
-    this.ensureColumn('projects', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
+    this.dropColumn('projects', 'backend'); // a project no longer has an agent of its own: each chat has one
     this.ensureColumn('projects', 'access', "TEXT NOT NULL DEFAULT 'all'");
     this.run("UPDATE projects SET access='all' WHERE access='dev'"); // 'dev' (owner, admins and devs) was the same as 'all'
     this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
@@ -291,6 +291,10 @@ export class Store {
   }
 
   /** Add a column earlier databases lack; true when it was added now. */
+  private dropColumn(table: string, column: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+    if (cols.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
   private ensureColumn(table: string, column: string, ddl: string): boolean {
     const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
     if (cols.some((c) => c.name === column)) return false;
@@ -438,9 +442,9 @@ export class Store {
   }
   setReview(convId: string, r: ReviewState): void { this.setKv(`review:${convId}`, JSON.stringify(r)); }
 
-  createProject(name: string, path: string, sandbox = 'workspace-write', backend: Backend = 'codex', access: ProjectAccess = 'all'): Project {
-    const p = { id: randomUUID(), name, path, sandbox, backend, access };
-    this.run('INSERT INTO projects (id,name,path,sandbox,backend,access) VALUES (?,?,?,?,?,?)', p.id, name, path, sandbox, backend, access);
+  createProject(name: string, path: string, sandbox = 'workspace-write', access: ProjectAccess = 'all'): Project {
+    const p = { id: randomUUID(), name, path, sandbox, access };
+    this.run('INSERT INTO projects (id,name,path,sandbox,access) VALUES (?,?,?,?,?)', p.id, name, path, sandbox, access);
     return p;
   }
   setProjectAccess(id: string, access: ProjectAccess): boolean {
@@ -458,10 +462,8 @@ export class Store {
     return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0;
   }
 
-  /** The chat runs on the project's backend unless told otherwise. */
-  createConversation(projectId: string, backend?: Backend, parent = ''): Conversation {
+  createConversation(projectId: string, backend: Backend = 'codex', parent = ''): Conversation {
     const id = randomUUID();
-    backend ??= this.getProject(projectId)?.backend ?? 'codex';
     this.run('INSERT INTO conversations (id,project_id,thread_id,backend,parent) VALUES (?,?,NULL,?,?)', id, projectId, backend, parent);
     return this.getConversation(id)!;
   }

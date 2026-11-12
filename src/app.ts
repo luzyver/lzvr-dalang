@@ -35,7 +35,7 @@ import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
 import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
-import { type Conversation, type Store, type SubagentPolicy } from './store.js';
+import { type Conversation, type Project, type Store, type SubagentPolicy } from './store.js';
 import { REVIEWER_GUIDE, type ReviewerPolicy } from './reviewer.js';
 
 declare module 'fastify' {
@@ -503,13 +503,13 @@ export function buildApp(
   const mayGrant = (user: AuthUser, access: ProjectAccess | undefined) => !access || canAccess(user, access);
   // With `clone`, the folder is made by cloning that repository into `path` (which must not exist yet, or be empty),
   // with the caller's own git setup (their keys and logins).
-  app.post<{ Body: { name: string; path: string; sandbox?: string; backend?: Backend; access?: ProjectAccess; clone?: string } }>('/api/projects', {
+  app.post<{ Body: { name: string; path: string; sandbox?: string; access?: ProjectAccess; clone?: string } }>('/api/projects', {
     onRequest: requireAdmin,
     schema: { body: {
       type: 'object', required: ['name', 'path'], additionalProperties: false,
       properties: {
         name: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
-        sandbox: { enum: [...SANDBOXES] }, backend: { enum: [...BACKENDS] }, access: { enum: [...PROJECT_ACCESS] },
+        sandbox: { enum: [...SANDBOXES] }, access: { enum: [...PROJECT_ACCESS] },
         clone: { type: 'string', minLength: 1, maxLength: 2000 },
       },
     } },
@@ -535,7 +535,7 @@ export function buildApp(
     }
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
-    const created = store.createProject(req.body.name, real, req.body.sandbox, req.body.backend, req.body.access);
+    const created = store.createProject(req.body.name, real, req.body.sandbox, req.body.access);
     return reply.code(201).send(created);
   });
 
@@ -597,18 +597,24 @@ export function buildApp(
   app.get<{ Params: { id: string } }>('/api/projects/:id/conversations', (req, reply) =>
     store.getProject(req.params.id) ? store.listConversations(req.params.id) : notFound(reply));
 
+  // A new chat runs on the agent of the project's newest chat, so the choice made in the composer carries over. When
+  // that agent has no account switched on and the other one does, it runs on the other: a chat nobody could prompt helps no one.
+  const chatBackend = (project: Project): Backend =>
+    dispatcher.backendFor(store.listConversations(project.id).filter((c) => !c.parent).at(-1)?.backend);
+
   app.post<{ Params: { id: string }; Body: { worktree?: boolean } | undefined }>('/api/projects/:id/conversations', async (req, reply) => {
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
+    const backend = chatBackend(project);
     if (req.body?.worktree) {
       try {
-        return reply.code(201).send(await createWorktreeChat(store, cfg, project));
+        return reply.code(201).send(await createWorktreeChat(store, cfg, project, { backend }));
       } catch (e) {
         if (e instanceof GitError) return reply.code(400).send({ error: e.message });
         throw e;
       }
     }
-    return reply.code(201).send(store.createConversation(req.params.id));
+    return reply.code(201).send(store.createConversation(req.params.id, backend));
   });
 
 

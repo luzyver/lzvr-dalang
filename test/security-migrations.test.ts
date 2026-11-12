@@ -38,6 +38,19 @@ describe('security migrations and restart recovery', () => {
     expect(store.listPushSubs()).toEqual([{ endpoint: 'bound', sub: '{}', user_key: 'owner', auth_hash: 'session-hash' }]);
   });
 
+  it('drops the agent a project used to have and keeps the project and its chats', () => {
+    const f = fixture();
+    let store = f.open();
+    const project = store.createProject('old', 'project');
+    const conv = store.createConversation(project.id, 'claude');
+    // Simulate the database from before: every project carried a backend.
+    store.db.exec("ALTER TABLE projects ADD COLUMN backend TEXT NOT NULL DEFAULT 'codex'");
+    store = f.open();
+    expect(store.getProject(project.id)).toEqual(project);
+    expect(store.getConversation(conv.id)!.backend).toBe('claude');
+    expect(store.createProject('new', 'other')).not.toHaveProperty('backend');
+  });
+
   it('restores historical and queued attachments to their projects without claiming unrelated files', () => {
     const f = fixture();
     let store = f.open();
