@@ -97,8 +97,22 @@ export function publicOf(privateKey: string, passphrase: string, comment = ''): 
   return { publicKey: `${k.type} ${wire.toString('base64')}${note ? ` ${note}` : ''}`, fingerprint: fingerprint(wire) };
 }
 
-/** A new ed25519 key pair in OpenSSH form, commented `comment`. */
-export const generateKey = (comment: string) => utils.generateKeyPairSync('ed25519', { comment }).private;
+/**
+ * A new ed25519 key pair in OpenSSH form. ssh2 now and then (about 1 in 400) writes a pair that it cannot read back
+ * itself ("Malformed OpenSSH private key"), so a pair is made again until both halves read: 20 times at most, then
+ * it throws rather than hand out a key nothing can use.
+ */
+export function ed25519Keys(opts: { comment?: string; passphrase?: string; cipher?: string; rounds?: number } = {}): { private: string; public: string } {
+  for (let tries = 0; tries < 20; tries++) {
+    const k = utils.generateKeyPairSync('ed25519', opts);
+    const halves = [utils.parseKey(k.private, opts.passphrase), utils.parseKey(k.public)];
+    if (!halves.some((h) => h instanceof Error)) return k;
+  }
+  throw new Error('could not make a readable ed25519 key pair in 20 tries');
+}
+
+/** A new ed25519 private key in OpenSSH form, commented `comment`. */
+export const generateKey = (comment: string) => ed25519Keys({ comment }).private;
 
 // ---------- commands a 'run' host still holds for approval ----------
 

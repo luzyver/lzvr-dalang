@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { type ParsedKey, Server, utils } from 'ssh2';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSshApproval, findDangerous, readSshApprovals, recoverSshApprovals, redact } from '../src/ssh-hosts.js';
+import { createSshApproval, ed25519Keys, findDangerous, readSshApprovals, recoverSshApprovals, redact } from '../src/ssh-hosts.js';
 import { fingerprint } from '../src/ssh-tunnel.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -11,7 +11,7 @@ import { bearer, mkUser, setupApp } from './setup-app.js';
 const closers: (() => unknown)[] = [];
 afterEach(async () => { for (const c of closers.splice(0)) await c(); });
 
-const hostKeys = utils.generateKeyPairSync('ed25519');
+const hostKeys = ed25519Keys();
 const hostFingerprint = fingerprint((utils.parseKey(hostKeys.public) as unknown as { getPublicSSH(): Buffer }).getPublicSSH());
 const PASSWORD = 'hunter2-secret';
 
@@ -368,6 +368,21 @@ describe('SSH hosts', () => {
       'echo hello > /tmp/out.txt', 'apt list --installed', 'mkdir -p /tmp/a && cp a.txt /tmp/a/', 'skill-check', 'kubectl get pods',
     ];
     for (const c of runs) expect(findDangerous(c), c).toEqual([]);
+  });
+
+  it('makes a key pair again when ssh2 wrote one it cannot read, and gives up after 20', () => {
+    const good = ed25519Keys();
+    const bad = { private: 'not a key', public: 'not a key' };
+    const spy = vi.spyOn(utils, 'generateKeyPairSync');
+    closers.push(() => spy.mockRestore());
+    spy.mockReturnValueOnce(bad).mockReturnValueOnce(bad).mockReturnValueOnce(good);
+    expect(ed25519Keys()).toBe(good);
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    spy.mockClear();
+    spy.mockReturnValue(bad);
+    expect(() => ed25519Keys()).toThrow(/readable ed25519 key pair in 20 tries/);
+    expect(spy).toHaveBeenCalledTimes(20);
   });
 
   it('takes every secret out of output, key lines too', () => {

@@ -1,6 +1,7 @@
 import { type AddressInfo, connect, createServer, type Server as NetServer } from 'node:net';
 import { Server, utils } from 'ssh2';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ed25519Keys } from '../src/ssh-hosts.js';
 import { fingerprint, openTunnel, type SshConf } from '../src/ssh-tunnel.js';
 import { AUTH } from './helpers.js';
 import { setupApp } from './setup-app.js';
@@ -8,8 +9,8 @@ import { setupApp } from './setup-app.js';
 const closers: (() => unknown)[] = [];
 afterEach(async () => { for (const c of closers.splice(0)) await c(); });
 
-const hostKeys = utils.generateKeyPairSync('ed25519');
-const userKeys = utils.generateKeyPairSync('ed25519', { passphrase: 'pp', cipher: 'aes256-cbc', rounds: 16 });
+const hostKeys = ed25519Keys();
+const userKeys = ed25519Keys({ passphrase: 'pp', cipher: 'aes256-cbc', rounds: 16 });
 const allowedUserKey = utils.parseKey(userKeys.public) as ReturnType<typeof utils.parseKey> & { getPublicSSH(): Buffer; verify(d: Buffer, s: Buffer, h?: string): boolean };
 const serverFingerprint = fingerprint((utils.parseKey(hostKeys.public) as unknown as { getPublicSSH(): Buffer }).getPublicSSH());
 
