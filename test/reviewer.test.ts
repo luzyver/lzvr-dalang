@@ -27,6 +27,11 @@ describe('reviewer', () => {
     expect(buildReviewPrompt({ ...base, files, diffFile: '/tmp/r/change.diff' })).toContain('The whole diff is in the file /tmp/r/change.diff');
     expect(p).toContain('### a.ts\n+x');
     expect(buildReviewPrompt({ ...base, files, guide: 'Only check tests.' })).not.toContain(REVIEWER_GUIDE);
+    const long = `${'rule. '.repeat(3000)}LAST RULE`; // a custom skill's instructions, past what a request may take
+    const skilled = buildReviewPrompt({ ...base, files, request: '/custom notes add a button', instructions: long });
+    expect(skilled).toContain('/custom notes add a button');
+    expect(skilled).toContain('LAST RULE');
+    expect(p).not.toContain('custom skill');
     expect(promptReview(p)).toEqual({ round: 1, key: 't1-before/1' });
     expect(promptReview('[Reviewer] something else')).toBeNull();
   });

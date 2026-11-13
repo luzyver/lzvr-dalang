@@ -197,6 +197,13 @@ function CustomSkills() {
   const [list, setList] = useState(null);
   useEffect(() => { api('/api/settings/custom-skills').then(setList).catch((e) => toast(e.message, 'err')); }, []);
   const save = guarded(async () => {
+    // Said here in plain words: the server would refuse the same with a schema error.
+    const names = list.map((s) => s.name.toLowerCase());
+    const bad = list.find((s) => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(s.name));
+    if (bad) throw new Error(bad.name ? `"${bad.name}" is not a valid name: use letters, digits, "-" and "_"` : 'Every skill needs a name');
+    if (new Set(names).size !== names.length) throw new Error('Two skills have the same name');
+    const empty = list.find((s) => !s.content.trim());
+    if (empty) throw new Error(`"${empty.name}" has no instructions`);
     await api('/api/settings/custom-skills', { method: 'PUT', body: { skills: list } });
     toast('Custom skills saved');
   });

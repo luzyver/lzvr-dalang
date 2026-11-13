@@ -43,19 +43,29 @@ describe('Dalang skills', () => {
   });
 });
 
-import { customInvocation, customSkillGuide } from '../src/skills.js';
+import { customInvocation, customSkillPrompt } from '../src/skills.js';
 
 describe('custom skills', () => {
   const skills = [{ name: 'Notes', description: '', content: 'Write notes.' }];
   it('finds a skill by name, ignoring case, only at the start of a prompt', () => {
-    expect(customInvocation('/custom notes fix it', skills)?.skill?.content).toBe('Write notes.');
+    expect(customInvocation('/custom notes fix it', skills)).toMatchObject({ input: 'fix it', skill: { content: 'Write notes.' } });
     expect(customInvocation('please /custom notes', skills)).toBeNull();
     expect(customInvocation('/custom nope', skills)?.skill).toBeUndefined();
   });
-  it('tells the agent the instructions, or that the skill is unknown', () => {
-    expect(customSkillGuide(customInvocation('/custom notes', skills), skills)).toContain('Write notes.');
-    expect(customSkillGuide(customInvocation('/custom nope', skills), skills)).toContain('no custom skill');
-    expect(customSkillGuide(null, skills)).toBe('');
+  it('puts the instructions and the input in the prompt, which no longer starts with a slash', () => {
+    const known = customSkillPrompt('/custom notes fix\nit', skills);
+    expect(known).toContain('Write notes.');
+    expect(known.endsWith('Input:\nfix\nit')).toBe(true);
+    expect(customSkillPrompt('/custom notes', skills)).toContain('Input:\n(none)');
+    const unknown = customSkillPrompt(' /custom nope x', skills);
+    expect(unknown).toContain('no custom skill');
+    expect(unknown).toContain('Notes');
+    const bare = customSkillPrompt('/custom ', [{ name: 'Notes', description: 'Meeting notes', content: 'x' }]);
+    expect(bare).toContain('- Notes: Meeting notes');
+    for (const p of [known, unknown, bare]) expect(p.trimStart().startsWith('/')).toBe(false);
+    expect(customSkillPrompt('/customs', skills)).toBe('/customs');
+    expect(customSkillPrompt('/compact', skills)).toBe('/compact');
+    expect(customSkillPrompt('hello', skills)).toBe('hello');
   });
 });
 
