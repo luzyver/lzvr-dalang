@@ -192,6 +192,35 @@ function ReviewerSettings() {
   </section>`;
 }
 
+/** Custom skills: instructions an admin writes here, run in any chat by typing `/custom <name>` at the start of a prompt. */
+function CustomSkills() {
+  const [list, setList] = useState(null);
+  useEffect(() => { api('/api/settings/custom-skills').then(setList).catch((e) => toast(e.message, 'err')); }, []);
+  const save = guarded(async () => {
+    await api('/api/settings/custom-skills', { method: 'PUT', body: { skills: list } });
+    toast('Custom skills saved');
+  });
+  if (list == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  const edit = (i, patch) => setList(list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  return html`<section class="form-card">
+    <strong>Custom skills</strong>
+    <span class="dim small">Write instructions once, then run them in any chat by starting a message with <code>/custom name</code>;
+      the rest of the message is the input. A name is letters, digits, "-" and "_".</span>
+    ${list.map((s, i) => html`<div class="form-card" key=${i}>
+      <div class="row wrap">
+        <${Field} label="Name"><input value=${s.name} placeholder="release-notes" onInput=${(e) => edit(i, { name: e.currentTarget.value.trim() })} /><//>
+        <${Field} label="Description"><input value=${s.description} onInput=${(e) => edit(i, { description: e.currentTarget.value })} /><//>
+        <button class="btn danger sm" onClick=${() => setList(list.filter((_, j) => j !== i))}>Remove</button>
+      </div>
+      <textarea class="prompt-edit" rows="6" aria-label="Instructions of ${s.name || 'skill'}" value=${s.content} onInput=${(e) => edit(i, { content: e.currentTarget.value })}></textarea>
+    </div>`)}
+    <div class="row">
+      <button class="btn ghost sm" onClick=${() => setList([...list, { name: '', description: '', content: '' }])}>Add skill</button>
+      <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
+    </div>
+  </section>`;
+}
+
 const Defaults = () => html`
   <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
   <${DefaultsFor} backend="codex" title="Codex" />
@@ -199,7 +228,8 @@ const Defaults = () => html`
   <${SubagentLimits} />
   <${ReviewerSettings} />
   <${DesignHook} />
-  <${AgentGit} />`;
+  <${AgentGit} />
+  <${CustomSkills} />`;
 
 /** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
 function PromptFor({ path, title, help }) {

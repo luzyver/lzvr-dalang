@@ -8,6 +8,7 @@ import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
+import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
 import { clickupApprovalRoutes } from './clickup-approvals.js';
 import { clickupClient, clickupForAll, clickupRoutes, clickupSend } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
@@ -377,6 +378,20 @@ export function buildApp(
     schema: { body: { type: 'object', required: ['enabled'], additionalProperties: false, properties: { enabled: { type: 'boolean' } } } },
   }, (req, reply) => {
     store.setDesignHook({ enabled: req.body.enabled });
+    return reply.code(204).send();
+  });
+  // Custom skills (skills.ts): written here by admins, run in a chat by typing `/custom <name>`. Any signed-in user may list the names.
+  app.get('/api/custom-skills', () => store.getCustomSkills().map(({ name, description }) => ({ name, description })));
+  app.get('/api/settings/custom-skills', { onRequest: requireAdmin }, () => store.getCustomSkills());
+  app.put<{ Body: { skills: CustomSkill[] } }>('/api/settings/custom-skills', {
+    onRequest: requireAdmin,
+    schema: { body: { type: 'object', required: ['skills'], additionalProperties: false, properties: { skills: { type: 'array', maxItems: 100, items: {
+      type: 'object', required: ['name', 'content'], additionalProperties: false,
+      properties: { name: { type: 'string', pattern: CUSTOM_SKILL_NAME.source }, description: { type: 'string', maxLength: 300 }, content: { type: 'string', minLength: 1, maxLength: 50_000 } } } } } } },
+  }, (req, reply) => {
+    const names = req.body.skills.map((s) => s.name.toLowerCase());
+    if (new Set(names).size !== names.length) return reply.code(400).send({ error: 'Skill names must be unique' });
+    store.setCustomSkills(req.body.skills.map((s) => ({ name: s.name, description: s.description ?? '', content: s.content })));
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.

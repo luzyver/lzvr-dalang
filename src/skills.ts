@@ -57,3 +57,26 @@ These folders are shared by every chat: do not change files in them. Anything a 
 (settings, a customized style guide) goes in the project instead, or ask the person.
 ${skills.map((s) => `- ${s.name} (${s.path}): ${s.description}`).join('\n')}`;
 }
+
+/** A skill an admin wrote in Settings: stored in the database, run for a chat by typing `/custom <name>` in its prompt. */
+export interface CustomSkill { name: string; description: string; content: string }
+
+export const CUSTOM_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** The custom skill a prompt invokes (`/custom <name> ...`), `null` when it does not start with the command. `skill` is undefined for an unknown name. */
+export function customInvocation(prompt: string, skills: CustomSkill[]): { name: string; skill?: CustomSkill } | null {
+  const m = /^\s*\/custom\s+(\S+)/i.exec(prompt);
+  if (!m) return null;
+  const name = m[1]!;
+  return { name, skill: skills.find((s) => s.name.toLowerCase() === name.toLowerCase()) };
+}
+
+/** What a turn that invokes a custom skill is told: the skill's instructions, or that there is no such skill. */
+export function customSkillGuide(inv: { name: string; skill?: CustomSkill } | null, skills: CustomSkill[]): string {
+  if (!inv) return '';
+  if (!inv.skill) {
+    const known = skills.map((s) => s.name).join(', ') || 'none';
+    return `The person started their message with "/custom ${inv.name}", but there is no custom skill of that name (there are: ${known}). Tell them so and do not guess its content.`;
+  }
+  return `The person invoked the custom skill "${inv.skill.name}" with "/custom ${inv.skill.name}"; the rest of their message is its input. Follow these instructions for this request:\n\n${inv.skill.content}`;
+}

@@ -42,3 +42,36 @@ describe('Dalang skills', () => {
     expect(loadSkills(SKILLS_DIR).map((s) => s.name)).toContain('diagram-design');
   });
 });
+
+import { customInvocation, customSkillGuide } from '../src/skills.js';
+
+describe('custom skills', () => {
+  const skills = [{ name: 'Notes', description: '', content: 'Write notes.' }];
+  it('finds a skill by name, ignoring case, only at the start of a prompt', () => {
+    expect(customInvocation('/custom notes fix it', skills)?.skill?.content).toBe('Write notes.');
+    expect(customInvocation('please /custom notes', skills)).toBeNull();
+    expect(customInvocation('/custom nope', skills)?.skill).toBeUndefined();
+  });
+  it('tells the agent the instructions, or that the skill is unknown', () => {
+    expect(customSkillGuide(customInvocation('/custom notes', skills), skills)).toContain('Write notes.');
+    expect(customSkillGuide(customInvocation('/custom nope', skills), skills)).toContain('no custom skill');
+    expect(customSkillGuide(null, skills)).toBe('');
+  });
+});
+
+import { AUTH } from './helpers.js';
+import { bearer, mkUser, setupApp } from './setup-app.js';
+
+describe('custom skills API', () => {
+  it('saves mixed-case names, rejects case-insensitive duplicates and non-admins', async () => {
+    const t = setupApp();
+    const dev = await mkUser(t, 'budi', 'dev');
+    const put = (skills: unknown[], headers = AUTH) => t.app.inject({ method: 'PUT', url: '/api/settings/custom-skills', headers, payload: { skills } });
+    expect((await put([{ name: 'Notes', description: 'd', content: 'x' }])).statusCode).toBe(204);
+    expect((await t.app.inject({ url: '/api/custom-skills', headers: AUTH })).json()).toEqual([{ name: 'Notes', description: 'd' }]);
+    expect((await put([{ name: 'Notes', content: 'x' }, { name: 'notes', content: 'y' }])).statusCode).toBe(400);
+    expect((await put([{ name: 'bad name', content: 'x' }])).statusCode).toBe(400);
+    expect((await put([], bearer(dev.token))).statusCode).toBe(403);
+    await t.app.close();
+  });
+});

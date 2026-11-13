@@ -6,6 +6,7 @@ import { DESIGN_HOOK_DEFAULTS, type DesignHookPolicy } from './design-hook.js';
 import { REVIEWER_DEFAULTS, type ReviewerPolicy, type ReviewState } from './reviewer.js';
 import { summarizeUsage, type ChatUsage } from './token-usage.js';
 import type { ContextUsage } from './context.js';
+import type { CustomSkill } from './skills.js';
 import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
@@ -429,6 +430,10 @@ export class Store {
     try { return { ...DESIGN_HOOK_DEFAULTS, ...(JSON.parse(this.getKv('design_hook') ?? '{}') as Partial<DesignHookPolicy>) }; } catch { return DESIGN_HOOK_DEFAULTS; }
   }
   setDesignHook(p: DesignHookPolicy): void { this.setKv('design_hook', JSON.stringify(p)); }
+  getCustomSkills(): CustomSkill[] {
+    try { const v = JSON.parse(this.getKv('custom_skills') ?? '[]') as CustomSkill[]; return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+  setCustomSkills(skills: CustomSkill[]): void { this.setKv('custom_skills', JSON.stringify(skills)); }
   getMemoryPolicy(): MemoryPolicy {
     try { return { ...MEMORY_DEFAULTS, ...(JSON.parse(this.getKv('memory') ?? '{}') as Partial<MemoryPolicy>) }; } catch { return MEMORY_DEFAULTS; }
   }

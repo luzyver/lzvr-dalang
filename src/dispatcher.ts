@@ -8,7 +8,7 @@ import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
-import { loadSkills, skillsGuide } from './skills.js';
+import { customInvocation, customSkillGuide, loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -576,6 +576,7 @@ export class Dispatcher {
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
+        customSkillGuide(customInvocation(item.prompt, this.store.getCustomSkills()), this.store.getCustomSkills()),
         agentGitGuide(agentGit),
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');
