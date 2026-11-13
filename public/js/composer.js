@@ -30,12 +30,18 @@ function useModelChoices(id, backend) {
 
 // "@db", "@database" or "@ssh" right before the caret, with what follows it so far ("@db:pro").
 const MENTION = /(^|\s)@(database|db|ssh):?([\w.-]*)$/i;
+// "/custom" at the very start of the box, whole or still being typed ("/cu"), then the skill's name so far.
+const SKILL = /^(\s*)\/(\w+)(?:\s+([\w-]*))?$/;
 const MENTION_KINDS = {
   db: { url: '/api/db/agent-connections', icon: 'database', label: 'Databases', none: 'No database connection agents may use' },
   ssh: { url: '/api/ssh/agent-hosts', icon: 'terminal', label: 'SSH hosts', none: 'No SSH host agents may use' },
+  skill: { url: '/api/custom-skills', icon: 'sparkles', label: 'Custom skills', none: 'No custom skill yet: an admin adds them in Settings' },
 };
 
-/** The @db / @ssh list above the box: the connections and hosts agents may use, inserted as "@db:<id>" / "@ssh:<id>". */
+/**
+ * The @db / @ssh list above the box: the connections and hosts agents may use, inserted as "@db:<id>" / "@ssh:<id>".
+ * Also the custom skills, listed when the box starts with "/custom" and inserted as "/custom <name>".
+ */
 function useMentions(box, setText) {
   const [at, setAt] = useState(null);
   const [lists, setLists] = useState({});
@@ -47,24 +53,31 @@ function useMentions(box, setText) {
 
   const update = (el) => {
     const caret = el.selectionStart;
-    const m = el.selectionEnd === caret && el.value.slice(0, caret).match(MENTION);
-    if (!m) { setAt(null); return; }
-    const kind = m[2].toLowerCase() === 'ssh' ? 'ssh' : 'db';
-    setAt({ kind, start: caret - m[0].length + m[1].length, end: caret, filter: m[3].toLowerCase() });
+    const before = el.selectionEnd === caret ? el.value.slice(0, caret) : null;
+    const m = before?.match(MENTION);
+    const s = !m && before?.match(SKILL);
+    // A name is only offered after the whole word: "/cu" lists them all, "/cu x" is not this command.
+    const skill = s && 'custom'.startsWith(s[2].toLowerCase()) && (s[3] === undefined || s[2].toLowerCase() === 'custom');
+    if (!m && !skill) { setAt(null); return; }
+    const kind = skill ? 'skill' : m[2].toLowerCase() === 'ssh' ? 'ssh' : 'db';
+    setAt(skill ? { kind, start: s[1].length, end: caret, filter: (s[3] || '').toLowerCase() }
+      : { kind, start: caret - m[0].length + m[1].length, end: caret, filter: m[3].toLowerCase() });
     setSel(0);
-    if (!loading.current[kind]) {
+    // Skills are read again each time their list opens: one added in Settings shows without a reload.
+    if (skill ? at?.kind !== 'skill' : !loading.current[kind]) {
       loading.current[kind] = true;
-      api(MENTION_KINDS[kind].url).then((l) => setLists((ls) => ({ ...ls, [kind]: l })))
+      api(MENTION_KINDS[kind].url)
+        .then((l) => setLists((ls) => ({ ...ls, [kind]: skill ? l.map((x) => ({ id: x.name, label: x.name, note: x.description })) : l })))
         .catch((e) => { loading.current[kind] = false; toast(e.message, 'err'); });
     }
   };
 
   const list = at && lists[at.kind];
-  const items = (list || []).filter((x) => !at.filter || x.id.includes(at.filter) || x.label.toLowerCase().includes(at.filter));
+  const items = (list || []).filter((x) => !at.filter || x.id.toLowerCase().includes(at.filter) || x.label.toLowerCase().includes(at.filter));
 
   const pick = (item) => {
     const el = box.current;
-    const ref = `@${at.kind}:${item.id} `;
+    const ref = at.kind === 'skill' ? `/custom ${item.id} ` : `@${at.kind}:${item.id} `;
     const next = el.value.slice(0, at.start) + ref + el.value.slice(at.end);
     setText(next);
     setAt(null);

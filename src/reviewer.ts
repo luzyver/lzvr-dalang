@@ -16,8 +16,9 @@ export const REVIEWER_DEFAULTS: ReviewerPolicy = { enabled: false, backend: '', 
 /**
  * Per person's chat, the request its reviewer checks: where it started (a checkpoint), how many reviews it had, and the
  * reviewer chat whose answer is awaited ('' = none). Kept in the database, so a review a restart cut off still reports.
+ * `instructions`: those of the custom skill the request invoked (`/custom <name>`), which the agent got with it.
  */
-export interface ReviewState { request: string; base: string; rounds: number; reviewer: string }
+export interface ReviewState { request: string; base: string; rounds: number; reviewer: string; instructions?: string }
 
 /** Which review of which request a review prompt asks for: a reviewer's late answer must not count for a newer one. */
 export const reviewKey = (r: Pick<ReviewState, 'base' | 'rounds'>) => `${r.base}/${r.rounds}`;
@@ -72,11 +73,14 @@ export function buildReviewPrompt(o: {
   request: string; answer: string; base: string; after: string; files: GitFile[]; diffs: string[]; guide?: string; round: number; key: string;
   /** The whole diff (writeChangeFile), when it could be written. */
   diffFile?: string;
+  /** A custom skill's instructions the request ran with: whole (a skill has its own limit) and after the request, so they never push it out. */
+  instructions?: string;
 }): string {
   const list = o.files.map((f) => `${f.status} ${f.from ? `${f.from} -> ` : ''}${f.path}`).join('\n');
   return `You are the reviewer of another agent's work in this repository (round ${o.round}, review ${o.key}).\n\n`
     + `${o.guide?.trim() || REVIEWER_GUIDE}\n\n`
     + `The request it worked on:\n\n${cut(o.request, ANSWER_MAX)}\n\n`
+    + (o.instructions ? `That request ran a custom skill. The agent was told to follow these instructions for it:\n\n${o.instructions}\n\n` : '')
     + `Its last answer:\n\n${cut(o.answer, ANSWER_MAX) || '(none)'}\n\n`
     + `Changed files (git checkpoints ${o.base}..${o.after}):\n${list}\n\n`
     + (o.diffFile ? `The whole diff is in the file ${o.diffFile}. Your shell may refuse even reads (git included): then read it `

@@ -8,7 +8,7 @@ import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
-import { loadSkills, skillsGuide } from './skills.js';
+import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -493,9 +493,12 @@ export class Dispatcher {
     // Claude Code takes no image flag: it opens attached images itself from the path in the prompt.
     const images = claude ? [] : item.attachments.filter((p) => IMAGE_EXT.has(extname(p).toLowerCase()));
     const others = item.attachments.filter((p) => !images.includes(p));
+    // `/custom <name>` becomes that skill's instructions (see skills.ts); what the chat shows stays what was typed.
+    const customSkills = this.store.getCustomSkills();
+    const said = customSkillPrompt(item.prompt, customSkills);
     const prompt = others.length
-      ? `${item.prompt}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
-      : item.prompt;
+      ? `${said}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
+      : said;
 
     const turnId = this.store.startTurn(convId, item.prompt, item.from_turn ?? null);
     let failed = false;
@@ -520,8 +523,11 @@ export class Dispatcher {
       checkpoints = this.opts.checkpoints !== false && sandbox !== 'read-only' && (await isRepo(cwd).catch(() => false));
       if (checkpoints) await this.checkpoint(cwd, convId, `${turnId}-before`);
       // A new request of the person (not a reviewer's or sub-agent's report coming back, nor a turn a restart cut off
-      // going on) starts what the reviewer checks.
-      if (!conv.parent && !item.resume && item.kind !== 'report') this.store.setReview(convId, { request: item.prompt, base: `${turnId}-before`, rounds: 0, reviewer: '' });
+      // going on) starts what the reviewer checks: what was typed, and apart from it a custom skill's instructions.
+      if (!conv.parent && !item.resume && item.kind !== 'report') {
+        const instructions = customInvocation(item.prompt, customSkills)?.skill?.content;
+        this.store.setReview(convId, { request: item.prompt, base: `${turnId}-before`, rounds: 0, reviewer: '', ...(instructions && { instructions }) });
+      }
       // Did an earlier attempt of THIS turn already do something (run a command, answer, ...)? One a restart cut off may have.
       let workDone = !!item.resume;
       let cutBy = item.resume ? 'Dalang restarted' : 'its account hit a usage limit';
@@ -869,7 +875,7 @@ export class Dispatcher {
     const diffFile = await writeChangeFile(cwd, base, head, rev.id)
       .catch((e) => { console.warn(`no diff file for the review of chat ${conv.id}: ${(e as Error).message}`); return undefined; });
     const prompt = buildReviewPrompt({ request: review.request, answer: lastMessage, base, after: head, files, diffs, guide: policy.guide,
-      round: review.rounds, key: reviewKey(review), diffFile });
+      round: review.rounds, key: reviewKey(review), diffFile, instructions: review.instructions });
     this.store.enqueue(rev.id, prompt, [], '', item.on_behalf || item.author, conv.id);
     this.emit(conv.id, after!.id, { type: 'review.started', reviewer: rev.id, round: review.rounds, files: files.length });
     this.kick(rev.id);

@@ -36,6 +36,30 @@ describe('Dispatcher with the claude backend', () => {
     expect(store.eventsAfter(conv.id, 0).filter((e) => e.type === 'context.compacted')).toHaveLength(1);
   });
 
+  it('sends a custom skill as its instructions, not as a prompt that starts with a slash', async () => {
+    const { store, dispatcher, conv } = setup({});
+    store.setCustomSkills([{ name: 'notes', description: '', content: 'Write notes.' }]);
+    store.enqueue(conv.id, '/custom notes about x', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const events = store.eventsAfter(conv.id, 0);
+    const echoed = events.find((e) => e.payload.includes('echo:'))!.payload;
+    expect(echoed).toContain('Write notes.');
+    expect(echoed).toContain('about x');
+    expect(echoed).not.toContain('echo:/custom');
+    expect(events.find((e) => e.type === 'user.prompt')!.payload).toContain('/custom notes about x'); // the chat shows what was typed
+  });
+
+  it('keeps what was typed apart from a long custom skill for the reviewer', async () => {
+    const { store, dispatcher, conv } = setup({});
+    const content = `${'rule. '.repeat(3000)}LAST RULE`;
+    store.setCustomSkills([{ name: 'notes', description: '', content }]);
+    store.enqueue(conv.id, '/custom notes about x', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    expect(store.getReview(conv.id)).toMatchObject({ request: '/custom notes about x', instructions: content });
+  });
+
   it('preserves Claude environment settings when Dalang compaction is opted out', async () => {
     const env = { FAKE_CONTEXT: JSON.stringify({ tokens: 12_000 }), CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' };
     const { store, conv, dispatcher: original } = setup(env);
