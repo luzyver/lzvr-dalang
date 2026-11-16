@@ -590,6 +590,8 @@ export function ChangesPane({ id }) {
             <span class="fpath" title=${f.from ? `${f.from} → ${f.path}` : f.path}><span class="dim">${dir}</span>${name}</span>
             ${st && html`<span class="diffstat">${st.add > 0 && html`<b class="add">+${st.add}</b>`}${st.del > 0 && html`<b class="del">−${st.del}</b>`}</span>`}
             ${isConflict(f) && html`<${ConflictMenu} id=${id} f=${f} after=${after} />`}
+            ${!s.operation && html`<button class="icon-btn sm danger file-revert" aria-label=${`Discard ${f.path}`} title=${f.status === '??' ? 'Delete this new file' : 'Discard the changes to this file'}
+              onClick=${(e) => { e.stopPropagation(); revert(f)(); }}><${Icon} name="undo-2" /></button>`}
           </div>`;
         })}
       </section>

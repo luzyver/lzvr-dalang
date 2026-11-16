@@ -47,6 +47,9 @@
 .file-list-head + .file { border-top: 0; }
 .file:hover { background: var(--surface-2); }
 .file.selected { background: var(--accent-soft); }
+.file-revert { flex: none; margin-right: -6px; opacity: 0; }
+.file:hover .file-revert, .file-revert:focus-visible { opacity: 1; }
+@media (hover: none) { .file-revert { opacity: 1; } }
 .fstat { font: 650 11px var(--mono); width: 14px; text-align: center; flex: none; }
 .fstat.m { color: var(--warn); } .fstat.a { color: var(--ok); } .fstat.d { color: var(--err); } .fstat.r { color: var(--syn-f); }
 .fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font: 12.5px var(--mono); }
