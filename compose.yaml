@@ -1,0 +1,53 @@
+# Dalang with Docker Compose (see "Install with Docker" in docs/setup.md).
+#   cp .env.example .env    # set LZVR_TOKEN; HOST, PORT, STATE_DIR and WORKSPACE_ROOT are set below, not there
+#   docker compose up -d --build
+name: dalang
+
+services:
+  dalang:
+    build:
+      context: .
+      args:
+        # the owner of the project folders on the host, so agents can write there (not root: the build refuses 0)
+        DALANG_UID: ${DALANG_UID:-1000}
+        DALANG_GID: ${DALANG_GID:-1000}
+    image: lzvr-dalang:local
+    init: true
+    restart: unless-stopped
+    # Codex confines what it runs with bubblewrap, which makes user and mount namespaces: Docker's default seccomp
+    # and AppArmor profiles refuse that, and every command of a read-only or workspace-write project would fail.
+    # No capability is added and the process stays the user `node`.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 9876
+      STATE_DIR: /data/state
+      WORKSPACE_ROOT: /workspace
+    ports:
+      # loopback only: put a TLS proxy on the host in front (nginx.conf), never publish it to the internet as is
+      - "127.0.0.1:${DALANG_PORT:-9876}:9876"
+    volumes:
+      # the database, accounts, uploads and worktrees
+      - state:/data/state
+      # the home of the user everything runs as: ~/.gitconfig, ~/.ssh, the gh login
+      - home:/home/node
+      # your projects: add them in the panel as /workspace/<folder>
+      - ${PROJECTS_DIR:-./projects}:/workspace
+    # A stop or an update lets running chats finish first: keep this longer than DRAIN_MINUTES (default 5).
+    stop_grace_period: 10m
+
+volumes:
+  state:
+  home:
+
+# A fixed subnet, so the proxy on the host always reaches the container from the same address (172.31.98.1):
+# that is what TRUST_PROXY is set to. Change both if the range is taken on your host.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.98.0/24
+          gateway: 172.31.98.1

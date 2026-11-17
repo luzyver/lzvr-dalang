@@ -604,7 +604,7 @@ describe('ClickUp tools', () => {
     expect(await clickupNames(await t.connect())).toEqual([]);
   });
 
-  it('are given to the owner only, not to other admins or devs', async () => {
+  it('read as each person with their own token, and are not given on another person\'s', async () => {
     const t = await withClickUp();
     const owner = await t.connect();
     expect((await clickupNames(owner)).sort()).toEqual(CLICKUP);
@@ -613,62 +613,86 @@ describe('ClickUp tools', () => {
     const only = await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-10', workspace_ids: ['901'] });
     expect(only.json.messages.map((m: { id: string }) => m.id)).toEqual(['d1m']);
     expect((await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-01' })).isError).toBe(true);
-    for (const role of ['admin', 'dev'] as const) {
-      const u = await mkUser(t, `u-${role}`, role);
-      expect(await clickupNames(await t.connect({ authorization: `Bearer ${u.token}` }))).toEqual([]);
-    }
+
+    // The owner's token is the owner's alone: an admin or dev without one of their own gets nothing.
+    const admin = await mkUser(t, 'u-admin', 'admin');
+    const dev = await mkUser(t, 'u-dev', 'dev');
+    const h = (u: { token: string }) => ({ authorization: `Bearer ${u.token}` });
+    for (const u of [admin, dev]) expect(await clickupNames(await t.connect(h(u)))).toEqual([]);
+
+    // A dev saves their own (one ClickUp refuses): they get the tools on it, the owner stays on the owner's.
+    const saved = await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: h(dev), payload: { token: 'pk_wrong', workspaceId: '', timeZone: '' } });
+    expect(saved.statusCode).toBe(200);
+    const asDev = await t.connect(h(dev));
+    expect((await clickupNames(asDev)).sort()).toEqual(CLICKUP);
+    expect((await call(asDev, 'clickup_whoami')).isError).toBe(true);
+    expect((await call(await t.connect(), 'clickup_whoami')).json).toMatchObject({ user: { username: 'luz' } });
+    expect(await clickupNames(await t.connect(h(admin)))).toEqual([]);
+
+    // Their token goes with them.
+    expect(t.store.getKv('clickup')).toContain('pk_wrong');
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${dev.id}`, headers: AUTH })).statusCode).toBe(204);
+    expect(t.store.getKv('clickup')).not.toContain('pk_wrong');
+    expect(t.store.getKv('clickup')).toContain('pk_test');
   });
 
-  it('reach an agent only during a turn the owner sent', async () => {
+  it('reach an agent only during a turn sent by someone with a token of their own', async () => {
     const t = await withClickUp();
+    const budi = await mkUser(t, 'budi', 'dev');
     const { a } = await twoConvs(await t.connect());
     const as = (author: string) => t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` });
     expect((await clickupNames(await as('owner'))).sort()).toEqual(CLICKUP);
-    for (const author of ['', 'budi']) expect(await clickupNames(await as(author))).toEqual([]);
+    for (const author of ['', 'budi', 'nobody']) expect(await clickupNames(await as(author))).toEqual([]);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: { authorization: `Bearer ${budi.token}` }, payload: { token: 'pk_test', workspaceId: '', timeZone: '' } });
+    expect((await clickupNames(await as('budi'))).sort()).toEqual(CLICKUP);
+    expect(await clickupNames(await as(''))).toEqual([]); // a prompt nobody sent (an agent, an approval) is on nobody's token
   });
 
-  it('reach every user once the owner marks them for all users', async () => {
-    const t = await withClickUp();
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true } });
-    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ configured: true, allUsers: true });
+  it('reads settings saved before every user had their own as the owner\'s', async () => {
+    const t = await boot({ clickupFetch: fakeClickUp() });
+    t.store.setKv('clickup', JSON.stringify({ token: 'pk_test', workspaceId: '900', timeZone: '', allUsers: true, send: true }));
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
+      .toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: '', send: true });
+    expect((await clickupNames(await t.connect())).sort()).toEqual([...CLICKUP, ...SEND].sort());
     const dev = await mkUser(t, 'u-dev', 'dev');
-    expect((await clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }))).sort()).toEqual(CLICKUP);
-    const { a } = await twoConvs(await t.connect());
-    for (const author of ['', 'budi']) {
-      expect((await clickupNames(await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` }))).sort()).toEqual(CLICKUP);
-    }
+    expect(await clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }))).toEqual([]); // "all users" is gone
   });
 
-  it('send messages only once the owner allows it, to whoever gets the other tools', async () => {
+  it('send messages only once the owner allows it, for everyone with a token', async () => {
     const t = await withClickUp();
-    const setSend = (allUsers: boolean, send: boolean) =>
-      t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers, send } });
-    const dev = await mkUser(t, 'u-dev', 'dev');
-    const devNames = async () => clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }));
+    const setSend = (send: boolean) =>
+      t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send } });
+    const dev = { authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` };
+    const devPut = (payload: object) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: dev, payload });
+    await devPut({ token: 'pk_test', workspaceId: '', timeZone: '' });
+    const devNames = async () => clickupNames(await t.connect(dev));
     expect(await clickupNames(await t.connect())).not.toContain('clickup_send_message');
+    expect((await devNames()).sort()).toEqual(CLICKUP);
+    expect((await devPut({ workspaceId: '', timeZone: '', send: true })).statusCode).toBe(403); // the owner's switch
 
-    expect((await setSend(false, true)).json()).toMatchObject({ send: true, allUsers: false });
+    expect((await setSend(true)).json()).toMatchObject({ send: true });
     const owner = await t.connect();
     expect((await clickupNames(owner)).sort()).toEqual([...CLICKUP, ...SEND].sort());
     const r = await call(owner, 'clickup_send_message', { channel_id: 'c1', content: 'deploy done' });
     expect(r.json).toMatchObject({ status: 'pending_approval', to: { channel: 'dev-team', workspace: 'Acme' } });
     expect((await call(owner, 'clickup_send_message', { channel_id: 'nope', content: 'hi' })).isError).toBe(true);
-    expect(await devNames()).toEqual([]);
-
-    await setSend(true, true);
     expect((await devNames()).sort()).toEqual([...CLICKUP, ...SEND].sort());
-    await setSend(true, false);
+
+    // A user saving their own settings leaves the switch as it is.
+    expect((await devPut({ workspaceId: '900', timeZone: '' })).json()).toMatchObject({ workspaceId: '900', send: true });
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ workspaceId: '', send: true });
+    await setSend(false);
     expect((await devNames()).sort()).toEqual(CLICKUP);
   });
 
-  it('hold every message for the owner, who may change it before it goes out, and tell the chat', async () => {
+  it('hold every message for whoever sent the turn, who may change it before it goes out, and tell the chat', async () => {
     const calls: string[] = [];
     const t = await withClickUp('pk_test', calls);
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
     const posts = () => calls.filter((c) => c.startsWith('POST '));
     const told = (re: RegExp) => until(() => [...t.store.listQueue(a.id), ...t.store.listTurns(a.id)].some((x) => re.test(x.prompt)));
     const { a } = await twoConvs(await t.connect());
-    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
 
     const thread = await call(agent, 'clickup_send_message', { channel_id: 'c1', reply_to: 'm3', content: 'done' });
     expect(thread.json).toMatchObject({ status: 'pending_approval', to: { reply_to: 'm3', thread: { author: 'luz', preview: 'still fixing the invoice export' } } });
@@ -677,11 +701,11 @@ describe('ClickUp tools', () => {
     expect((await call(agent, 'clickup_send_message', { channel_id: 'c1', to_user_id: '22', content: 'x' })).isError).toBe(true);
     expect(posts()).toEqual([]);
 
-    // Other admins neither see nor decide them: the messages would go out as the owner.
+    // Nobody else sees or decides them, admins included: the messages go out as the one who asked.
     const admin = { authorization: `Bearer ${(await mkUser(t, 'u-admin', 'admin')).token}` };
     expect((await t.app.inject({ url: '/api/clickup/approvals', headers: admin })).json()).toEqual([]);
     const id = (thread.json as { approval_id: number }).approval_id;
-    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(403);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(404);
     expect((await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json()).toHaveLength(2);
 
     const ok = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH, payload: { content: 'done, deployed' } });
@@ -708,11 +732,11 @@ describe('ClickUp tools', () => {
   it('send files from the chat folder by uploading them to a task, as they were when asked, and link them', async () => {
     const calls: string[] = [];
     const t = await withClickUp('pk_test', calls);
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
     const { p, a } = await twoConvs(await t.connect());
     const dir = t.store.getProject(p.id)!.path;
     writeFileSync(join(dir, 'rekap.xlsx'), 'xlsx-bytes');
-    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
     const ask = (args: Record<string, unknown>) => call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'rekap terlampir', ...args });
 
     expect((await ask({ files: ['rekap.xlsx'] })).text).toMatch(/task_id/);
@@ -736,14 +760,14 @@ describe('ClickUp tools', () => {
   it('keep files whose names differ only in case apart, and keep the files of an upload cut off midway until dismissed', async () => {
     const calls: string[] = [];
     const t = await withClickUp('pk_test', calls);
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
     const { p, a } = await twoConvs(await t.connect());
     const dir = t.store.getProject(p.id)!.path;
     for (const [sub, name, body] of [['a', 'rekap.xlsx', 'first'], ['b', 'REKAP.xlsx', 'second one'], ['b', 'bad-502.xlsx', 'x']]) {
       mkdirSync(join(dir, sub!), { recursive: true });
       writeFileSync(join(dir, sub!, name!), body!);
     }
-    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
     const ask = async (files: string[]) => ((await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'rekap', files, task_id: 't1' })).json as { approval_id: number }).approval_id;
     const approve = async (id: number) => (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
     const filesOf = (id: number) => join(t.cfg.stateDir, 'clickup-files', String(id));
@@ -762,30 +786,53 @@ describe('ClickUp tools', () => {
     expect(existsSync(filesOf(cut))).toBe(false);
   });
 
-  it('show a request only to whoever asked, and call a 5xx on sending unknown, not failed', async () => {
+  it('show a request only to whoever asked, who alone decides it, and call a 5xx on sending unknown, not failed', async () => {
     const inner = fakeClickUp();
     const status = { code: 502 };
     const flaky = (async (input: string | URL, init?: RequestInit) => (init?.method === 'POST' && status.code
       ? new Response('{"err":"bad gateway"}', { status: status.code }) : inner(input, init))) as typeof fetch;
     const t = await boot({ clickupFetch: flaky });
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token: 'pk_test', workspaceId: '', timeZone: '', allUsers: true, send: true } });
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { token: 'pk_test', workspaceId: '', timeZone: '', send: true } });
     const { a } = await twoConvs(await t.connect());
-    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, '')}` });
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
     const asked = await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'secret draft' });
     const id = (asked.json as { approval_id: number }).approval_id;
 
-    const dev = await t.connect({ authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` });
+    const devAuth = { authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` };
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: devAuth, payload: { token: 'pk_test', workspaceId: '', timeZone: '' } });
+    const dev = await t.connect(devAuth);
     expect((await call(dev, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
     const own = (await call(dev, 'clickup_send_message', { channel_id: 'c1', content: 'mine' })).json as { approval_id: number };
     expect((await call(dev, 'clickup_send_status', { approval_id: own.approval_id })).json).toMatchObject({ status: 'pending' });
     expect((await call(agent, 'clickup_send_status', { approval_id: own.approval_id })).isError).toBe(true);
+    // The same chat, another person's turn: the owner's request is not theirs to read.
+    const devTurn = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'u-dev')}` });
+    expect((await call(devTurn, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
+    expect((await call(agent, 'clickup_send_status', { approval_id: id })).json).toMatchObject({ status: 'pending' });
+
+    // Each sees their own only, and the owner cannot send as the dev.
+    const ids = async (headers: Record<string, string>) => (await t.app.inject({ url: '/api/clickup/approvals', headers })).json().map((x: { id: number }) => x.id);
+    expect(await ids(AUTH)).toEqual([id]);
+    expect(await ids(devAuth)).toEqual([own.approval_id]);
+    for (const verb of ['approve', 'reject']) {
+      expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/${verb}`, headers: AUTH })).statusCode).toBe(404);
+      expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/${verb}`, headers: devAuth })).statusCode).toBe(404);
+    }
 
     const r = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH });
     expect(r.json()).toMatchObject({ status: 'unknown' });
-    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json().map((x: { id: number }) => x.id)).toContain(id);
+    expect(await ids(AUTH)).toContain(id);
     status.code = 400; // refused outright: nothing was posted
-    const r2 = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/approve`, headers: AUTH });
+    const r2 = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/approve`, headers: devAuth });
     expect(r2.json()).toMatchObject({ status: 'failed' });
+
+    // The dev's requests go with them, and their ids are not given out again.
+    const last = (await call(dev, 'clickup_send_message', { channel_id: 'c1', content: 'last' })).json as { approval_id: number };
+    const devId = t.store.userKeyOf('u-dev');
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${devId}`, headers: AUTH })).statusCode).toBe(204);
+    expect(t.store.getKv('clickup_approvals')).not.toContain('"last"');
+    const again = (await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'again' })).json as { approval_id: number };
+    expect(again.approval_id).toBeGreaterThan(last.approval_id);
   });
 });
 
@@ -796,9 +843,9 @@ describe('Settings → ClickUp', () => {
   it('saves the settings and never sends the token back', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
-      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', allUsers: false, send: false });
+      .toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', send: false });
     const saved = await put(t, { token: ' pk_test ', workspaceId: '900', timeZone: 'Asia/Jakarta' });
-    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', allUsers: false, send: false });
+    expect(saved.json()).toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: 'Asia/Jakarta', send: false });
     expect(saved.body).not.toContain('pk_test');
     // leaving the token out keeps it
     expect((await put(t, { workspaceId: '', timeZone: '' })).json()).toMatchObject({ configured: true, tokenHint: '…test' });
@@ -822,13 +869,22 @@ describe('Settings → ClickUp', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(502);
   });
 
-  it('is for the owner only', async () => {
-    const t = await boot();
+  it('is each user\'s own: nobody sees or changes another person\'s', async () => {
+    const t = await boot({ clickupFetch: fakeClickUp() });
+    await put(t, { token: 'pk_test', workspaceId: '900', timeZone: '' });
     for (const role of ['admin', 'dev'] as const) {
       const h = { authorization: `Bearer ${(await mkUser(t, `u-${role}`, role)).token}` };
-      expect((await t.app.inject({ url: '/api/settings/clickup', headers: h })).statusCode).toBe(403);
-      expect((await put(t, { token: 'pk_x', workspaceId: '', timeZone: '' }, h)).statusCode).toBe(403);
-      expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(403);
+      const get = async () => (await t.app.inject({ url: '/api/settings/clickup', headers: h })).json();
+      expect(await get()).toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', send: false });
+      expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(400);
+      expect((await put(t, { token: `pk_${role}`, workspaceId: '901', timeZone: 'Asia/Jakarta' }, h)).statusCode).toBe(200);
+      expect(await get()).toEqual({ configured: true, tokenHint: `…${`pk_${role}`.slice(-4)}`, workspaceId: '901', timeZone: 'Asia/Jakarta', send: false });
+      expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(502); // on their token, not the owner's
+      // removing it leaves nothing of theirs behind
+      await put(t, { token: '', workspaceId: '', timeZone: '' }, h);
+      expect(t.store.getKv('clickup')).not.toContain(`pk_${role}`);
     }
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ configured: true, tokenHint: '…test', workspaceId: '900' });
+    expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(200);
   });
 });

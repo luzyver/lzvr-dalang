@@ -177,7 +177,8 @@ npm run dev             # http://127.0.0.1:9876
 
 Open the panel, add a Codex or Claude Code account in Settings, add a project folder and start a chat. On Windows,
 `run.cmd` does all of this in one go (see [Development workflow](CONTRIBUTING.md#development-workflow)). For a real server, follow
-[Install on the VM](docs/setup.md#install-on-the-vm-no-docker): systemd, nginx with HTTPS, and email sign-in.
+[Install on the VM](docs/setup.md#install-on-the-vm-no-docker): systemd, nginx with HTTPS, and email sign-in. Or run it
+in a container: [Install with Docker](docs/setup.md#install-with-docker).
 
 Set `MCP_INJECT=1` in `.env` to give chat agents the gateway's tools for sub-agents, memory, databases and SSH.
 Configure connections and access policies in the panel; the optional code graph also needs a configured

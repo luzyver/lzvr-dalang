@@ -21,7 +21,7 @@ export const dbApprovals = signal([]);
 export const indexRequests = signal([]);
 /** Commands agents asked to run on SSH hosts set to "every command after approval" (admins). */
 export const sshApprovals = signal([]);
-/** ClickUp messages agents ask to send as the owner, waiting for the owner (empty for everyone else). */
+/** ClickUp messages agents ask to send as you (your own ClickUp user), waiting for you; nobody else sees them. */
 export const clickupApprovals = signal([]);
 
 const wide = () => innerWidth > 1280;
@@ -204,11 +204,30 @@ export const newChat = (project, worktree = false) => guarded(async () => {
   openChat(c.id);
 });
 
+/** What only admins decide. Emptied for everyone else and between sessions: the next one may not see them. */
+function clearAdminApprovals() {
+  batch(() => { approvals.value = []; dbApprovals.value = []; indexRequests.value = []; sshApprovals.value = []; });
+}
+export function clearApprovals() {
+  batch(() => { clearAdminApprovals(); clickupApprovals.value = []; });
+}
+
 export async function refreshApprovals() {
-  if (!isAdmin.value) return;
+  const user = me.value;
+  if (!user) return;
+  const stale = () => me.value !== user; // signed out or in as another meanwhile: the answer is not this session's
+  // ClickUp messages wait for whoever asked, admin or not; the rest are for admins to decide.
   try {
-    const [chats, dbs, indexes, ssh, clickup] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals'), api('/api/clickup/approvals')]);
-    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; clickupApprovals.value = clickup; });
+    const clickup = await api('/api/clickup/approvals');
+    if (stale()) return;
+    clickupApprovals.value = clickup;
+  } catch { /* retried on the next tick */ }
+  if (stale()) return;
+  if (!isAdmin.value) { clearAdminApprovals(); return; }
+  try {
+    const [chats, dbs, indexes, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals')]);
+    if (stale()) return;
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; });
   } catch { /* retried on the next tick */ }
 }
 

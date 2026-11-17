@@ -112,7 +112,8 @@ keep secrets out of what Codex can read if that matters to you. Agents can also 
 
 ## ClickUp
 
-Set up in the panel: **Settings → MCP**, tab **ClickUp** (shown to the owner only). Paste a personal API token (ClickUp → Settings
+Set up in the panel: **Settings → MCP**, tab **ClickUp**. Every panel user saves their own there (for users other than
+the owner, ClickUp is all Settings → MCP shows). Paste a personal API token (ClickUp → Settings
 → Apps → API Token) and Save; **Test connection** shows which ClickUp user it reads as and the workspaces it can see.
 One token reads every workspace that ClickUp user is in (a workspace under another ClickUp login needs that login's
 token, which is not supported). Optional: a default workspace ID (default: all of them; a chat can still ask for
@@ -133,10 +134,16 @@ September, jam kerja gue 09:00-18:00, kapan aja gue lembur (di luar jam kerja at
 reads the month's messages and works out the late days and the work from their times and content. Work you did not
 chat about does not show.
 
-**Only the owner gets them**, since they read with the owner's ClickUp token: the main token or the owner's own email
-sign-in from outside, and inside a chat only during a turn the owner sent (prompts from other panel users, agents,
-approvals or their schedules do not get them), and Settings → MCP is refused to everyone else, admins included.
-Ticking **All users** gives them to every user's sign-in and every turn too, still reading as the owner's ClickUp user.
+**Each person reads with their own token only.** From outside, the tools use the token of whoever signed in (the main
+token: the owner's); inside a chat, that of whoever sent the turn. Someone who saved no token gets no ClickUp tools,
+and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or changes another person's token,
+admins and the owner included, and a deleted user's token is removed. A token saved before every user had their own
+stays the owner's.
+
+**Allow sending** is the owner's switch, for everyone: with it, `clickup_send_message` asks to send as the ClickUp
+user of whoever sent the turn, and each message waits for that same person's approval (a card in the chat and in
+Approvals, shown to them alone).
+
 The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp token sits where an
 agent that reads files as root could find it (the database), so the "What this does and does not protect" note above
 applies to it too. One call makes at most 250 ClickUp requests (ClickUp allows about 100 a minute on most plans); a busy workspace over a long
@@ -144,7 +151,7 @@ range may stop early with a warning, so ask for a shorter range or particular ch
 
 ## Other MCP servers
 
-**Settings → MCP** (the owner only) has a tab for ClickUp, one for every other MCP server the agents get next to this
+For the owner, **Settings → MCP** has a tab for ClickUp, one for every other MCP server the agents get next to this
 gateway's own (for Codex and Claude Code alike), and **Add**: an HTTP server (URL and an optional bearer token) or a
 command started over stdio (command, arguments, environment). **Add** offers Context7, Playwright and Sentry
 filled in; every field can be changed. In a server's tab a switch turns it off without forgetting it.

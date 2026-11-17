@@ -3,17 +3,21 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { type ClickUp, ClickUpUncertain, type Destination, MAX_SEND, type OutFile, type TaskRef } from './clickup.js';
 import type { Dispatcher } from './dispatcher.js';
+import { clickupUserKey } from './clickup-routes.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
 
 /**
- * ClickUp messages agents ask to send (clickup_send_message). They go out as the owner's ClickUp user, so each one waits
- * for the owner, who sees where it goes (workspace, channel or person, thread) and may change the text before sending.
+ * ClickUp messages agents ask to send (clickup_send_message). Each goes out as the ClickUp user of the person whose
+ * turn asked (`user`, their user key), so it waits for that person, who sees where it goes (workspace, channel or
+ * person, thread) and may change the text before sending.
  */
 export interface ClickUpApproval {
-  id: number; dest: Destination; content: string; who: string; conv: string | null; at: number;
+  id: number;
+  /** Whose ClickUp it is sent as, and who alone sees and decides it. Absent on ones from before: the owner's. */
+  user?: string; dest: Destination; content: string; who: string; conv: string | null; at: number;
   status: 'pending' | 'sending' | 'unknown' | 'sent' | 'rejected' | 'failed' | 'dismissed'; decidedAt?: number;
-  /** The owner changed the text before sending. */
+  /** The person changed the text before sending. */
   edited?: boolean;
   /** What sending gave (or why it failed). */
   outcome?: string;
@@ -23,11 +27,13 @@ export interface ClickUpApproval {
   task?: TaskRef;
 }
 
-/** Where an approval's files wait: what the owner approves is what goes, even if the agent changes them meanwhile. */
+/** Where an approval's files wait: what the person approves is what goes, even if the agent changes them meanwhile. */
 const filesDir = (stateDir: string, id: number) => join(stateDir, 'clickup-files', String(id));
 const dropFiles = (stateDir: string, id: number) => rmSync(filesDir(stateDir, id), { recursive: true, force: true });
 
 const KEY = 'clickup_approvals';
+/** The last id given out. */
+const SEQ = 'clickup_approvals_seq';
 const KEEP = 200;
 const unresolved = (a: ClickUpApproval) => ['pending', 'sending', 'unknown'].includes(a.status);
 
@@ -39,12 +45,15 @@ function save(store: Store, list: ClickUpApproval[]): void {
   const decided = list.filter((a) => !unresolved(a)).slice(-KEEP);
   store.setKv(KEY, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
-export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'dest' | 'content' | 'who' | 'conv'> & {
+export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'dest' | 'content' | 'who' | 'conv'> & {
   files?: OutFile[]; task?: TaskRef; stateDir?: string;
 }): ClickUpApproval {
   const { files = [], task, stateDir, ...rest } = a;
   const list = readClickUpApprovals(store);
-  const next: ClickUpApproval = { ...rest, id: Math.max(0, ...list.map((x) => x.id)) + 1, at: Date.now(), status: 'pending' };
+  // Never an id again, even after the highest one was removed with its user: a send still running ends on its own id.
+  const id = Math.max(Number(store.getKv(SEQ)) || 0, ...list.map((x) => x.id)) + 1;
+  store.setKv(SEQ, String(id));
+  const next: ClickUpApproval = { ...rest, id, at: Date.now(), status: 'pending' };
   if (files.length) {
     if (!stateDir || !task) throw new Error('files need a task and a place to wait');
     const dir = filesDir(stateDir, next.id);
@@ -56,13 +65,25 @@ export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'de
   save(store, [...list, next]);
   return next;
 }
-/** Changes one approval in the list as stored now: others may have come or been decided meanwhile. */
-function update(store: Store, id: number, patch: Partial<ClickUpApproval>): void {
+/**
+ * Changes one approval in the list as stored now: others may have come or been decided meanwhile. False when it is no
+ * longer there (its user was removed while it was being sent).
+ */
+function update(store: Store, a: ClickUpApproval): boolean {
   const list = readClickUpApprovals(store);
-  const a = list.find((x) => x.id === id);
-  if (!a) return;
-  Object.assign(a, patch);
+  const at = list.findIndex((x) => x.id === a.id && x.at === a.at);
+  if (at < 0) return false;
+  list[at] = a;
   save(store, list);
+  return true;
+}
+/** A user who is gone: nobody else may decide their requests, so they go too, with their files. */
+export function forgetClickUpApprovals(store: Store, stateDir: string, userKey: string): void {
+  const list = readClickUpApprovals(store);
+  const theirs = list.filter((a) => a.user === userKey);
+  if (!theirs.length) return;
+  for (const a of theirs) dropFiles(stateDir, a.id);
+  save(store, list.filter((a) => a.user !== userKey));
 }
 /** A send cut off by a restart may or may not have reached ClickUp. */
 function recover(store: Store): void {
@@ -82,19 +103,17 @@ export function describeDestination(d: Destination): string {
 }
 
 /**
- * The owner's ClickUp approvals. Other admins see none: the messages would go out as the owner. Approve sends the text
- * (as the owner may have changed it) and tells the chat that asked.
+ * Each person's own ClickUp approvals. Nobody else sees or decides them, admins and the owner included: the messages
+ * go out as that person. Approve sends the text (as they may have changed it) and tells the chat that asked.
  */
-export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher; client: () => ClickUp | undefined }): void {
+export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; stateDir: string; dispatcher: Dispatcher; client: (userKey: string) => ClickUp | undefined }): void {
   const { store } = d;
   recover(store);
-  const isOwner = (u?: AuthUser) => !!u && u.id === null;
-  const requireOwner = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (!isOwner(req.user)) return reply.code(403).send({ error: 'owner only' });
-  };
+  const userOf = (a: ClickUpApproval) => a.user ?? 'owner';
+  const mine = (a: ClickUpApproval, u?: AuthUser) => !!u && userOf(a) === clickupUserKey(u);
 
-  app.get<{ Querystring: { status?: string } }>('/api/clickup/approvals', (req) => (!isOwner(req.user) ? [] : readClickUpApprovals(store)
-    .filter((a) => (req.query.status ? a.status === req.query.status : unresolved(a))).reverse()));
+  app.get<{ Querystring: { status?: string } }>('/api/clickup/approvals', (req) => readClickUpApprovals(store)
+    .filter((a) => mine(a, req.user) && (req.query.status ? a.status === req.query.status : unresolved(a))).reverse());
 
   const tellChat = (a: ClickUpApproval, text: string) => {
     if (!a.conv || !store.getConversation(a.conv)) return;
@@ -104,31 +123,31 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
   const quote = (a: ClickUpApproval) => `\n\n${a.content.split('\n').map((l) => `> ${l}`).join('\n')}`;
   const sending = new Set<number>();
 
-  const decide = (verb: 'approve' | 'reject' | 'dismiss') => async (req: { params: { id: string }; body?: unknown }, reply: any) => {
-    const a = readClickUpApprovals(store).find((x) => x.id === Number(req.params.id));
+  const decide = (verb: 'approve' | 'reject' | 'dismiss') => async (req: { params: { id: string }; body?: unknown; user?: AuthUser }, reply: any) => {
+    const a = readClickUpApprovals(store).find((x) => x.id === Number(req.params.id) && mine(x, req.user)); // another person's is not there
     if (!a) return reply.code(404).send({ error: 'not found' });
     if (sending.has(a.id)) return reply.code(409).send({ error: 'already being sent' });
     if (a.status !== (verb === 'dismiss' ? 'unknown' : 'pending')) return reply.code(409).send({ error: `already ${a.status}` });
     const done = (patch: Partial<ClickUpApproval>) => {
       Object.assign(a, { decidedAt: Date.now(), ...patch });
-      update(store, a.id, a);
+      if (!update(store, a)) return; // gone with its user, files and all
       if (!unresolved(a)) dropFiles(d.stateDir, a.id); // decided for good: its files are not sent again
     };
     const where = describeDestination(a.dest);
     if (verb === 'dismiss') {
       done({ status: 'dismissed' });
-      tellChat(a, `[ClickUp] The owner closed your interrupted message to ${where}. Whether it reached ClickUp is unknown; it is not sent again.${quote(a)}`);
+      tellChat(a, `[ClickUp] The person closed your interrupted message to ${where}. Whether it reached ClickUp is unknown; it is not sent again.${quote(a)}`);
       return a;
     }
     if (verb === 'reject') {
       done({ status: 'rejected' });
-      tellChat(a, `[ClickUp] The owner did not send your message to ${where}. Do not ask again unless you are told to.${quote(a)}`);
+      tellChat(a, `[ClickUp] The person did not send your message to ${where}. Do not ask again unless you are told to.${quote(a)}`);
       return a;
     }
-    const cu = d.client();
+    const cu = d.client(userOf(a));
     if (!cu) return reply.code(409).send({ error: 'no ClickUp token saved; reject it instead' });
     const asked = (req.body as { content?: unknown } | null | undefined)?.content;
-    const content = typeof asked === 'string' && asked.trim() ? asked.trim() : a.content; // the owner's own wording, if changed
+    const content = typeof asked === 'string' && asked.trim() ? asked.trim() : a.content; // the person's own wording, if changed
     if (content.length > MAX_SEND) return reply.code(400).send({ error: `at most ${MAX_SEND} characters per message` });
     let files: OutFile[];
     try {
@@ -142,19 +161,19 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
     try {
       const r = await cu.deliver(a.dest, content, files, a.task);
       done({ status: 'sent', messageId: r.id, outcome: `Sent ${r.date} ${r.time}` });
-      tellChat(a, `[ClickUp] The owner approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) uploaded to task "${a.task!.name}" and linked at its end` : ''}.${quote(a)}`);
+      tellChat(a, `[ClickUp] The person approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) uploaded to task "${a.task!.name}" and linked at its end` : ''}.${quote(a)}`);
     } catch (e) {
       const msg = (e as Error).message;
       // Failing before the message went out, or ClickUp refusing it, means nothing was posted; a 5xx or timeout does not say.
       const unsure = e instanceof ClickUpUncertain;
       done({ status: unsure ? 'unknown' : 'failed', outcome: msg });
-      tellChat(a, `[ClickUp] The owner approved your message to ${where}, but ${unsure ? 'whether it was sent is unknown; do not ask again, check ClickUp first' : 'it could not be sent'}: ${msg}${quote(a)}`);
+      tellChat(a, `[ClickUp] The person approved your message to ${where}, but ${unsure ? 'whether it was sent is unknown; do not ask again, check ClickUp first' : 'it could not be sent'}: ${msg}${quote(a)}`);
     } finally {
       sending.delete(a.id);
     }
     return a;
   };
-  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/approve', { onRequest: requireOwner }, decide('approve'));
-  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/reject', { onRequest: requireOwner }, decide('reject'));
-  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/dismiss', { onRequest: requireOwner }, decide('dismiss'));
+  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/approve', decide('approve'));
+  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/reject', decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/clickup/approvals/:id/dismiss', decide('dismiss'));
 }

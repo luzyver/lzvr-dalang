@@ -3,93 +3,116 @@ import { ClickUp, validTimeZone } from './clickup.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
 
+/** One person's ClickUp: their personal token, default workspace and time zone. Empty strings mean "not set". */
+interface Account { token: string; workspaceId: string; timeZone: string }
+
 /**
- * What Settings → MCP → ClickUp saves (kv `clickup`). Empty strings mean "not set". `allUsers`: admins' and devs' turns
- * get the tools too (still reading as the owner's ClickUp user); else only the owner's. `send`: whoever gets the tools
- * also gets clickup_send_message, which sends as the owner's ClickUp user.
+ * What Settings → MCP → ClickUp saves (kv `clickup`). `users`: every person's own ClickUp, by their user key (see
+ * clickupUserKey), so each one's turns read and send as their own ClickUp user. `send`: the owner's switch for
+ * everyone, whoever has the tools also gets clickup_send_message.
  */
-interface Saved { token: string; workspaceId: string; timeZone: string; allUsers: boolean; send: boolean }
+interface Saved { send: boolean; users: Record<string, Account> }
 
 const KEY = 'clickup';
-const EMPTY: Saved = { token: '', workspaceId: '', timeZone: '', allUsers: false, send: false };
+const NONE: Account = { token: '', workspaceId: '', timeZone: '' };
+const str = (v: unknown) => (typeof v === 'string' ? v : '');
+const account = (v: any): Account => ({ token: str(v?.token), workspaceId: str(v?.workspaceId), timeZone: str(v?.timeZone) });
+const blank = (a: Account) => !a.token && !a.workspaceId && !a.timeZone;
+
+/** Whose ClickUp a request or turn uses: a panel user's id, 'owner' for the owner (as Store.userKeyOf gives). */
+export const clickupUserKey = (u: AuthUser): string => u.id ?? 'owner';
 
 function load(store: Store): Saved {
   try {
-    const s = { ...EMPTY, ...JSON.parse(store.getKv(KEY) ?? '{}') };
-    return { token: s.token, workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers === true, send: s.send === true }; // drops keys older versions saved
-  } catch { return EMPTY; }
+    const s = JSON.parse(store.getKv(KEY) ?? '{}');
+    const users: Record<string, Account> = {};
+    if (s.users && typeof s.users === 'object') for (const [k, v] of Object.entries(s.users)) users[k] = account(v);
+    else if (!blank(account(s))) users.owner = account(s); // saved before every user had their own: the one token was the owner's
+    return { send: s.send === true, users };
+  } catch { return { send: false, users: {} }; }
 }
 
 /** The token is never sent back to the panel, only its last four characters. */
-const view = (s: Saved) => ({
-  configured: Boolean(s.token), tokenHint: s.token ? `…${s.token.slice(-4)}` : '',
-  workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers, send: s.send,
+const view = (a: Account, send: boolean) => ({
+  configured: Boolean(a.token), tokenHint: a.token ? `…${a.token.slice(-4)}` : '',
+  workspaceId: a.workspaceId, timeZone: a.timeZone, send,
 });
 
-/**
- * The ClickUp client for the current settings, or undefined while no token is saved. Built again only when the
- * settings change, so its cached user and workspace survive between MCP calls.
- */
-/** Whether the ClickUp tools are for every user's turns, not only the owner's. */
-export const clickupForAll = (store: Store): boolean => load(store).allUsers;
-
-/** Whether whoever gets the ClickUp tools may also send messages with them. */
+/** Whether whoever has the ClickUp tools may also send messages with them. */
 export const clickupSend = (store: Store): boolean => load(store).send;
 
-export function clickupClient(store: Store, fetchImpl?: typeof fetch): () => ClickUp | undefined {
-  let last: { raw: string; client: ClickUp | undefined } | null = null;
-  return () => {
-    const raw = store.getKv(KEY) ?? '';
-    if (last?.raw !== raw) {
-      const s = load(store);
+/** A user who is gone: their token goes with them. */
+export function forgetClickUp(store: Store, userKey: string): void {
+  const s = load(store);
+  if (!(userKey in s.users)) return;
+  delete s.users[userKey];
+  store.setKv(KEY, JSON.stringify(s));
+}
+
+/**
+ * The ClickUp client of one person (by user key), or undefined while they have no token saved. Built again only when
+ * their settings change, so its cached user and workspace survive between MCP calls.
+ */
+export function clickupClient(store: Store, fetchImpl?: typeof fetch): (userKey: string) => ClickUp | undefined {
+  const last = new Map<string, { raw: string; client: ClickUp | undefined }>();
+  return (userKey) => {
+    const a = load(store).users[userKey];
+    if (!a?.token) { last.delete(userKey); return undefined; }
+    const raw = JSON.stringify(a);
+    let hit = last.get(userKey);
+    if (hit?.raw !== raw) {
       let client: ClickUp | undefined;
       try {
-        client = s.token ? new ClickUp({
-          token: s.token, workspaceId: s.workspaceId || undefined, timeZone: s.timeZone || undefined, fetch: fetchImpl,
-        }) : undefined;
+        client = new ClickUp({ token: a.token, workspaceId: a.workspaceId || undefined, timeZone: a.timeZone || undefined, fetch: fetchImpl });
       } catch { client = undefined; } // saved settings are checked on save; never let a bad row break /mcp
-      last = { raw, client };
+      hit = { raw, client };
+      last.set(userKey, hit);
     }
-    return last.client;
+    return hit.client;
   };
 }
 
 /**
- * Settings → ClickUp. The token is the owner's own, so only the owner (main token or owner sign-in) may see or change
- * these settings, not other admins.
+ * Settings → ClickUp. Everyone sees and changes their own token, workspace and time zone, never another person's.
+ * Only the owner (main token or owner sign-in) sets `send`.
  */
-export function clickupRoutes(app: FastifyInstance, d: { store: Store; client: () => ClickUp | undefined }): void {
+export function clickupRoutes(app: FastifyInstance, d: { store: Store; client: (userKey: string) => ClickUp | undefined }): void {
   const { store } = d;
-  const requireOwner = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (!req.user || req.user.id !== null) return reply.code(403).send({ error: 'owner only' });
-  };
 
-  app.get('/api/settings/clickup', { onRequest: requireOwner }, () => view(load(store)));
+  app.get('/api/settings/clickup', (req) => {
+    const s = load(store);
+    return view(s.users[clickupUserKey(req.user!)] ?? NONE, s.send);
+  });
 
-  // `token`: omitted keeps the saved one, '' removes it (which turns the ClickUp tools off).
-  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string; allUsers?: boolean; send?: boolean } }>('/api/settings/clickup', {
-    onRequest: requireOwner,
+  // `token`: omitted keeps the saved one, '' removes it (which turns the ClickUp tools off for this person).
+  app.put<{ Body: { token?: string; workspaceId: string; timeZone: string; send?: boolean } }>('/api/settings/clickup', {
     schema: { body: {
       type: 'object', required: ['workspaceId', 'timeZone'], additionalProperties: false,
       properties: {
         token: { type: 'string', maxLength: 200 }, workspaceId: { type: 'string', pattern: '^[0-9]{0,20}$' },
-        timeZone: { type: 'string', maxLength: 64 }, allUsers: { type: 'boolean' }, send: { type: 'boolean' },
+        timeZone: { type: 'string', maxLength: 64 }, send: { type: 'boolean' },
       },
     } },
   }, (req, reply) => {
     const b = req.body;
-    const next: Saved = {
-      token: b.token === undefined ? load(store).token : b.token.trim(),
-      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(), allUsers: b.allUsers ?? false, send: b.send ?? false,
+    const owner = req.user!.id === null;
+    if (b.send !== undefined && !owner) return reply.code(403).send({ error: 'only the owner allows sending' });
+    const s = load(store);
+    const key = clickupUserKey(req.user!);
+    const next: Account = {
+      token: b.token === undefined ? s.users[key]?.token ?? '' : b.token.trim(),
+      workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(),
     };
     if (next.timeZone && !validTimeZone(next.timeZone)) return reply.code(400).send({ error: `unknown time zone: ${next.timeZone}` });
-    store.setKv(KEY, JSON.stringify(next));
-    return view(next);
+    if (blank(next)) delete s.users[key]; else s.users[key] = next;
+    if (owner) s.send = b.send ?? false;
+    store.setKv(KEY, JSON.stringify(s));
+    return view(next, s.send);
   });
 
   // Try the saved settings against ClickUp: who the token is, which workspace, which time zone.
-  app.post('/api/settings/clickup/test', { onRequest: requireOwner }, async (_req, reply) => {
-    const client = d.client();
+  app.post('/api/settings/clickup/test', async (req, reply) => {
+    const client = d.client(clickupUserKey(req.user!));
     if (!client) return reply.code(400).send({ error: 'no ClickUp token saved' });
     try { return await client.whoami(); } catch (e) { return reply.code(502).send({ error: (e as Error).message }); }
   });

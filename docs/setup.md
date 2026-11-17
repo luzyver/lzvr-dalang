@@ -3,7 +3,7 @@
 Install and administer the server. For a local quick start, see the [README](../README.md#quick-start);
 for development, see [CONTRIBUTING](../CONTRIBUTING.md).
 
-- [Installation and updates](#install-on-the-vm-no-docker)
+- [Installation and updates](#install-on-the-vm-no-docker), or [with Docker](#install-with-docker)
 - [Terminals](#terminals-without-root) and [HTTPS](#nginx-https)
 - [Sign-in](#signing-in), [users and roles](#users-and-roles), [accounts](#adding-codex-accounts)
 - [Git and forges](#merge-requests-gh-and-glab), [per-user credentials](#each-users-own-git-setup)
@@ -59,6 +59,57 @@ after the restart, continues in the same agent session ("continued after a resta
 queued behind it. For that systemd must signal only node and wait long enough: `update.sh` adds the drop-in
 `/etc/systemd/system/lzvr-dalang.service.d/drain.conf` with `KillMode=mixed` and `TimeoutStopSec=10min` the first
 time; raise `TimeoutStopSec` with it when you set a longer `DRAIN_MINUTES`. Ctrl+C (SIGINT) and a crash do not wait.
+
+## Install with Docker
+
+Instead of systemd: `Dockerfile` and `compose.yaml` in this repo run Dalang in one container, with the `codex` and
+`claude` CLIs, git, ssh and `gh` inside it. Needs Docker with Compose v2.
+
+```bash
+git clone https://github.com/luzyver/lzvr-dalang.git /opt/lzvr-dalang && cd /opt/lzvr-dalang
+cp .env.example .env                                   # set LZVR_TOKEN (openssl rand -hex 32) and the sign-in mail
+mkdir -p projects                                      # or point PROJECTS_DIR at the folder that holds your projects
+# the account that owns the project folders (here: deploy), never root: the build refuses uid or gid 0
+DALANG_UID=$(id -u deploy) DALANG_GID=$(id -g deploy) docker compose up -d --build
+docker compose exec dalang bwrap --unshare-user --unshare-pid --ro-bind / / --dev /dev true && echo sandbox ok
+```
+
+The panel is then on `http://127.0.0.1:9876` of the host (loopback only). What differs from the VM install:
+
+- **Settings in `.env`** as in "Configuration", but `HOST`, `PORT`, `STATE_DIR` and `WORKSPACE_ROOT` are set by
+  `compose.yaml` and win over it. `DALANG_PORT` (the host's port), `PROJECTS_DIR`, `DALANG_UID` and `DALANG_GID` are read
+  by Compose itself: put them in `.env` too, so a later `docker compose up` does not need them on the command line.
+  `AUTH_BYPASS` stops the start here, since the container does not listen on loopback.
+- **Projects** are the host folder `PROJECTS_DIR` (default `./projects`), seen in the container as `/workspace`: add
+  a project in the panel as `/workspace/<folder>`. Agents see nothing else of the host.
+- **Everything runs as the user `node`**, not root, with the uid and gid given at build time (`DALANG_UID`,
+  `DALANG_GID`, default 1000). Use those of the owner of the project folders, or agents cannot write there and git calls
+  the repositories "dubious". From a root shell `$(id -u)` is 0, which the build refuses: name the account, and
+  `chown -R` the project folders to it if root owns them. Agents cannot install system packages; add what your
+  projects need to the `Dockerfile`.
+- **Codex's sandbox** (bubblewrap) makes namespaces of its own, which Docker's default seccomp and AppArmor profiles
+  refuse, so `compose.yaml` turns both off for this container (`security_opt`); no capability is added. The last
+  command above checks it as the container's user: without "sandbox ok", every command of a Codex chat in a
+  `read-only` or `workspace-write` project fails, the Reviewer's too. On a host that restricts user namespaces
+  (Ubuntu 24.04 and later) also run `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` there, and keep it in
+  `/etc/sysctl.d`. With `docker run`, pass `--security-opt seccomp=unconfined --security-opt apparmor=unconfined`.
+- **What is kept**: the volume `state` (database, accounts, uploads, worktrees) and the volume `home` (the home of
+  `node`: `~/.gitconfig`, `~/.ssh`, the `gh` login, so Settings → Git & forges works as on a VM). Back up both;
+  `docker compose down -v` deletes them.
+- **nginx** runs on the host as in the next sections, with `nginx.conf` unchanged. The container sees it come from the
+  network's gateway, so set `TRUST_PROXY=172.31.98.1` (not `1`) next to `LZVR_ORIGIN`; `compose.yaml` fixes that
+  subnet, change both if it is taken on your host.
+- **Terminals** in the code editor are the owner's only: `TERMINAL_USER` needs a service running as root.
+- **Not in the image**: `glab` and the `codebase-memory-mcp` binary. Add them to the `Dockerfile`, or put the binary in
+  a volume and name its path in Settings → MCP → Code memory.
+- **Databases and SSH hosts on the Docker host itself** are not `127.0.0.1` from inside the container: use the gateway
+  address (`172.31.98.1`) or the host's own address.
+
+To update: `git pull --ff-only && docker compose up -d --build`. The CLIs are installed at their latest version when
+that layer is built; `docker compose build --no-cache` moves them (or pin `CODEX_VERSION` / `CLAUDE_CODE_VERSION` in
+the `Dockerfile`). Stopping or replacing the container lets running chats finish first, as on the VM: `init: true`
+signals node alone and `stop_grace_period` (10 minutes) waits for it; raise it with a longer `DRAIN_MINUTES`. Don't
+update from a Dalang chat: it stops the server running that chat.
 
 ## Terminals without root
 

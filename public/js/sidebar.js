@@ -211,7 +211,7 @@ export function Sidebar() {
       </button>
     </div>
     <nav class="side-nav">
-      ${isAdmin.value && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${go('approvals')}>
+      ${(isAdmin.value || clickupApprovals.value.length > 0) && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${go('approvals')}>
         <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
       <a class=${cx('nav-item', view === 'schedules' && 'active')} href="#" onClick=${go('schedules')}>
         <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
