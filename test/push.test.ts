@@ -128,6 +128,10 @@ describe('Push.notify', () => {
     t.store.db.prepare("UPDATE projects SET access='all' WHERE id=?").run(project.id);
     await t.push.notify({ title: 'Shared', body: 'text', convId: conv.id });
     expect(sent.splice(0).sort()).toEqual([1, 2, 3].map((n) => SUB(n).endpoint));
+    // One person's own (a ClickUp message of theirs to approve): nobody else's devices, with or without a chat.
+    await t.push.notify({ title: 'ClickUp', body: 'draft', convId: conv.id, audience: { user: dev.id } });
+    await t.push.notify({ title: 'ClickUp', body: 'draft', convId: '', audience: { user: 'owner' } });
+    expect(sent.splice(0)).toEqual([SUB(3).endpoint, SUB(1).endpoint]);
     t.store.setKv('db_connections', JSON.stringify([{ id: 'db', access: 'owner' }]));
     await t.push.notify({ title: 'SQL', body: 'secret SQL', convId: conv.id, audience: { admin: true, database: 'db' } });
     expect(sent.splice(0)).toEqual([SUB(1).endpoint]);

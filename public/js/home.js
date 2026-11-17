@@ -58,7 +58,7 @@ export function Home() {
       <div class="ov-cols">
         <div class="ov-col">
           <${Section} title="Needs you" count=${attention.length}
-            action=${isAdmin.value && waiting > 0 && html`<button class="btn sm ghost" onClick=${() => openView('approvals')}>${plural(waiting, 'approval')}<${Icon} name="chevron-right" class="tiny" /></button>`}>
+            action=${waiting > 0 && html`<button class="btn sm ghost" onClick=${() => openView('approvals')}>${plural(waiting, 'approval')}<${Icon} name="chevron-right" class="tiny" /></button>`}>
             ${attention.length ? html`<ul class="ov-list">${attention.slice(0, 8).map((x) => html`<${ChatLine} key=${x.conv.id} x=${x} why=${x.why} />`)}</ul>`
               : html`<p class="ov-empty">No failed chats, approvals or unread answers.</p>`}
           <//>

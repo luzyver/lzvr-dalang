@@ -1,5 +1,5 @@
 // The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users for admins;
-// Git & forges for everyone (the owner: the server's setup) and MCP (ClickUp and other servers) for the owner.
+// Git & forges for everyone (the owner: the server's setup) and MCP (everyone: their own ClickUp; the owner: other servers too).
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
@@ -280,7 +280,7 @@ const SECTIONS = [
   ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
   ['users', 'Users', 'users', UsersSection, true],
   ['git', 'Git & forges', 'git-branch', GitSection, false],
-  ['mcp', 'MCP', 'wrench', McpSection, 'owner'],
+  ['mcp', 'MCP', 'wrench', McpSection, false],
 ];
 
 function Settings() {

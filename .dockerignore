@@ -1,0 +1,26 @@
+# secrets and runtime state: never in the build context
+.env
+.env.*
+state
+
+# rebuilt in the image
+node_modules
+dist
+coverage
+
+# not needed to build or run
+.git
+.github
+.impeccable
+.vscode
+.idea
+docs
+test
+/*.md
+*.log
+*.cmd
+*.ps1
+nginx.conf
+compose.yaml
+Dockerfile
+.dockerignore

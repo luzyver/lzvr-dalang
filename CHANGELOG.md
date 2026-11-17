@@ -21,6 +21,16 @@ All notable changes to this project are documented here. The format follows
   workspace, the channel or person and the thread replied to, and the owner may change the text before sending.
   Agents can message a person privately (`to_user_id`), pick a thread with `clickup_list_threads`, find people with
   `clickup_find_people` and follow a request with `clickup_send_status`
+- Docker: a `Dockerfile` and `compose.yaml` run Dalang in one container with the Codex and Claude Code CLIs, git and
+  `gh`, as a user other than root, with the state and that user's home in volumes ("Install with Docker" in
+  `docs/setup.md`)
+
+### Changed
+
+- ClickUp is per user: everyone saves their own ClickUp token in Settings → MCP → ClickUp, their turns read as their
+  own ClickUp user, and messages a chat asks to send wait for the approval of whoever sent the turn. "All users"
+  (other users reading as the owner) is gone: without a token of their own a user gets no ClickUp tools. "Allow
+  sending" stays the owner's switch, for everyone. The token saved before stays the owner's
 
 ### Fixed
 

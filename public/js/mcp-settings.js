@@ -1,12 +1,15 @@
-// Settings → MCP (the owner): ClickUp, code memory and the other MCP servers agents get. Every one is the owner's only
-// unless marked "All users" (code memory is every user's, each on the projects they may open).
+// Settings → MCP: everyone's own ClickUp, and for the owner code memory and the other MCP servers agents get. Those
+// servers are the owner's only unless marked "All users" (code memory is every user's, each on the projects they may open).
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Seg, Spinner, Switch } from './ui.js';
-import { guarded, toast } from './store.js';
+import { guarded, isOwner, toast } from './store.js';
 
-/** The owner's ClickUp token, workspace and time zone, for the ClickUp Chat tools on /mcp (read-only unless sending is allowed). */
+/**
+ * Your own ClickUp token, workspace and time zone, for the ClickUp Chat tools on /mcp: every user has their own, and
+ * their turns read as their ClickUp user. Read-only unless the owner allows sending (for everyone).
+ */
 function ClickUpCard() {
   const [s, setS] = useState(null);
   const [token, setToken] = useState('');
@@ -14,7 +17,8 @@ function ClickUpCard() {
   const load = (v) => { setS(v); setToken(''); setResult(null); };
   useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
-  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, allUsers: s.allUsers, send: s.send, ...extra });
+  // Only the owner may say whether sending is allowed.
+  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, ...(isOwner.value && { send: s.send }), ...extra });
   // An empty token field keeps the saved token.
   const save = guarded(async () => {
     load(await api('/api/settings/clickup', { method: 'PUT', body: body(token.trim() ? { token } : {}) }));
@@ -33,7 +37,8 @@ function ClickUpCard() {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`<section class="form-card">
     <strong>ClickUp</strong>
-    <span class="dim small">ClickUp Chat tools on this gateway's own MCP, e.g. "what did I work on last week?". Read-only unless sending is allowed below.
+    <span class="dim small">ClickUp Chat tools on this gateway's own MCP, e.g. "what did I work on last week?". The token is yours alone:
+      only turns you sent use it, and every user saves their own. Read-only unless sending is allowed below.
       Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
     <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
       <input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)}
@@ -43,10 +48,12 @@ function ClickUpCard() {
     <${Field} label="Time zone" hint="Message dates and times are given in it. Empty = your ClickUp profile's time zone.">
       <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>
     <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
-    <label class="check small"><input type="checkbox" checked=${s.allUsers} onChange=${(e) => setS({ ...s, allUsers: e.currentTarget.checked })} />
-      All users: admins' and devs' chats get it too, reading your ClickUp messages</label>
-    <label class="check small"><input type="checkbox" checked=${s.send} onChange=${(e) => setS({ ...s, send: e.currentTarget.checked })} />
-      Allow sending: chats that get these tools can also ask to send ClickUp messages as you${s.allUsers ? ', including admins\' and devs\' chats' : ''}; each one waits for your approval</label>
+    ${isOwner.value
+      ? html`<label class="check small"><input type="checkbox" checked=${s.send} onChange=${(e) => setS({ ...s, send: e.currentTarget.checked })} />
+          Allow sending, for every user: a chat can also ask to send ClickUp messages as whoever sent its turn; each one waits for that person's own approval</label>`
+      : html`<span class="dim small">${s.send
+          ? 'Sending is allowed by the owner: a chat can ask to send ClickUp messages as you; each one waits for your approval.'
+          : 'Sending is not allowed by the owner: the tools only read.'}</span>`}
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
       <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.configured}>Test connection<//>
@@ -256,8 +263,12 @@ function AddTab({ list, onSaved }) {
   </section>`;
 }
 
-/** ClickUp, every saved server and "+ Add", one tab each. */
+/** The owner: ClickUp, code memory, every saved server and "+ Add", one tab each. Everyone else: their own ClickUp. */
 export function McpSection() {
+  return isOwner.value ? html`<${OwnerMcpSection} />` : html`<${ClickUpCard} />`;
+}
+
+function OwnerMcpSection() {
   const [list, setList] = useState(null);
   const [tab, setTab] = useState('clickup');
   const load = () => api('/api/settings/mcp-servers').then(setList).catch((e) => toast(e.message, 'err'));
@@ -268,7 +279,8 @@ export function McpSection() {
   const tabs = [['clickup', 'ClickUp', true], ['code', 'Code memory', true], ...list.map((s) => [s.name, s.name, s.enabled]), ['add', 'Add', true]];
   return html`
     <p class="dim">Tools your chats' agents can use. They are yours: only turns you sent get them, unless one is marked
-      <strong>All users</strong>. Prompts from admins and devs (and from agents and approvals) get only those.</p>
+      <strong>All users</strong>. Prompts from admins and devs (and from agents and approvals) get only those, and
+      ClickUp with their own token.</p>
     <div class="tabs wrap" role="tablist" aria-label="MCP servers">
       ${tabs.map(([k, label, on]) => html`<button key=${k} role="tab" aria-selected=${current === k} class=${cx('tab', current === k && 'active', !on && 'off')}
         title=${on ? '' : 'Off'} onClick=${() => setTab(k)}>${k === 'add' && html`<${Icon} name="plus" />`}<span class=${cx(k !== 'clickup' && k !== 'code' && k !== 'add' && 'mono')}>${label}</span></button>`)}

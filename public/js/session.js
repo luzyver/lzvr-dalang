@@ -1,7 +1,7 @@
 // Signing in and out, and loading what the app needs once signed in.
 import { batch, signal } from '../vendor/signals.js';
 import { api, currentToken, publicApi, setUnauthorizedHandler, tokenStore, Unauthorized } from './api.js';
-import { loadProjects, me, openChat, openSettings, refreshApprovals, route, toast } from './store.js';
+import { clearApprovals, loadProjects, me, openChat, openSettings, refreshApprovals, route, toast } from './store.js';
 import { disableNotifications, restoreNotifications } from './notifications.js';
 import { refreshScheduleCount } from './schedules.js';
 
@@ -15,6 +15,7 @@ export function showLogin(message = '') {
   tokenStore.clear();
   batch(() => {
     me.value = null;
+    clearApprovals();
     route.value = { view: 'home' };
     loginMessage.value = message;
     session.value = 'out';
@@ -44,8 +45,8 @@ export async function startSession() {
   try { await loadProjects(); } catch (e) { if (!(e instanceof Unauthorized)) toast(e.message, 'err'); return; }
   void restoreNotifications().catch(() => {});
   refreshScheduleCount();
+  refreshApprovals();
   if (user.role === 'admin') {
-    refreshApprovals();
     // First run: nothing works until an account exists, so an admin lands straight in the sign-in step.
     Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')])
       .then(([a, c]) => { if (!a.length && !c.length) openSettings('codex'); }).catch(() => {});

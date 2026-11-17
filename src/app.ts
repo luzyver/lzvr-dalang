@@ -9,8 +9,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
 import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
-import { clickupApprovalRoutes } from './clickup-approvals.js';
-import { clickupClient, clickupForAll, clickupRoutes, clickupSend } from './clickup-routes.js';
+import { clickupApprovalRoutes, forgetClickUpApprovals } from './clickup-approvals.js';
+import { clickupClient, clickupRoutes, clickupSend, forgetClickUp } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
 import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
 import { memoryRoutes } from './memory.js';
@@ -211,7 +211,7 @@ export function buildApp(
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   const clickup = clickupClient(store, deps.clickupFetch);
   const codeMemory = deps.codeMemory ?? new CodeMemory(store, { cwd: cfg.stateDir });
-  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupForAll: () => clickupForAll(store), clickupSend: () => clickupSend(store), codeMemory });
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupSend: () => clickupSend(store), codeMemory });
   codeMemoryRoutes(app, { store, codeMemory });
   codeIndexRoutes(app, { store, codeMemory, push });
   memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
@@ -505,10 +505,12 @@ export function buildApp(
     if (email !== undefined) store.setUserEmail(req.params.id, email || null);
     return reply.code(204).send();
   });
-  // Their own git setup (keys, gh/glab logins) goes with them.
+  // Their own git setup (keys, gh/glab logins), ClickUp token and ClickUp requests go with them.
   app.delete<{ Params: { id: string } }>('/api/users/:id', { onRequest: requireAdmin }, (req, reply) => {
     if (!store.deleteUser(req.params.id)) return notFound(reply);
     gitUsers.remove(req.params.id);
+    forgetClickUp(store, req.params.id);
+    forgetClickUpApprovals(store, cfg.stateDir, req.params.id);
     return reply.code(204).send();
   });
 

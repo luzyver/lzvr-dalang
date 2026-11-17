@@ -26,7 +26,7 @@ import type { Conversation, Memory, MemoryScope, Project, Store, StoredEvent } f
 import { BACKENDS, type Backend, canAccess, SANDBOXES } from './util.js';
 
 type Deps = {
-  cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: () => ClickUp | undefined; clickupForAll?: () => boolean;
+  cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: (userKey: string) => ClickUp | undefined;
   clickupSend?: () => boolean; codeMemory?: CodeMemory;
 };
 
@@ -71,7 +71,7 @@ const creating = new Map<string, number>();
 type Viewer = { id: string | null; role: 'admin' | 'dev' | null };
 
 /** `viewer`: whose project access applies (see canAccess); an agent may always reach its own chat's project. */
-function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owner: boolean, viewer: Viewer, onBehalf = ''): McpServer {
+function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', viewer: Viewer, onBehalf = ''): McpServer {
   const { cfg, store, dispatcher, push } = d;
   const server = new McpServer({ name: 'dalang', version: '0.1.0' });
   const tools = new Map<string, { remove(): void }>();
@@ -431,8 +431,8 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', owne
     reviewTools(server, store, source);
     return server;
   }
-  const cu = owner || d.clickupForAll?.() ? d.clickup?.() : undefined;
-  if (cu) clickupTools(server, store, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source });
+  const cu = me ? d.clickup?.(me) : undefined;
+  if (cu) clickupTools(server, store, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source, user: me });
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
@@ -469,10 +469,10 @@ const WORKSPACES = z.array(z.string()).optional()
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
- * ClickUp Chat tools. They use the owner's personal ClickUp token, so unless the owner marked them for all users only
- * the owner gets them: the main token or the owner's own sign-in from outside, and inside a chat only during a turn the
- * owner sent. They only read, unless the owner also allowed sending: clickup_send_message then asks to send as the
- * owner, and each message waits for the owner's approval.
+ * ClickUp Chat tools. Each person has their own ClickUp token (Settings → MCP → ClickUp), and the tools read as its
+ * ClickUp user: from outside the caller's own, inside a chat that of whoever sent the turn. Someone with no token gets
+ * none, and so do prompts nobody sent (agents, approvals). They only read, unless the owner allowed sending:
+ * clickup_send_message then asks to send as that person, and each message waits for their own approval.
  */
 const MAX_FILES = 5;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -495,7 +495,7 @@ function readChatFiles(store: Store, conv: string | null, paths: string[]): OutF
   return out;
 }
 
-function clickupTools(server: McpServer, store: Store, push: Push, stateDir: string, cu: ClickUp, send: boolean, by: { who: string; conv: string | null }): void {
+function clickupTools(server: McpServer, store: Store, push: Push, stateDir: string, cu: ClickUp, send: boolean, by: { who: string; conv: string | null; user: string }): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
@@ -547,7 +547,7 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
       + 'named it plainly, show the choices and let them pick: the channel (clickup_list_channels), then whether to post '
       + 'in it or reply in a thread and which one (clickup_list_threads), or, for a private message, the person '
       + '(clickup_find_people). Then show the text and send only what they agreed to. Nothing is sent at once: the '
-      + 'message waits for the owner to approve it in Dalang (status pending_approval), who may change the text; the '
+      + 'message waits for the person to approve it in Dalang (status pending_approval), who may change the text; the '
       + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits. Files '
       + '(files, paths in this chat folder) cannot go into ClickUp Chat itself: they are uploaded to a ClickUp task '
       + '(task_id, an id or link the person gives you; ask which one) when the message is sent, and the message ends with '
@@ -568,11 +568,11 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
     const files = a.files?.length ? readChatFiles(store, by.conv, a.files) : [];
     const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
     const task = files.length ? await cu.task(a.task_id!) : undefined;
-    const p = createClickUpApproval(store, { dest, content: a.content.trim(), who: by.who, conv: by.conv, files, task, stateDir });
-    void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { owner: true } });
+    const p = createClickUpApproval(store, { user: by.user, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, task, stateDir });
+    void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { user: by.user } });
     return {
       status: 'pending_approval', approval_id: p.id, to: dest, ...(task && { files: p.files, task }),
-      note: 'Nothing was sent yet: the owner approves it in Dalang. The outcome will arrive in this chat as a message; do not send it again.',
+      note: 'Nothing was sent yet: the person approves it in Dalang. The outcome will arrive in this chat as a message; do not send it again.',
     };
   }));
 
@@ -581,8 +581,9 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
       + 'failed, unknown (sending was cut off) or dismissed, with the text as sent. Never ask again for a sending, sent or unknown one.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
-    // Only the one who asked: the same chat, or from outside a chat the same panel user.
-    const mine = (x: ClickUpApproval) => (by.conv ? x.conv === by.conv : x.conv === null && x.who === by.who);
+    // Only the one who asked: the same person, in the same chat or, from outside a chat, under the same name.
+    const mine = (x: ClickUpApproval) => (x.user ?? 'owner') === by.user
+      && (by.conv ? x.conv === by.conv : x.conv === null && x.who === by.who);
     const a = readClickUpApprovals(store).find((x) => x.id === approval_id && mine(x));
     return a ? text(a) : fail(`no such approval: ${approval_id}`);
   });
@@ -815,7 +816,7 @@ export function mcpRoutes(app: FastifyInstance, d: Deps): void {
     const author = req.mcpConv && !owner ? d.store.listUsers().find((u) => u.name === req.mcpAuthor) : undefined;
     const viewer: Viewer = !req.mcpConv ? { id: req.user?.id ?? null, role: req.user?.role ?? 'admin' }
       : owner ? { id: null, role: 'admin' } : { id: author?.id ?? '', role: author?.role ?? null };
-    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', owner, viewer, onBehalf);
+    const server = buildServer(d, req.mcpConv ?? null, req.user?.role ?? 'admin', viewer, onBehalf);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => { void transport.close(); void server.close(); });

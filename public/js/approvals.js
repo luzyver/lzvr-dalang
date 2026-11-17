@@ -1,5 +1,5 @@
 // Messages one chat wants to send another (via MCP), database writes agents ask for on "write with approval"
-// connections of the SQL editor, commands agents ask for on SSH hosts that need approval, ClickUp messages agents ask to send as the owner, and users' requests to index a project's code graph wait here until a human decides. Shown as cards in the chat concerned and all together
+// connections of the SQL editor, commands agents ask for on SSH hosts that need approval, ClickUp messages agents ask to send as you, and users' requests to index a project's code graph wait here until a human decides. Shown as cards in the chat concerned and all together
 // in the Approvals view.
 import { useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
@@ -100,7 +100,7 @@ function ClickUpWhere({ d }) {
   </div>`;
 }
 
-/** A ClickUp message an agent wants to send as the owner; the owner may change the text, then Approve sends it. */
+/** A ClickUp message an agent wants to send as you (each user sees only their own); you may change the text, then Approve sends it. */
 export function ClickUpApprovalCard({ a, showChat }) {
   const [text, setText] = useState(a.content);
   const decide = (verb) => guarded(async () => {
