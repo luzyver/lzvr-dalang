@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { badName, globList, inGitDir, searchRegExp } from '../src/code-routes.js';
+import { templateWorkDir } from '../src/templates.js';
 import { asUser, shellUser, Terminals, userShell } from '../src/terminals.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -205,6 +206,24 @@ describe('code editor: files', () => {
     const dev = await mkUser(t, 'dev1', 'dev');
     expect((await t.call('GET', url, undefined, bearer(dev.token))).statusCode).toBe(404);
     expect((await t.call('GET', '/files/download?path=..%2Foutside.txt', undefined, bearer(dev.token))).statusCode).toBe(404);
+  });
+
+  it('lets a dev download what the chat made from a template, not what another chat made', async () => {
+    const t = await withChat();
+    const dev = await mkUser(t, 'dev1', 'dev');
+    const other = `${t.id}-other`;
+    try {
+      for (const id of [t.id, other]) {
+        mkdirSync(templateWorkDir(id), { recursive: true });
+        writeFileSync(join(templateWorkDir(id), 'surat.pdf'), `pdf of ${id}\n`);
+      }
+      const get = (path: string) => t.call('GET', `/files/download?path=${encodeURIComponent(path)}`, undefined, bearer(dev.token));
+      expect((await get(join(templateWorkDir(t.id), 'surat.pdf'))).body).toBe(`pdf of ${t.id}\n`);
+      expect((await get(join(templateWorkDir(other), 'surat.pdf'))).statusCode).toBe(404);
+      expect((await get(join(templateWorkDir(t.id), '..', other, 'surat.pdf'))).statusCode).toBe(404);
+    } finally {
+      for (const id of [t.id, other]) rmSync(templateWorkDir(id), { recursive: true, force: true });
+    }
   });
 
   it('404s for an unknown chat', async () => {

@@ -4,8 +4,14 @@
  * file from the rest of the message and hand back a PDF (see templatePrompt).
  */
 
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 /** A template: its .docx lives on disk at `file` (inside the state folder); this record is what the database keeps. */
 export interface Template { name: string; description: string; file: string }
+
+/** Where a chat's agent fills templates: the copy and the PDF are made here, outside the project, so they never show up in its changes. */
+export const templateWorkDir = (convId: string) => join(tmpdir(), 'dalang-template', convId);
 
 export const TEMPLATE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -61,9 +67,9 @@ export function isDocx(bytes: Buffer): boolean {
 /**
  * The prompt the agent gets: what was typed, then what to do with each template it mentions (where the .docx is and how
  * to turn it into a PDF), or that there is no such template. "@template" alone lists them. Any other prompt comes back
- * unchanged, also one that only talks about "@template".
+ * unchanged, also one that only talks about "@template". `workDir` is the folder the agent works in (templateWorkDir).
  */
-export function templatePrompt(prompt: string, templates: Template[]): string {
+export function templatePrompt(prompt: string, templates: Template[], workDir: string): string {
   const names = templateMentions(prompt, templates.map((t) => t.name));
   if (!names.length) {
     if (prompt.trim().toLowerCase() !== '@template') return prompt;
@@ -84,14 +90,15 @@ The person asked for a PDF made from a document template (a Word file). Use the 
 ${parts.join('\n')}
 
 How to do it:
-1. Copy the template .docx into the project (a new file; never change the original, it is shared by every chat) and open the copy.
+1. Copy the template .docx into ${workDir} (a new file; never change the original, it is shared by every chat) and open
+   the copy. Everything you make for this (the copy, the PDF, any helper file) goes in that folder, not in the project.
 2. Find its fields: placeholders such as {{field}} or [Field], in the body and in headers, footers and tables. Word often
    splits one placeholder over several runs, so look at the text of a paragraph, not at single runs. Fill each from the
    message and keep the template's layout and formatting. A field the message gives no value for: ask the person, do
    not invent one.
 3. Check the filled copy: no placeholder left anywhere (headers and footers too), headings numbered in order, and the
    table of contents, if there is one, updated.
-4. Convert the filled copy to PDF (for example \`soffice --headless --convert-to pdf <file>.docx\`). If no converter is
-   installed, say so and give the filled .docx instead.
+4. Convert the filled copy to PDF (for example \`soffice --headless --convert-to pdf --outdir <folder> <file>.docx\`).
+   If no converter is installed, say so and give the filled .docx instead.
 5. Tell the person the path of the PDF (and of the .docx) you made.`;
 }

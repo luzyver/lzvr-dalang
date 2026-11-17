@@ -41,12 +41,14 @@ describe('templatePrompt', () => {
   });
 
   it('points the agent at the file, says when a name is unknown, leaves other prompts alone', () => {
-    const p = templatePrompt('isi @template:Penawaran nama: PT A', templates);
+    const p = templatePrompt('isi @template:Penawaran nama: PT A', templates, '/tmp/work');
     expect(p).toContain('/state/templates/penawaran.docx');
     expect(p).toContain('PDF');
-    expect(templatePrompt('@template:nope x', templates)).toContain('no template of that name');
-    expect(templatePrompt('@template ', templates)).toContain('- penawaran: Surat penawaran');
-    for (const p of ['hello', 'ntar manggilnya pakai @template', 'tambah fitur @template di docs']) expect(templatePrompt(p, templates)).toBe(p);
+    expect(p).toContain('Copy the template .docx into /tmp/work'); // filled outside the project
+    expect(p).not.toContain('into the project');
+    expect(templatePrompt('@template:nope x', templates, '/tmp/work')).toContain('no template of that name');
+    expect(templatePrompt('@template ', templates, '/tmp/work')).toContain('- penawaran: Surat penawaran');
+    for (const p of ['hello', 'ntar manggilnya pakai @template', 'tambah fitur @template di docs']) expect(templatePrompt(p, templates, '/tmp/work')).toBe(p);
   });
 });
 
