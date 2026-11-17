@@ -18,9 +18,9 @@ LABEL org.opencontainers.image.source=https://github.com/luzyver/lzvr-dalang \
       org.opencontainers.image.description="Self-hosted control room for the Codex CLI and Claude Code" \
       org.opencontainers.image.licenses=MIT
 
-# What the agents and the panel run: git and ssh (Changes, pushes, SSH tests), gh (Merge Requests on GitHub), and the
-# tools agents reach for first in a project. bubblewrap is Codex's sandbox on Linux (it needs the security_opt lines of
-# compose.yaml to make its namespaces). libreoffice-writer turns a filled @template .docx into a PDF (soffice --headless),
+# What the agents and the panel run: git and ssh (Changes, pushes, SSH tests), gh (Merge Requests on GitHub; glab for
+# GitLab is installed below), and the tools agents reach for first in a project. bubblewrap is Codex's sandbox on Linux
+# (it needs the security_opt lines of compose.yaml to make its namespaces). libreoffice-writer turns a filled @template .docx into a PDF (soffice --headless),
 # with fonts-liberation and fonts-dejavu-core so the text has glyphs.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -32,6 +32,25 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh
+
+# glab (Merge Requests and HTTPS logins on GitLab, Settings -> Git & forges): not packaged by Debian bookworm, so the
+# release .deb from gitlab.com, checked against the hashes pinned here. To move it, change GLAB_VERSION and both hashes
+# (checksums.txt of that release: https://gitlab.com/gitlab-org/cli/-/releases).
+ARG GLAB_VERSION=1.128.0
+ARG GLAB_SHA256_AMD64=b42db1c339cb66df2dbdaf190b8c4e359cb2ea3f7ac53e46302b04777f2cf405
+ARG GLAB_SHA256_ARM64=88e68a179fc25c3751e7950aa4b1b47b184cade590b70d9ca4aafff6648c655e
+RUN arch=$(dpkg --print-architecture) \
+    && case "$arch" in \
+         amd64) sha="$GLAB_SHA256_AMD64" ;; \
+         arm64) sha="$GLAB_SHA256_ARM64" ;; \
+         *) echo "no glab package for $arch" >&2; exit 1 ;; \
+       esac \
+    && deb="glab_${GLAB_VERSION}_linux_${arch}.deb" \
+    && curl -fsSL -o "/tmp/$deb" "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/$deb" \
+    && echo "$sha  /tmp/$deb" | sha256sum -c - \
+    && dpkg -i "/tmp/$deb" \
+    && rm "/tmp/$deb" \
+    && glab version
 
 # The agent CLIs. `latest` at build time: rebuild with --no-cache (or pin a version here) to move them.
 ARG CODEX_VERSION=latest
