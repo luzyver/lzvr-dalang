@@ -584,8 +584,14 @@ describe('sub-agents', () => {
 });
 
 describe('ClickUp tools', () => {
-  const CLICKUP = ['clickup_chat_history', 'clickup_find_people', 'clickup_list_channels', 'clickup_list_threads', 'clickup_whoami'];
-  const SEND = ['clickup_send_message', 'clickup_send_status'];
+  const CLICKUP = [
+    'clickup_chat_history', 'clickup_find_people', 'clickup_find_tasks', 'clickup_get_doc', 'clickup_get_list', 'clickup_get_task',
+    'clickup_list_channels', 'clickup_list_docs', 'clickup_list_spaces', 'clickup_list_threads', 'clickup_time_entries', 'clickup_whoami',
+  ];
+  const SEND = [
+    'clickup_attach_file', 'clickup_checklist', 'clickup_comment_task', 'clickup_create_task', 'clickup_link_tasks', 'clickup_log_time', 'clickup_send_message',
+    'clickup_send_status', 'clickup_update_task', 'clickup_write_doc',
+  ];
   const clickupNames = async (c: C) => (await c.listTools()).tools.map((x) => x.name).filter((n) => n.startsWith('clickup_'));
   /** Boot with the fake ClickUp API and, unless told otherwise, a token saved in Settings → ClickUp. */
   async function withClickUp(token = 'pk_test', calls?: string[]) {
@@ -729,6 +735,62 @@ describe('ClickUp tools', () => {
     await told(/did not send your message/);
   });
 
+  it('read tasks, time and Docs, and hold every change for whoever sent the turn until they approve it', async () => {
+    const calls: string[] = [];
+    const t = await withClickUp('pk_test', calls);
+    const changes = () => calls.filter((c) => /^(POST|PUT|DELETE) /.test(c));
+    const { a } = await twoConvs(await t.connect());
+    const told = (re: RegExp) => until(() => [...t.store.listQueue(a.id), ...t.store.listTurns(a.id)].some((x) => re.test(x.prompt)));
+    const connect = () => t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
+
+    // Reading needs no switch; changing is not even offered without it.
+    const reader = await connect();
+    expect((await call(reader, 'clickup_find_tasks', { query: 'rekap' })).json).toMatchObject({ tasks: [{ id: 't1', status: 'in progress' }] });
+    expect((await call(reader, 'clickup_get_task', { task: 'DEV-42' })).json).toMatchObject({ id: 't1', checklists: [{ id: 'ck1' }] });
+    expect((await call(reader, 'clickup_time_entries', { from: '2026-10-08', to: '2026-10-09', workspace_ids: ['900'] })).json).toMatchObject({ total: '3h 30m' });
+    expect((await call(reader, 'clickup_get_doc', { doc_id: 'doc1', page_id: 'p1' })).json).toMatchObject({ doc: 'Runbook', page: { name: 'Deploy' } });
+    expect((await call(reader, 'clickup_get_list', { list_id: 'nope' })).isError).toBe(true);
+    expect(await clickupNames(reader)).not.toContain('clickup_update_task');
+
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
+    const agent = await connect();
+    const asked = await call(agent, 'clickup_update_task', { task: 't1', status: 'done', add_tags: ['urgent fix'] });
+    expect(asked.json).toMatchObject({ status: 'pending_approval', change: 'Change task "Rekap transaksi"\nStatus: in progress → done\nAdd tags: urgent fix' });
+    expect((await call(agent, 'clickup_update_task', { task: 't1', status: 'review' })).text).toMatch(/no status "review"/);
+    expect(changes()).toEqual([]);
+
+    const id = (asked.json as { approval_id: number }).approval_id;
+    const admin = { authorization: `Bearer ${(await mkUser(t, 'u-admin', 'admin')).token}` };
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(404);
+    const [waiting] = (await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json();
+    expect(waiting).toMatchObject({ id, status: 'pending', action: { title: 'Change task "Rekap transaksi"', url: 'https://app.clickup.com/t/t1' } });
+
+    const ok = (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
+    expect(ok).toMatchObject({ status: 'sent', messageId: 't1', action: { calls: [] } }); // made once: its requests are not kept
+    expect(ok.outcome).toMatch(/^Done .*https:\/\/app\.clickup\.com\/t\/t1$/);
+    expect(changes()).toEqual(['PUT /api/v2/task/t1 {"status":"done"}', 'POST /api/v2/task/t1/tag/urgent%20fix undefined']);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).statusCode).toBe(409);
+    await told(/approved your change \(Change task "Rekap transaksi"\) and it was made/);
+    expect((await call(agent, 'clickup_send_status', { approval_id: id })).json).toMatchObject({ status: 'sent' });
+
+    const no = await call(agent, 'clickup_comment_task', { task: 't1', text: 'beres' });
+    const noId = (no.json as { approval_id: number }).approval_id;
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${noId}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
+    await told(/did not approve your change \(Comment on task "Rekap transaksi"\)/);
+
+    // ClickUp refusing a step is a failure; one cut off midway is unknown, and is not made again.
+    const fail = async (items: string[]) => {
+      const r = await call(agent, 'clickup_checklist', { task: 't1', checklist_id: 'ck1', items });
+      return (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${(r.json as { approval_id: number }).approval_id}/approve`, headers: AUTH })).json();
+    };
+    expect(await fail(['boom-400'])).toMatchObject({ status: 'failed' });
+    const cut = await fail(['ok', 'boom-502']);
+    expect(cut).toMatchObject({ status: 'unknown' });
+    expect(cut.outcome).toMatch(/Already done: adding item "ok"/);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${cut.id}/approve`, headers: AUTH })).statusCode).toBe(409);
+    expect(changes()).toHaveLength(5);
+  });
+
   it('send files from the chat folder by uploading them to a task, as they were when asked, and link them', async () => {
     const calls: string[] = [];
     const t = await withClickUp('pk_test', calls);
@@ -742,7 +804,7 @@ describe('ClickUp tools', () => {
     expect((await ask({ files: ['rekap.xlsx'] })).text).toMatch(/task_id/);
     expect((await ask({ files: ['nope.xlsx'], task_id: 't1' })).text).toMatch(/no file nope.xlsx/);
     expect((await ask({ files: ['../outside.txt'], task_id: 't1' })).isError).toBe(true);
-    expect((await ask({ files: ['rekap.xlsx'], task_id: 't2' })).text).toMatch(/no task t2/);
+    expect((await ask({ files: ['rekap.xlsx'], task_id: 't404' })).text).toMatch(/no task t404/);
     const ok = await ask({ files: ['rekap.xlsx'], task_id: 'https://app.clickup.com/t/t1' });
     expect(ok.json).toMatchObject({ status: 'pending_approval', files: [{ name: 'rekap.xlsx', size: 10 }], task: { id: 't1', name: 'Rekap transaksi' } });
     writeFileSync(join(dir, 'rekap.xlsx'), 'changed after asking'); // what the owner approved is what goes
@@ -755,6 +817,55 @@ describe('ClickUp tools', () => {
       'UPLOAD /api/v2/task/t1/attachment rekap.xlsx 10',
       `POST /api/v3/workspaces/900/chat/channels/c1/messages ${JSON.stringify({ type: 'message', content: 'rekap terlampir\n\n📎 [rekap.xlsx](https://files.example/rekap.xlsx)', content_format: 'text/md' })}`,
     ]);
+  });
+
+  it('attach files from the chat folder to a task, with a comment that links them or alone, once approved', async () => {
+    const calls: string[] = [];
+    const t = await withClickUp('pk_test', calls);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
+    const { p, a } = await twoConvs(await t.connect());
+    const dir = t.store.getProject(p.id)!.path;
+    writeFileSync(join(dir, 'shot.png'), 'png-bytes');
+    const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
+    const approve = async (id: number) => (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
+    const sent = () => calls.filter((c) => /^(POST|UPLOAD) /.test(c));
+    const filesOf = (id: number) => join(t.cfg.stateDir, 'clickup-files', String(id));
+
+    expect((await call(agent, 'clickup_attach_file', { task: 't1', files: ['nope.png'] })).text).toMatch(/no file nope.png/);
+    expect((await call(agent, 'clickup_attach_file', { task: 't404', files: ['shot.png'] })).text).toMatch(/no task t404/);
+    const note = await call(agent, 'clickup_comment_task', { task: 'DEV-42', text: 'lihat gambar', files: ['shot.png'] });
+    expect(note.json).toMatchObject({
+      status: 'pending_approval',
+      change: 'Comment on task "Rekap transaksi"\nComment: lihat gambar\nFiles: shot.png (9 B): attached to the task, linked at the end of the comment',
+    });
+    const noteId = (note.json as { approval_id: number }).approval_id;
+    const [waiting] = (await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json();
+    expect(waiting).toMatchObject({ id: noteId, files: [{ name: 'shot.png', size: 9 }], task: { id: 't1' } });
+    writeFileSync(join(dir, 'shot.png'), 'changed after asking'); // what the person approved is what goes
+    expect(sent()).toEqual([]);
+
+    expect(await approve(noteId)).toMatchObject({ status: 'sent', messageId: 'cm9' });
+    expect(sent()).toEqual([
+      'UPLOAD /api/v2/task/t1/attachment shot.png 9',
+      `POST /api/v2/task/t1/comment ${JSON.stringify({ notify_all: false, comment: [{ text: 'lihat gambar\n', attributes: {} }, { text: '\n📎 ', attributes: {} }, { text: 'shot.png', attributes: { link: 'https://files.example/shot.png' } }] })}`,
+    ]);
+    expect(existsSync(filesOf(noteId))).toBe(false);
+    await until(() => [...t.store.listQueue(a.id), ...t.store.listTurns(a.id)].some((x) => /with 1 file\(s\) attached to task "Rekap transaksi"/.test(x.prompt)));
+
+    const alone = await call(agent, 'clickup_attach_file', { task: 't1', files: ['shot.png'] });
+    expect(alone.json).toMatchObject({ status: 'pending_approval', change: 'Attach a file to task "Rekap transaksi"\nFiles: shot.png (20 B)' });
+    const aloneId = (alone.json as { approval_id: number }).approval_id;
+    const done = await approve(aloneId);
+    expect(done).toMatchObject({ status: 'sent' });
+    expect(done.outcome).toMatch(/^Done .*https:\/\/app\.clickup\.com\/t\/t1$/);
+    expect(sent().slice(2)).toEqual(['UPLOAD /api/v2/task/t1/attachment shot.png 20']);
+
+    // A rejected one uploads nothing and its files are dropped.
+    const no = ((await call(agent, 'clickup_attach_file', { task: 't1', files: ['shot.png'] })).json as { approval_id: number }).approval_id;
+    expect(existsSync(filesOf(no))).toBe(true);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${no}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
+    expect(existsSync(filesOf(no))).toBe(false);
+    expect(sent()).toHaveLength(3);
   });
 
   it('keep files whose names differ only in case apart, and keep the files of an upload cut off midway until dismissed', async () => {

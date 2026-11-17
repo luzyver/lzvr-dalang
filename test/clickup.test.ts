@@ -157,7 +157,7 @@ describe('ClickUp files', () => {
   const file = (name: string) => ({ name, data: Buffer.from(name) });
   const uploads = (calls: string[]) => calls.filter((c) => c.startsWith('UPLOAD ')).map((c) => c.split(' ')[2]);
 
-  it('finds a task by id, by link, and by a custom id link only together with its workspace', async () => {
+  it('finds a task by id, by link, and by a custom id, in the workspace of its link or else in each one read', async () => {
     const calls: string[] = [];
     const c = fakeClient(calls);
     const t1 = { id: 't1', name: 'Rekap transaksi', url: 'https://app.clickup.com/t/t1' };
@@ -165,7 +165,8 @@ describe('ClickUp files', () => {
     expect(await c.task('https://app.clickup.com/t/t1')).toEqual(t1);
     expect(await c.task('https://app.clickup.com/t/900/DEV-42')).toEqual(t1); // uploads then go to t1, its own id
     expect(calls).toContain('/api/v2/task/DEV-42?custom_task_ids=true&team_id=900');
-    await expect(c.task('DEV-42')).rejects.toThrow(/no task DEV-42/);
+    expect(await c.task('DEV-42')).toEqual(t1);
+    await expect(c.task('DEV-99')).rejects.toThrow(/no task DEV-99/);
     await expect(c.task('not a task')).rejects.toThrow(/not a task id or link/);
   });
 

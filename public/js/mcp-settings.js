@@ -7,7 +7,7 @@ import { AsyncButton, confirmDialog, Field, Icon, Seg, Spinner, Switch } from '.
 import { guarded, isOwner, toast } from './store.js';
 
 /**
- * Your own ClickUp token, workspace and time zone, for the ClickUp Chat tools on /mcp: every user has their own, and
+ * Your own ClickUp token, workspace and time zone, for the ClickUp tools on /mcp (chat, tasks, time, Docs): every user has their own, and
  * their turns read as their ClickUp user. Read-only unless the owner allows sending (for everyone).
  */
 function ClickUpCard() {
@@ -37,7 +37,7 @@ function ClickUpCard() {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`<section class="form-card">
     <strong>ClickUp</strong>
-    <span class="dim small">ClickUp Chat tools on this gateway's own MCP, e.g. "what did I work on last week?". The token is yours alone:
+    <span class="dim small">ClickUp tools on this gateway's own MCP (chat, tasks, time tracking, Docs), e.g. "what did I work on last week?". The token is yours alone:
       only turns you sent use it, and every user saves their own. Read-only unless sending is allowed below.
       Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
     <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
@@ -50,9 +50,9 @@ function ClickUpCard() {
     <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
     ${isOwner.value
       ? html`<label class="check small"><input type="checkbox" checked=${s.send} onChange=${(e) => setS({ ...s, send: e.currentTarget.checked })} />
-          Allow sending, for every user: a chat can also ask to send ClickUp messages as whoever sent its turn; each one waits for that person's own approval</label>`
+          Allow sending and changes, for every user: a chat can also ask to send ClickUp messages and to change tasks, comments, time entries and Docs as whoever sent its turn; each one waits for that person's own approval</label>`
       : html`<span class="dim small">${s.send
-          ? 'Sending is allowed by the owner: a chat can ask to send ClickUp messages as you; each one waits for your approval.'
+          ? 'Sending and changes are allowed by the owner: a chat can ask to send ClickUp messages and to change tasks, comments, time entries and Docs as you; each one waits for your approval.'
           : 'Sending is not allowed by the owner: the tools only read.'}</span>`}
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>

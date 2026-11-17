@@ -5,7 +5,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUpApproval, createClickUpApproval, describeDestination, readClickUpApprovals } from './clickup-approvals.js';
-import { type ClickUp, MAX_SEND, type OutFile, startOfDay } from './clickup.js';
+import { type ClickUp, MAX_FILES, MAX_SEND, type OutFile, startOfDay } from './clickup.js';
+import { clickupWorkTools } from './clickup-work-tools.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
 import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, dbTarget, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
@@ -469,12 +470,12 @@ const WORKSPACES = z.array(z.string()).optional()
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
- * ClickUp Chat tools. Each person has their own ClickUp token (Settings → MCP → ClickUp), and the tools read as its
- * ClickUp user: from outside the caller's own, inside a chat that of whoever sent the turn. Someone with no token gets
- * none, and so do prompts nobody sent (agents, approvals). They only read, unless the owner allowed sending:
- * clickup_send_message then asks to send as that person, and each message waits for their own approval.
+ * ClickUp tools: chat here, tasks, time and Docs in clickup-work-tools.ts. Each person has their own ClickUp token
+ * (Settings → MCP → ClickUp), and the tools read as its ClickUp user: from outside the caller's own, inside a chat that
+ * of whoever sent the turn. Someone with no token gets none, and so do prompts nobody sent (agents, approvals). They
+ * only read, unless the owner allowed sending: clickup_send_message then asks to send as that person and the change
+ * tools ask to change things as them, and each message or change waits for their own approval.
  */
-const MAX_FILES = 5;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /** Files an agent sends along, read now from its chat's folder (paths relative to it): each once, at most 5 of 25 MB. */
@@ -539,6 +540,7 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
     inputSchema: { query: z.string().optional().describe('part of a name or email; empty lists everyone'), workspace_ids: WORKSPACES },
   }, async (a) => run(() => cu.people(a.query, a.workspace_ids)));
 
+  clickupWorkTools(server, store, push, cu, send, by, { stateDir, read: (paths) => readChatFiles(store, by.conv, paths) });
   if (!send) return;
   server.registerTool('clickup_send_message', {
     description: 'Ask to send a ClickUp Chat message (markdown) as the ClickUp user from clickup_whoami: to a channel, DM '
@@ -577,8 +579,9 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
   }));
 
   server.registerTool('clickup_send_status', {
-    description: 'The status of a ClickUp message asked for with clickup_send_message: pending, sending, sent, rejected, '
-      + 'failed, unknown (sending was cut off) or dismissed, with the text as sent. Never ask again for a sending, sent or unknown one.',
+    description: 'The status of a ClickUp message asked for with clickup_send_message, or of a change asked for with '
+      + 'another ClickUp tool (a task, a comment, time, a Doc): pending, sending, sent (a change: made), rejected, failed, '
+      + 'unknown (it was cut off) or dismissed, with the text as sent. Never ask again for a sending, sent or unknown one.',
     inputSchema: { approval_id: z.number().int() },
   }, async ({ approval_id }) => {
     // Only the one who asked: the same person, in the same chat or, from outside a chat, under the same name.

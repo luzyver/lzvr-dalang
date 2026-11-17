@@ -100,8 +100,45 @@ function ClickUpWhere({ d }) {
   </div>`;
 }
 
-/** A ClickUp message an agent wants to send as you (each user sees only their own); you may change the text, then Approve sends it. */
-export function ClickUpApprovalCard({ a, showChat }) {
+/** A change to ClickUp an agent wants to make as you (a task, a comment, time, a Doc): what it does, then Approve makes it. */
+function ClickUpChangeCard({ a, showChat }) {
+  const decide = (verb) => guarded(async () => {
+    const r = await api(`/api/clickup/approvals/${a.id}/${verb}`, { method: 'POST' });
+    if (verb === 'approve') toast(r.status === 'sent' ? 'Done in ClickUp' : `It may not have been done: ${r.outcome}`, r.status === 'sent' ? 'ok' : 'err');
+    await refreshApprovals();
+  });
+  const pending = a.status === 'pending';
+  return html`<div class="card approval">
+    <div class="card-icon"><${Icon} name="circle-check" /></div>
+    <div class="card-body">
+      <strong>${a.who || 'An agent'} wants to change ClickUp as you
+        ${showChat && a.conv && html` from <a onClick=${() => openChat(a.conv)}>${chatName(a.conv)}</a>`}</strong>
+      <div>${a.action.title}${a.action.url && html` <a class="small" href=${a.action.url} target="_blank" rel="noopener">open</a>`}</div>
+      ${a.action.details.length > 0 && html`<div class="small">
+        ${a.action.details.map((d) => html`<div><span class="dim">${d.label}</span> <span style="white-space: pre-wrap">${d.value}</span></div>`)}
+      </div>`}
+      ${!pending ? html`<p class="sql-warning">${a.status === 'sending' ? 'Being done now. It cannot be done twice.' : a.outcome}</p>
+      ${a.status === 'unknown' && html`<span class="dim small">Dismiss closes this request without doing it again. Check ClickUp for whether it was done.</span>
+      <div class="card-actions">
+        <${AsyncButton} class="btn sm" icon="x" onClick=${decide('dismiss')}>Dismiss<//>
+      </div>`}` : html`<span class="dim small">Approve makes this change now as you; others see it at once. The outcome goes back to the chat.</span>
+      <div class="card-actions">
+        <${AsyncButton} class="btn primary sm" icon="check" onClick=${decide('approve')}>Approve<//>
+        <${AsyncButton} class="btn sm" icon="x" onClick=${decide('reject')}>Reject<//>
+      </div>`}
+    </div>
+  </div>`;
+}
+
+/**
+ * A ClickUp message an agent wants to send as you (each user sees only their own); you may change the text, then
+ * Approve sends it. A change (a.action) has a card of its own.
+ */
+export function ClickUpApprovalCard(props) {
+  return props.a.action ? html`<${ClickUpChangeCard} ...${props} />` : html`<${ClickUpMessageCard} ...${props} />`;
+}
+
+function ClickUpMessageCard({ a, showChat }) {
   const [text, setText] = useState(a.content);
   const decide = (verb) => guarded(async () => {
     const r = await api(`/api/clickup/approvals/${a.id}/${verb}`, { method: 'POST', ...(verb === 'approve' && { body: { content: text } }) });
@@ -173,7 +210,7 @@ export function ApprovalsView() {
       ${writes.map((a) => html`<${DbApprovalCard} key=${`db${a.id}`} a=${a} showChat />`)}
       ${commands.length > 0 && html`<p class="dim">Commands agents asked to run on SSH hosts set to "every command after approval" (SSH Hosts).</p>`}
       ${commands.map((a) => html`<${SshApprovalCard} key=${`ssh${a.id}`} a=${a} showChat />`)}
-      ${clickups.length > 0 && html`<p class="dim">ClickUp messages agents asked to send as you (Settings → MCP → ClickUp, "Allow sending").</p>`}
+      ${clickups.length > 0 && html`<p class="dim">ClickUp messages agents asked to send and changes they asked to make as you (Settings → MCP → ClickUp, "Allow sending").</p>`}
       ${clickups.map((a) => html`<${ClickUpApprovalCard} key=${`cu${a.id}`} a=${a} showChat />`)}
       ${indexes.length > 0 && html`<p class="dim">Code graphs users asked to index (code memory).</p>`}
       ${indexes.map((r) => html`<${IndexRequestCard} key=${`ix${r.id}`} r=${r} />`)}
