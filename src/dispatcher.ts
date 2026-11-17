@@ -2,13 +2,14 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isBusy, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
+import { mentionedTemplates, templatePrompt } from './templates.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -495,7 +496,12 @@ export class Dispatcher {
     const others = item.attachments.filter((p) => !images.includes(p));
     // `/custom <name>` becomes that skill's instructions (see skills.ts); what the chat shows stays what was typed.
     const customSkills = this.store.getCustomSkills();
-    const said = customSkillPrompt(item.prompt, customSkills);
+    // `@template:<name>` adds how to fill that template (templates.ts), to a request only: not to a report coming back,
+    // nor for a reviewer, whose prompt quotes the request.
+    const fills = !reviewer && item.kind !== 'report';
+    const templates = fills ? this.store.getTemplates() : [];
+    const typed = customSkillPrompt(item.prompt, customSkills);
+    const said = fills ? templatePrompt(typed, templates) : typed;
     const prompt = others.length
       ? `${said}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
       : said;
@@ -555,6 +561,7 @@ export class Dispatcher {
       const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
       // Claude Code reads outside its folder only from directories it was given.
       if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
+      if (claude) for (const dir of new Set(mentionedTemplates(item.prompt, templates).map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
       // The agent must read the graph of the code as it is now: an index the project's files changed since is redone

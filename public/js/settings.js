@@ -1,6 +1,6 @@
 // The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users for admins;
 // Git & forges for everyone (the owner: the server's setup) and MCP (everyone: their own ClickUp; the owner: other servers too).
-import { useEffect, useState } from '../vendor/preact-hooks.js';
+import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
@@ -228,6 +228,50 @@ function CustomSkills() {
   </section>`;
 }
 
+/** PDF templates: a .docx an admin uploads with placeholders to fill, used in any chat by mentioning `@template:name`. */
+function Templates() {
+  const [list, setList] = useState(null);
+  const [draft, setDraft] = useState({ name: '', description: '', file: null });
+  const picker = useRef(null);
+  const load = () => api('/api/settings/templates').then(setList).catch((e) => toast(e.message, 'err'));
+  useEffect(() => { load(); }, []);
+  const upload = guarded(async () => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(draft.name)) throw new Error('Name: use letters, digits, "-" and "_"');
+    if (!draft.file) throw new Error('Choose a .docx file');
+    const form = new FormData(); // the fields come before the file: the server reads them from the stream in that order
+    form.append('name', draft.name);
+    form.append('description', draft.description);
+    form.append('file', draft.file);
+    await api('/api/settings/templates', { method: 'PUT', form });
+    setDraft({ name: '', description: '', file: null });
+    if (picker.current) picker.current.value = ''; // the file input keeps its own value
+    toast('Template saved');
+    await load();
+  });
+  const remove = guarded(async (name) => {
+    await api(`/api/settings/templates/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    await load();
+  });
+  if (list == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
+  return html`<section class="form-card">
+    <strong>PDF templates</strong>
+    <span class="dim small">Upload a Word file (.docx) with the fields to fill written as placeholders, such as <code>{{field}}</code> or <code>[Field]</code>. In a chat, mention
+      <code>@template:name</code> and give the data in the message: the agent fills the template and makes a PDF. Uploading a name again replaces it.</span>
+    ${list.map((t) => html`<div class="row wrap" key=${t.name}>
+      <code>${t.name}</code><span class="dim small">${t.description}</span>
+      <${AsyncButton} class="btn danger sm" onClick=${() => remove(t.name)}>Remove<//>
+    </div>`)}
+    <div class="form-card">
+      <div class="row wrap">
+        <${Field} label="Name"><input value=${draft.name} placeholder="surat-penawaran" onInput=${(e) => setDraft({ ...draft, name: e.currentTarget.value.trim() })} /><//>
+        <${Field} label="Description"><input value=${draft.description} onInput=${(e) => setDraft({ ...draft, description: e.currentTarget.value })} /><//>
+        <${Field} label="File (.docx)"><input type="file" accept=".docx" ref=${picker} onChange=${(e) => setDraft({ ...draft, file: e.currentTarget.files[0] || null })} /><//>
+      </div>
+      <div class="row"><${AsyncButton} class="btn primary sm" onClick=${upload}>Upload<//></div>
+    </div>
+  </section>`;
+}
+
 const Defaults = () => html`
   <p class="dim">Used when a chat has no model or effort of its own. Leave a field on its default to let the CLI choose.</p>
   <${DefaultsFor} backend="codex" title="Codex" />
@@ -236,7 +280,8 @@ const Defaults = () => html`
   <${ReviewerSettings} />
   <${DesignHook} />
   <${AgentGit} />
-  <${CustomSkills} />`;
+  <${CustomSkills} />
+  <${Templates} />`;
 
 /** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
 function PromptFor({ path, title, help }) {

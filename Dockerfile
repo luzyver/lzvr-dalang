@@ -20,12 +20,14 @@ LABEL org.opencontainers.image.source=https://github.com/luzyver/lzvr-dalang \
 
 # What the agents and the panel run: git and ssh (Changes, pushes, SSH tests), gh (Merge Requests on GitHub), and the
 # tools agents reach for first in a project. bubblewrap is Codex's sandbox on Linux (it needs the security_opt lines of
-# compose.yaml to make its namespaces).
+# compose.yaml to make its namespaces). libreoffice-writer turns a filled @template .docx into a PDF (soffice --headless),
+# with fonts-liberation and fonts-dejavu-core so the text has glyphs.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client ripgrep less procps bubblewrap \
+       libreoffice-writer fonts-liberation fonts-dejavu-core \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
