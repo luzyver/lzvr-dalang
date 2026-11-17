@@ -100,8 +100,11 @@ The panel is then on `http://127.0.0.1:9876` of the host (loopback only). What d
   network's gateway, so set `TRUST_PROXY=172.31.98.1` (not `1`) next to `LZVR_ORIGIN`; `compose.yaml` fixes that
   subnet, change both if it is taken on your host.
 - **Terminals** in the code editor are the owner's only: `TERMINAL_USER` needs a service running as root.
-- **Not in the image**: `glab` and the `codebase-memory-mcp` binary. Add them to the `Dockerfile`, or put the binary in
-  a volume and name its path in Settings → MCP → Code memory.
+- **`gh` and `glab`** are in the image (`glab` pinned by `GLAB_VERSION` and its hashes in the `Dockerfile`), so Merge
+  Requests and HTTPS logins work for GitHub and GitLab. A self-hosted forge whose host name contains neither word
+  (`git.example.com`) also needs `GIT_FORGE` in `.env` (see "Merge Requests: gh and glab").
+- **Not in the image**: the `codebase-memory-mcp` binary. Add it to the `Dockerfile`, or put it in a volume and name its
+  path in Settings → MCP → Code memory.
 - **Databases and SSH hosts on the Docker host itself** are not `127.0.0.1` from inside the container: use the gateway
   address (`172.31.98.1`) or the host's own address.
 
