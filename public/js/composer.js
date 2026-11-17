@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { DRIVERS, EngineIcon, Icon } from './ui.js';
 import { guarded, toast } from './store.js';
 import { chat, refreshQueue } from './chat-view.js';
+import { MENTION, MENTION_KINDS, mentionKind, mentionText, menuItems, refreshes } from './mention-kinds.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const BACKEND_OPTIONS = [['claude', 'Claude Code'], ['codex', 'Codex']];
@@ -28,19 +29,12 @@ function useModelChoices(id, backend) {
   return state;
 }
 
-// "@db", "@database" or "@ssh" right before the caret, with what follows it so far ("@db:pro").
-const MENTION = /(^|\s)@(database|db|ssh):?([\w.-]*)$/i;
 // "/custom" at the very start of the box, whole or still being typed ("/cu"), then the skill's name so far.
 const SKILL = /^(\s*)\/(\w+)(?:\s+([\w-]*))?$/;
-const MENTION_KINDS = {
-  db: { url: '/api/db/agent-connections', icon: 'database', label: 'Databases', none: 'No database connection agents may use' },
-  ssh: { url: '/api/ssh/agent-hosts', icon: 'terminal', label: 'SSH hosts', none: 'No SSH host agents may use' },
-  skill: { url: '/api/custom-skills', icon: 'sparkles', label: 'Custom skills', none: 'No custom skill yet: an admin adds them in Settings' },
-};
 
 /**
  * The @db / @ssh list above the box: the connections and hosts agents may use, inserted as "@db:<id>" / "@ssh:<id>".
- * Also the custom skills, listed when the box starts with "/custom" and inserted as "/custom <name>".
+ * Also the document templates ("@template:<name>") and the custom skills, listed when the box starts with "/custom" and inserted as "/custom <name>".
  */
 function useMentions(box, setText) {
   const [at, setAt] = useState(null);
@@ -59,15 +53,15 @@ function useMentions(box, setText) {
     // A name is only offered after the whole word: "/cu" lists them all, "/cu x" is not this command.
     const skill = s && 'custom'.startsWith(s[2].toLowerCase()) && (s[3] === undefined || s[2].toLowerCase() === 'custom');
     if (!m && !skill) { setAt(null); return; }
-    const kind = skill ? 'skill' : m[2].toLowerCase() === 'ssh' ? 'ssh' : 'db';
+    const kind = mentionKind(m?.[2].toLowerCase(), skill);
     setAt(skill ? { kind, start: s[1].length, end: caret, filter: (s[3] || '').toLowerCase() }
       : { kind, start: caret - m[0].length + m[1].length, end: caret, filter: m[3].toLowerCase() });
     setSel(0);
-    // Skills are read again each time their list opens: one added in Settings shows without a reload.
-    if (skill ? at?.kind !== 'skill' : !loading.current[kind]) {
+    // Skills and templates are read again each time their list opens: one added in Settings shows without a reload.
+    if (refreshes(kind) ? at?.kind !== kind : !loading.current[kind]) {
       loading.current[kind] = true;
       api(MENTION_KINDS[kind].url)
-        .then((l) => setLists((ls) => ({ ...ls, [kind]: skill ? l.map((x) => ({ id: x.name, label: x.name, note: x.description })) : l })))
+        .then((l) => setLists((ls) => ({ ...ls, [kind]: menuItems(kind, l) })))
         .catch((e) => { loading.current[kind] = false; toast(e.message, 'err'); });
     }
   };
@@ -77,7 +71,7 @@ function useMentions(box, setText) {
 
   const pick = (item) => {
     const el = box.current;
-    const ref = at.kind === 'skill' ? `/custom ${item.id} ` : `@${at.kind}:${item.id} `;
+    const ref = mentionText(at.kind, item.id);
     const next = el.value.slice(0, at.start) + ref + el.value.slice(at.end);
     setText(next);
     setAt(null);

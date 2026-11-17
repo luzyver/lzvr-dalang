@@ -50,6 +50,32 @@ describe('Dispatcher with the claude backend', () => {
     expect(events.find((e) => e.type === 'user.prompt')!.payload).toContain('/custom notes about x'); // the chat shows what was typed
   });
 
+  it('tells how to fill a mentioned template and lets Claude read its folder, in a request only', async () => {
+    const { store, dispatcher, conv } = setup({});
+    const file = join(tmpdir(), 'lzvr-templates', 'surat.docx');
+    store.setTemplates([{ name: 'surat', description: '', file }]);
+    store.enqueue(conv.id, 'buat @template:surat untuk PT A', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 1));
+    const echoed = () => store.eventsAfter(conv.id, 0).filter((e) => e.payload.includes('echo:')).at(-1)!.payload;
+    const dir = JSON.stringify(`|--add-dir=${join(tmpdir(), 'lzvr-templates')}`).slice(1, -1);
+    expect(echoed()).toContain('surat.docx');
+    expect(echoed()).toContain('Convert the filled copy to PDF');
+    expect(echoed()).toContain(dir);
+    store.enqueue(conv.id, '[Reviewer] the request was: buat @template:surat untuk PT A', [], '', '', '', 'report');
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 2));
+    expect(echoed()).not.toContain('Convert the filled copy to PDF');
+    expect(echoed()).not.toContain(dir);
+    // A custom skill may name the template: the mention is then in its instructions, not in what was typed.
+    store.setCustomSkills([{ name: 'surat', description: '', content: 'Fill @template:surat from the input.' }]);
+    store.enqueue(conv.id, '/custom surat untuk PT B', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 3));
+    expect(echoed()).toContain('Convert the filled copy to PDF');
+    expect(echoed()).toContain(dir);
+  });
+
   it('keeps what was typed apart from a long custom skill for the reviewer', async () => {
     const { store, dispatcher, conv } = setup({});
     const content = `${'rule. '.repeat(3000)}LAST RULE`;

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -9,6 +9,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
 import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
+import { isDocx, TEMPLATE_NAME } from './templates.js';
 import { clickupApprovalRoutes, forgetClickUpApprovals } from './clickup-approvals.js';
 import { clickupClient, clickupRoutes, clickupSend, forgetClickUp } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
@@ -392,6 +393,42 @@ export function buildApp(
     const names = req.body.skills.map((s) => s.name.toLowerCase());
     if (new Set(names).size !== names.length) return reply.code(400).send({ error: 'Skill names must be unique' });
     store.setCustomSkills(req.body.skills.map((s) => ({ name: s.name, description: s.description ?? '', content: s.content })));
+    return reply.code(204).send();
+  });
+  // Document templates (templates.ts): a .docx an admin uploads here, used in a chat by mentioning `@template:<name>`.
+  // Any signed-in user may list the names; the file itself is only ever read by the agent.
+  const templatesDir = join(cfg.stateDir, 'templates');
+  app.get('/api/templates', () => store.getTemplates().map(({ name, description }) => ({ name, description })));
+  app.get('/api/settings/templates', { onRequest: requireAdmin }, () => store.getTemplates().map(({ name, description }) => ({ name, description })));
+  // multipart: the fields `name` and `description` come before the field `file`; sending a name again replaces that template.
+  app.put('/api/settings/templates', { onRequest: requireAdmin }, async (req, reply) => {
+    const part = await req.file();
+    if (!part) return reply.code(400).send({ error: 'multipart field "file" required' });
+    const field = (k: string) => { const f = part.fields[k] as { value?: unknown } | undefined; return typeof f?.value === 'string' ? f.value : ''; };
+    const name = field('name').trim();
+    const description = field('description').trim().slice(0, 300);
+    if (!TEMPLATE_NAME.test(name)) return reply.code(400).send({ error: 'name: use letters, digits, "-" and "_"' });
+    if (extname(part.filename).toLowerCase() !== '.docx') return reply.code(400).send({ error: 'the template must be a .docx file' });
+    const bytes = await part.toBuffer();
+    if (part.file.truncated) return reply.code(413).send({ error: `file exceeds ${maxUpload} bytes` });
+    if (!isDocx(bytes)) return reply.code(400).send({ error: 'not a valid .docx file' });
+    mkdirSync(templatesDir, { recursive: true });
+    const file = join(templatesDir, `${name}.docx`);
+    const all = store.getTemplates();
+    const rest = all.filter((t) => t.name.toLowerCase() !== name.toLowerCase());
+    // The same name in other letter case replaces it too: where file names tell case apart, its old file would stay behind.
+    // Removed before writing: where they do not, both names are one file.
+    for (const t of all) if (!rest.includes(t) && t.file !== file) rmSync(t.file, { force: true });
+    writeFileSync(file, bytes);
+    store.setTemplates([...rest, { name, description, file }].sort((a, b) => a.name.localeCompare(b.name)));
+    return reply.code(204).send();
+  });
+  app.delete<{ Params: { name: string } }>('/api/settings/templates/:name', { onRequest: requireAdmin }, (req, reply) => {
+    const all = store.getTemplates();
+    const t = all.find((x) => x.name.toLowerCase() === req.params.name.toLowerCase());
+    if (!t) return notFound(reply);
+    rmSync(t.file, { force: true });
+    store.setTemplates(all.filter((x) => x !== t));
     return reply.code(204).send();
   });
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.

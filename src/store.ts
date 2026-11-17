@@ -7,6 +7,7 @@ import { REVIEWER_DEFAULTS, type ReviewerPolicy, type ReviewState } from './revi
 import { summarizeUsage, type ChatUsage } from './token-usage.js';
 import type { ContextUsage } from './context.js';
 import type { CustomSkill } from './skills.js';
+import type { Template } from './templates.js';
 import type { Backend, ProjectAccess } from './util.js';
 
 const SCHEMA = `
@@ -434,6 +435,10 @@ export class Store {
     try { const v = JSON.parse(this.getKv('custom_skills') ?? '[]') as CustomSkill[]; return Array.isArray(v) ? v : []; } catch { return []; }
   }
   setCustomSkills(skills: CustomSkill[]): void { this.setKv('custom_skills', JSON.stringify(skills)); }
+  getTemplates(): Template[] {
+    try { const v = JSON.parse(this.getKv('templates') ?? '[]') as Template[]; return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+  setTemplates(templates: Template[]): void { this.setKv('templates', JSON.stringify(templates)); }
   getMemoryPolicy(): MemoryPolicy {
     try { return { ...MEMORY_DEFAULTS, ...(JSON.parse(this.getKv('memory') ?? '{}') as Partial<MemoryPolicy>) }; } catch { return MEMORY_DEFAULTS; }
   }
