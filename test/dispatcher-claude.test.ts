@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { Dispatcher } from '../src/dispatcher.js';
 import { reviewDiffDir } from '../src/reviewer.js';
 import { Store } from '../src/store.js';
+import { templateWorkDir } from '../src/templates.js';
 import { turnsDone, until } from './helpers.js';
 
 const FAKE_CLAUDE = [process.execPath, fileURLToPath(new URL('./fake-claude.mjs', import.meta.url))];
@@ -62,11 +63,16 @@ describe('Dispatcher with the claude backend', () => {
     expect(echoed()).toContain('surat.docx');
     expect(echoed()).toContain('Convert the filled copy to PDF');
     expect(echoed()).toContain(dir);
+    // The copy and the PDF are made in the chat's own folder outside the project, which Claude may write to.
+    const work = JSON.stringify(`|--add-dir=${templateWorkDir(conv.id)}`).slice(1, -1);
+    expect(echoed()).toContain(work);
+    expect(existsSync(templateWorkDir(conv.id))).toBe(true);
     store.enqueue(conv.id, '[Reviewer] the request was: buat @template:surat untuk PT A', [], '', '', '', 'report');
     dispatcher.kick(conv.id);
     await until(() => turnsDone(store, conv.id, 2));
     expect(echoed()).not.toContain('Convert the filled copy to PDF');
     expect(echoed()).not.toContain(dir);
+    expect(echoed()).not.toContain(work);
     // A custom skill may name the template: the mention is then in its instructions, not in what was typed.
     store.setCustomSkills([{ name: 'surat', description: '', content: 'Fill @template:surat from the input.' }]);
     store.enqueue(conv.id, '/custom surat untuk PT B', []);

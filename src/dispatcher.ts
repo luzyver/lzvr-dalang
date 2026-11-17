@@ -9,7 +9,7 @@ import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
-import { mentionedTemplates, templatePrompt } from './templates.js';
+import { mentionedTemplates, templatePrompt, templateWorkDir } from './templates.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -501,7 +501,7 @@ export class Dispatcher {
     const fills = !reviewer && item.kind !== 'report';
     const templates = fills ? this.store.getTemplates() : [];
     const typed = customSkillPrompt(item.prompt, customSkills);
-    const said = fills ? templatePrompt(typed, templates) : typed;
+    const said = fills ? templatePrompt(typed, templates, templateWorkDir(convId)) : typed;
     const prompt = others.length
       ? `${said}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
       : said;
@@ -561,7 +561,13 @@ export class Dispatcher {
       const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
       // Claude Code reads outside its folder only from directories it was given.
       if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
-      if (claude) for (const dir of new Set(mentionedTemplates(typed, templates).map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
+      const filled = mentionedTemplates(typed, templates);
+      if (claude) for (const dir of new Set(filled.map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
+      // A template is filled outside the project (templateWorkDir): Claude Code writes there only if given the folder.
+      if (filled.length) {
+        mkdirSync(templateWorkDir(convId), { recursive: true });
+        if (claude) extraArgs.push(`--add-dir=${templateWorkDir(convId)}`);
+      }
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
       // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
