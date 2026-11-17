@@ -561,7 +561,7 @@ export class Dispatcher {
       const skills = this.opts.skillsDir ? loadSkills(this.opts.skillsDir) : [];
       // Claude Code reads outside its folder only from directories it was given.
       if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
-      if (claude) for (const dir of new Set(mentionedTemplates(item.prompt, templates).map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
+      if (claude) for (const dir of new Set(mentionedTemplates(typed, templates).map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
       // The agent must read the graph of the code as it is now: an index the project's files changed since is redone

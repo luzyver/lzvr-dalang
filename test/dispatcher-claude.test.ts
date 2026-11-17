@@ -67,6 +67,13 @@ describe('Dispatcher with the claude backend', () => {
     await until(() => turnsDone(store, conv.id, 2));
     expect(echoed()).not.toContain('Convert the filled copy to PDF');
     expect(echoed()).not.toContain(dir);
+    // A custom skill may name the template: the mention is then in its instructions, not in what was typed.
+    store.setCustomSkills([{ name: 'surat', description: '', content: 'Fill @template:surat from the input.' }]);
+    store.enqueue(conv.id, '/custom surat untuk PT B', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 3));
+    expect(echoed()).toContain('Convert the filled copy to PDF');
+    expect(echoed()).toContain(dir);
   });
 
   it('keeps what was typed apart from a long custom skill for the reviewer', async () => {
