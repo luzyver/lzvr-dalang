@@ -1,6 +1,7 @@
 /**
- * ClickUp Chat client for the MCP gateway: lists chat channels, reads messages in a date range, each stamped with its
- * local date, time and weekday, lists people and a channel's latest threads, and sends a message, DM or thread reply.
+ * ClickUp client for the MCP gateway. Here: the requests themselves and ClickUp Chat (lists chat channels, reads
+ * messages in a date range, each stamped with its local date, time and weekday, lists people and a channel's latest
+ * threads, and sends a message, DM or thread reply). Tasks, time tracking and Docs are in clickup-work.ts.
  * Uses a personal API token (pk_...), so it sees what that ClickUp user sees and sends as them.
  */
 
@@ -56,19 +57,27 @@ export interface Destination {
 
 /** A file sent with a message. ClickUp Chat takes no files over its API, so it is uploaded to a task and linked. */
 export interface OutFile { name: string; data: Buffer }
+/** A file uploaded to a task. */
+export interface Uploaded { name: string; url: string }
+/** A link to an uploaded file, in markdown (for a chat message). */
+export const fileLink = (f: Uploaded) => `📎 [${f.name.replace(/[[\]]/g, '')}](${f.url})`;
+/** " Already on task …: links." for a failure after files went up, so nobody uploads them twice without knowing. */
+export const onTask = (task: TaskRef, files: Uploaded[]) => (files.length ? ` Already on task "${task.name}" (${task.url}): ${files.map(fileLink).join(', ')}.` : '');
 /** The task files are uploaded to. */
 export interface TaskRef { id: string; name: string; url: string }
 
 interface Channel { id: string; name: string; type: string; workspace_id: string; workspace: string }
 interface Person { id: string; name: string; email: string }
-interface Workspace { id: string; name: string; members: Map<string, string>; people: Person[] }
+export interface Workspace { id: string; name: string; members: Map<string, string>; people: Person[] }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; replies_count?: number; parent_message?: string }
 
-const DAY_MS = 86_400_000;
-const MAX_DAYS = 93;
-const MAX_REQUESTS = 250; // per call, so one question cannot spend the whole ClickUp rate limit (100/min on most plans)
+export const DAY_MS = 86_400_000;
+export const MAX_DAYS = 93;
+export const MAX_REQUESTS = 250; // per call, so one question cannot spend the whole ClickUp rate limit (100/min on most plans)
 const MAX_CONTENT = 1500;
 export const MAX_SEND = 4000;
+/** Files sent along with one message or change. */
+export const MAX_FILES = 5;
 const PREVIEW = 200;
 const REPLY_LOOKBACK_MS = 7 * DAY_MS; // threads started this long before `from` are still read for replies
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -106,6 +115,9 @@ export class ClickUpError extends Error {
 /** Sending a message failed in a way that does not tell whether ClickUp kept it (a 5xx, a timeout, a lost connection). */
 export class ClickUpUncertain extends ClickUpError {}
 
+/** Query parameters; an array is sent once per value (ClickUp's `name[]` filters). */
+export type Query = Record<string, string | number | boolean | undefined | (string | number)[]>;
+
 const channelName = (c: any): string =>
   c.name ? String(c.name) : c.type === 'DM' ? 'Direct message' : c.type === 'GROUP_DM' ? 'Group DM' : String(c.id);
 
@@ -123,18 +135,20 @@ export class ClickUp {
   }
 
   /** One GET, counted against `budget`. */
-  private get(path: string, query: Record<string, string | number | boolean | undefined> = {}, budget?: { left: number }): Promise<any> {
+  get(path: string, query: Query = {}, budget?: { left: number }): Promise<any> {
     return this.request('GET', path, query, undefined, budget);
   }
 
   /** One request. A 429 is retried once after a short wait (ClickUp did nothing then); a longer wait is reported instead. */
-  private async request(method: 'GET' | 'POST', path: string, query: Record<string, string | number | boolean | undefined>,
-    payload?: unknown, budget?: { left: number }): Promise<any> {
+  async request(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, query: Query, payload?: unknown, budget?: { left: number }): Promise<any> {
     const form = payload instanceof FormData; // a file upload: fetch sets the multipart content type
     if (budget && budget.left-- <= 0) throw new ClickUpError('request budget for this call used up');
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) if (v !== undefined) qs.set(k, String(v));
-    const url = `${this.base}${path}${qs.size ? `?${qs}` : ''}`;
+    for (const [k, v] of Object.entries(query)) {
+      if (Array.isArray(v)) for (const x of v) qs.append(k, String(x)); // `statuses[]=a&statuses[]=b`
+      else if (v !== undefined) qs.set(k, String(v));
+    }
+    const url = `${this.base}${path}${qs.size ? `?${String(qs).replace(/\+/g, '%20')}` : ''}`; // ClickUp wants spaces as %20
     const headers: Record<string, string> = { authorization: this.o.token, accept: 'application/json' };
     if (payload !== undefined && !form) headers['content-type'] = 'application/json';
     for (let attempt = 0; ; attempt++) {
@@ -151,11 +165,12 @@ export class ClickUp {
         const body = await res.text().catch(() => '');
         throw new ClickUpError(`ClickUp ${res.status} on ${path}: ${body.slice(0, 300)}`, res.status);
       }
-      return res.json();
+      const body = await res.text(); // a DELETE may answer with nothing
+      return body ? JSON.parse(body) : {};
     }
   }
 
-  private user() {
+  user() {
     this.me ??= this.get('/api/v2/user').then((r) => ({
       id: String(r.user.id), username: r.user.username ?? '', email: r.user.email ?? '', timezone: r.user.timezone ?? null,
     }));
@@ -164,7 +179,7 @@ export class ClickUp {
   }
 
   /** Every workspace the token can see, with its members' names. */
-  private allWorkspaces() {
+  allWorkspaces() {
     this.teams ??= this.get('/api/v2/team').then((r) => ((r.teams ?? []) as any[]).map((t) => {
       const members = new Map<string, string>();
       const people: Person[] = [];
@@ -181,7 +196,7 @@ export class ClickUp {
   }
 
   /** The workspaces a call reads: the ones it names, else the configured one, else all. */
-  private async workspaces(ids?: string[]): Promise<Workspace[]> {
+  async workspaces(ids?: string[]): Promise<Workspace[]> {
     const all = await this.allWorkspaces();
     const want = ids?.length ? ids : this.o.workspaceId ? [this.o.workspaceId] : null;
     if (!want) {
@@ -414,24 +429,74 @@ export class ClickUp {
    * id it gives back is the one uploads go to.
    */
   async task(ref: string): Promise<TaskRef> {
+    const t = await this.rawTask(ref);
+    return { id: String(t.id), name: String(t.name ?? t.id), url: String(t.url ?? `https://app.clickup.com/t/${t.id}`) };
+  }
+
+  /**
+   * A task as ClickUp gives it, by id or link. A custom id given bare (`DEV-42`) says no workspace, so when ClickUp
+   * knows no task of that id it is looked for as a custom id in each workspace read by default; found in more than one,
+   * it is refused, since only a link says which.
+   */
+  async rawTask(ref: string, query: Query = {}): Promise<any> {
     const found = taskId(ref);
     if (!found) throw new ClickUpError(`not a task id or link: ${ref}`);
     const { id, team } = found;
-    let t: any;
-    try {
-      t = await this.get(`/api/v2/task/${encodeURIComponent(id)}`, team ? { custom_task_ids: true, team_id: team } : {});
-    } catch (e) {
+    const none = (e: unknown) => {
       const s = e instanceof ClickUpError ? e.status : undefined;
-      if (s !== undefined && s >= 400 && s < 500 && s !== 429) throw new ClickUpError(`no task ${id} that this ClickUp user can open`, s);
-      throw e;
+      return s !== undefined && s >= 400 && s < 500 && s !== 429;
+    };
+    const path = `/api/v2/task/${encodeURIComponent(id)}`;
+    let status: number | undefined;
+    try {
+      return await this.get(path, { ...query, ...(team && { custom_task_ids: true, team_id: team }) });
+    } catch (e) {
+      if (!none(e)) throw e;
+      status = (e as ClickUpError).status;
     }
-    return { id: String(t.id), name: String(t.name ?? id), url: String(t.url ?? `https://app.clickup.com/t/${t.id}`) };
+    if (!team && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) {
+      // Every workspace is asked: the same custom id in two of them must not pick a task by the order they come in.
+      const hits: { ws: Workspace; task: any }[] = [];
+      for (const ws of await this.workspaces()) {
+        try { hits.push({ ws, task: await this.get(path, { ...query, custom_task_ids: true, team_id: ws.id }) }); } catch (e) { if (!none(e)) throw e; }
+      }
+      if (hits.length > 1) {
+        throw new ClickUpError(`${id} is a task in ${hits.length} workspaces (${hits.map((h) => h.ws.name).join(', ')}); `
+          + `give its link instead, like https://app.clickup.com/t/${hits[0]!.ws.id}/${id}`);
+      }
+      if (hits.length) return hits[0]!.task;
+    }
+    throw new ClickUpError(`no task ${id} that this ClickUp user can open`, status);
   }
 
   /** Send `content` (markdown) as the token's user to a channel, person or thread (see `destination`). */
   async send(q: SendQuery) {
     const content = checkContent(q.content);
     return this.deliver(await this.destination(q), content);
+  }
+
+  /**
+   * Uploads files to a task as attachments and gives the name and address of each: a chat message links them in
+   * markdown (`fileLink`), a comment as rich text. A refusal with nothing uploaded yet did nothing; any failure after
+   * that is uncertain and names the files already on the task.
+   */
+  async attach(task: TaskRef, files: OutFile[]): Promise<Uploaded[]> {
+    const links: Uploaded[] = [];
+    const uploaded = () => onTask(task, links);
+    for (const f of files) {
+      const form = new FormData();
+      form.append('attachment', new Blob([new Uint8Array(f.data)]), f.name);
+      let a: any;
+      try {
+        a = await this.request('POST', `/api/v2/task/${encodeURIComponent(task.id)}/attachment`, {}, form);
+      } catch (e) {
+        const msg = `uploading ${f.name} failed: ${(e as Error).message}.${uploaded()}`;
+        throw refused(e) && !links.length ? new ClickUpError(msg) : new ClickUpUncertain(`${msg} Check the task before sending them again.`);
+      }
+      if (!a?.url) throw new ClickUpUncertain(`ClickUp gave no link for ${f.name}.${uploaded()} Check the task before sending them again.`);
+      links.push({ name: String(a.title || f.name), url: String(a.url) });
+    }
+    return links;
   }
 
   /**
@@ -445,22 +510,9 @@ export class ClickUp {
     let content = checkContent(raw);
     if (files.length && !task) throw new ClickUpError('files need a task to be uploaded to');
     const tz = await this.timeZone();
-    const links: string[] = [];
-    const uploaded = () => (links.length ? ` Already on task "${task!.name}" (${task!.url}): ${links.join(', ')}.` : '');
-    for (const f of files) {
-      const form = new FormData();
-      form.append('attachment', new Blob([new Uint8Array(f.data)]), f.name);
-      let a: any;
-      try {
-        a = await this.request('POST', `/api/v2/task/${encodeURIComponent(task!.id)}/attachment`, {}, form);
-      } catch (e) {
-        const msg = `uploading ${f.name} failed: ${(e as Error).message}.${uploaded()}`;
-        throw refused(e) && !links.length ? new ClickUpError(msg) : new ClickUpUncertain(`${msg} Check the task before sending them again.`);
-      }
-      if (!a?.url) throw new ClickUpUncertain(`ClickUp gave no link for ${f.name}.${uploaded()} Check the task before sending them again.`);
-      links.push(`📎 [${String(a.title || f.name).replace(/[[\]]/g, '')}](${a.url})`);
-    }
-    if (links.length) content = `${content}\n\n${links.join('\n')}`;
+    const links = files.length ? await this.attach(task!, files) : [];
+    const uploaded = () => onTask(task!, links);
+    if (links.length) content = `${content}\n\n${links.map(fileLink).join('\n')}`;
     // Nothing posted yet: the message failed for sure, but files uploaded stay on the task, so say where.
     const notSent = (e: unknown) => (links.length
       ? new ClickUpError(`${(e as Error).message}.${uploaded()}`, e instanceof ClickUpError ? e.status : undefined) : e);
@@ -493,7 +545,7 @@ export class ClickUp {
 }
 
 /** The id in a task id or link (`…/t/<id>`, or `…/t/<workspace>/<custom id>` with its workspace). */
-function taskId(ref: string): { id: string; team?: string } | null {
+export function taskId(ref: string): { id: string; team?: string } | null {
   const r = ref.trim();
   const m = /\/t\/(?:(\d+)\/)?([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/.exec(r);
   if (m) return { id: m[2]!, ...(m[1] && { team: m[1] }) };
@@ -501,7 +553,7 @@ function taskId(ref: string): { id: string; team?: string } | null {
 }
 
 /** Whether a failed request says ClickUp refused it (a 4xx but a timeout); anything else may have been kept. */
-const refused = (e: unknown) => {
+export const refused = (e: unknown) => {
   const s = e instanceof ClickUpError ? e.status : undefined;
   return s !== undefined && s >= 400 && s < 500 && s !== 408;
 };
@@ -513,7 +565,7 @@ function checkContent(raw: string): string {
   return content;
 }
 
-function stamp(ms: number, tz: string) {
+export function stamp(ms: number, tz: string) {
   const p = localParts(ms, tz);
   return { date: p.date, time: p.time, weekday: p.weekday };
 }

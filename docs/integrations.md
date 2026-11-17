@@ -120,7 +120,7 @@ token, which is not supported). Optional: a default workspace ID (default: all o
 particular ones) and the time zone message times are given in (default your ClickUp profile's). The token is stored
 in the database and never sent back to the panel, only its last four characters. **Remove token** turns the tools off.
 
-Once a token is saved, `/mcp` has three more read-only tools:
+Once a token is saved, `/mcp` has read-only tools for ClickUp Chat:
 
 - `clickup_whoami`: the ClickUp user it reads as, its workspaces (and the default) and the time zone.
 - `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date), with
@@ -134,6 +134,17 @@ September, jam kerja gue 09:00-18:00, kapan aja gue lembur (di luar jam kerja at
 reads the month's messages and works out the late days and the work from their times and content. Work you did not
 chat about does not show.
 
+Beyond chat, the same token reads the rest of ClickUp:
+
+- `clickup_list_spaces`: every space with its folders and lists. `clickup_get_list`: a list's statuses and custom fields.
+- `clickup_find_tasks`: tasks by list, space, folder, assignee (`me`), status, tag, due date or part of the name.
+  `clickup_get_task`: one task in full (description, custom fields, checklists, subtasks, dependencies, attachments)
+  and, on request, its latest comments (`comment_limit`, default 50; `comments_more` says older ones are left). A
+  task is named by its id, its custom id (`DEV-42`) or its link; a custom id that is a task in two workspaces is
+  refused until its link says which. Tasks of several workspaces are listed together, last changed first.
+- `clickup_time_entries`: time tracked between two dates, with the total of each day and of the range.
+- `clickup_list_docs` and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
+
 **Each person reads with their own token only.** From outside, the tools use the token of whoever signed in (the main
 token: the owner's); inside a chat, that of whoever sent the turn. Someone who saved no token gets no ClickUp tools,
 and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or changes another person's token,
@@ -143,6 +154,24 @@ stays the owner's.
 **Allow sending** is the owner's switch, for everyone: with it, `clickup_send_message` asks to send as the ClickUp
 user of whoever sent the turn, and each message waits for that same person's approval (a card in the chat and in
 Approvals, shown to them alone).
+
+The same switch lets a chat ask for changes, each held for approval the same way, with a card that says what it
+does (old value → new value where there is one):
+
+- `clickup_create_task` and `clickup_update_task`: a task or subtask made; name, description, status, priority,
+  dates, assignees, tags, custom fields, parent, list or archiving changed.
+- `clickup_comment_task`: a comment, or a reply to one; with `files` (paths in the chat's folder, at most 5 of 25 MB
+  each) they are attached to the task and the comment ends with a link to each. `clickup_attach_file`: files attached
+  to a task with no comment. The files are copied when asked, so what is approved is what goes. `clickup_checklist`: a checklist added, items added, an item
+  ticked or renamed. `clickup_link_tasks`: a task waits on, blocks or is linked to another, or no longer.
+- `clickup_log_time`: time worked, on a task or without one. `clickup_write_doc`: a Doc or a page made, a page's text
+  replaced or added to.
+
+A change is checked when asked (the list, status, people and fields must exist) and made only on approval. A task
+moved to another list takes its status from that list: if the list lacks the task's status, the new one must be named. If
+ClickUp refuses a step the card says failed; if a step is cut off midway it says unknown, names the steps already
+done, and is not made again. Nothing is deleted through these tools (a task is archived instead), and spaces,
+folders, lists, goals and views are not created or changed.
 
 The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp token sits where an
 agent that reads files as root could find it (the database), so the "What this does and does not protect" note above

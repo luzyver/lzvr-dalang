@@ -2,27 +2,34 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { type ClickUp, ClickUpUncertain, type Destination, MAX_SEND, type OutFile, type TaskRef } from './clickup.js';
+import { type ClickUpAction, ClickUpWork } from './clickup-work.js';
 import type { Dispatcher } from './dispatcher.js';
 import { clickupUserKey } from './clickup-routes.js';
 import type { Store } from './store.js';
 import type { AuthUser } from './util.js';
 
 /**
- * ClickUp messages agents ask to send (clickup_send_message). Each goes out as the ClickUp user of the person whose
- * turn asked (`user`, their user key), so it waits for that person, who sees where it goes (workspace, channel or
- * person, thread) and may change the text before sending.
+ * ClickUp messages agents ask to send (clickup_send_message) and changes they ask to make (a task, a comment, time, a
+ * Doc: `action`). Each goes out as the ClickUp user of the person whose turn asked (`user`, their user key), so it
+ * waits for that person, who sees where a message goes (workspace, channel or person, thread) and may change its text
+ * before sending, or what a change does.
  */
 export interface ClickUpApproval {
   id: number;
   /** Whose ClickUp it is sent as, and who alone sees and decides it. Absent on ones from before: the owner's. */
-  user?: string; dest: Destination; content: string; who: string; conv: string | null; at: number;
+  user?: string;
+  /** A message's destination; absent on a change. */
+  dest?: Destination;
+  /** A change instead of a message: `content` is then what it does, in words. */
+  action?: ClickUpAction;
+  content: string; who: string; conv: string | null; at: number;
   status: 'pending' | 'sending' | 'unknown' | 'sent' | 'rejected' | 'failed' | 'dismissed'; decidedAt?: number;
   /** The person changed the text before sending. */
   edited?: boolean;
   /** What sending gave (or why it failed). */
   outcome?: string;
   messageId?: string | null;
-  /** Files sent with it: copied when asked (see `filesDir`), uploaded to `task` on sending and linked from the message. */
+  /** Files sent with it: copied when asked (see `filesDir`), uploaded to `task` on sending and linked from the message or comment. */
   files?: { name: string; size: number }[];
   task?: TaskRef;
 }
@@ -45,7 +52,7 @@ function save(store: Store, list: ClickUpApproval[]): void {
   const decided = list.filter((a) => !unresolved(a)).slice(-KEEP);
   store.setKv(KEY, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
-export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'dest' | 'content' | 'who' | 'conv'> & {
+export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'dest' | 'action' | 'content' | 'who' | 'conv'> & {
   files?: OutFile[]; task?: TaskRef; stateDir?: string;
 }): ClickUpApproval {
   const { files = [], task, stateDir, ...rest } = a;
@@ -131,30 +138,57 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
     const done = (patch: Partial<ClickUpApproval>) => {
       Object.assign(a, { decidedAt: Date.now(), ...patch });
       if (!update(store, a)) return; // gone with its user, files and all
-      if (!unresolved(a)) dropFiles(d.stateDir, a.id); // decided for good: its files are not sent again
+      if (unresolved(a)) return;
+      dropFiles(d.stateDir, a.id); // decided for good: its files are not sent again
+      if (a.action) { // nor is its change made again: only its words stay, cut short (a Doc page may be long)
+        const slim = { ...a.action, calls: [], details: a.action.details.map((x) => ({ ...x, value: x.value.slice(0, 2000) })) };
+        if (update(store, { ...a, action: slim })) a.action = slim;
+      }
     };
-    const where = describeDestination(a.dest);
+    const where = a.dest ? describeDestination(a.dest) : '';
     if (verb === 'dismiss') {
       done({ status: 'dismissed' });
-      tellChat(a, `[ClickUp] The person closed your interrupted message to ${where}. Whether it reached ClickUp is unknown; it is not sent again.${quote(a)}`);
+      tellChat(a, a.action
+        ? `[ClickUp] The person closed your interrupted change (${a.action.title}). Whether ClickUp made it is unknown; it is not made again.${quote(a)}`
+        : `[ClickUp] The person closed your interrupted message to ${where}. Whether it reached ClickUp is unknown; it is not sent again.${quote(a)}`);
       return a;
     }
     if (verb === 'reject') {
       done({ status: 'rejected' });
-      tellChat(a, `[ClickUp] The person did not send your message to ${where}. Do not ask again unless you are told to.${quote(a)}`);
+      tellChat(a, a.action
+        ? `[ClickUp] The person did not approve your change (${a.action.title}), so nothing was changed. Do not ask again unless you are told to.${quote(a)}`
+        : `[ClickUp] The person did not send your message to ${where}. Do not ask again unless you are told to.${quote(a)}`);
       return a;
     }
     const cu = d.client(userOf(a));
     if (!cu) return reply.code(409).send({ error: 'no ClickUp token saved; reject it instead' });
-    const asked = (req.body as { content?: unknown } | null | undefined)?.content;
-    const content = typeof asked === 'string' && asked.trim() ? asked.trim() : a.content; // the person's own wording, if changed
-    if (content.length > MAX_SEND) return reply.code(400).send({ error: `at most ${MAX_SEND} characters per message` });
     let files: OutFile[];
     try {
       files = (a.files ?? []).map((f, i) => ({ name: f.name, data: readFileSync(join(filesDir(d.stateDir, a.id), String(i))) }));
     } catch {
       return reply.code(409).send({ error: 'its files are gone from the server; reject it instead' });
     }
+    if (a.action) {
+      done({ status: 'sending' }); // persisted before the change is made
+      sending.add(a.id);
+      try {
+        const r = await new ClickUpWork(cu).perform(a.action, files, a.task);
+        done({ status: 'sent', messageId: r.id, outcome: `Done ${r.date} ${r.time}${r.url ? `: ${r.url}` : ''}` });
+        tellChat(a, `[ClickUp] The person approved your change (${a.action.title}) and it was made at ${r.date} ${r.time}${r.id ? ` (id ${r.id})` : ''}${r.url ? `: ${r.url}` : ''}${files.length ? `, with ${files.length} file(s) attached to task "${a.task!.name}"` : ''}.`);
+      } catch (e) {
+        const msg = (e as Error).message;
+        const unsure = e instanceof ClickUpUncertain;
+        done({ status: unsure ? 'unknown' : 'failed', outcome: msg });
+        tellChat(a, `[ClickUp] The person approved your change (${a.action.title}), but ${unsure ? 'whether it was made is unknown; do not ask again, check ClickUp first' : 'it could not be made'}: ${msg}`);
+      } finally {
+        sending.delete(a.id);
+      }
+      return a;
+    }
+    if (!a.dest) return reply.code(409).send({ error: 'nothing to send; reject it instead' });
+    const asked = (req.body as { content?: unknown } | null | undefined)?.content;
+    const content = typeof asked === 'string' && asked.trim() ? asked.trim() : a.content; // the person's own wording, if changed
+    if (content.length > MAX_SEND) return reply.code(400).send({ error: `at most ${MAX_SEND} characters per message` });
     const edited = content !== a.content;
     done({ status: 'sending', content, ...(edited && { edited: true }) }); // persisted before the message goes out
     sending.add(a.id);

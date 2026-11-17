@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- ClickUp beyond chat: agents read spaces, folders and lists, tasks (with comments, checklists, custom fields and
+  dependencies), time entries and Docs (`clickup_list_spaces`, `clickup_get_list`, `clickup_find_tasks`,
+  `clickup_get_task`, `clickup_time_entries`, `clickup_list_docs`, `clickup_get_doc`). With "Allow sending" on they
+  can also ask to create and change tasks, comment, edit checklists, tie tasks, log time and write Docs
+  (`clickup_create_task`, `clickup_update_task`, `clickup_comment_task`, `clickup_checklist`, `clickup_link_tasks`,
+  `clickup_log_time`, `clickup_write_doc`); every change waits for the approval of whoever sent the turn, on a card
+  that says what it does. Nothing is deleted through them. A bare custom task id (`DEV-42`) is now found too.
+  Files from the chat's folder can go along: attached to a task alone (`clickup_attach_file`) or with a comment that
+  links them (`files` of `clickup_comment_task`)
 - Project memory: facts kept per project from its chats and shown to every later chat on Codex and Claude Code
   alike. They stay when the chat they came from is deleted. After each finished turn a small read-only request picks
   what is worth keeping (Settings → Project memory, `AUTO_MEMORY=0` turns it off); agents get `memory_search`,
