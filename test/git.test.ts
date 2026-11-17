@@ -742,6 +742,9 @@ describe('Merge Requests on GitHub / GitLab', () => {
     expect(await remoteRepo('https://git.example.com/github-mirror/app')).toBeNull(); // only the host counts
     expect(await remoteRepo('https://git.example.com/team/app', 'gitlab')).toEqual({ forge: 'gitlab', repo: 'git.example.com/team/app' });
     expect(await remoteRepo('/srv/git/app.git', 'github')).toEqual({ forge: 'github', repo: null });
+    // GIT_FORGE is for hosts whose name says nothing: it must not send a github.com remote to glab
+    expect(await remoteRepo('https://github.com/acme/app.git', 'gitlab')).toEqual({ forge: 'github', repo: 'github.com/acme/app' });
+    expect(await remoteRepo('https://gitlab.com/acme/app.git', 'github')).toEqual({ forge: 'gitlab', repo: 'gitlab.com/acme/app' });
     expect(pullRequestArgs({ forge: 'github', repo: 'github.com/acme/app', branch: 'b', base: 'main', title: 't', body: 'd' }))
       .toEqual(['pr', 'create', '--repo', 'github.com/acme/app', '--head', 'b', '--base', 'main', '--title', 't', '--body', 'd']);
     expect(pullRequestArgs({ forge: 'gitlab', repo: 'git.example.com/team/app', branch: 'b', base: 'main', title: 't', body: 'd' }))

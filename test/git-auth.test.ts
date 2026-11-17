@@ -414,6 +414,13 @@ describe('which credentials a commit and push use', () => {
     expect(await t.auth.forgeForHost('github.com')).toBe('github'); // the name alone is enough there
   });
 
+  it('lets the host name win over GIT_FORGE, which only decides for a neutrally named host', async () => {
+    const hub = repo('https://github.com/acme/app.git');
+    expect((await hub.auth.credentials(hub.cwd, { forge: 'gitlab' })).forge).toEqual({ forge: 'github', cli: 'gh', host: 'github.com' });
+    const neutral = repo('https://git.example.com/acme/app.git');
+    expect((await neutral.auth.credentials(neutral.cwd, { forge: 'gitlab' })).forge).toEqual({ forge: 'gitlab', cli: 'glab', host: 'git.example.com' });
+  });
+
   it('tells a plain http remote apart, and that a helper for https:// does not cover it', async () => {
     const t = repo('http://gitlab.example.com/acme/app.git');
     sh(t.cwd, 'config', 'credential.https://gitlab.example.com.helper', '!glab auth git-credential');

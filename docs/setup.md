@@ -103,6 +103,9 @@ The panel is then on `http://127.0.0.1:9876` of the host (loopback only). What d
 - **`gh` and `glab`** are in the image (`glab` pinned by `GLAB_VERSION` and its hashes in the `Dockerfile`), so Merge
   Requests and HTTPS logins work for GitHub and GitLab. A self-hosted forge whose host name contains neither word
   (`git.example.com`) also needs `GIT_FORGE` in `.env` (see "Merge Requests: gh and glab").
+- **`php`** (the CLI of Debian bookworm, PHP 8.2) is in the image, so agents can check the syntax of the PHP files they
+  change with `php -l`. It is not the PHP version of your servers: code that only an older PHP accepts may be reported
+  as an error.
 - **Not in the image**: the `codebase-memory-mcp` binary. Add it to the `Dockerfile`, or put it in a volume and name its
   path in Settings → MCP → Code memory.
 - **Databases and SSH hosts on the Docker host itself** are not `127.0.0.1` from inside the container: use the gateway
@@ -363,11 +366,12 @@ How Dalang picks the CLI and the repository:
 
 - **From the remote of the chat's branch.** A host name containing `github` means `gh`, one containing `gitlab` means
   `glab`. A server named otherwise (`git.example.com`) needs `GIT_FORGE=github` or `GIT_FORGE=gitlab`; it applies to
-  every project on this Dalang.
+  every project on this Dalang whose host name says neither, and never overrides a name that does (a `github.com`
+  remote goes to `gh` even with `GIT_FORGE=gitlab`).
 - **SSH aliases work.** A remote like `git@github.com-work:acme/app.git` (one key per account in `~/.ssh/config`) is
   resolved with `ssh -G` to the real host, and the CLI is told the repository explicitly (`gh --repo github.com/acme/app`,
   `glab --repo https://gitlab.example.com/group/sub/app`), since neither CLI knows such aliases. Subgroups work.
-- **Nothing is asked.** `gh` runs with `GH_PROMPT_DISABLED=1`, `glab` with `--yes` and `NO_PROMPT=1`. Dalang pushes the
+- **Nothing is asked.** `gh` runs with `GH_PROMPT_DISABLED=1`, `glab` with `--yes` and `GLAB_NO_PROMPT=1`. Dalang pushes the
   branch first, so the CLI does not offer to.
 - **The target is the branch the chat started from** (`base` of the worktree), not whatever the project folder has
   checked out now. A chat started from a detached HEAD cannot open one.
@@ -402,7 +406,7 @@ Known limits:
 | `AUTO_TITLE` | on | `0` turns off generated chat titles: the chat's agent gives each new chat a short title from its first prompt (one small read-only request, counted against the account's usage), else the first prompt is the title. |
 | `CODEX_BIN` | `codex` | Path to the Codex binary. On native Windows use the full path to `codex.exe`. |
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
-| `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. |
+| `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. A host name that does contain one wins over it. |
 | `TERMINAL_SHELL` | PowerShell / login shell | The shell the code editor's terminals start (a path, no arguments). |
 | `TERMINAL_USER` | unset | Linux: the account the code editor's terminals of admins and devs run as (the owner's run as the service's). Unset, only the owner has terminals. It may not be root or able to use sudo, and its shells can never gain rights (see "Terminals without root"). |
 
