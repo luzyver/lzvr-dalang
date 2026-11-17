@@ -1,0 +1,49 @@
+name: Deploy
+
+# Redeploys the Docker install once CI has passed on a push to master (a merged pull request is such a push), or by
+# hand from the Actions tab. It does nothing until the repository is set up for it: see "Continuous deployment" in
+# docs/setup.md (variable DEPLOY_HOST, secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two deploys at once, and never cancel one halfway through a container swap.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.DEPLOY_HOST != '' && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      )
+    runs-on: ubuntu-latest
+    # The swap waits for running chats (DRAIN_MINUTES) before the new container starts.
+    timeout-minutes: 45
+    steps:
+      - name: Deploy over SSH
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER || 'deploy' }}
+          PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$KEY" ] && [ -n "$KNOWN_HOSTS" ] || { echo '::error::secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS are required'; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          echo "Deploying $SHA to $HOST"
+          # The key's forced command on the server runs `dalang-deploy <sha>` and nothing else.
+          ssh -i ~/.ssh/deploy_key -p "$PORT" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "$USER_NAME@$HOST" "$SHA"
