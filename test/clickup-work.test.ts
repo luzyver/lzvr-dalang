@@ -294,6 +294,11 @@ describe('ClickUp work, changing', () => {
     await expect(w.planLogTime({ date: '2026-10-08', start: '19:00', minutes: 30 })).rejects.toThrow(/give workspace_id, or a task: there are 2 workspaces/);
     expect((await w.planLogTime({ date: '2026-10-08', start: '23:45', minutes: 30, workspaceId: '901' })).details[0]!.value).toBe('2026-10-08 23:45 to 2026-10-09 00:15 (0h 30m)');
     await expect(w.planLogTime({ date: '2026-10-08', start: '7pm', minutes: 30 })).rejects.toThrow(/time like 09:30/);
+    // A date or time that does not exist is refused, not rolled over into another day than the card shows.
+    await expect(w.planLogTime({ date: '2026-02-31', start: '09:00', minutes: 30, workspaceId: '901' })).rejects.toThrow(/no such date: 2026-02-31/);
+    await expect(w.planLogTime({ date: '2026-10-08', start: '25:99', minutes: 30, workspaceId: '901' })).rejects.toThrow(/no such time: 25:99/);
+    await expect(w.planCreateTask({ listId: 'l1', name: 'x', due: '2026-13-01' })).rejects.toThrow(/no such date/);
+    await expect(w.findTasks({ dueFrom: '2026-04-31' })).rejects.toThrow(/no such date/);
   });
 
   it('takes a local time by the offset of that time, on the day the clocks change too', async () => {

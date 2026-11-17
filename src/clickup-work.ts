@@ -83,13 +83,22 @@ function when(s: string, tz: string): { ms: number; time: boolean } {
 /** Epoch ms of a local date and time in `tz`, by the offset that holds at that time (not at midnight: DST may change it). */
 function localTime(date: string, hour: number, minute: number, tz: string): number {
   const [y, m, d] = date.split('-').map(Number);
+  realDate(date);
+  if (hour > 23 || minute > 59) throw new ClickUpError(`no such time: ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
   const guess = Date.UTC(y!, m! - 1, d!, hour, minute);
   const first = guess - localParts(guess, tz).offsetMs;
   return guess - localParts(first, tz).offsetMs;
 }
 
+/** Refuses a date the calendar does not have (2026-02-31), which Date would quietly roll over into the next month. */
+function realDate(date: string): void {
+  const [y, m, d] = date.split('-').map(Number);
+  if (new Date(Date.UTC(y!, m! - 1, d!)).toISOString().slice(0, 10) !== date) throw new ClickUpError(`no such date: ${date}`);
+}
+
 function dayStart(date: string, tz: string, next = false): number {
   if (!DATE_RE.test(date)) throw new ClickUpError(`not a date like 2026-10-01: ${date}`);
+  realDate(date);
   if (!next) return startOfDay(date, tz);
   const [y, m, d] = date.split('-').map(Number);
   return startOfDay(new Date(Date.UTC(y!, m! - 1, d! + 1)).toISOString().slice(0, 10), tz);
