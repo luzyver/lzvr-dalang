@@ -33,6 +33,8 @@ All notable changes to this project are documented here. The format follows
 - Docker: a `Dockerfile` and `compose.yaml` run Dalang in one container with the Codex and Claude Code CLIs, git and
   `gh`, as a user other than root, with the state and that user's home in volumes ("Install with Docker" in
   `docs/setup.md`)
+- Docker: the image has the PHP CLI (`php-cli`), so agents working on PHP projects can check the files they change
+  with `php -l`
 
 ### Changed
 
@@ -43,6 +45,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- With `GIT_FORGE=gitlab` set, creating a Merge Request for a `github.com` remote ran `glab` and failed with "none of
+  the git remotes point to a known GitLab host" (and the other way round); the host name now decides, and
+  `GIT_FORGE` only for a host whose name says neither
+- `glab` printed a deprecation warning for `NO_PROMPT` in front of every error; Dalang now sets `GLAB_NO_PROMPT`
 - On Node 22 and 24, a panel user's git identity could carry over into the owner's later git requests, so the
   owner's commits failed with "empty ident name"; each request now gets only its own git context
 - Panel users other than the owner saw "Not a git repository" in the Changes tab of projects owned by another OS

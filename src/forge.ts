@@ -43,7 +43,7 @@ export async function remoteRepo(remoteUrl: string, forge?: Forge): Promise<{ fo
   const r = parseRemote(remoteUrl);
   if (!r) return forge ? { forge, repo: null } : null; // e.g. a local path: let the CLI work it out
   const host = r.ssh ? await sshHostName(r.host) : r.host;
-  const f = forge ?? forgeOf(host) ?? forgeOf(r.host);
+  const f = forgeOf(host) ?? forgeOf(r.host) ?? forge; // the host name wins: GIT_FORGE is for names that say nothing
   return f ? { forge: f, repo: `${host}/${r.path}` } : null;
 }
 
@@ -75,7 +75,7 @@ export function runForge(forge: Forge, command: string[], args: string[], cwd: s
   const name = forge === 'github' ? 'gh' : 'glab';
   return new Promise((resolve, reject) => {
     execFile(cmd!, [...pre, ...args], {
-      cwd, timeout: 60_000, maxBuffer: 16e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1', ...env },
+      cwd, timeout: 60_000, maxBuffer: 16e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', GLAB_NO_PROMPT: '1', NO_COLOR: '1', ...env },
     }, (err, out, stderr) => {
       if (!err) return resolve(String(out));
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new GitError(`${name} is not installed on the server (or not on PATH)`));
@@ -128,7 +128,7 @@ function authStatus(command: string[], cwd: string, host: string): Promise<strin
   const [cmd, ...pre] = command;
   return new Promise((resolve) => {
     execFile(cmd!, [...pre, 'auth', 'status', '--hostname', host], {
-      cwd, timeout: 30_000, maxBuffer: 1e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', NO_COLOR: '1' },
+      cwd, timeout: 30_000, maxBuffer: 1e6, env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', GLAB_NO_PROMPT: '1', NO_COLOR: '1' },
     }, (_err, out, stderr) => resolve(`${out ?? ''}\n${stderr ?? ''}`));
   });
 }
@@ -260,7 +260,7 @@ export async function createPullRequest(o: PullRequestOpts): Promise<{ url: stri
   return new Promise((resolve, reject) => {
     execFile(cmd!, [...pre, ...pullRequestArgs(o)], {
       cwd: o.cwd, timeout: 120_000, maxBuffer: 8e6,
-      env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', ...account },
+      env: { ...gitEnv(), GH_PROMPT_DISABLED: '1', GLAB_NO_PROMPT: '1', ...account },
     }, (err, out, stderr) => {
       const text = `${out}\n${stderr}`;
       if (!err) {

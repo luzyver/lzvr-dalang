@@ -167,7 +167,7 @@ export class GitAuth {
   private env(extra: Record<string, string> = {}): Record<string, string> {
     // Like git and the Merge Request CLI: no gateway secrets, and nothing may wait for an answer on a terminal.
     const inherited = Object.entries(process.env).filter((e): e is [string, string] => !e[0].startsWith('LZVR_') && e[1] !== undefined);
-    return { ...Object.fromEntries(inherited), GH_PROMPT_DISABLED: '1', NO_PROMPT: '1', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...(typeof this.opts.env === 'function' ? this.opts.env() : this.opts.env), ...extra };
+    return { ...Object.fromEntries(inherited), GH_PROMPT_DISABLED: '1', GLAB_NO_PROMPT: '1', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...(typeof this.opts.env === 'function' ? this.opts.env() : this.opts.env), ...extra };
   }
 
   private run(command: string[], args: string[], o: { input?: string; env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Result> {
@@ -583,7 +583,9 @@ export class GitAuth {
       };
     }
 
-    const forge = o.forge ?? (realHost ? await this.forgeForHost(realHost.replace(/:\d+$/, '')) : null);
+    // The host name first, then GIT_FORGE (o.forge), then whichever CLI is signed in to it: as remoteRepo decides
+    const bare = realHost?.replace(/:\d+$/, '');
+    const forge = (bare ? forgeOf(bare.toLowerCase()) : null) ?? o.forge ?? (bare ? await this.forgeForHost(bare) : null);
     if (forge && realHost) out.forge = { forge, cli: forge === 'github' ? 'gh' : 'glab', host: realHost.replace(/:\d+$/, '') };
     if (!o.check) return out;
 
