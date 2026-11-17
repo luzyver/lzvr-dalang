@@ -111,6 +111,39 @@ the `Dockerfile`). Stopping or replacing the container lets running chats finish
 signals node alone and `stop_grace_period` (10 minutes) waits for it; raise it with a longer `DRAIN_MINUTES`. Don't
 update from a Dalang chat: it stops the server running that chat.
 
+### Continuous deployment
+
+`.github/workflows/deploy.yml` redeploys a Docker install whenever CI passes on a push to `master` (merging a pull
+request is one), and from the Actions tab (**Deploy → Run workflow**). It logs in with an SSH key that can do one thing:
+run `dalang-deploy <sha>` (`scripts/deploy-docker.sh`), which fast-forwards the checkout to that commit, builds the
+image while the old container keeps serving, swaps the container and waits for it to be healthy. A commit that is not on
+`origin/master`, a failed build or an unhealthy container fails the job; the first two leave the running container alone.
+
+On the server, as the account that owns the checkout (here `deploy`), with sudo:
+
+```bash
+sudo install -m 755 scripts/deploy-docker.sh /usr/local/bin/dalang-deploy
+echo 'deploy ALL=(root) NOPASSWD: /usr/local/bin/dalang-deploy' | sudo tee /etc/sudoers.d/dalang-deploy
+sudo chmod 440 /etc/sudoers.d/dalang-deploy && sudo visudo -cf /etc/sudoers.d/dalang-deploy
+ssh-keygen -t ed25519 -N '' -C dalang-deploy -f dalang-deploy        # the private half goes to GitHub, then delete it
+echo "restrict,command=\"sudo -n /usr/local/bin/dalang-deploy \\\"\${SSH_ORIGINAL_COMMAND:-}\\\"\" $(cat dalang-deploy.pub)" \
+  >> ~/.ssh/authorized_keys
+ssh-keyscan -t ed25519 panel.example.com                             # -> DEPLOY_KNOWN_HOSTS
+```
+
+In the repository's **Settings → Secrets and variables → Actions**: variables `DEPLOY_HOST` (and `DEPLOY_USER` unless it
+is `deploy`, `DEPLOY_PORT` unless 22), secrets `DEPLOY_SSH_KEY` (the private key) and `DEPLOY_KNOWN_HOSTS` (the
+`ssh-keyscan` line). Without `DEPLOY_HOST` the workflow skips, so forks are not affected. The server must accept SSH from
+GitHub's runners.
+
+- `/usr/local/bin/dalang-deploy` is a copy, so a push cannot change what the key may run: reinstall it when the script
+  changes. A push can still change `Dockerfile` and `compose.yaml`, which run as root through Docker: whoever may push to
+  `master` controls the server. Protect the branch.
+- Keep `stop_grace_period` (in `compose.yaml`, or a `compose.override.yaml` next to it) longer than `DRAIN_MINUTES`;
+  the job allows 45 minutes for a deploy.
+- Local commits in the server's checkout stop the deploy (it only fast-forwards). Keep server-only settings in `.env`
+  and `compose.override.yaml`.
+
 ## Terminals without root
 
 The service runs as root, so a terminal in the code editor would be a root shell. That one is for the owner alone
