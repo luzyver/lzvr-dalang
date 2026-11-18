@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -74,6 +74,29 @@ describe('Dispatcher', () => {
     const auxiliary = new Dispatcher(store, { homes: original.accounts.homes, command: FAKE, env: { FAKE_ECHO_ARGS: '1' } });
     const args = JSON.parse(await auxiliary.ask('codex', 'draft a title', { cwd: dir })) as string[];
     expect(args.join(' ')).not.toContain('model_auto_compact_token_limit');
+  });
+
+  it("lets Codex write to the chat's folder of files for the person, outside its workspace-write sandbox", async () => {
+    const { store, dispatcher, conv, dir } = setupDispatcher({}, FAKE, ['a'], { filesDir: join(tmpdir(), 'lzvr-chat-files') });
+    const argsOf = (id: string) => (JSON.parse(store.eventsAfter(id, 0).find((e) => e.type === 'item.completed')!.payload).item.args as string[]);
+    const run = async (id: string) => { store.enqueue(id, 'export the data', []); dispatcher.kick(id); await until(() => turnsDone(store, id, 1)); return argsOf(id); };
+    const files = dispatcher.filesDir(conv.id);
+    try {
+      const args = await run(conv.id);
+      expect(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2)).toEqual(['--add-dir', files]);
+      expect(args.indexOf('--add-dir')).toBeLessThan(args.indexOf('-')); // an option of exec, before the prompt
+      expect(existsSync(files)).toBe(true);
+      expect(args.join('\n')).toContain(`](${files}/data.xlsx)`); // told where, in its instructions
+      // Full access needs no extra folder; a read-only chat makes no files and is told of none.
+      const full = store.createConversation(store.createProject('full', dir, 'danger-full-access').id);
+      expect(await run(full.id)).not.toContain('--add-dir');
+      const ro = store.createConversation(store.createProject('ro', dir, 'read-only').id);
+      const roArgs = await run(ro.id);
+      expect(roArgs).not.toContain('--add-dir');
+      expect(roArgs.join('\n')).not.toContain('Files for the person');
+    } finally {
+      rmSync(join(tmpdir(), 'lzvr-chat-files'), { recursive: true, force: true });
+    }
   });
 
   it('persists changes to the effective agent/model with the turn that starts using them', async () => {

@@ -9,7 +9,7 @@ import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
-import { mentionedTemplates, templatePrompt, templateWorkDir } from './templates.js';
+import { filesGuide, mentionedTemplates, templatePrompt, templateWorkDir } from './templates.js';
 import { runClaudeTurn } from './claude.js';
 import { runTurn } from './codex.js';
 import { loadConnections } from './databases.js';
@@ -74,6 +74,8 @@ export interface DispatcherOpts {
   contextCompactTokens?: number;
   /** Snapshot the agent's folder before and after each turn, so a turn's changes can be shown and undone (default on). */
   checkpoints?: boolean;
+  /** Where each chat's folder of files made for the person is (see filesDir); a temp folder when not set. */
+  filesDir?: string;
   /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
   skillsDir?: string;
   /**
@@ -289,6 +291,9 @@ export class Dispatcher {
 
   isRunning(convId: string): boolean { return this.active.has(convId); }
 
+  /** The chat's folder of files its agent makes for the person (see templateWorkDir): served by the chat's download route. */
+  filesDir(convId: string): string { return templateWorkDir(convId, this.opts.filesDir); }
+
   cancel(convId: string): boolean {
     const ac = this.active.get(convId);
     if (!ac) return false;
@@ -501,7 +506,7 @@ export class Dispatcher {
     const fills = !reviewer && item.kind !== 'report';
     const templates = fills ? this.store.getTemplates() : [];
     const typed = customSkillPrompt(item.prompt, customSkills);
-    const said = fills ? templatePrompt(typed, templates, templateWorkDir(convId)) : typed;
+    const said = fills ? templatePrompt(typed, templates, this.filesDir(convId)) : typed;
     const prompt = others.length
       ? `${said}\n\nAttached files:\n${others.map((p) => `- ${p}`).join('\n')}`
       : said;
@@ -563,10 +568,14 @@ export class Dispatcher {
       if (claude && skills.length) extraArgs.push(`--add-dir=${this.opts.skillsDir}`);
       const filled = mentionedTemplates(typed, templates);
       if (claude) for (const dir of new Set(filled.map((t) => dirname(t.file)))) extraArgs.push(`--add-dir=${dir}`);
-      // A template is filled outside the project (templateWorkDir): Claude Code writes there only if given the folder.
-      if (filled.length) {
-        mkdirSync(templateWorkDir(convId), { recursive: true });
-        if (claude) extraArgs.push(`--add-dir=${templateWorkDir(convId)}`);
+      // Files made for the person (an export, a filled template) go outside the project, in the chat's own folder
+      // (filesDir, see filesGuide): Claude Code writes there only if given the folder, and so does Codex in its
+      // workspace-write sandbox, which otherwise writes to the project and temp folders only.
+      const makesFiles = fills && sandbox !== 'read-only';
+      if (makesFiles || filled.length) {
+        mkdirSync(this.filesDir(convId), { recursive: true });
+        if (claude) extraArgs.push(`--add-dir=${this.filesDir(convId)}`);
+        else if (sandbox === 'workspace-write') extraArgs.push('--add-dir', this.filesDir(convId));
       }
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
@@ -596,6 +605,7 @@ export class Dispatcher {
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
         agentGitGuide(agentGit),
+        makesFiles ? filesGuide(this.filesDir(convId)) : '',
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');
       // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).

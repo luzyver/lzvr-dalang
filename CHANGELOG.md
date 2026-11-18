@@ -49,6 +49,11 @@ All notable changes to this project are documented here. The format follows
   the git remotes point to a known GitLab host" (and the other way round); the host name now decides, and
   `GIT_FORGE` only for a host whose name says neither
 - `glab` printed a deprecation warning for `NO_PROMPT` in front of every error; Dalang now sets `GLAB_NO_PROMPT`
+- A file an agent made for the person without a template (an export, a spreadsheet, a chart, a report) was written
+  into the project and named only as a path, so it showed up in the project's changes and the chat offered no
+  download. Agents are now told to make such files in the chat's own folder outside the project and to link them
+  in the answer, which the chat turns into a download; ClickUp attachments can be taken from that folder too.
+  The folder is in the state folder (`chat-files`), so the links still work after a restart or redeploy
 - On Node 22 and 24, a panel user's git identity could carry over into the owner's later git requests, so the
   owner's commits failed with "empty ident name"; each request now gets only its own git context
 - Panel users other than the owner saw "Not a git repository" in the Changes tab of projects owned by another OS

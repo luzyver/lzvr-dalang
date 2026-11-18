@@ -433,7 +433,7 @@ function buildServer(d: Deps, source: string | null, role: 'admin' | 'dev', view
     return server;
   }
   const cu = me ? d.clickup?.(me) : undefined;
-  if (cu) clickupTools(server, store, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source, user: me });
+  if (cu) clickupTools(server, store, dispatcher, push, cfg.stateDir, cu, d.clickupSend?.() ?? false, { who: onBehalf, conv: source, user: me });
   // Every MCP caller counts as an agent here: it gets the connections marked for agents that its viewer may open.
   const dbs = loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(viewer, c.access));
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
@@ -477,16 +477,18 @@ const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
  * tools ask to change things as them, and each message or change waits for their own approval.
  */
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
-
-/** Files an agent sends along, read now from its chat's folder (paths relative to it): each once, at most 5 of 25 MB. */
-function readChatFiles(store: Store, conv: string | null, paths: string[]): OutFile[] {
+/**
+ * Files an agent sends along, read now from its chat's folder (paths relative to it) or from the folder it makes files
+ * for the person in (Dispatcher.filesDir, full paths): each once, at most 5 of 25 MB.
+ */
+function readChatFiles(store: Store, dispatcher: Dispatcher, conv: string | null, paths: string[]): OutFile[] {
   const c = conv ? store.getConversation(conv) : null;
   const project = c && store.getProject(c.project_id);
   if (!c || !project) throw new Error('files can be sent only from inside a chat, from its folder');
   const root = c.worktree ?? project.path;
   const out: OutFile[] = [];
   for (const p of paths) {
-    const real = insideRoot(root, p);
+    const real = insideRoot(root, p) ?? insideRoot(dispatcher.filesDir(c.id), p);
     if (!real || !statSync(real).isFile()) throw new Error(`no file ${p} in this chat's folder`);
     if (statSync(real).size > MAX_FILE_BYTES) throw new Error(`${p} is over 25 MB`);
     const name = basename(real);
@@ -496,7 +498,7 @@ function readChatFiles(store: Store, conv: string | null, paths: string[]): OutF
   return out;
 }
 
-function clickupTools(server: McpServer, store: Store, push: Push, stateDir: string, cu: ClickUp, send: boolean, by: { who: string; conv: string | null; user: string }): void {
+function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, push: Push, stateDir: string, cu: ClickUp, send: boolean, by: { who: string; conv: string | null; user: string }): void {
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
@@ -540,7 +542,7 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
     inputSchema: { query: z.string().optional().describe('part of a name or email; empty lists everyone'), workspace_ids: WORKSPACES },
   }, async (a) => run(() => cu.people(a.query, a.workspace_ids)));
 
-  clickupWorkTools(server, store, push, cu, send, by, { stateDir, read: (paths) => readChatFiles(store, by.conv, paths) });
+  clickupWorkTools(server, store, push, cu, send, by, { stateDir, read: (paths) => readChatFiles(store, dispatcher, by.conv, paths) });
   if (!send) return;
   server.registerTool('clickup_send_message', {
     description: 'Ask to send a ClickUp Chat message (markdown) as the ClickUp user from clickup_whoami: to a channel, DM '
@@ -567,7 +569,7 @@ function clickupTools(server: McpServer, store: Store, push: Push, stateDir: str
   }, async (a) => run(async () => {
     if (!a.content.trim()) throw new Error('the message is empty');
     if (a.files?.length && !a.task_id) throw new Error('files need task_id: ClickUp Chat takes no files over its API, so they go to a task and the message links them');
-    const files = a.files?.length ? readChatFiles(store, by.conv, a.files) : [];
+    const files = a.files?.length ? readChatFiles(store, dispatcher, by.conv, a.files) : [];
     const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
     const task = files.length ? await cu.task(a.task_id!) : undefined;
     const p = createClickUpApproval(store, { user: by.user, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, task, stateDir });

@@ -9,7 +9,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
 import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
-import { isDocx, TEMPLATE_NAME, templateWorkDir } from './templates.js';
+import { isDocx, TEMPLATE_NAME } from './templates.js';
 import { clickupApprovalRoutes, forgetClickUpApprovals } from './clickup-approvals.js';
 import { clickupClient, clickupRoutes, clickupSend, forgetClickUp } from './clickup-routes.js';
 import { CodeMemory } from './code-memory.js';
@@ -724,8 +724,8 @@ export function buildApp(
     const project = conv && store.getProject(conv.project_id);
     if (!conv || !project) return notFound(reply);
     const root = conv.worktree ?? project.path;
-    // A template is filled outside the project, in the chat's own folder (templateWorkDir): its PDF is this chat's too.
-    let real = insideRoot(root, req.query.path) ?? insideRoot(templateWorkDir(conv.id), req.query.path);
+    // Files made for the person (an export, a filled template) are outside the project, in the chat's own folder (Dispatcher.filesDir).
+    let real = insideRoot(root, req.query.path) ?? insideRoot(dispatcher.filesDir(conv.id), req.query.path);
     if (!real && req.user?.role === 'admin') {
       try { real = realpathSync(resolve(root, req.query.path)); } catch { /* no such file */ }
     }
