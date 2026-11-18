@@ -44,7 +44,7 @@ export interface Config {
   mailerUrl?: string;
   /** Sender of the sign-in mail; the mailer's own default when unset. */
   mailFrom?: string;
-  /** Emails that sign in as the owner (admin). Panel users sign in with the email set on their user. */
+  /** Emails that sign in as the owner. Panel users sign in with the email set on their user. */
   ownerEmails: string[];
   /** Local development only: every request is the owner, no sign-in. Refused unless HOST is a loopback address. */
   authBypass: boolean;

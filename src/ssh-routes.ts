@@ -1,6 +1,6 @@
 /**
  * The SSH Hosts page: the servers agents may run commands on through the gateway's ssh_* MCP tools (see ssh-hosts.ts).
- * Admins add and change them and decide the commands held for approval. Passwords, keys and passphrases never go back
+ * Users add and change them and decide the commands held for approval. Passwords, keys and passphrases never go back
  * to the panel.
  */
 import type { FastifyInstance } from 'fastify';
@@ -67,13 +67,10 @@ const PANEL_TIMEOUT_MAX_MS = 600_000;
 export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: Dispatcher }): void {
   const { store } = d;
   recoverSshApprovals(store);
-  const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
-  };
-  /** The host, if this admin may open it (one they may not does not exist for them). */
+  /** The host, if this user may open it (one they may not does not exist for them). */
   const find = (user: AuthUser, id: string) => loadHosts(store).find((h) => h.id === id && canAccess(user, h.access));
 
-  /** The saved key, if this admin may see it. */
+  /** The saved key, if this user may see it. */
   const findKey = (user: AuthUser, id: string) => loadKeys(store).find((k) => k.id === id && canAccess(user, k.access));
 
   /** A host from the form, or an error message. `old` gives the saved secrets when none are sent. */
@@ -81,7 +78,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     if (b.access === 'owner' && user.id !== null) return 'only the owner can make a host owner-only';
     const keyId = b.auth === 'key' ? b.keyId || '' : '';
     if (keyId) {
-      // A key this admin may not see stays only on the host and server it was put on by someone who could.
+      // A key this user may not see stays only on the host and server it was put on by someone who could.
       const k = findKey(user, keyId);
       const kept = old?.keyId === keyId && old.host === b.host.trim() && old.port === (b.port || 22) && old.user === b.user.trim();
       const key = k ?? (kept ? loadKeys(store).find((x) => x.id === keyId) : undefined);
@@ -91,7 +88,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const host = b.host.trim();
     const port = b.port || 22;
     // The saved secrets go only to the server they were saved for: another address or user must be given them again
-    // (an admin could otherwise point a host at a server of their own and read its password there).
+    // (a user could otherwise point a host at a server of their own and read its password there).
     const same = !!old && old.host === host && old.port === port && old.user === b.user.trim();
     const keep = (sent: string | undefined, was: string | undefined) => (sent === undefined ? (same ? was ?? '' : '') : sent);
     // A host on a saved key was loaded with that key's secrets: they are the key's, never kept as the host's own.
@@ -120,13 +117,13 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     return h;
   };
 
-  app.get('/api/ssh/hosts', { onRequest: requireAdmin }, (req) => loadHosts(store).filter((h) => canAccess(req.user!, h.access)).map(viewHost));
+  app.get('/api/ssh/hosts', (req) => loadHosts(store).filter((h) => canAccess(req.user!, h.access)).map(viewHost));
   // The hosts an agent in this user's chats may use, for the composer's @ssh list (anyone may ask): no more than
   // ssh_list_hosts shows, so no address or login.
   app.get('/api/ssh/agent-hosts', (req) => loadHosts(store).filter((h) => h.agent !== 'off' && canAccess(req.user!, h.access))
     .map((h) => ({ id: h.id, label: h.label, ...(h.note && { note: h.note }) })));
 
-  app.put<{ Params: { id: string }; Body: Body }>('/api/ssh/hosts/:id', { onRequest: requireAdmin, schema: { body: BODY } }, (req, reply) => {
+  app.put<{ Params: { id: string }; Body: Body }>('/api/ssh/hosts/:id', { schema: { body: BODY } }, (req, reply) => {
     const { id } = req.params;
     if (!ID.test(id)) return reply.code(400).send({ error: 'name: lowercase letters, digits, - and _ (at most 32)' });
     const list = loadHosts(store);
@@ -139,7 +136,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     return viewHost(next);
   });
 
-  app.delete<{ Params: { id: string } }>('/api/ssh/hosts/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/ssh/hosts/:id', (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     saveHosts(store, loadHosts(store).filter((h) => h.id !== req.params.id));
     clearSshLog(store, req.params.id);
@@ -151,7 +148,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   // when none is trusted yet. A saved host's key that changed fails before logging in and answers it in `changedKey`:
   // only Test connection again with that key as `acceptKey` (the person saw it and accepted it) logs in.
   app.post<{ Body: Body & { id?: string; acceptKey?: string } }>('/api/ssh/test', {
-    onRequest: requireAdmin, schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 },
+    schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 },
       acceptKey: { type: 'string', maxLength: 200 } } } },
   }, async (req, reply) => {
     const { id, hostKey: _ignored, acceptKey, ...b } = req.body;
@@ -164,11 +161,11 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   });
 
   // Saved keys (Keys): a private key given once and picked by many hosts. The private half never goes back.
-  app.get('/api/ssh/keys', { onRequest: requireAdmin }, (req) => {
+  app.get('/api/ssh/keys', (req) => {
     const hosts = loadHosts(store).filter((h) => canAccess(req.user!, h.access));
     return loadKeys(store).filter((k) => canAccess(req.user!, k.access)).map((k) => viewKey(k, hosts.filter((h) => h.keyId === k.id).map((h) => h.id)));
   });
-  app.put<{ Params: { id: string }; Body: KeyBody }>('/api/ssh/keys/:id', { onRequest: requireAdmin, schema: { body: KEY_BODY } }, (req, reply) => {
+  app.put<{ Params: { id: string }; Body: KeyBody }>('/api/ssh/keys/:id', { schema: { body: KEY_BODY } }, (req, reply) => {
     const { id } = req.params;
     if (!ID.test(id)) return reply.code(400).send({ error: 'name: lowercase letters, digits, - and _ (at most 32)' });
     const b = req.body;
@@ -189,7 +186,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     const hosts = loadHosts(store).filter((h) => canAccess(req.user!, h.access));
     return viewKey(next, hosts.filter((h) => h.keyId === id).map((h) => h.id));
   });
-  app.delete<{ Params: { id: string } }>('/api/ssh/keys/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/ssh/keys/:id', (req, reply) => {
     if (!findKey(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     const users = loadHosts(store).filter((h) => h.keyId === req.params.id);
     if (users.length) {
@@ -202,14 +199,14 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     return reply.code(204).send();
   });
 
-  app.get<{ Params: { id: string } }>('/api/ssh/hosts/:id/log', { onRequest: requireAdmin }, (req, reply) => {
+  app.get<{ Params: { id: string } }>('/api/ssh/hosts/:id/log', (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     return readSshLog(store, req.params.id);
   });
 
-  // Commands agents asked for on 'approve' hosts. Admins see those of hosts they may open.
+  // Commands agents asked for on 'approve' hosts. Users see those of hosts they may open.
   const visible = (user: AuthUser, a: SshApproval) => !!find(user, a.host);
-  app.get<{ Querystring: { status?: string } }>('/api/ssh/approvals', { onRequest: requireAdmin }, (req) =>
+  app.get<{ Querystring: { status?: string } }>('/api/ssh/approvals', (req) =>
     readSshApprovals(store).filter((a) => (req.query.status ? a.status === req.query.status : ['pending', 'executing', 'unknown'].includes(a.status)) && visible(req.user!, a)).reverse());
 
   /** Tells the chat the agent asked from what became of its command, so it can go on. */
@@ -223,7 +220,7 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
   // Approvals whose command is running now: another Approve or a Reject must wait for it.
   const running = new Set<number>();
   /**
-   * Rejects the commands still waiting on host `id`, which was removed or now reaches another server: an admin's
+   * Rejects the commands still waiting on host `id`, which was removed or now reaches another server: an
    * Approve must never run one on a server it was not asked for.
    */
   const dropPending = (id: string, why: string, by: string) => {
@@ -244,12 +241,12 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
     };
     if (verb === 'dismiss') {
       done({ status: 'dismissed' }); // Close the request while preserving the uncertain execution outcome.
-      tellChat(a, `[SSH] An admin dismissed your interrupted command on host "${a.host}". Its outcome remains unknown; dismissal does not run it again. Check the server before requesting any further command.${block(a)}`);
+      tellChat(a, `[SSH] Someone dismissed your interrupted command on host "${a.host}". Its outcome remains unknown; dismissal does not run it again. Check the server before requesting any further command.${block(a)}`);
       return a;
     }
     if (verb === 'reject') {
       done({ status: 'rejected' });
-      tellChat(a, `[SSH] An admin rejected your command on host "${a.host}"; it did not run. Do not run it again unless you are asked to.${block(a)}`);
+      tellChat(a, `[SSH] Someone rejected your command on host "${a.host}"; it did not run. Do not run it again unless you are asked to.${block(a)}`);
       return a;
     }
     const h = find(req.user!, a.host);
@@ -264,18 +261,18 @@ export function sshRoutes(app: FastifyInstance, d: { store: Store; dispatcher: D
       logSsh(store, h.id, { at: t0, who, conv: a.conv, command: a.command.slice(0, 4000), ...(a.sudo && { sudo: true }), ok: true, exitCode: r.exitCode, ms: r.ms });
       const outcome = describeRun(r);
       done({ status: 'approved', outcome });
-      tellChat(a, `[SSH] An admin approved your command on host "${a.host}" and it ran.${block(a)}\n\nResult: ${outcome}`);
+      tellChat(a, `[SSH] Someone approved your command on host "${a.host}" and it ran.${block(a)}\n\nResult: ${outcome}`);
     } catch (e) {
       const msg = (e as Error).message;
       logSsh(store, h.id, { at: t0, who, conv: a.conv, command: a.command.slice(0, 4000), ...(a.sudo && { sudo: true }), ok: false, ms: Date.now() - t0, error: msg });
       done({ status: 'failed', outcome: msg });
-      tellChat(a, `[SSH] An admin approved your command on host "${a.host}", but it could not run.${block(a)}\n\nError: ${msg}`);
+      tellChat(a, `[SSH] Someone approved your command on host "${a.host}", but it could not run.${block(a)}\n\nError: ${msg}`);
     } finally {
       running.delete(a.id);
     }
     return a;
   };
-  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/approve', { onRequest: requireAdmin }, decide('approve'));
-  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/reject', { onRequest: requireAdmin }, decide('reject'));
-  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/dismiss', { onRequest: requireAdmin }, decide('dismiss'));
+  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/approve', decide('approve'));
+  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/reject', decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/ssh/approvals/:id/dismiss', decide('dismiss'));
 }

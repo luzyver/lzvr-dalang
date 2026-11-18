@@ -73,15 +73,16 @@ import { AUTH } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
 describe('custom skills API', () => {
-  it('saves mixed-case names, rejects case-insensitive duplicates and non-admins', async () => {
+  it('saves mixed-case names, rejects case-insensitive duplicates, and lets a user save them too', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
+    const budi = await mkUser(t, 'budi');
     const put = (skills: unknown[], headers = AUTH) => t.app.inject({ method: 'PUT', url: '/api/settings/custom-skills', headers, payload: { skills } });
     expect((await put([{ name: 'Notes', description: 'd', content: 'x' }])).statusCode).toBe(204);
     expect((await t.app.inject({ url: '/api/custom-skills', headers: AUTH })).json()).toEqual([{ name: 'Notes', description: 'd' }]);
     expect((await put([{ name: 'Notes', content: 'x' }, { name: 'notes', content: 'y' }])).statusCode).toBe(400);
     expect((await put([{ name: 'bad name', content: 'x' }])).statusCode).toBe(400);
-    expect((await put([], bearer(dev.token))).statusCode).toBe(403);
+    expect((await put([{ name: 'Mine', description: 'm', content: 'x' }], bearer(budi.token))).statusCode).toBe(204);
+    expect((await t.app.inject({ url: '/api/custom-skills', headers: AUTH })).json()).toEqual([{ name: 'Mine', description: 'm' }]);
     await t.app.close();
   });
 });

@@ -1,4 +1,4 @@
-// Codex / Claude Code accounts (admins): the list with usage meters, and adding one by running the CLI's login on the server.
+// Codex / Claude Code accounts: the list with usage meters, and adding one by running the CLI's login on the server.
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';

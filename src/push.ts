@@ -1,7 +1,7 @@
 import * as webpush from 'web-push';
 import { loadConnections } from './databases.js';
 import { loadHosts } from './ssh-hosts.js';
-import { canAccess } from './util.js';
+import { canAccess, canOpen } from './util.js';
 import type { Store } from './store.js';
 
 export type PushSend = (sub: webpush.PushSubscription, payload: string) => Promise<void>;
@@ -9,7 +9,7 @@ export type PushSend = (sub: webpush.PushSubscription, payload: string) => Promi
 export interface Notification {
   title: string; body: string; convId: string;
   /** Internal audience constraints, never included in the push payload. */
-  audience?: { admin?: boolean; owner?: boolean; user?: string; project?: string; conversation?: string; database?: string; host?: string };
+  audience?: { owner?: boolean; user?: string; project?: string; conversation?: string; database?: string; host?: string };
 }
 
 /** Most subscriptions one user keeps; subscribing past it drops their oldest. */
@@ -67,8 +67,8 @@ export class Push {
     const { audience, ...message } = n;
     const payload = JSON.stringify(message);
     await Promise.allSettled(this.store.listPushSubs().map(async (s) => {
-      const user = s.user_key === 'owner' ? { id: null, role: 'admin' as const } : this.store.getUser(s.user_key);
-      if (!user || (audience?.admin && user.role !== 'admin') || (audience?.owner && user.id !== null) || (audience?.user && s.user_key !== audience.user)) return;
+      const user = s.user_key === 'owner' ? { id: null } : this.store.getUser(s.user_key);
+      if (!user || (audience?.owner && user.id !== null) || (audience?.user && s.user_key !== audience.user)) return;
       const projects = [audience?.project];
       for (const id of [n.convId, audience?.conversation]) {
         if (!id) continue;
@@ -79,7 +79,7 @@ export class Push {
       for (const id of projects) {
         if (!id) continue;
         const p = this.store.getProject(id);
-        if (!p || !canAccess(user, p.access)) return;
+        if (!p || !canOpen(user, p)) return;
       }
       if (audience?.database) {
         const c = loadConnections(this.store).find((c) => c.id === audience.database);

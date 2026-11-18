@@ -185,51 +185,51 @@ describe('memory', () => {
     expect(lastAnswer(store, conv.id)).not.toContain('Answer in Indonesian');
   });
 
-  it('lets everyone who may open the project read and change its memory, and admins the settings', async () => {
+  it('lets everyone who may open the project read and change its memory, and every user the settings', async () => {
     const t = setupApp();
-    const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
+    const user = bearer((await mkUser(t, 'budi')).token);
     const mk = async (access: string) => (await t.app.inject({ method: 'POST', url: '/api/projects', headers: AUTH, payload: { name: access, path: 'proj', access } })).json().id as string;
     const open = await mk('all');
     const hidden = await mk('owner');
     const req = (method: string, url: string, headers: Record<string, string>, payload?: object) => t.app.inject({ method: method as 'GET', url, headers, payload });
 
-    const made = await req('POST', `/api/projects/${open}/memories`, dev, { text: '  Use the  staging DB for tests ' });
+    const made = await req('POST', `/api/projects/${open}/memories`, user, { text: '  Use the  staging DB for tests ' });
     expect(made.statusCode).toBe(201);
     expect(made.json()).toMatchObject({ text: 'Use the staging DB for tests', created_by: 'budi' });
     const id = made.json().id;
-    expect((await req('PATCH', `/api/projects/${open}/memories/${id}`, dev, { text: 'Use the test DB' })).json().text).toBe('Use the test DB');
-    expect((await req('GET', `/api/projects/${open}/memories?q=test`, dev)).json()).toHaveLength(1);
-    expect((await req('GET', `/api/projects/${open}/memories?q=nothing`, dev)).json()).toHaveLength(0);
+    expect((await req('PATCH', `/api/projects/${open}/memories/${id}`, user, { text: 'Use the test DB' })).json().text).toBe('Use the test DB');
+    expect((await req('GET', `/api/projects/${open}/memories?q=test`, user)).json()).toHaveLength(1);
+    expect((await req('GET', `/api/projects/${open}/memories?q=nothing`, user)).json()).toHaveLength(0);
     // another project's id does not reach it, and a project the user may not open does not exist for them
     expect((await req('DELETE', `/api/projects/${hidden}/memories/${id}`, AUTH)).statusCode).toBe(404);
-    expect((await req('GET', `/api/projects/${hidden}/memories`, dev)).statusCode).toBe(404);
-    expect((await req('DELETE', `/api/projects/${open}/memories/${id}`, dev)).statusCode).toBe(204);
+    expect((await req('GET', `/api/projects/${hidden}/memories`, user)).statusCode).toBe(404);
+    expect((await req('DELETE', `/api/projects/${open}/memories/${id}`, user)).statusCode).toBe(204);
     expect(t.store.listMemories({ projectId: open })).toHaveLength(0);
 
-    expect((await req('GET', '/api/settings/memory', dev)).statusCode).toBe(403);
-    const saved = await req('PUT', '/api/settings/memory', AUTH, { auto: false, user: false, effort: '', models: { claude: 'haiku' } });
+    expect((await req('GET', '/api/settings/memory', user)).statusCode).toBe(200);
+    const saved = await req('PUT', '/api/settings/memory', user, { auto: false, user: false, effort: '', models: { claude: 'haiku' } });
     expect(saved.json()).toMatchObject({ auto: false, user: false, effort: '', models: { claude: 'haiku' } });
     expect((await req('PUT', '/api/settings/memory', AUTH, { auto: true, models: { codex: '--flag' } })).statusCode).toBe(400);
   });
 
   it("keeps each person's own memory to them alone, not even the owner sees another's", async () => {
     const t = setupApp();
-    const budi = await mkUser(t, 'budi', 'dev');
-    const dev = bearer(budi.token);
+    const budi = await mkUser(t, 'budi');
+    const user = bearer(budi.token);
     const req = (method: string, url: string, headers: Record<string, string>, payload?: object) => t.app.inject({ method: method as 'GET', url, headers, payload });
 
-    const mine = (await req('POST', '/api/me/memories', dev, { text: 'Prefers short answers' })).json();
+    const mine = (await req('POST', '/api/me/memories', user, { text: 'Prefers short answers' })).json();
     expect(mine).toMatchObject({ user_key: budi.id, project_id: null });
     await req('POST', '/api/me/memories', AUTH, { text: 'Answer in Indonesian' });
-    expect((await req('GET', '/api/me/memories', dev)).json().map((m: Memory) => m.text)).toEqual(['Prefers short answers']);
+    expect((await req('GET', '/api/me/memories', user)).json().map((m: Memory) => m.text)).toEqual(['Prefers short answers']);
     expect((await req('GET', '/api/me/memories', AUTH)).json().map((m: Memory) => m.text)).toEqual(['Answer in Indonesian']);
     expect((await req('PATCH', `/api/me/memories/${mine.id}`, AUTH, { text: 'hijacked' })).statusCode).toBe(404);
     expect((await req('DELETE', `/api/me/memories/${mine.id}`, AUTH)).statusCode).toBe(404);
-    expect((await req('PATCH', `/api/me/memories/${mine.id}`, dev, { text: 'Prefers very short answers' })).json().text).toBe('Prefers very short answers');
+    expect((await req('PATCH', `/api/me/memories/${mine.id}`, user, { text: 'Prefers very short answers' })).json().text).toBe('Prefers very short answers');
 
     // deleting a user who does not exist, the owner included, leaves every memory alone
-    const admin = bearer((await mkUser(t, 'sari', 'admin')).token);
-    expect((await req('DELETE', '/api/users/owner', admin)).statusCode).toBe(404);
+    const sari = bearer((await mkUser(t, 'sari')).token);
+    expect((await req('DELETE', '/api/users/owner', sari)).statusCode).toBe(404);
     expect(t.store.listMemories({ userKey: 'owner' })).toHaveLength(1);
 
     // a person's memory goes with them

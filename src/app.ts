@@ -36,7 +36,7 @@ import { otpRoutes, type SendMail } from './otp.js';
 import { scheduleRoutes } from './schedules.js';
 import { codeRoutes } from './code-routes.js';
 import { Terminals, terminalRoutes } from './terminals.js';
-import { type AuthUser, type Backend, BACKENDS, canAccess, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
+import { type AuthUser, type Backend, BACKENDS, canOpen, PROJECT_ACCESS, type ProjectAccess, SANDBOXES } from './util.js';
 import { type Conversation, type Project, type Store, type SubagentPolicy } from './store.js';
 import { REVIEWER_GUIDE, type ReviewerPolicy } from './reviewer.js';
 
@@ -135,27 +135,22 @@ export function buildApp(
   };
 
   /**
-   * The main token is the owner (always an admin, the break-glass login). Anything else is looked up by the hash of
+   * The main token is the owner (the break-glass login). Anything else is looked up by the hash of
    * the token: a panel user's personal token, or a session created by an email sign-in (which may belong to a user).
    */
   const resolveUser = (token: string, now: number): AuthUser | null => {
-    if (timingSafeEqual(digest(token), want)) return { id: null, name: 'owner', role: 'admin', main: true };
+    if (timingSafeEqual(digest(token), want)) return { id: null, name: 'owner', main: true };
     const h = sessionHash(token);
-    const asUser = (u: { id: string; name: string; role: 'admin' | 'dev' }): AuthUser => ({ id: u.id, name: u.name, role: u.role, main: false });
+    const asUser = (u: { id: string; name: string }): AuthUser => ({ id: u.id, name: u.name, main: false });
     const personal = store.getUserByTokenHash(h);
     if (personal) return asUser(personal);
     const session = store.getSession(h, now);
     if (!session) return null;
     if (session.user_id === null) { // owner signed in by email, while that email is still an owner's
-      return ownerSessionValid(cfg, token) ? { id: null, name: 'owner', role: 'admin', main: false } : null;
+      return ownerSessionValid(cfg, token) ? { id: null, name: 'owner', main: false } : null;
     }
     const u = store.getUser(session.user_id);
     return u ? asUser(u) : null;
-  };
-
-  // Route-level `onRequest`, so a refused caller is turned away before the body is even parsed.
-  const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
   };
 
   app.addHook('onRequest', async (req, reply) => {
@@ -180,7 +175,7 @@ export function buildApp(
     if (agentConv) { req.mcpConv = agentConv; req.mcpAuthor = dispatcher.mcpAuthor(m![1]!); return; }
 
     // Local development (AUTH_BYPASS): whoever calls is the owner. loadConfig refuses it unless HOST is loopback.
-    if (cfg.authBypass) { req.user = { id: null, name: 'owner', role: 'admin', main: false }; return; }
+    if (cfg.authBypass) { req.user = { id: null, name: 'owner', main: false }; return; }
 
     noteFailure(req.ip);
     return reply.code(401).send({ error: 'unauthorized' });
@@ -202,10 +197,10 @@ export function buildApp(
     if (!req.user || !req.routeOptions.url) return;
     const projectId = routeProject(req.routeOptions.url, req.params as Record<string, string>);
     const project = projectId && store.getProject(projectId);
-    if (project && !canAccess(req.user, project.access)) return notFound(reply);
+    if (project && !canOpen(req.user, project)) return notFound(reply);
   });
   /** The ids of the projects this caller may open. */
-  const openable = (user: AuthUser) => new Set(store.listProjects().filter((p) => canAccess(user, p.access)).map((p) => p.id));
+  const openable = (user: AuthUser) => new Set(store.listProjects().filter((p) => canOpen(user, p)).map((p) => p.id));
 
   panelRoutes(app);
   authRoutes(app, { cfg, store });
@@ -254,7 +249,7 @@ export function buildApp(
   });
 
   // Sends that one conversation (via MCP) wants to make into another wait here for a human decision.
-  app.get('/api/approvals', { onRequest: requireAdmin }, (req) => {
+  app.get('/api/approvals', (req) => {
     const ok = openable(req.user!);
     return store.listApprovals('pending').filter((a) => ok.has(convProject(a.to_conv) ?? ''));
   });
@@ -270,8 +265,8 @@ export function buildApp(
     store.setApprovalStatus(a.id, status);
     return reply.code(204).send();
   };
-  app.post<{ Params: { id: string } }>('/api/approvals/:id/approve', { onRequest: requireAdmin }, decide('approved'));
-  app.post<{ Params: { id: string } }>('/api/approvals/:id/reject', { onRequest: requireAdmin }, decide('rejected'));
+  app.post<{ Params: { id: string } }>('/api/approvals/:id/approve', decide('approved'));
+  app.post<{ Params: { id: string } }>('/api/approvals/:id/reject', decide('rejected'));
 
   app.get('/api/push/key', () => ({ publicKey: push.publicKey() }));
   app.post<{ Body: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } } } }>('/api/push/subscribe', {
@@ -311,25 +306,22 @@ export function buildApp(
     return f.accounts.list().map((a, i) => ({ ...a, loggedIn: logged[i] ?? null, limits: dispatcher.limitsFor(backend, a.name) }));
   });
   app.put<{ Params: { name: string }; Body: { enabled: boolean; backend?: Backend } }>('/api/accounts/:name/enabled', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['enabled'], additionalProperties: false,
       properties: { enabled: { type: 'boolean' }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) =>
     dispatcher.setEnabled(backendOf(req.body.backend), req.params.name, req.body.enabled) ? reply.code(204).send() : notFound(reply));
-  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-model', { onRequest: requireAdmin }, (req) =>
+  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-model', (req) =>
     ({ model: store.getDefaultModel(backendOf(req.query.backend)) }));
   app.put<{ Body: { model: string; backend?: Backend } }>('/api/settings/default-model', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['model'], additionalProperties: false,
       properties: { model: { type: 'string', pattern: '^([A-Za-z0-9][A-Za-z0-9._:/[\\]-]{0,63})?$' }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
     store.setDefaultModel(req.body.model, backendOf(req.body.backend));
     return reply.code(204).send();
   });
-  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-effort', { onRequest: requireAdmin }, (req) =>
+  app.get<{ Querystring: { backend?: string } }>('/api/settings/default-effort', (req) =>
     ({ effort: store.getDefaultEffort(backendOf(req.query.backend)) }));
   app.put<{ Body: { effort: string; backend?: Backend } }>('/api/settings/default-effort', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['effort'], additionalProperties: false,
       properties: { effort: { type: 'string', enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] }, backend: { enum: [...BACKENDS] } } } },
   }, (req, reply) => {
@@ -337,9 +329,8 @@ export function buildApp(
     return reply.code(204).send();
   });
   // How far agents may go with sub-agents (see SubagentPolicy).
-  app.get('/api/settings/subagents', { onRequest: requireAdmin }, () => store.getSubagentPolicy());
+  app.get('/api/settings/subagents', () => store.getSubagentPolicy());
   app.put<{ Body: Partial<SubagentPolicy> }>('/api/settings/subagents', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', additionalProperties: false,
       properties: {
         maxChildren: { type: 'integer', minimum: 0, maximum: 50 }, maxDepth: { type: 'integer', minimum: 0, maximum: 5 }, autoSend: { type: 'boolean' },
@@ -349,9 +340,8 @@ export function buildApp(
     return reply.code(204).send();
   });
   // The automatic reviewer of a person's chats (see reviewer.ts).
-  app.get('/api/settings/reviewer', { onRequest: requireAdmin }, () => ({ ...store.getReviewerPolicy(), defaultGuide: REVIEWER_GUIDE }));
+  app.get('/api/settings/reviewer', () => ({ ...store.getReviewerPolicy(), defaultGuide: REVIEWER_GUIDE }));
   app.put<{ Body: Partial<ReviewerPolicy> }>('/api/settings/reviewer', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', additionalProperties: false,
       properties: {
         enabled: { type: 'boolean' }, backend: { enum: ['', ...BACKENDS] }, model: { type: 'string', maxLength: 200 },
@@ -363,9 +353,8 @@ export function buildApp(
     return reply.code(204).send();
   });
   // Whether chat agents may commit and push themselves (see agent-git.ts); the panel's own commit and push always work.
-  app.get('/api/settings/agent-git', { onRequest: requireAdmin }, () => store.getAgentGit());
+  app.get('/api/settings/agent-git', () => store.getAgentGit());
   app.put<{ Body: AgentGitPolicy }>('/api/settings/agent-git', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['commit', 'push'], additionalProperties: false,
       properties: { commit: { type: 'boolean' }, push: { type: 'boolean' } } } },
   }, (req, reply) => {
@@ -373,19 +362,17 @@ export function buildApp(
     return reply.code(204).send();
   });
   // Whether turns that may write run Impeccable's design detector after UI edits (see design-hook.ts).
-  app.get('/api/settings/design-hook', { onRequest: requireAdmin }, () => store.getDesignHook());
+  app.get('/api/settings/design-hook', () => store.getDesignHook());
   app.put<{ Body: DesignHookPolicy }>('/api/settings/design-hook', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['enabled'], additionalProperties: false, properties: { enabled: { type: 'boolean' } } } },
   }, (req, reply) => {
     store.setDesignHook({ enabled: req.body.enabled });
     return reply.code(204).send();
   });
-  // Custom skills (skills.ts): written here by admins, run in a chat by typing `/custom <name>`. Any signed-in user may list the names.
+  // Custom skills (skills.ts): written here, run in a chat by typing `/custom <name>`. Any signed-in user may list the names.
   app.get('/api/custom-skills', () => store.getCustomSkills().map(({ name, description }) => ({ name, description })));
-  app.get('/api/settings/custom-skills', { onRequest: requireAdmin }, () => store.getCustomSkills());
+  app.get('/api/settings/custom-skills', () => store.getCustomSkills());
   app.put<{ Body: { skills: CustomSkill[] } }>('/api/settings/custom-skills', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['skills'], additionalProperties: false, properties: { skills: { type: 'array', maxItems: 100, items: {
       type: 'object', required: ['name', 'content'], additionalProperties: false,
       properties: { name: { type: 'string', pattern: CUSTOM_SKILL_NAME.source }, description: { type: 'string', maxLength: 300 }, content: { type: 'string', minLength: 1, maxLength: 50_000 } } } } } } },
@@ -395,13 +382,13 @@ export function buildApp(
     store.setCustomSkills(req.body.skills.map((s) => ({ name: s.name, description: s.description ?? '', content: s.content })));
     return reply.code(204).send();
   });
-  // Document templates (templates.ts): a .docx an admin uploads here, used in a chat by mentioning `@template:<name>`.
+  // Document templates (templates.ts): a .docx uploaded here, used in a chat by mentioning `@template:<name>`.
   // Any signed-in user may list the names; the file itself is only ever read by the agent.
   const templatesDir = join(cfg.stateDir, 'templates');
   app.get('/api/templates', () => store.getTemplates().map(({ name, description }) => ({ name, description })));
-  app.get('/api/settings/templates', { onRequest: requireAdmin }, () => store.getTemplates().map(({ name, description }) => ({ name, description })));
+  app.get('/api/settings/templates', () => store.getTemplates().map(({ name, description }) => ({ name, description })));
   // multipart: the fields `name` and `description` come before the field `file`; sending a name again replaces that template.
-  app.put('/api/settings/templates', { onRequest: requireAdmin }, async (req, reply) => {
+  app.put('/api/settings/templates', async (req, reply) => {
     const part = await req.file();
     if (!part) return reply.code(400).send({ error: 'multipart field "file" required' });
     const field = (k: string) => { const f = part.fields[k] as { value?: unknown } | undefined; return typeof f?.value === 'string' ? f.value : ''; };
@@ -423,7 +410,7 @@ export function buildApp(
     store.setTemplates([...rest, { name, description, file }].sort((a, b) => a.name.localeCompare(b.name)));
     return reply.code(204).send();
   });
-  app.delete<{ Params: { name: string } }>('/api/settings/templates/:name', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { name: string } }>('/api/settings/templates/:name', (req, reply) => {
     const all = store.getTemplates();
     const t = all.find((x) => x.name.toLowerCase() === req.params.name.toLowerCase());
     if (!t) return notFound(reply);
@@ -434,24 +421,22 @@ export function buildApp(
   // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.
   // Empty = the built-in prompt.
   for (const [path, key, builtIn] of [['commit-prompt', 'commit_prompt', DEFAULT_COMMIT_PROMPT], ['mr-prompt', 'mr_prompt', DEFAULT_MR_PROMPT]] as const) {
-    app.get(`/api/settings/${path}`, { onRequest: requireAdmin }, () => ({ prompt: store.getKv(key) ?? '', default: builtIn }));
+    app.get(`/api/settings/${path}`, () => ({ prompt: store.getKv(key) ?? '', default: builtIn }));
     app.put<{ Body: { prompt: string } }>(`/api/settings/${path}`, {
-      onRequest: requireAdmin,
       schema: { body: { type: 'object', required: ['prompt'], additionalProperties: false, properties: { prompt: { type: 'string', maxLength: 20_000 } } } },
     }, (req, reply) => {
       store.setKv(key, req.body.prompt.trim());
       return reply.code(204).send();
     });
   }
-  app.post('/api/accounts/unblock', { onRequest: requireAdmin }, (_req, reply) => {
+  app.post('/api/accounts/unblock', (_req, reply) => {
     dispatcher.accounts.unblockAll();
     dispatcher.claudeAccounts.unblockAll();
     return reply.code(204).send();
   });
 
-  // Adding an account links another ChatGPT/Codex login to this machine: admins only (agent tokens cannot reach /api at all).
+  // Adding an account links another ChatGPT/Codex login to this machine (agent tokens cannot reach /api at all).
   app.post<{ Body: { name: string; backend?: Backend; relogin?: boolean } }>('/api/accounts/login', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['name'], additionalProperties: false,
       properties: { name: { type: 'string' }, backend: { enum: [...BACKENDS] }, relogin: { type: 'boolean' } } } },
   }, (req, reply) => {
@@ -463,7 +448,7 @@ export function buildApp(
       throw e;
     }
   });
-  app.delete<{ Params: { name: string }; Querystring: { backend?: string } }>('/api/accounts/:name', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { name: string }; Querystring: { backend?: string } }>('/api/accounts/:name', (req, reply) => {
     try {
       forBackend(backendOf(req.query.backend)).logins.remove(req.params.name);
       return reply.code(204).send();
@@ -472,20 +457,19 @@ export function buildApp(
       throw e;
     }
   });
-  app.get<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
+  app.get<{ Params: { id: string } }>('/api/accounts/login/:id', (req, reply) =>
     loginFlows().map((l) => l.get(req.params.id)).find(Boolean) ?? notFound(reply));
   app.post<{ Params: { id: string }; Body: { code: string } }>('/api/accounts/login/:id/code', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['code'], additionalProperties: false,
       properties: { code: { type: 'string', pattern: '^[A-Za-z0-9._#~/+=-]{1,512}$' } } } },
   }, (req, reply) =>
     loginFlows().some((l) => l.sendCode(req.params.id, req.body.code)) ? reply.code(204).send() : notFound(reply));
-  app.delete<{ Params: { id: string } }>('/api/accounts/login/:id', { onRequest: requireAdmin }, (req, reply) =>
+  app.delete<{ Params: { id: string } }>('/api/accounts/login/:id', (req, reply) =>
     loginFlows().some((l) => l.cancel(req.params.id)) ? reply.code(204).send() : notFound(reply));
 
-  app.get('/api/me', (req) => ({ name: req.user!.name, role: req.user!.role, main: req.user!.main }));
+  app.get('/api/me', (req) => ({ name: req.user!.name, main: req.user!.main }));
 
-  // --- panel users (admin only). They sign in with a code mailed to their email; each also gets a personal API
+  // --- panel users. They sign in with a code mailed to their email; each also gets a personal API
   // token, shown once (only its hash is kept). ---
   /** '' clears the email; otherwise it must look like one and not be an owner email. */
   const badEmail = (email: string | undefined) => {
@@ -494,15 +478,14 @@ export function buildApp(
     if (cfg.ownerEmails.includes(email.toLowerCase())) return 'this email signs in as the owner (LZVR_OWNER_EMAILS)';
     return null;
   };
-  app.get('/api/users', { onRequest: requireAdmin }, () => store.listUsers());
-  app.post<{ Body: { name: string; role: 'admin' | 'dev'; email?: string } }>('/api/users', {
-    onRequest: requireAdmin,
+  app.get('/api/users', () => store.listUsers());
+  app.post<{ Body: { name: string; email?: string } }>('/api/users', {
     schema: { body: {
-      type: 'object', required: ['name', 'role'], additionalProperties: false,
-      properties: { name: { type: 'string' }, role: { enum: ['admin', 'dev'] }, email: { type: 'string' } },
+      type: 'object', required: ['name'], additionalProperties: false,
+      properties: { name: { type: 'string' }, email: { type: 'string' } },
     } },
   }, (req, reply) => {
-    const { name, role } = req.body;
+    const { name } = req.body;
     const email = req.body.email?.trim() ?? '';
     if (!USER_NAME_RE.test(name)) return reply.code(400).send({ error: 'name must be 1-32 characters: a-z, 0-9, - or _ (starting with a letter or digit)' });
     if (name === 'owner') return reply.code(409).send({ error: '"owner" is reserved for the main access token' });
@@ -511,39 +494,37 @@ export function buildApp(
     if (email && store.getUserByEmail(email)) return reply.code(409).send({ error: `another user already has ${email}` });
     const token = randomBytes(32).toString('hex');
     try {
-      const u = store.createUser(name, role, sessionHash(token), email || null);
-      return reply.code(201).send({ id: u.id, name: u.name, role: u.role, email: u.email, token });
+      const u = store.createUser(name, sessionHash(token), email || null);
+      return reply.code(201).send({ id: u.id, name: u.name, email: u.email, token });
     } catch {
       return reply.code(409).send({ error: `a user named "${name}" already exists` });
     }
   });
-  app.post<{ Params: { id: string } }>('/api/users/:id/token', { onRequest: requireAdmin }, (req, reply) => {
+  app.post<{ Params: { id: string } }>('/api/users/:id/token', (req, reply) => {
     if (!store.getUser(req.params.id)) return notFound(reply);
     const token = randomBytes(32).toString('hex');
     store.setUserToken(req.params.id, sessionHash(token));
     return { token };
   });
-  app.patch<{ Params: { id: string }; Body: { role?: 'admin' | 'dev'; email?: string } }>('/api/users/:id', {
-    onRequest: requireAdmin,
+  app.patch<{ Params: { id: string }; Body: { email: string } }>('/api/users/:id', {
     schema: { body: {
-      type: 'object', minProperties: 1, additionalProperties: false,
-      properties: { role: { enum: ['admin', 'dev'] }, email: { type: 'string' } },
+      type: 'object', required: ['email'], additionalProperties: false,
+      properties: { email: { type: 'string' } },
     } },
   }, (req, reply) => {
     if (!store.getUser(req.params.id)) return notFound(reply);
-    const email = req.body.email?.trim();
+    const email = req.body.email.trim();
     const emailError = badEmail(email);
     if (emailError) return reply.code(400).send({ error: emailError });
     if (email) {
       const other = store.getUserByEmail(email);
       if (other && other.id !== req.params.id) return reply.code(409).send({ error: `another user already has ${email}` });
     }
-    if (req.body.role) store.setUserRole(req.params.id, req.body.role);
-    if (email !== undefined) store.setUserEmail(req.params.id, email || null);
+    store.setUserEmail(req.params.id, email || null);
     return reply.code(204).send();
   });
   // Their own git setup (keys, gh/glab logins), ClickUp token and ClickUp requests go with them.
-  app.delete<{ Params: { id: string } }>('/api/users/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/users/:id', (req, reply) => {
     if (!store.deleteUser(req.params.id)) return notFound(reply);
     gitUsers.remove(req.params.id);
     forgetClickUp(store, req.params.id);
@@ -551,24 +532,33 @@ export function buildApp(
     return reply.code(204).send();
   });
 
-  app.get('/api/projects', (req) => store.listProjects().filter((p) => canAccess(req.user!, p.access)));
+  app.get('/api/projects', (req) => store.listProjects().filter((p) => canOpen(req.user!, p)));
 
-  // An admin cannot make a project they could not open themselves (they would lose it): 'owner' is the owner's.
-  const mayGrant = (user: AuthUser, access: ProjectAccess | undefined) => !access || canAccess(user, access);
+  // Nobody can make a project they could not open themselves (they would lose it): 'owner' is the owner's, unless it
+  // is shared with them by name.
+  const mayGrant = (user: AuthUser, access: ProjectAccess, members: string[]) => canOpen(user, { access, members });
+  const LOCKED_OUT = 'only the owner can limit a project to people other than yourself';
+  const MEMBERS = { type: 'array', maxItems: 500, items: { type: 'string', maxLength: 64 } } as const;
+  /** The ids without repeats, or null when one of them is not a user. */
+  const memberIds = (ids: string[] | undefined): string[] | null => {
+    const unique = [...new Set(ids ?? [])];
+    return unique.every((id) => store.getUser(id)) ? unique : null;
+  };
   // With `clone`, the folder is made by cloning that repository into `path` (which must not exist yet, or be empty),
   // with the caller's own git setup (their keys and logins).
-  app.post<{ Body: { name: string; path: string; sandbox?: string; access?: ProjectAccess; clone?: string } }>('/api/projects', {
-    onRequest: requireAdmin,
+  app.post<{ Body: { name: string; path: string; sandbox?: string; access?: ProjectAccess; members?: string[]; clone?: string } }>('/api/projects', {
     schema: { body: {
       type: 'object', required: ['name', 'path'], additionalProperties: false,
       properties: {
         name: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
-        sandbox: { enum: [...SANDBOXES] }, access: { enum: [...PROJECT_ACCESS] },
+        sandbox: { enum: [...SANDBOXES] }, access: { enum: [...PROJECT_ACCESS] }, members: MEMBERS,
         clone: { type: 'string', minLength: 1, maxLength: 2000 },
       },
     } },
   }, async (req, reply) => {
-    if (!mayGrant(req.user!, req.body.access)) return reply.code(403).send({ error: `only the owner can limit a project to ${req.body.access}` });
+    const members = memberIds(req.body.members);
+    if (!members) return reply.code(400).send({ error: 'members must be ids of users' });
+    if (!mayGrant(req.user!, req.body.access ?? 'all', members)) return reply.code(403).send({ error: LOCKED_OUT });
     if (req.body.clone) {
       const url = req.body.clone.trim();
       if (url.startsWith('-') || /^ext::/i.test(url)) return reply.code(400).send({ error: 'not a repository address' });
@@ -589,19 +579,28 @@ export function buildApp(
     }
     const real = insideRoot(cfg.workspaceRoot, req.body.path);
     if (!real) return reply.code(400).send({ error: 'path must be an existing directory inside WORKSPACE_ROOT' });
-    const created = store.createProject(req.body.name, real, req.body.sandbox, req.body.access);
+    const created = store.createProject(req.body.name, real, req.body.sandbox, req.body.access, members);
     return reply.code(201).send(created);
   });
 
-  app.patch<{ Params: { id: string }; Body: { access: ProjectAccess } }>('/api/projects/:id', {
-    onRequest: requireAdmin,
-    schema: { body: { type: 'object', required: ['access'], additionalProperties: false, properties: { access: { enum: [...PROJECT_ACCESS] } } } },
+  // `access`: the level; `members`: the users it is shared with on top of that. One left out stays as it is.
+  app.patch<{ Params: { id: string }; Body: { access?: ProjectAccess; members?: string[] } }>('/api/projects/:id', {
+    schema: { body: {
+      type: 'object', minProperties: 1, additionalProperties: false,
+      properties: { access: { enum: [...PROJECT_ACCESS] }, members: MEMBERS },
+    } },
   }, (req, reply) => {
-    if (!mayGrant(req.user!, req.body.access)) return reply.code(403).send({ error: `only the owner can limit a project to ${req.body.access}` });
-    return store.setProjectAccess(req.params.id, req.body.access) ? store.getProject(req.params.id) : notFound(reply);
+    const project = store.getProject(req.params.id);
+    if (!project) return notFound(reply);
+    const members = req.body.members ? memberIds(req.body.members) : project.members;
+    if (!members) return reply.code(400).send({ error: 'members must be ids of users' });
+    const access = req.body.access ?? project.access;
+    if (!mayGrant(req.user!, access, members)) return reply.code(403).send({ error: LOCKED_OUT });
+    store.setProjectAccess(project.id, access, members);
+    return store.getProject(project.id);
   });
 
-  app.delete<{ Params: { id: string } }>('/api/projects/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/projects/:id', (req, reply) => {
     const project = store.getProject(req.params.id);
     if (!project) return notFound(reply);
     const convs = store.listConversations(project.id);
@@ -619,7 +618,7 @@ export function buildApp(
   // Deleting a chat takes its sub-agents along, which may run in a project this person may not open: then nothing goes.
   const HIDDEN_AGENTS = 'some of its sub-agents run in a project you may not open';
   const mayRemove = (user: AuthUser, chats: Conversation[]) =>
-    chats.every((c) => { const p = store.getProject(c.project_id); return !p || canAccess(user, p.access); });
+    chats.every((c) => { const p = store.getProject(c.project_id); return !p || canOpen(user, p); });
 
   /** Stop and delete these chats, with their worktrees, checkpoints and terminals, whatever projects they are in. */
   const removeChats = (chats: Conversation[]) => {
@@ -714,8 +713,9 @@ export function buildApp(
     return conv ? { ...conv, last_at: store.lastAt(conv.id), turns: store.listTurns(conv.id), agent_turns: store.agentTurns(conv.id), token_usage: store.tokenUsage(conv.id).total, context_usage: store.contextUsage(conv.id) } : notFound(reply);
   });
 
-  // Serve links from agent answers only from this chat's own worktree/project and template folder; an admin, who can read the whole
-  // machine through an agent anyway, may fetch a file anywhere on it (an agent often writes its output to /tmp).
+  // Serve links from agent answers only from this chat's own worktree/project and template folder. The owner may fetch a
+  // file anywhere on the machine (an agent often writes its output to /tmp); for anyone else that would reach past the
+  // projects they may open, into other chats' files and Dalang's own state.
   app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/files/download', {
     schema: { querystring: { type: 'object', required: ['path'], additionalProperties: false,
       properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } },
@@ -728,7 +728,7 @@ export function buildApp(
     // (Dispatcher.filesDir). Templates were filled in a temp folder before that one: a link in an older answer still names it.
     let real = insideRoot(root, req.query.path) ?? insideRoot(dispatcher.filesDir(conv.id), req.query.path)
       ?? insideRoot(templateWorkDir(conv.id), req.query.path);
-    if (!real && req.user?.role === 'admin') {
+    if (!real && req.user!.id === null) {
       try { real = realpathSync(resolve(root, req.query.path)); } catch { /* no such file */ }
     }
     if (!real) return notFound(reply);
@@ -750,7 +750,7 @@ export function buildApp(
     const projects = store.uploadProjects(path);
     if (projects.length) return projects.some((id) => {
       const p = store.getProject(id);
-      return p && canAccess(user, p.access);
+      return p && canOpen(user, p);
     });
     return store.uploadOwner(path) === user.id;
   };

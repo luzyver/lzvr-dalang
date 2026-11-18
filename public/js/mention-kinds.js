@@ -6,8 +6,8 @@ export const MENTION = /(^|\s)@(database|db|ssh|template):?([\w.-]*)$/i;
 export const MENTION_KINDS = {
   db: { url: '/api/db/agent-connections', icon: 'database', label: 'Databases', none: 'No database connection agents may use' },
   ssh: { url: '/api/ssh/agent-hosts', icon: 'terminal', label: 'SSH hosts', none: 'No SSH host agents may use' },
-  template: { url: '/api/templates', icon: 'file', label: 'PDF templates', none: 'No template yet: an admin adds them in Settings' },
-  skill: { url: '/api/custom-skills', icon: 'sparkles', label: 'Custom skills', none: 'No custom skill yet: an admin adds them in Settings' },
+  template: { url: '/api/templates', icon: 'file', label: 'PDF templates', none: 'No template yet: add them in Settings' },
+  skill: { url: '/api/custom-skills', icon: 'sparkles', label: 'Custom skills', none: 'No custom skill yet: add them in Settings' },
 };
 
 /** Which list a typed "@word" (or the "/custom" command, `skill`) opens. */

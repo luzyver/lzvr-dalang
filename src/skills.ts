@@ -58,7 +58,7 @@ These folders are shared by every chat: do not change files in them. Anything a 
 ${skills.map((s) => `- ${s.name} (${s.path}): ${s.description}`).join('\n')}`;
 }
 
-/** A skill an admin wrote in Settings: stored in the database, run for a chat by typing `/custom <name>` in its prompt. */
+/** A skill written in Settings: stored in the database, run for a chat by typing `/custom <name>` in its prompt. */
 export interface CustomSkill { name: string; description: string; content: string }
 
 export const CUSTOM_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -85,7 +85,7 @@ export function customSkillPrompt(prompt: string, skills: CustomSkill[]): string
   if (!inv.skill) {
     const known = skills.map((s) => s.name).join(', ') || 'none';
     if (!inv.name) {
-      const list = skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ''}`).join('\n') || '(none yet: an admin adds them in Settings)';
+      const list = skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ''}`).join('\n') || '(none yet: add them in Settings)';
       return `The person typed "/custom" without the name of a custom skill. Do nothing else: show them this list of custom skills and say one runs with "/custom <name>".\n\n${list}`;
     }
     return `The person asked for the custom skill "${inv.name}", but there is no custom skill of that name (there are: ${known}). Tell them so and do not guess its content.${inv.input ? `\n\nThe rest of their message:\n${inv.input}` : ''}`;

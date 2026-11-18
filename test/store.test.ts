@@ -75,12 +75,12 @@ describe('Store', () => {
 
   it('keeps users, finds them by token hash, and cascades a delete to their sessions', () => {
     const { store } = fresh();
-    const u = store.createUser('budi', 'dev', 'hash-1');
-    expect(store.getUser(u.id)).toMatchObject({ name: 'budi', role: 'dev' });
+    const u = store.createUser('budi', 'hash-1', 'Budi@Example.com');
+    expect(store.getUser(u.id)).toEqual({ id: u.id, name: 'budi', email: 'budi@example.com', created_at: expect.any(String) });
     expect(store.getUserByTokenHash('hash-1')!.id).toBe(u.id);
     expect(store.getUserByTokenHash('nope')).toBeNull();
-    expect(() => store.createUser('budi', 'admin', 'hash-2')).toThrow(); // unique name
-    expect(() => store.createUser('other', 'admin', 'hash-1')).toThrow(); // unique token
+    expect(() => store.createUser('budi', 'hash-2')).toThrow(); // unique name
+    expect(() => store.createUser('other', 'hash-1')).toThrow(); // unique token
 
     store.createSession('s1', Date.now() + 60_000, u.id);
     expect(store.getSession('s1', Date.now())).toEqual({ user_id: u.id });
@@ -97,7 +97,7 @@ describe('Store', () => {
     expect(store.deleteUser(u.id)).toBe(false);
   });
 
-  it('adds the user columns to a database created before roles existed', () => {
+  it('adds the user columns to a database created before users existed', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'lzvr-mig-')), 'old.db');
     const old = new DatabaseSync(file);
     old.exec(`CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
@@ -109,6 +109,35 @@ describe('Store', () => {
     expect(store.getSession('old-session', Date.now())).toEqual({ user_id: null }); // still valid, as the owner
     // passkey sign-in is gone, and its table with it
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='passkeys'").get()).toBeUndefined();
+  });
+
+  it('drops user roles: a project that was for the owner and admins becomes one shared with those admins by name', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'lzvr-roles-')), 'old.db');
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT 'dev',
+                token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+              CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
+                sandbox TEXT NOT NULL DEFAULT 'workspace-write', access TEXT NOT NULL DEFAULT 'all', members TEXT NOT NULL DEFAULT '[]');
+              INSERT INTO users (id,name,role,token_hash) VALUES ('a1','sari','admin','h1'), ('a2','tono','admin','h2'), ('d1','budi','dev','h3');
+              INSERT INTO projects (id,name,path,access,members) VALUES
+                ('p1','1 admins','/p1','admin','[]'), ('p2','2 admins and a member','/p2','admin','["d1","a2"]'),
+                ('p3','3 owner','/p3','owner','["d1"]'), ('p4','4 everyone','/p4','all','[]');`);
+    old.close();
+    const cols = (s: Store) => (s.db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name);
+    const projects = (s: Store) => s.listProjects().map((p) => [p.id, p.access, p.members]);
+    const after = [['p1', 'owner', ['a1', 'a2']], ['p2', 'owner', ['d1', 'a2', 'a1']], ['p3', 'owner', ['d1']], ['p4', 'all', []]];
+    const store = new Store(file);
+    expect(cols(store)).not.toContain('role');
+    expect(projects(store)).toEqual(after);
+    expect(store.listUsers().map((u) => u.name).sort()).toEqual(['budi', 'sari', 'tono']); // nobody lost, tokens kept
+    expect(store.getUserByTokenHash('h3')!.id).toBe('d1');
+    store.db.close();
+    // Opening it again changes nothing, and an 'admin' level written without the column to tell who they were is everyone's.
+    const again = new Store(file);
+    expect(projects(again)).toEqual(after);
+    again.db.prepare("UPDATE projects SET access='admin' WHERE id='p3'").run();
+    again.db.close();
+    expect(new Store(file).getProject('p3')).toMatchObject({ access: 'all', members: ['d1'] });
   });
 
   it('has indexes for sub-agents, a project\'s chats and a chat\'s queue, and dates old events once only', () => {

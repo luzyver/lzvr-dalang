@@ -116,38 +116,41 @@ describe('Push.notify', () => {
   it('checks current project, connection and host access for the subscribing user', async () => {
     const sent: string[] = [];
     const t = setupApp({}, { pushSend: async (sub) => { sent.push(sub.endpoint); } });
-    const dev = await mkUser(t, 'dev', 'dev');
-    const admin = await mkUser(t, 'admin', 'admin');
-    for (const [n, headers] of [[1, AUTH], [2, bearer(admin.token)], [3, bearer(dev.token)]] as const) {
+    const budi = await mkUser(t, 'budi');
+    const sari = await mkUser(t, 'sari');
+    for (const [n, headers] of [[1, AUTH], [2, bearer(sari.token)], [3, bearer(budi.token)]] as const) {
       await t.app.inject({ method: 'POST', url: '/api/push/subscribe', headers, payload: { subscription: SUB(n) } });
     }
     const project = t.store.createProject('secret', t.root, 'workspace-write', 'owner');
     const conv = t.store.createConversation(project.id);
     await t.push.notify({ title: 'Secret', body: 'private text', convId: conv.id });
     expect(sent.splice(0)).toEqual([SUB(1).endpoint]);
-    t.store.db.prepare("UPDATE projects SET access='all' WHERE id=?").run(project.id);
+    t.store.setProjectAccess(project.id, 'owner', [budi.id]); // shared with one user by name
+    await t.push.notify({ title: 'Secret', body: 'private text', convId: conv.id });
+    expect(sent.splice(0).sort()).toEqual([1, 3].map((n) => SUB(n).endpoint));
+    t.store.setProjectAccess(project.id, 'all', []);
     await t.push.notify({ title: 'Shared', body: 'text', convId: conv.id });
     expect(sent.splice(0).sort()).toEqual([1, 2, 3].map((n) => SUB(n).endpoint));
     // One person's own (a ClickUp message of theirs to approve): nobody else's devices, with or without a chat.
-    await t.push.notify({ title: 'ClickUp', body: 'draft', convId: conv.id, audience: { user: dev.id } });
+    await t.push.notify({ title: 'ClickUp', body: 'draft', convId: conv.id, audience: { user: budi.id } });
     await t.push.notify({ title: 'ClickUp', body: 'draft', convId: '', audience: { user: 'owner' } });
     expect(sent.splice(0)).toEqual([SUB(3).endpoint, SUB(1).endpoint]);
     t.store.setKv('db_connections', JSON.stringify([{ id: 'db', access: 'owner' }]));
-    await t.push.notify({ title: 'SQL', body: 'secret SQL', convId: conv.id, audience: { admin: true, database: 'db' } });
+    await t.push.notify({ title: 'SQL', body: 'secret SQL', convId: conv.id, audience: { database: 'db' } });
     expect(sent.splice(0)).toEqual([SUB(1).endpoint]);
-    t.store.setKv('ssh_hosts', JSON.stringify([{ id: 'host', access: 'admin' }]));
-    await t.push.notify({ title: 'SSH', body: 'command', convId: conv.id, audience: { admin: true, host: 'host' } });
-    expect(sent.splice(0).sort()).toEqual([1, 2].map((n) => SUB(n).endpoint));
-    t.store.setUserRole(admin.id, 'dev');
-    await t.push.notify({ title: 'SSH', body: 'command', convId: conv.id, audience: { admin: true, host: 'host' } });
+    t.store.setKv('ssh_hosts', JSON.stringify([{ id: 'host', access: 'admin' }])); // a level from when users had roles: everyone's now
+    await t.push.notify({ title: 'SSH', body: 'command', convId: conv.id, audience: { host: 'host' } });
+    expect(sent.splice(0).sort()).toEqual([1, 2, 3].map((n) => SUB(n).endpoint));
+    t.store.setKv('ssh_hosts', JSON.stringify([{ id: 'host', access: 'owner' }]));
+    await t.push.notify({ title: 'SSH', body: 'command', convId: conv.id, audience: { host: 'host' } });
     expect(sent.splice(0)).toEqual([SUB(1).endpoint]);
-    t.store.deleteUser(dev.id);
+    t.store.deleteUser(budi.id);
     await t.push.notify({ title: 'Shared', body: 'text', convId: conv.id });
     expect(sent.splice(0).sort()).toEqual([1, 2].map((n) => SUB(n).endpoint));
     // An authenticated user cannot remove another user's device subscription.
-    await t.app.inject({ method: 'POST', url: '/api/push/unsubscribe', headers: bearer(admin.token), payload: { endpoint: SUB(1).endpoint } });
+    await t.app.inject({ method: 'POST', url: '/api/push/unsubscribe', headers: bearer(sari.token), payload: { endpoint: SUB(1).endpoint } });
     expect(t.store.listPushSubs().some((s) => s.endpoint === SUB(1).endpoint)).toBe(true);
-    await t.app.inject({ method: 'POST', url: '/api/auth/logout', headers: bearer(admin.token) });
+    await t.app.inject({ method: 'POST', url: '/api/auth/logout', headers: bearer(sari.token) });
     expect(t.store.listPushSubs().map((s) => s.endpoint)).toEqual([SUB(1).endpoint]);
     await t.app.close();
   });

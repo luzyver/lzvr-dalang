@@ -90,7 +90,7 @@ Cron schedules that keep a conversation going, with a push notification when eac
 <td valign="top">
 
 **Access controls**<br>
-Email codes, users and roles, read-only projects, approvals, and stored connection secrets encrypted at rest.
+Email codes, users, per-project access, read-only projects, approvals, and stored connection secrets encrypted at rest.
 
 </td>
 </tr>

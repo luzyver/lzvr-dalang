@@ -36,7 +36,7 @@ export function contextFor({ conn, database, sql, error, result, schemas, table,
   } else if (result && result.affected != null) parts.push(`It changed ${result.affected} row(s).`);
   const tables = tablesIn(sql || '', schemas, table);
   if (tables.length) parts.push(`Tables:\n${tables.join('\n')}`);
-  const mode = conn.readOnly || conn.agent === 'read-only' ? 'read-only' : conn.agent === 'approve' ? 'read, with writes held for an admin\'s approval' : 'read and write';
+  const mode = conn.readOnly || conn.agent === 'read-only' ? 'read-only' : conn.agent === 'approve' ? 'read, with writes held for approval' : 'read and write';
   parts.push(conn.agent === 'off'
     ? 'Agents cannot query this connection, so work from what is here.'
     : `You can query it yourself with the dalang MCP tools db_schema and db_query (connection "${conn.id}"${database ? `, database "${database}"` : ''}); for you it is ${mode}.`);
@@ -73,7 +73,7 @@ export function AskAgent({ context, suggestion, onClose }) {
   if (projects == null) return html`<div class="dialog-body"><div class="pane-loading"><${Spinner} /></div></div>`;
   return html`<div class="dialog-body">
     <div class="dialog-head"><h2>Ask the agent</h2><button class="icon-btn" aria-label="Close" onClick=${onClose}><${Icon} name="x" /></button></div>
-    ${!projects.length ? html`<p class="dim">There is no project to ask in. An admin adds projects in the panel.</p>` : html`
+    ${!projects.length ? html`<p class="dim">There is no project to ask in. Add one in the panel first.</p>` : html`
       <div class="row wrap">
         <${Field} label="Project"><select value=${project} onChange=${(e) => setProject(e.currentTarget.value)}>
           ${projects.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select><//>

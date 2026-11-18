@@ -1,6 +1,6 @@
 // The SQL editor: the panel's database connections in their own browser tab (/sql), not tied to a chat. Connections and
 // their tables on the left, query consoles as tabs in the middle, results below (DataGrip's layout, kept as quiet as
-// the code editor). Admins add and change connections, including whether agents may use them. The result grid lives in
+// the code editor). Connections are added and changed here, including whether agents may use them. The result grid lives in
 // sql-grid.js, "Ask the agent" in sql-ask.js.
 import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { batch, signal } from '../vendor/signals.js';
@@ -8,7 +8,7 @@ import * as cm from '../vendor/code/editor.js';
 import { html, cx } from './lib.js';
 import { api, downloadFile } from './api.js';
 import { AsyncButton, confirmDialog, ContextMenu, DRIVERS, Empty, ENGINE_ICONS, EngineIcon, Field, Icon, Logo, Menu, MenuItem, Modal, Resizer, Seg, Spinner } from './ui.js';
-import { guarded, isAdmin, isOwner, toast } from './store.js';
+import { guarded, isOwner, toast } from './store.js';
 import { copyText } from './code.js';
 import { createState, EditorView } from './code-mirror.js';
 import { ResultGrid } from './sql-grid.js';
@@ -24,12 +24,12 @@ const mobile = () => innerWidth <= 760;
 const noSql = (conn) => conn?.driver === 'mongodb' || conn?.driver === 'redis' || conn?.driver === 'elasticsearch';
 const PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379, elasticsearch: 9200 };
 const DIALECTS = { postgres: cm.PostgreSQL, mysql: cm.MySQL, mariadb: cm.MariaSQL, sqlite: cm.SQLite };
-const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
+const ACCESS = { all: 'Everyone', owner: 'Owner only' };
 const AGENT = { off: 'Off', 'read-only': 'Read-only', approve: 'Write with approval', 'read-write': 'Read and write' };
 const AGENT_HINT = {
   off: 'Agents do not see this connection.',
   'read-only': 'Agents read through the gateway\'s MCP tools (db_list_connections, db_schema, db_query); the database refuses their writes.',
-  approve: 'Agents read freely; a script that writes waits in Approvals until an admin runs or rejects it, and the outcome goes back to the agent\'s chat.',
+  approve: 'Agents read freely; a script that writes waits in Approvals until someone runs or rejects it, and the outcome goes back to the agent\'s chat.',
   'read-write': 'Agents may change data and tables through the gateway\'s MCP tools.',
 };
 /** sql-formatter's names for the dialects. */
@@ -1102,7 +1102,7 @@ const connItems = (conn) => html`
   <${MenuItem} icon="square-code" onClick=${() => newConsole(conn.id)}>New console<//>
   <${MenuItem} icon="refresh-cw" title="Read its databases, tables and columns again from the server" onClick=${() => refreshConn(conn)}>Refresh<//>
   <${MenuItem} icon="copy" onClick=${() => copyText(conn.id, 'name copied')}>Copy its name (for agents)<//>
-  ${isAdmin.value && html`<div class="menu-sep"></div>
+  ${html`<div class="menu-sep"></div>
     <${MenuItem} icon="pencil" onClick=${() => { sq.editing.value = { conn }; }}>Edit connection<//>
     ${(sq.workspaces.value?.length ?? 0) > 1 && html`<${MenuItem} icon="x" onClick=${() => setInWorkspace(conn.id, false)}>Remove from this workspace<//>`}
     <${MenuItem} icon="history" onClick=${() => { sq.log.value = conn.id; }}>Agent queries<//>
@@ -1323,8 +1323,8 @@ function Tree() {
   const q = sq.find.value.trim();
   return html`<div class="files-pane">
     <div class="pane-head"><span class="pane-title">Database</span><div class="spacer"></div>
-      ${isAdmin.value && others && html`<button class="icon-btn xs" title="Choose this workspace's connections" aria-label="Choose connections" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}><${Icon} name="sliders-horizontal" /></button>`}
-      ${isAdmin.value && html`<button class="icon-btn xs" title="Add a connection" aria-label="Add a connection" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" /></button>`}
+      ${others && html`<button class="icon-btn xs" title="Choose this workspace's connections" aria-label="Choose connections" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}><${Icon} name="sliders-horizontal" /></button>`}
+      ${html`<button class="icon-btn xs" title="Add a connection" aria-label="Add a connection" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" /></button>`}
       <button class="icon-btn xs" title="Reload connections" aria-label="Reload connections" onClick=${() => { loadConns(); loadWorkspaces(); }}><${Icon} name="refresh-cw" /></button>
     </div>
     ${ready && conns.length > 0 && html`<div class="sql-find">
@@ -1336,7 +1336,7 @@ function Tree() {
       ${!ready ? html`<div class="tree-empty"><${Spinner} /></div>`
         : q && conns.length ? html`<${Found} q=${q} />`
         : conns.length ? conns.map((c) => html`<${ConnNode} key=${c.id} conn=${c} />`)
-          : html`<div class="tree-empty small dim">${!isAdmin.value ? 'No connections in this workspace yet. An admin adds them.' : html`
+          : html`<div class="tree-empty small dim">${html`
               No connections in this workspace yet.
               <div class="row wrap sql-ws-empty">
                 <button class="btn sm" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" />New connection</button>
@@ -1347,7 +1347,7 @@ function Tree() {
   </div>`;
 }
 
-/** New workspace, rename it, or pick its connections (admins). */
+/** New workspace, rename it, or pick its connections. */
 function WorkspaceDialog({ mode }) {
   const w = currentWs();
   const [name, setName] = useState(mode === 'rename' ? w?.name ?? '' : '');
@@ -1387,7 +1387,7 @@ function WorkspaceDialog({ mode }) {
   </div>`;
 }
 
-/** The workspace picker in the header, with its menu for admins. */
+/** The workspace picker in the header, with its menu. */
 function WorkspacePicker() {
   const list = sq.workspaces.value || [];
   const w = currentWs();
@@ -1405,7 +1405,7 @@ function WorkspacePicker() {
     <select aria-label="Workspace" title="Workspace" value=${w.id} onChange=${(e) => openWorkspace(e.currentTarget.value)}>
       ${list.map((x) => html`<option value=${x.id}>${x.name}</option>`)}
     </select>
-    ${isAdmin.value && html`<${Menu} label="Workspace options" buttonClass="sm">
+    ${html`<${Menu} label="Workspace options" buttonClass="sm">
       <${MenuItem} icon="plus" onClick=${() => { sq.wsDialog.value = { mode: 'new' }; }}>New workspace<//>
       <${MenuItem} icon="pencil" onClick=${() => { sq.wsDialog.value = { mode: 'rename' }; }}>Rename<//>
       <${MenuItem} icon="database" onClick=${() => { sq.wsDialog.value = { mode: 'conns' }; }}>Choose connections<//>
@@ -1414,13 +1414,13 @@ function WorkspacePicker() {
   </div>`;
 }
 
-// ---------- the connection dialog (admins) ----------
+// ---------- the connection dialog ----------
 
 function ConnectionForm({ conn }) {
   const [f, setF] = useState(() => ({
     id: conn?.id ?? '', label: conn?.label ?? '', driver: conn?.driver ?? 'postgres', host: conn?.host ?? 'localhost',
     port: conn?.port ? String(conn.port) : '', user: conn?.user ?? '', password: '', database: conn?.database ?? '',
-    ssl: conn?.ssl ?? 'disable', file: conn?.file ?? '', access: conn?.access ?? 'admin', readOnly: conn?.readOnly ?? false,
+    ssl: conn?.ssl ?? 'disable', file: conn?.file ?? '', access: conn?.access ?? 'all', readOnly: conn?.readOnly ?? false,
     agent: conn?.agent ?? 'off', allDatabases: conn?.allDatabases ?? false,
   }));
   // The SSH tunnel; its secrets are never sent here, so their fields start empty (empty keeps the saved one).
@@ -1865,7 +1865,7 @@ export function SqlEditor() {
             <div class="cm-wrap" hidden=${!c}><${EditorHost} /></div>
             ${!c && html`<div class="editor-placeholder"><${Empty} icon="database" title="No console open">
               ${wsConns().length ? html`Double-click a connection, or <button class="btn sm" onClick=${() => newConsole(wsConns()[0].id)}>open a console</button>`
-                : isAdmin.value ? html`<button class="btn sm" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" />Add a connection</button>` : 'An admin adds the connections.'}<//></div>`}
+                : html`<button class="btn sm" onClick=${() => { sq.editing.value = { conn: null }; }}><${Icon} name="plus" />Add a connection</button>`}<//></div>`}
           </div>
         </div>
         <${Resizer} dir="h" onMove=${(_dx, dy) => {

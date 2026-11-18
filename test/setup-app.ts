@@ -17,10 +17,10 @@ import { FAKE, TOKEN } from './helpers.js';
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
 /** Create a panel user through the API (as the owner) and return their id and one-time token. */
-export async function mkUser(t: { app: { inject: (o: any) => Promise<any> } }, name: string, role: 'admin' | 'dev') {
-  const r = await t.app.inject({ method: 'POST', url: '/api/users', headers: { authorization: `Bearer ${TOKEN}` }, payload: { name, role } });
+export async function mkUser(t: { app: { inject: (o: any) => Promise<any> } }, name: string) {
+  const r = await t.app.inject({ method: 'POST', url: '/api/users', headers: { authorization: `Bearer ${TOKEN}` }, payload: { name } });
   if (r.statusCode !== 201) throw new Error(`mkUser failed: ${r.statusCode} ${r.body}`);
-  return r.json() as { id: string; name: string; role: string; token: string };
+  return r.json() as { id: string; name: string; token: string };
 }
 
 export interface AppExtras {

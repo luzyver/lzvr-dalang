@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as databases from '../src/databases.js';
-import { agentRefusal, type DbConnection, findUnsafe, loadConnections, onDatabase, panelRefusal, planBackup, previewEdits, QueryError, readBackup, statementsOf } from '../src/databases.js';
+import { agentRefusal, type DbConnection, findUnsafe, loadConnections, onDatabase, planBackup, previewEdits, QueryError, readBackup, statementsOf } from '../src/databases.js';
 import { createDbApproval, dbTarget, readDbApprovals, recoverDbApprovals } from '../src/database-routes.js';
 import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -202,13 +202,12 @@ describe('agent refusals', () => {
     expect(agentRefusal("SELECT 1 AS x$y, $tag$ pg_read_file('/x') $tag$, $1", 'postgres', true)).toBeNull();
   });
 
-  it('reads a UESCAPE clause past the comments around it, for agents and the read-only panel', () => {
+  it('reads a UESCAPE clause past the comments around it, for agents', () => {
     const pg = ["SELECT U&\"!0070g_read_file\" /*c*/ UESCAPE '!'('/etc/passwd')",
       "SELECT U&\"!0070g_read_file\" UESCAPE /*c*/ '!'('/etc/passwd')",
       "SELECT U&\"!0070g_read_file\" -- c\n UESCAPE /* a /* b */ */ -- d\r '!' ('/etc/passwd')"];
     for (const sql of pg) {
       for (const ro of [true, false]) expect(agentRefusal(sql, 'postgres', ro), sql).toMatch(/refused for agents/);
-      expect(panelRefusal(sql, 'postgres'), sql).toMatch(/refused on a read-only connection/);
     }
     expect(agentRefusal("SELECT U&\"!0061\" /*c*/ UESCAPE /*d*/ '!' FROM t", 'postgres', true)).toBeNull();
   });
@@ -277,7 +276,7 @@ describe('SQL editor connections', () => {
     const own = join(t.cfg.stateDir, 'own.db');
     new DatabaseSync(own).close();
     expect((await t.put('x', { file: own })).json().error).toMatch(/state folder/);
-    expect((await t.put('x', { file: own, access: 'admin' })).json().error).toMatch(/state folder/);
+    expect((await t.put('x', { file: own, access: 'all' })).json().error).toMatch(/state folder/);
     expect((await t.put('x', { file: own, access: 'owner' })).statusCode).toBe(200);
   });
 
@@ -296,40 +295,22 @@ describe('SQL editor connections', () => {
     expect(ro.json().error).toMatch(/readonly/i);
   });
 
-  it('refuses what reaches past the tables for non-admins on a read-only connection, query and export alike', async () => {
+  it('screens nothing in the panel on a read-only connection, for a user as for the owner: the database holds it to reads', async () => {
     const t = await boot();
     await t.put('app', { readOnly: true });
-    const dev = await mkUser(t, 'dana', 'dev');
+    const user = await mkUser(t, 'dana');
     const bad = "SELECT [load_extension]('/tmp/x')";
-    const ro = await t.query('app', bad, bearer(dev.token));
-    expect(ro.statusCode).toBe(400);
-    expect(ro.json().error).toMatch(/read-only connection: functions that reach files/);
-    const ex = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/export', headers: bearer(dev.token), payload: { sql: bad, format: 'csv' } });
-    expect(ex.statusCode).toBe(400);
-    expect(ex.json().error).toMatch(/read-only connection/);
-    expect((await t.query('app', 'SELECT name FROM users', bearer(dev.token))).statusCode).toBe(200);
-    // An admin may (the connection being read-only holds it to reads); so may anyone on a read-write connection.
-    expect((await t.query('app', bad)).json().error).not.toMatch(/read-only connection/);
-    await t.put('app', { readOnly: false });
-    expect((await t.query('app', bad, bearer(dev.token))).json().error ?? '').not.toMatch(/read-only connection/);
-  });
-
-  it('refuses server-side JavaScript to non-admins on a read-only MongoDB connection, before reaching the server', async () => {
-    const t = await boot();
-    // Nothing listens there: a refusal comes before any connection.
-    expect((await t.put('mongo', { driver: 'mongodb', host: '127.0.0.1', port: 1, readOnly: true })).statusCode).toBe(200);
-    const dev = await mkUser(t, 'dana', 'dev');
-    const bad = 'db.u.find({ $where: "sleep(1000) || true" })';
-    const ro = await t.query('mongo', bad, bearer(dev.token));
-    expect(ro.statusCode).toBe(400);
-    expect(ro.json().error).toMatch(/read-only connection: \$where/);
-    const ex = await t.app.inject({ method: 'POST', url: '/api/db/connections/mongo/export', headers: bearer(dev.token), payload: { sql: bad, format: 'csv' } });
-    expect(ex.statusCode).toBe(400);
-    expect(ex.json().error).toMatch(/read-only connection: \$where/);
-    expect((await t.query('mongo', 'db.u.aggregate([{ $group: { _id: 1, x: { $accumulator: {} } } }])', bearer(dev.token))).json().error).toMatch(/read-only connection/);
-    // A read that only mentions it is no refusal. Read-only Redis runs only reads already; KEYS is one, the person's to run.
-    expect(panelRefusal('db.u.find({ note: "$where" })', 'mongodb')).toBeNull();
-    expect(panelRefusal('KEYS *', 'redis')).toBeNull();
+    for (const headers of [bearer(user.token), AUTH]) {
+      const ro = await t.query('app', bad, headers);
+      expect(ro.statusCode).toBe(400); // SQLite's own refusal, not a screen before it
+      expect(ro.json().error).not.toMatch(/read-only connection/);
+      const ex = await t.app.inject({ method: 'POST', url: '/api/db/connections/app/export', headers, payload: { sql: bad, format: 'csv' } });
+      expect(ex.body).not.toMatch(/read-only connection/);
+      expect((await t.query('app', 'SELECT name FROM users', headers)).statusCode).toBe(200);
+      const write = await t.query('app', 'DELETE FROM users', headers);
+      expect(write.statusCode).toBe(400);
+      expect(write.json().error).toMatch(/readonly/i);
+    }
   });
 
   it('reads up to 100 000 rows of a statement (the row limit All)', async () => {
@@ -421,13 +402,25 @@ describe('SQL editor connections', () => {
     });
   });
 
-  it('shows a connection only to whom its access allows', async () => {
+  it('shows a connection only to whom its access allows, and lets every user add one', async () => {
     const t = await boot();
-    await t.put('adm', { access: 'admin' });
-    const dev = await mkUser(t, 'dana', 'dev');
-    expect((await t.app.inject({ url: '/api/db/connections', headers: bearer(dev.token) })).json()).toEqual([]);
-    expect((await t.query('adm', 'SELECT 1', bearer(dev.token))).statusCode).toBe(404);
-    expect((await t.put('adm2', {}, bearer(dev.token))).statusCode).toBe(403);
+    await t.put('own', { access: 'owner' });
+    const user = await mkUser(t, 'dana');
+    expect((await t.app.inject({ url: '/api/db/connections', headers: bearer(user.token) })).json()).toEqual([]);
+    expect((await t.query('own', 'SELECT 1', bearer(user.token))).statusCode).toBe(404);
+    expect((await t.put('mine', {}, bearer(user.token))).statusCode).toBe(200);
+    expect((await t.app.inject({ url: '/api/db/connections', headers: bearer(user.token) })).json().map((c: { id: string }) => c.id)).toEqual(['mine']);
+    expect((await t.query('mine', 'SELECT 1', bearer(user.token))).statusCode).toBe(200);
+  });
+
+  it('reads a connection saved for "Owner and admins" as open to everyone', async () => {
+    const t = await boot();
+    await t.put('old', {});
+    const saved = JSON.parse(t.store.getKv('db_connections')!);
+    t.store.setKv('db_connections', JSON.stringify(saved.map((c: object) => ({ ...c, access: 'admin' }))));
+    expect(loadConnections(t.store)[0]!.access).toBe('all');
+    const user = await mkUser(t, 'dana');
+    expect((await t.query('old', 'SELECT 1', bearer(user.token))).statusCode).toBe(200);
   });
 
   it('keeps "every database" to PostgreSQL and refuses another database elsewhere', async () => {
@@ -592,11 +585,11 @@ describe('SQL editor workspaces', () => {
     expect((await t.app.inject({ method: 'DELETE', url: '/api/db/workspaces/main-production-2', headers: AUTH })).statusCode).toBe(409);
   });
 
-  it('lets only admins change workspaces', async () => {
+  it('lets every user change workspaces', async () => {
     const t = await boot();
-    const dev = await mkUser(t, 'dana', 'dev');
-    expect((await t.app.inject({ url: '/api/db/workspaces', headers: bearer(dev.token) })).statusCode).toBe(200);
-    expect((await t.app.inject({ method: 'POST', url: '/api/db/workspaces', headers: bearer(dev.token), payload: { name: 'x' } })).statusCode).toBe(403);
+    const user = await mkUser(t, 'dana');
+    expect((await t.app.inject({ url: '/api/db/workspaces', headers: bearer(user.token) })).statusCode).toBe(200);
+    expect((await t.app.inject({ method: 'POST', url: '/api/db/workspaces', headers: bearer(user.token), payload: { name: 'x' } })).statusCode).toBe(201);
   });
 });
 
@@ -621,7 +614,7 @@ describe('SQL editor connections for agents', () => {
     expect(log[0]).toMatchObject({ who: 'owner', sql: 'DROP TABLE users' });
   });
 
-  it('holds an agent\'s write for an admin on an approval connection, then runs it and tells the chat', async () => {
+  it('holds an agent\'s write for a person on an approval connection, then runs it and tells the chat', async () => {
     const t = await boot();
     await t.put('app', { agent: 'approve' });
     const p = t.store.createProject('proj', t.root);
@@ -733,7 +726,7 @@ describe('SQL editor connections for agents', () => {
     try { expect(db.prepare('SELECT count(*) AS n FROM users').get()!.n).toBe(2); } finally { db.close(); }
   });
 
-  it('allows only an authorized admin to dismiss an unknown database approval', async () => {
+  it('allows only someone who may open the connection to dismiss an unknown database approval', async () => {
     const t = await boot();
     await t.put('app', { agent: 'approve', access: 'owner' });
     const a = createDbApproval(t.store, { conn: 'app', target: dbTarget(loadConnections(t.store)[0]!), sql: 'DELETE FROM users', who: 'owner', conv: null });
@@ -744,10 +737,8 @@ describe('SQL editor connections for agents', () => {
       expect(readDbApprovals(t.store)[0]!.status).toBe(status);
     }
     t.store.setKv('db_approvals', JSON.stringify([{ ...a, status: 'unknown' }]));
-    const dev = await mkUser(t, 'devi', 'dev');
-    const admin = await mkUser(t, 'admin', 'admin');
-    expect((await dismiss(bearer(dev.token))).statusCode).toBe(403);
-    expect((await dismiss(bearer(admin.token))).statusCode).toBe(404);
+    const user = await mkUser(t, 'devi');
+    expect((await dismiss(bearer(user.token))).statusCode).toBe(404);
     expect(readDbApprovals(t.store)[0]!.status).toBe('unknown');
     expect((await dismiss()).statusCode).toBe(200);
   });
@@ -838,8 +829,8 @@ describe('SQL editor connections for agents', () => {
 
   it('hides a connection from an agent working for someone who may not open it', async () => {
     const t = await boot();
-    await t.put('adm', { agent: 'read-only', access: 'admin' });
-    await mkUser(t, 'dana', 'dev');
+    await t.put('own', { agent: 'read-only', access: 'owner' });
+    await mkUser(t, 'dana');
     expect(await (await t.agent('dana')).tools()).not.toContain('db_query');
     expect(await (await t.agent('owner')).tools()).toContain('db_query');
   });

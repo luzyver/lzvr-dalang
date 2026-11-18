@@ -189,14 +189,14 @@ describe('git actions', () => {
     expect(existsSync(join(t.repo, 'b.txt'))).toBe(false);
   });
 
-  it('lets a dev change files only outside read-only projects', async () => {
+  it('lets a user change files in a read-only project too', async () => {
     const t = await gitProject('read-only');
-    const dev = await mkUser(t, 'dana', 'dev');
+    const user = await mkUser(t, 'dana');
     const conv = (await t.chat(false)).json();
     writeFileSync(join(t.repo, 'a.txt'), 'changed\n');
-    expect((await t.call('GET', `/api/conversations/${conv.id}/git`, undefined, bearer(dev.token))).statusCode).toBe(200);
-    expect((await t.call('POST', `/api/conversations/${conv.id}/git/discard`, undefined, bearer(dev.token))).statusCode).toBe(403);
-    expect((await t.call('POST', `/api/conversations/${conv.id}/git/discard`)).statusCode).toBe(204);
+    expect((await t.call('GET', `/api/conversations/${conv.id}/git`, undefined, bearer(user.token))).statusCode).toBe(200);
+    expect((await t.call('POST', `/api/conversations/${conv.id}/git/discard`, undefined, bearer(user.token))).statusCode).toBe(204);
+    expect(readFileSync(join(t.repo, 'a.txt'), 'utf8')).toBe('one\n');
   });
 
   it('refuses to change files while an agent works in the same folder', async () => {
@@ -230,13 +230,12 @@ describe('commit message drafts', () => {
     expect(readFileSync(join(t.repo, 'a.txt'), 'utf8')).toBe('one\ntwo\n'); // nothing was committed or changed
   });
 
-  it('uses the prompt an admin saved, for Codex and Claude Code alike', async () => {
+  it('uses the prompt a user saved, for Codex and Claude Code alike', async () => {
     const t = await gitProject();
-    const dev = await mkUser(t, 'dana', 'dev');
+    const user = await mkUser(t, 'dana');
     const url = '/api/settings/commit-prompt';
     expect((await t.call('GET', url)).json()).toEqual({ prompt: '', default: expect.stringContaining('Conventional Commit format') });
-    expect((await t.app.inject({ method: 'PUT', url, headers: bearer(dev.token), payload: { prompt: 'x' } })).statusCode).toBe(403);
-    expect((await t.app.inject({ method: 'PUT', url, headers: AUTH, payload: { prompt: '  Write a haiku about the change.  ' } })).statusCode).toBe(204);
+    expect((await t.app.inject({ method: 'PUT', url, headers: bearer(user.token), payload: { prompt: '  Write a haiku about the change.  ' } })).statusCode).toBe(204);
     expect((await t.call('GET', url)).json().prompt).toBe('Write a haiku about the change.');
 
     const conv = (await t.chat(false)).json();

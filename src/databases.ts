@@ -14,12 +14,12 @@ import mysql from 'mysql2';
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import {
-  mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlRefused, noSqlUnsafe, redisSchema, redisScript,
+  mongoBackupRead, mongoDdl, mongoSchema, mongoScript, mongoTest, noSqlAgentRefusal, noSqlBackupPlan, noSqlUnsafe, redisSchema, redisScript,
   redisTest, splitNoSql,
 } from './nosql.js';
 import { openTunnel, type SshConf, tlsServer } from './ssh-tunnel.js';
 import type { Store } from './store.js';
-import type { ProjectAccess } from './util.js';
+import { currentAccess, type ProjectAccess } from './util.js';
 
 export const DRIVERS = ['postgres', 'mysql', 'mariadb', 'sqlite', 'mongodb', 'redis', 'elasticsearch'] as const;
 export type Driver = (typeof DRIVERS)[number];
@@ -120,7 +120,7 @@ const MAX_STATEMENTS = 100;
 export function loadConnections(store: Store): DbConnection[] {
   try {
     const list = JSON.parse(store.getKv(KEY) ?? '[]');
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(list) ? list.map(currentAccess) : [];
   } catch { return []; }
 }
 export const saveConnections = (store: Store, list: DbConnection[]) => store.setKv(KEY, JSON.stringify(list));
@@ -1049,17 +1049,6 @@ export function agentRefusal(script: string, driver: Driver, readOnly: boolean):
   if (isNoSql(driver)) return noSqlAgentRefusal(statementsOf(script, driver), driver);
   const hit = refusedStatement(script, driver, readOnly);
   return hit && `refused for agents: ${hit}. Ask a human to run it in the SQL editor if it is needed.`;
-}
-
-/**
- * Why the SQL editor refuses a non-admin's script on a read-only connection, or null. Read-only holds such a user to
- * reads, but a read-only transaction still runs COPY TO, pg_read_file() and the like, and MongoDB's find() a $where's
- * JavaScript, so they get the agents' screen. Read-only Redis already runs nothing but REDIS_READS.
- */
-export function panelRefusal(script: string, driver: Driver): string | null {
-  if (driver === 'elasticsearch' || driver === 'redis') return null;
-  const hit = driver === 'mongodb' ? noSqlRefused(statementsOf(script, driver), driver) : refusedStatement(script, driver, true);
-  return hit && `refused on a read-only connection: ${hit}. Ask an admin to run it if it is needed.`;
 }
 
 // ---------- statements that hit every row ----------

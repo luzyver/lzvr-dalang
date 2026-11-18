@@ -1,6 +1,6 @@
 /**
  * Settings → MCP: other MCP servers (Context7, Playwright, ...) given to the agents' turns next to this gateway's own.
- * They are the owner's: a turn the owner sent gets every enabled server, any other turn (admins, devs, agents,
+ * They are the owner's: a turn the owner sent gets every enabled server, any other turn (other users, agents,
  * approvals) only those marked "all users". Secrets (the bearer token, env values) never go back to the panel and never
  * onto a command line: the CLI reads them from the turn's environment.
  */
@@ -11,7 +11,7 @@ import type { AuthUser } from './util.js';
 export interface McpServerConf {
   name: string;
   enabled: boolean;
-  /** Admins' and devs' turns get it too (else the owner's turns only). */
+  /** Other users' turns get it too (else the owner's turns only). */
   allUsers: boolean;
   /** Streamable HTTP server: its URL and an optional bearer token. */
   url: string;

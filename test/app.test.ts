@@ -76,7 +76,7 @@ describe('with no Codex account yet', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/accounts/unblock', headers: AUTH })).statusCode).toBe(204);
   });
 
-  it('lets an admin add the first one from the panel', async () => {
+  it('lets the owner add the first one from the panel', async () => {
     const t = setupApp({}, { homes: [] });
     const started = await t.app.inject({ method: 'POST', url: '/api/accounts/login', headers: AUTH, payload: { name: 'main' } });
     expect(started.statusCode).toBe(202);
@@ -106,13 +106,13 @@ describe('adding accounts from the panel', () => {
     expect(list[0]).toMatchObject({ loggedIn: false });
   });
 
-  it('is for admins only: a dev cannot link new accounts, an admin (including an owner session) can', async () => {
+  it('is for everyone signed in: a user and an owner session can link new accounts, nobody else', async () => {
     const t = setupApp();
-    const dev = { authorization: `Bearer ${(await mkUser(t, 'budi', 'dev')).token}` };
-    expect((await login(t, 'x', dev)).statusCode).toBe(403);
-    expect((await t.app.inject({ url: '/api/accounts/login/anything', headers: dev })).statusCode).toBe(403);
-    expect((await t.app.inject({ method: 'DELETE', url: '/api/accounts/login/anything', headers: dev })).statusCode).toBe(403);
-    expect((await t.app.inject({ url: '/api/accounts', headers: dev })).statusCode).toBe(200); // reading is fine
+    const user = { authorization: `Bearer ${(await mkUser(t, 'budi')).token}` };
+    expect((await login(t, '../x', user)).statusCode).toBe(400); // allowed, then failed name validation
+    expect((await t.app.inject({ url: '/api/accounts/login/anything', headers: user })).statusCode).toBe(404);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/accounts/login/anything', headers: user })).statusCode).toBe(404);
+    expect((await t.app.inject({ url: '/api/accounts', headers: user })).statusCode).toBe(200);
 
     t.cfg.ownerEmails = ['boss@example.com'];
     const owner = ownerSessionToken(t.cfg, 'boss@example.com');
@@ -322,16 +322,15 @@ describe('reasoning effort', () => {
 });
 
 describe('removing an account', () => {
-  it('is admin only, deletes a panel account, and 404s on one that is not', async () => {
+  it('deletes a panel account, for a user too, and 404s on one that is not', async () => {
     const t = setupApp();
     const id = (await t.app.inject({ method: 'POST', url: '/api/accounts/login', headers: AUTH, payload: { name: 'second' } })).json().id;
     await until(() => t.logins.get(id)!.status === 'success');
     const del = (name: string, headers = AUTH) => t.app.inject({ method: 'DELETE', url: `/api/accounts/${name}`, headers });
 
-    const dev = { authorization: `Bearer ${(await mkUser(t, 'budi', 'dev')).token}` };
-    expect((await del('second', dev)).statusCode).toBe(403);
+    const user = { authorization: `Bearer ${(await mkUser(t, 'budi')).token}` };
     expect((await del('nope')).statusCode).toBe(404);
-    expect((await del('second')).statusCode).toBe(204);
+    expect((await del('second', user)).statusCode).toBe(204);
     const names = (await t.app.inject({ url: '/api/accounts', headers: AUTH })).json().map((a: { name: string }) => a.name);
     expect(names).not.toContain('second');
   });

@@ -10,7 +10,7 @@
 import ssh2 from 'ssh2';
 import { fingerprint, sshConnect, type SshLogin } from './ssh-tunnel.js';
 import type { Store } from './store.js';
-import type { ProjectAccess } from './util.js';
+import { currentAccess, type ProjectAccess } from './util.js';
 
 const { utils } = ssh2;
 
@@ -61,7 +61,7 @@ export function loadHosts(store: Store): SshHost[] {
   let list: SshHost[];
   try {
     const raw = JSON.parse(store.getKv(KEY) ?? '[]');
-    list = Array.isArray(raw) ? raw : [];
+    list = Array.isArray(raw) ? raw.map(currentAccess) : [];
   } catch { return []; }
   if (!list.some((h) => h.keyId)) return list;
   const keys = new Map(loadKeys(store).map((k) => [k.id, k]));
@@ -81,7 +81,7 @@ const KEYS = 'ssh_keys';
 export function loadKeys(store: Store): SshKey[] {
   try {
     const list = JSON.parse(store.getKv(KEYS) ?? '[]');
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(list) ? list.map(currentAccess) : [];
   } catch { return []; }
 }
 export const saveKeys = (store: Store, list: SshKey[]) => store.setKv(KEYS, JSON.stringify(list));

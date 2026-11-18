@@ -103,9 +103,9 @@ describe('composer @ menu', () => {
 });
 
 describe('templates API', () => {
-  it('rejects non-docx uploads and non-admins, lists and removes templates', async () => {
+  it('rejects non-docx uploads, takes one from a user too, lists and removes templates', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
+    const budi = await mkUser(t, 'budi');
     const boundary = 'xBOUNDARYx';
     const body = (filename: string, data: string | Buffer, name: string) => Buffer.concat([Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="name"\r\n\r\n${name}\r\n`
@@ -117,8 +117,8 @@ describe('templates API', () => {
     expect((await put('a.txt', 'PKxx')).statusCode).toBe(400);
     expect((await put('a.docx', 'nope')).statusCode).toBe(400);
     expect((await put('a.docx', 'PKxx')).statusCode).toBe(400);
-    expect((await put('a.docx', DOCX, bearer(dev.token))).statusCode).toBe(403);
-    expect((await put('a.docx', DOCX)).statusCode).toBe(204);
+    expect((await put('a.docx', DOCX, bearer(budi.token))).statusCode).toBe(204);
+    expect((await put('a.docx', DOCX)).statusCode).toBe(204); // again, as the owner: replaces it
     expect((await put('a.docx', DOCX.subarray(0, 40))).statusCode).toBe(400); // a broken upload must not replace the good one
     expect(readFileSync(t.store.getTemplates()[0]!.file).equals(DOCX)).toBe(true);
     // The same name in other letter case replaces it: one template, one file, holding the newer upload.

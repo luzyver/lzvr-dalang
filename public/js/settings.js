@@ -1,10 +1,10 @@
-// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users for admins;
+// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users;
 // Git & forges for everyone (the owner: the server's setup) and MCP (everyone: their own ClickUp; the owner: other servers too).
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, Field, Icon, Modal, Seg, Spinner } from './ui.js';
-import { guarded, isAdmin, isOwner, me, toast, ui } from './store.js';
+import { guarded, isOwner, me, toast, ui } from './store.js';
 import { PALETTES, THEMES, palette, theme } from './theme.js';
 import { enableNotifications } from './notifications.js';
 import { AccountsSection } from './accounts.js';
@@ -36,7 +36,7 @@ function Device() {
       <${AsyncButton} class="btn" icon="bell" onClick=${guarded(async () => { await enableNotifications(); toast('Notifications on'); })}>Enable<//>
     </div>
     <div class="setting-row">
-      <div><strong>Sign out</strong><div class="dim small">Signed in as ${me.value?.name} (${me.value?.role}).</div></div>
+      <div><strong>Sign out</strong><div class="dim small">Signed in as ${me.value?.name}.</div></div>
       <button class="btn danger" onClick=${signOut}><${Icon} name="log-out" />Sign out</button>
     </div>`;
 }
@@ -192,7 +192,7 @@ function ReviewerSettings() {
   </section>`;
 }
 
-/** Custom skills: instructions an admin writes here, run in any chat by typing `/custom <name>` at the start of a prompt. */
+/** Custom skills: instructions written here, run in any chat by typing `/custom <name>` at the start of a prompt. */
 function CustomSkills() {
   const [list, setList] = useState(null);
   useEffect(() => { api('/api/settings/custom-skills').then(setList).catch((e) => toast(e.message, 'err')); }, []);
@@ -228,7 +228,7 @@ function CustomSkills() {
   </section>`;
 }
 
-/** PDF templates: a .docx an admin uploads with placeholders to fill, used in any chat by mentioning `@template:name`. */
+/** PDF templates: a .docx uploaded here with placeholders to fill, used in any chat by mentioning `@template:name`. */
 function Templates() {
   const [list, setList] = useState(null);
   const [draft, setDraft] = useState({ name: '', description: '', file: null });
@@ -330,7 +330,7 @@ const SECTIONS = [
 
 function Settings() {
   const current = ui.settings.value;
-  const visible = SECTIONS.filter((s) => !s[4] || (s[4] === 'owner' ? isOwner.value : isAdmin.value));
+  const visible = SECTIONS.filter((s) => s[4] !== 'owner' || isOwner.value);
   const [, title, , Body] = visible.find((s) => s[0] === current) || visible[0];
   const go = (k) => { ui.settings.value = k; };
   return html`<div class="settings-layout">

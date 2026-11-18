@@ -5,7 +5,7 @@ for development, see [CONTRIBUTING](../CONTRIBUTING.md).
 
 - [Installation and updates](#install-on-the-vm-no-docker), or [with Docker](#install-with-docker)
 - [Terminals](#terminals-without-root) and [HTTPS](#nginx-https)
-- [Sign-in](#signing-in), [users and roles](#users-and-roles), [accounts](#adding-codex-accounts)
+- [Sign-in](#signing-in), [users](#users), [accounts](#adding-codex-accounts)
 - [Git and forges](#merge-requests-gh-and-glab), [per-user credentials](#each-users-own-git-setup)
 - [Configuration](#configuration), [security](#security), [failover](#failover-two-things-to-confirm-on-your-first-run)
 
@@ -106,6 +106,9 @@ The panel is then on `http://127.0.0.1:9876` of the host (loopback only). What d
 - **`php`** (the CLI of Debian bookworm, PHP 8.2) is in the image, so agents can check the syntax of the PHP files they
   change with `php -l`. It is not the PHP version of your servers: code that only an older PHP accepts may be reported
   as an error.
+- **`python3`** (Debian bookworm's Python 3.11, also as `python`) with `pip` and `venv` is in the image, for the
+  scripts agents write and for Python projects. Debian marks its Python as externally managed, so packages go in a
+  virtual environment (`python -m venv .venv`), not system-wide.
 - **Not in the image**: the `codebase-memory-mcp` binary. Add it to the `Dockerfile`, or put it in a volume and name its
   path in Settings → MCP → Code memory.
 - **Databases and SSH hosts on the Docker host itself** are not `127.0.0.1` from inside the container: use the gateway
@@ -153,7 +156,7 @@ GitHub's runners.
 ## Terminals without root
 
 The service runs as root, so a terminal in the code editor would be a root shell. That one is for the owner alone
-(the main token, or a sign-in with an owner email). Admins and devs get terminals only with `TERMINAL_USER`, and
+(the main token, or a sign-in with an owner email). Other users get terminals only with `TERMINAL_USER`, and
 theirs run as that ordinary account, one that cannot use sudo; the owner's root terminals are never listed to them.
 Use an account made for this alone, never one somebody logs in with (its password is locked below), and run the
 `chgrp` lines only on project folders, never on `/root`, `/home` or `/`: they change everything below that folder,
@@ -171,7 +174,7 @@ sudo -u dalang git config --global --add safe.directory '*'   # repositories own
 chmod 600 /etc/systemd/system/lzvr-dalang.service && chmod 700 /opt/lzvr-dalang/state && systemctl daemon-reload
 ```
 
-Then `Environment=TERMINAL_USER=dalang` in the service and restart it. Every new terminal of an admin or dev then:
+Then `Environment=TERMINAL_USER=dalang` in the service and restart it. Every new terminal of anyone but the owner then:
 
 - **starts as that account** (`dalang@vm:~$`) with its home, its login shell and its own `~/.gitconfig` and `~/.ssh`
   (the git setup of Settings → Git & forges belongs to root and is not used there);
@@ -211,7 +214,7 @@ anything. For a stricter wall, also restrict ports 80/443 in the firewall (`ufw 
 Open the panel at that URL (or `http://127.0.0.1:9876` through an SSH tunnel), sign in by email (see below), then turn on
 **Notifications** in Settings → This device. Push and "install app" only work over HTTPS (or localhost).
 Subscriptions belong to the signed-in user; each notification checks their current project, database or host access.
-Approval notifications go only to eligible admins. Signing out removes the device's subscription. Old subscriptions
+Approval notifications go to the users who may open what the approval is about. Signing out removes the device's subscription. Old subscriptions
 without a recorded user are discarded on upgrade and rebound when that browser next signs in.
 
 ## Signing in
@@ -227,38 +230,38 @@ server and does not change the public response.
 **Local development:** `AUTH_BYPASS=true` skips sign-in entirely: every request is the owner. It is refused at start
 unless `HOST` is a loopback address (`127.0.0.1`, `::1`, `localhost`). Never set it on the VM.
 
-## Users and roles
+## Users
 
-The main access token (`LZVR_TOKEN`) is the **owner**: always an admin, and the break-glass login if everything else
-goes wrong. From it (or any admin) open **Users** in the panel to create people:
-
-| | admin | dev |
-|---|---|---|
-| Use projects and chats: send prompts, queue, cancel, drafts, files, live view, notifications | yes | yes |
-| Create / delete projects (this is where a project's sandbox is chosen) | yes | no |
-| Add Codex accounts, unblock accounts at their limit | yes | no |
-| Approve or reject chat-to-chat sends from MCP | yes | no |
-| Create / delete users, change roles, issue new tokens | yes | no |
+The main access token (`LZVR_TOKEN`) is the **owner**, and the break-glass login if everything else goes wrong. Open
+**Users** in the panel to create people. Users have no roles: every user may do everything in the panel (add and
+delete projects, add accounts, manage users, connections and SSH hosts, decide approvals) except what is the owner's
+alone: the server's git setup, MCP servers, the code memory settings, root terminals, and whatever a project,
+connection or host with **Owner only** access holds. What a user sees is set per project, database connection and SSH
+host, so create users only for people you would trust with the server.
 
 Each user has an email (set when creating them, editable in the list): that is what they sign in with. Creating a user also
 prints a personal API token **once** (only a hash is stored), for the HTTP/MCP API or signing in without email. **New token** replaces a user's token and signs
-out all their sessions; **Delete** removes their token and sessions at once. Over `/mcp`, a dev's token gets the
-everyday tools only; an admin's available tools also depend on the enabled integrations.
+out all their sessions; **Delete** removes their token and sessions at once. Over `/mcp`, the available tools depend on
+the enabled integrations.
 
-Each project has an **access** level, picked when it is added and changeable from its menu in the sidebar:
+Each project has an **access** setting, picked when it is added and changeable from its menu in the sidebar (**Access…**):
 
 | Access | Who may open it |
 |---|---|
-| `all` (default) | everyone: the owner, admins and devs |
-| `admin` | the owner and admins |
-| `owner` | the owner only |
+| Everyone (`all`, the default) | the owner and every user |
+| Selected users (`owner` plus `members`) | the owner and the users ticked in the dialog; with none ticked, the owner only |
+
+A user can only save a choice that still includes themselves; the owner can save any. A deleted user leaves these lists.
 
 The owner always sees every project. Anyone else gets a 404 for a project they may not open, its chats and everything in
 them (git, files, terminals, schedules, queue, approvals), and does not find it in lists, search or over `/mcp`. An agent sees
 the projects of the user who sent its turn's prompt (plus its own); one with no such user sees only `all` projects (plus its
-own). An admin may set anything but `owner`, so they cannot lock themselves out; `owner` is set by the owner. Note that a dev chatting in a project whose sandbox is
-`danger-full-access` is effectively running commands as root, so keep such projects for admins you trust (access `admin`)
-or give devs only `workspace-write`/`read-only` projects.
+own). Note that anyone chatting in a project whose sandbox is `danger-full-access` is effectively running commands as
+the server's user (root, if the service runs as root), so share such projects only with people you trust.
+
+**Upgrading from roles (admin / dev):** every user now has what admins had. A project that was for "Owner and admins"
+becomes one shared with the users who were admins then, by name. Database connections, SSH hosts and SSH keys that
+were for "Owner and admins" become **Everyone**: set them to **Owner only** if they should not be.
 
 An upload waiting to be attached is private to its uploader and the owner. Once attached, downloading or reusing it
 requires access to at least one project it was attached to; current project permissions apply even to the original
@@ -268,13 +271,13 @@ owner-only; upload them again if another user needs them.
 ## Adding Codex accounts
 
 Every Codex account is added from the panel, including the first one. Dalang starts with no account (and never reads
-`~/.codex`); the first time an admin opens the panel it goes straight to the sign-in step. Click **+ Account**, type a name,
+`~/.codex`); the first time someone opens the panel it goes straight to the sign-in step. Click **+ Account**, type a name,
 press **Start login**. The gateway runs `codex login --device-auth` on the VM and shows a sign-in link and a code. Open the
 link on any device, enter the code and approve with the Codex/ChatGPT account you want to add. When Codex reports that
 account as logged in it joins the failover list (in the order added), survives restarts, and its folder is
-`<STATE_DIR>/codex-accounts/<name>`, so backing up `STATE_DIR` backs up all of them. Admins only. The first account's `sessions`
+`<STATE_DIR>/codex-accounts/<name>`, so backing up `STATE_DIR` backs up all of them. The first account's `sessions`
 folder is shared with the later ones so a chat can move between accounts. Until an account exists, chats fail with a
-message telling an admin to add one.
+message saying to add one.
 
 A badge with a warning sign means Codex says that account is not logged in (for example its login expired). Dalang does
 not store your Codex passwords or tokens: they stay in each home's `auth.json`. There is no "remove account" button yet;
@@ -338,8 +341,8 @@ up HTTPS. Panel users other than the owner get their own setup there instead (se
 
 ## Each user's own git setup
 
-Only the owner (main token or owner sign-in) works with the server's git setup above. Every other panel user, admins
-included, has their own under `<STATE_DIR>/git-users/<user id>/`, managed in their own **Settings → Git & forges**:
+Only the owner (main token or owner sign-in) works with the server's git setup above. Every other panel user
+has their own under `<STATE_DIR>/git-users/<user id>/`, managed in their own **Settings → Git & forges**:
 
 - `gitconfig`: their author and HTTPS credential helpers (`GIT_CONFIG_GLOBAL`). It starts with an empty
   `credential.helper`, which drops system-wide helpers such as Git Credential Manager and the logins stored there.
@@ -408,7 +411,7 @@ Known limits:
 | `GH_BIN` / `GLAB_BIN` | `gh` / `glab` | The GitHub and GitLab CLIs that **Create Merge Request** runs. Only the one your remote needs has to be installed. |
 | `GIT_FORGE` | from the remote | `github` or `gitlab`, for a self-hosted server whose host name contains neither word. A host name that does contain one wins over it. |
 | `TERMINAL_SHELL` | PowerShell / login shell | The shell the code editor's terminals start (a path, no arguments). |
-| `TERMINAL_USER` | unset | Linux: the account the code editor's terminals of admins and devs run as (the owner's run as the service's). Unset, only the owner has terminals. It may not be root or able to use sudo, and its shells can never gain rights (see "Terminals without root"). |
+| `TERMINAL_USER` | unset | Linux: the account the code editor's terminals of users other than the owner run as (the owner's run as the service's). Unset, only the owner has terminals. It may not be root or able to use sudo, and its shells can never gain rights (see "Terminals without root"). |
 
 ## Security
 
