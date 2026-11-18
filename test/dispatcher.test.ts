@@ -86,7 +86,8 @@ describe('Dispatcher', () => {
       expect(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2)).toEqual(['--add-dir', files]);
       expect(args.indexOf('--add-dir')).toBeLessThan(args.indexOf('-')); // an option of exec, before the prompt
       expect(existsSync(files)).toBe(true);
-      expect(args.join('\n')).toContain(`](${files}/data.xlsx)`); // told where, in its instructions
+      // told where, in its instructions: a JSON string there, so the backslashes of a Windows path are doubled
+      expect(args.join('\n')).toContain(JSON.stringify(`](${files}/data.xlsx)`).slice(1, -1));
       // Full access needs no extra folder; a read-only chat makes no files and is told of none.
       const full = store.createConversation(store.createProject('full', dir, 'danger-full-access').id);
       expect(await run(full.id)).not.toContain('--add-dir');

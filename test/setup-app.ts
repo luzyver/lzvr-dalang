@@ -40,6 +40,8 @@ export interface AppExtras {
   loginEnv?: Record<string, string>;
   /** A fake CBM session for code memory (default: the real binary, which the tests never turn on). */
   cbm?: CbmClient;
+  /** Where the chats' folders of files for the person are, as main.ts sets it (default: the temp folder templates used to be filled in). */
+  filesDir?: string;
 }
 
 export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}) {
@@ -55,12 +57,12 @@ export function setupApp(env: Record<string, string> = {}, extra: AppExtras = {}
   const store = new Store();
   // As in production: the secret entries are stored encrypted.
   store.sealKv(new Sealer('test-secret-key'), SEALED_KEYS);
-  const dispatcher = new Dispatcher(store, { homes: extra.homes ?? [join(base, 'home')], command: FAKE, contextCompactTokens: cfg.contextCompactTokens, env });
+  const dispatcher = new Dispatcher(store, { homes: extra.homes ?? [join(base, 'home')], command: FAKE, contextCompactTokens: cfg.contextCompactTokens, env, filesDir: extra.filesDir });
   const push = new Push(store, { send: extra.pushSend ?? (async () => {}) });
   const logins = new Logins({
     command: FAKE, baseDir: join(cfg.stateDir, 'accounts'), accounts: dispatcher.accounts, store, env: extra.loginEnv,
   });
-  const { cfg: _cfg, pushSend: _p, loginEnv: _l, homes: _h, cbm, ...appExtras } = extra;
+  const { cfg: _cfg, pushSend: _p, loginEnv: _l, homes: _h, filesDir: _f, cbm, ...appExtras } = extra;
   const codeMemory = new CodeMemory(store, { cwd: cfg.stateDir, ...(cbm && { connect: async () => cbm }) });
   const app = buildApp({ cfg, store, dispatcher, push, logins, codeMemory, ...appExtras });
   return { app, store, dispatcher, push, logins, cfg, root, base, codeMemory };

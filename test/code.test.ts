@@ -10,8 +10,8 @@ import { AUTH, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
 /** An app with one project (folder `proj`, some files in it) and a chat in it. */
-async function withChat(opts: { sandbox?: string; terminals?: Terminals } = {}) {
-  const t = setupApp({}, { terminals: opts.terminals });
+async function withChat(opts: { sandbox?: string; terminals?: Terminals; filesDir?: string } = {}) {
+  const t = setupApp({}, { terminals: opts.terminals, filesDir: opts.filesDir });
   const dir = join(t.root, 'proj');
   mkdirSync(join(dir, 'src'), { recursive: true });
   mkdirSync(join(dir, '.git'));
@@ -223,6 +223,28 @@ describe('code editor: files', () => {
       expect((await get(join(templateWorkDir(t.id), '..', other, 'surat.pdf'))).statusCode).toBe(404);
     } finally {
       for (const id of [t.id, other]) rmSync(templateWorkDir(id), { recursive: true, force: true });
+    }
+  });
+
+  it('still lets a dev download a template filled before the chats had a folder in the state folder', async () => {
+    const filesDir = mkdtempSync(join(tmpdir(), 'lzvr-chat-files-'));
+    const t = await withChat({ filesDir });
+    const dev = await mkUser(t, 'dev1', 'dev');
+    const other = `${t.id}-other`;
+    try {
+      for (const id of [t.id, other]) {
+        mkdirSync(templateWorkDir(id), { recursive: true });
+        writeFileSync(join(templateWorkDir(id), 'surat.pdf'), `old pdf of ${id}\n`);
+      }
+      mkdirSync(join(filesDir, t.id), { recursive: true });
+      writeFileSync(join(filesDir, t.id, 'data.xlsx'), 'new\n');
+      const get = (path: string) => t.call('GET', `/files/download?path=${encodeURIComponent(path)}`, undefined, bearer(dev.token));
+      expect((await get(join(filesDir, t.id, 'data.xlsx'))).body).toBe('new\n');
+      expect((await get(join(templateWorkDir(t.id), 'surat.pdf'))).body).toBe(`old pdf of ${t.id}\n`);
+      expect((await get(join(templateWorkDir(other), 'surat.pdf'))).statusCode).toBe(404);
+    } finally {
+      for (const id of [t.id, other]) rmSync(templateWorkDir(id), { recursive: true, force: true });
+      rmSync(filesDir, { recursive: true, force: true });
     }
   });
 
