@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { cbmVersion, type CodeMemory } from './code-memory.js';
 import type { Push } from './push.js';
 import type { Store } from './store.js';
-import { type AuthUser, canAccess } from './util.js';
+import { type AuthUser, canOpen } from './util.js';
 
 /**
  * Settings → MCP → Code memory, for the owner only (it names a command this machine runs): the CBM binary and its
@@ -88,15 +88,13 @@ function saveIndexRequests(store: Store, list: IndexRequest[]): void {
 }
 
 /**
- * Indexing from the chat, for every user: an admin (or the owner) indexes the projects they may open at once; anyone
- * else asks, and the index runs once an admin approves (Approvals). Indexing takes the machine's cores for a while,
- * which is why it is not anyone's to start.
+ * Indexing from the chat: every user indexes the projects they may open at once. Requests left from when users had
+ * roles (a dev asked, an admin approved) can still be decided in Approvals.
  */
 export function codeIndexRoutes(app: FastifyInstance, d: { store: Store; codeMemory: CodeMemory; push: Push }): void {
   const { store, codeMemory: cm, push } = d;
-  const admin = (u: AuthUser) => u.role === 'admin';
   /** The project, if this user may open it. */
-  const projectFor = (u: AuthUser, id: string) => { const p = store.getProject(id); return p && canAccess(u, p.access) ? p : null; };
+  const projectFor = (u: AuthUser, id: string) => { const p = store.getProject(id); return p && canOpen(u, p) ? p : null; };
   const pendingFor = (projectId: string) => readIndexRequests(store).find((r) => r.project === projectId && r.status === 'pending') ?? null;
 
   app.get<{ Params: { id: string } }>('/api/projects/:id/code-memory', async (req, reply) => {
@@ -104,16 +102,15 @@ export function codeIndexRoutes(app: FastifyInstance, d: { store: Store; codeMem
     if (!p) return reply.code(404).send({ error: 'not found' });
     return {
       enabled: cm.settings().enabled, index: cm.state(p.id), changed: await cm.changedSinceIndex(p),
-      pending: pendingFor(p.id), direct: admin(req.user!),
+      pending: pendingFor(p.id), direct: true,
     };
   });
 
-  // Delete the project's index, or stop one running: admins only, like indexing at once.
+  // Delete the project's index, or stop one running.
   app.delete<{ Params: { id: string } }>('/api/projects/:id/code-memory/index', async (req, reply) => {
     const u = req.user!;
     const p = projectFor(u, req.params.id);
     if (!p) return reply.code(404).send({ error: 'not found' });
-    if (!admin(u)) return reply.code(403).send({ error: 'admin only' });
     await cm.drop(p);
     return reply.code(204).send();
   });
@@ -123,28 +120,17 @@ export function codeIndexRoutes(app: FastifyInstance, d: { store: Store; codeMem
     const p = projectFor(u, req.params.id);
     if (!p) return reply.code(404).send({ error: 'not found' });
     if (!cm.settings().enabled) return reply.code(400).send({ error: 'code memory is off' });
-    if (admin(u)) {
-      void cm.index(p);
-      return reply.code(202).send({ status: 'indexing' });
-    }
-    const open = pendingFor(p.id);
-    if (open) return { status: 'pending_approval', request: open };
-    const list = readIndexRequests(store);
-    const r: IndexRequest = { id: Math.max(0, ...list.map((x) => x.id)) + 1, project: p.id, who: u.name, at: Date.now(), status: 'pending' };
-    saveIndexRequests(store, [...list, r]);
-    void push.notify({ title: 'Approval needed', body: `${u.name} asks to index the code graph of ${p.name}`, convId: '', audience: { admin: true, project: p.id } });
-    return reply.code(202).send({ status: 'pending_approval', request: r });
+    void cm.index(p);
+    return reply.code(202).send({ status: 'indexing' });
   });
 
-  // Requests waiting for an admin: those of projects the admin may open.
+  // Requests still waiting: those of projects this user may open.
   app.get('/api/code-memory/requests', async (req, reply) => {
-    if (!admin(req.user!)) return reply.code(403).send({ error: 'admin only' });
     return readIndexRequests(store).filter((r) => r.status === 'pending' && projectFor(req.user!, r.project))
       .map((r) => ({ ...r, projectName: store.getProject(r.project)!.name })).reverse();
   });
 
   const decide = (verb: 'approve' | 'reject') => async (req: { params: { id: string }; user?: AuthUser }, reply: any) => {
-    if (!admin(req.user!)) return reply.code(403).send({ error: 'admin only' });
     const list = readIndexRequests(store);
     const r = list.find((x) => x.id === Number(req.params.id));
     const p = r && projectFor(req.user!, r.project);

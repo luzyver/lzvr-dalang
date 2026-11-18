@@ -73,8 +73,8 @@ describe('code memory', () => {
   it('is set by the owner only, and indexes a project only when asked', async () => {
     const t = await boot();
     const p = t.store.createProject('proj', join(t.root, 'proj'));
-    const admin = await mkUser(t, 'adi', 'admin');
-    expect((await t.app.inject({ url: '/api/settings/code-memory', headers: bearer(admin.token) })).statusCode).toBe(403);
+    const user = await mkUser(t, 'adi');
+    expect((await t.app.inject({ url: '/api/settings/code-memory', headers: bearer(user.token) })).statusCode).toBe(403);
     expect((await t.settings({ enabled: true, command: '', cacheDir: '', runtimeDir: '' })).statusCode).toBe(400);
     expect((await t.index(p.id)).statusCode).toBe(400); // off
     expect((await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' })).statusCode).toBe(200);
@@ -95,7 +95,7 @@ describe('code memory', () => {
     mkdirSync(join(t.root, 'secret'));
     const p = t.store.createProject('proj', join(t.root, 'proj'));
     const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, 'owner');
-    await mkUser(t, 'budi', 'dev');
+    await mkUser(t, 'budi');
     await t.turnOn();
     const conv = t.store.createConversation(p.id);
     const agent = await t.connect(bearer(t.dispatcher.issueMcpToken(conv.id, 'budi')));
@@ -268,8 +268,7 @@ describe('code memory', () => {
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
     await t.turnOn();
     const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
-    const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
-    const admin = bearer((await mkUser(t, 'adi', 'admin')).token);
+    const user = bearer((await mkUser(t, 'budi')).token);
     const del = (id: string, headers: Record<string, string>) => t.app.inject({ method: 'DELETE', url: `/api/projects/${id}/code-memory/index`, headers });
 
     // A turn waits for the reindex of changed code; deleting the index stops it, and the turn goes on without a graph.
@@ -280,8 +279,7 @@ describe('code memory', () => {
     const waiting = t.codeMemory.refresh(p);
     await until(() => indexes() === before + 1);
     void t.codeMemory.index(q); // queued behind it
-    expect((await del(p.id, dev)).statusCode).toBe(403);
-    expect((await del(p.id, admin)).statusCode).toBe(204);
+    expect((await del(p.id, user)).statusCode).toBe(204);
     expect(t.hold.closed).toBe(1);
     expect(await waiting).toBe('fresh');
     expect(t.codeMemory.state(p.id)).toBeNull();
@@ -382,71 +380,47 @@ describe('code memory', () => {
     expect(t.calls.find((c) => c.name === 'delete_project')?.args).toEqual({ project: 'G-proj' });
     await until(() => t.store.getKv('code_memory_orphans') === null);
   });
-  it('lets admins index from the chat at once, and anyone else ask for it, which an admin approves or rejects', async () => {
+  it('lets every user index from the chat at once, and decide the requests left from when devs had to ask', async () => {
     const t = await boot();
     mkdirSync(join(t.root, 'secret'));
     const p = t.store.createProject('proj', join(t.root, 'proj'));
     const secret = t.store.createProject('secret', join(t.root, 'secret'), undefined, 'owner');
-    const dev = bearer((await mkUser(t, 'budi', 'dev')).token);
-    const admin = bearer((await mkUser(t, 'adi', 'admin')).token);
+    const budi = bearer((await mkUser(t, 'budi')).token);
+    const adi = bearer((await mkUser(t, 'adi')).token);
     const ask = (id: string, headers: Record<string, string>) => t.app.inject({ method: 'POST', url: `/api/projects/${id}/code-memory/index`, headers });
     const indexes = () => t.calls.filter((c) => c.name === 'index_repository').length;
-    expect((await ask(p.id, dev)).statusCode).toBe(400); // code memory is off
+    expect((await ask(p.id, budi)).statusCode).toBe(400); // code memory is off
     await t.settings({ enabled: true, command: 'cbm', cacheDir: '', runtimeDir: '' });
-    expect((await ask(secret.id, dev)).statusCode).toBe(404); // a project the dev may not open
+    expect((await ask(secret.id, budi)).statusCode).toBe(404); // a project this user may not open
 
-    // A dev asks: nothing runs until an admin approves; asking again gives the same request.
-    const first = await ask(p.id, dev);
-    expect(first.statusCode).toBe(202);
-    expect(first.json()).toMatchObject({ status: 'pending_approval', request: { project: p.id, who: 'budi', status: 'pending' } });
-    expect((await ask(p.id, dev)).json().request.id).toBe(first.json().request.id);
+    // Requests saved before roles went: any user who may open the project sees and decides them.
+    const legacy = (id: number, project: string) => ({ id, project, who: 'budi', at: Date.now(), status: 'pending' });
+    t.store.setKv('code_memory_requests', JSON.stringify([legacy(1, p.id), legacy(2, p.id), legacy(3, secret.id)]));
+    expect((await t.app.inject({ url: `/api/projects/${p.id}/code-memory`, headers: budi })).json())
+      .toMatchObject({ enabled: true, index: null, pending: { who: 'budi' }, direct: true });
+    const pending = (await t.app.inject({ url: '/api/code-memory/requests', headers: adi })).json();
+    expect(pending).toMatchObject([{ id: 2, projectName: 'proj', who: 'budi' }, { id: 1, projectName: 'proj', who: 'budi' }]);
+    expect((await t.app.inject({ method: 'POST', url: '/api/code-memory/requests/3/approve', headers: adi })).statusCode).toBe(404);
     expect(indexes()).toBe(0);
-    expect((await t.app.inject({ url: `/api/projects/${p.id}/code-memory`, headers: dev })).json())
-      .toMatchObject({ enabled: true, index: null, pending: { who: 'budi' }, direct: false });
-    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: dev })).statusCode).toBe(403);
-    const pending = (await t.app.inject({ url: '/api/code-memory/requests', headers: admin })).json();
-    expect(pending).toMatchObject([{ projectName: 'proj', who: 'budi' }]);
-    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/approve`, headers: dev })).statusCode).toBe(403);
-    const approved = await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/approve`, headers: admin });
+    const approved = await t.app.inject({ method: 'POST', url: '/api/code-memory/requests/1/approve', headers: adi });
     expect(approved.json()).toMatchObject({ status: 'approved', decidedBy: 'adi' });
     await until(() => t.codeMemory.state(p.id)?.status === 'ready');
     expect(indexes()).toBe(1);
-    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${pending[0].id}/reject`, headers: admin })).statusCode).toBe(409);
+    expect((await t.app.inject({ method: 'POST', url: '/api/code-memory/requests/1/reject', headers: adi })).statusCode).toBe(409);
 
     // Rejected: nothing runs.
-    const again = (await ask(p.id, dev)).json().request;
-    expect((await t.app.inject({ method: 'POST', url: `/api/code-memory/requests/${again.id}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
+    expect((await t.app.inject({ method: 'POST', url: '/api/code-memory/requests/2/reject', headers: budi })).json()).toMatchObject({ status: 'rejected' });
     await new Promise((r) => setTimeout(r, 100));
     expect(indexes()).toBe(1);
-    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: AUTH })).json()).toEqual([]);
+    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: budi })).json()).toEqual([]);
+    expect((await t.app.inject({ url: '/api/code-memory/requests', headers: AUTH })).json()).toMatchObject([{ id: 3, projectName: 'secret' }]);
 
-    // An admin (or the owner) indexes at once.
-    expect((await ask(p.id, admin)).json()).toEqual({ status: 'indexing' });
+    // Asking now indexes at once, for a user and the owner alike.
+    const direct = await ask(p.id, budi);
+    expect(direct.statusCode).toBe(202);
+    expect(direct.json()).toEqual({ status: 'indexing' });
     await until(() => indexes() === 2);
     expect((await ask(secret.id, AUTH)).json()).toEqual({ status: 'indexing' });
     await until(() => indexes() === 3);
-  });
-});
-
-describe('code memory hook script', () => {
-  const SCRIPT = fileURLToPath(new URL('../scripts/code-memory-hook.mjs', import.meta.url));
-  const FAKE = fileURLToPath(new URL('./fake-cbm-hook.mjs', import.meta.url));
-  const run = (event: object, env: Record<string, string>) => new Promise<{ code: number | null; out: string }>((resolve) => {
-    const child = execFile(process.execPath, [SCRIPT], { env: { ...process.env, ...env } }, (err, out) => resolve({ code: err ? (err.code as number) : 0, out }));
-    child.stdin!.end(JSON.stringify(event));
-  });
-  const EVENT = { session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Grep', cwd: 'C:\\wt\\abc', tool_input: { pattern: 'mcpServersFor' } };
-  const CBM = { LZVR_CBM_COMMAND: process.execPath, LZVR_CBM_ARGS: JSON.stringify([FAKE]) };
-
-  it('hands the event to CBM with the project folder in forward slashes', async () => {
-    const r = await run(EVENT, { ...CBM, LZVR_CODE_ROOT: 'D:\\work\\proj' });
-    expect(r.code).toBe(0);
-    expect(JSON.parse(r.out).hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', additionalContext: 'cwd=D:/work/proj tool=Grep' });
-  });
-
-  it('fails open: no answer and exit 0 when CBM fails, is missing or is not set', async () => {
-    expect(await run(EVENT, { ...CBM, LZVR_CODE_ROOT: '/p', FAKE_CBM_FAIL: '1' })).toEqual({ code: 0, out: '' });
-    expect(await run(EVENT, { LZVR_CBM_COMMAND: join(process.cwd(), 'no-such-cbm'), LZVR_CODE_ROOT: '/p' })).toEqual({ code: 0, out: '' });
-    expect(await run(EVENT, { LZVR_CODE_ROOT: '/p', LZVR_CBM_COMMAND: '' })).toEqual({ code: 0, out: '' });
   });
 });

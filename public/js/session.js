@@ -46,11 +46,9 @@ export async function startSession() {
   void restoreNotifications().catch(() => {});
   refreshScheduleCount();
   refreshApprovals();
-  if (user.role === 'admin') {
-    // First run: nothing works until an account exists, so an admin lands straight in the sign-in step.
-    Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')])
-      .then(([a, c]) => { if (!a.length && !c.length) openSettings('codex'); }).catch(() => {});
-  }
+  // First run: nothing works until an account exists, so whoever signs in lands straight in the sign-in step.
+  Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')])
+    .then(([a, c]) => { if (!a.length && !c.length) openSettings('codex'); }).catch(() => {});
   clearInterval(timer);
   // Agents start sub-agents and chats change status on their own: keep the sidebar current while the panel is in view.
   timer = setInterval(() => {

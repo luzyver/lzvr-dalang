@@ -215,7 +215,7 @@ function ServerForm({ s, template, taken, onSaved, onCancel }) {
       <${Field} label="Environment" hint="KEY=value, one per line. Saved values are never shown: a line with only the name keeps it.">
         <textarea class="mono" rows="2" value=${f.env} onInput=${set('env')} placeholder="API_KEY=..."></textarea><//>`}
     <label class="check small"><input type="checkbox" checked=${f.allUsers} onChange=${(e) => setF({ ...f, allUsers: e.currentTarget.checked })} />
-      All users: admins' and devs' chats get it too, with these credentials</label>
+      All users: their chats get it too, with these credentials</label>
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
       ${onCancel && html`<button class="btn ghost sm" onClick=${onCancel}>Cancel</button>`}
@@ -279,7 +279,7 @@ function OwnerMcpSection() {
   const tabs = [['clickup', 'ClickUp', true], ['code', 'Code memory', true], ...list.map((s) => [s.name, s.name, s.enabled]), ['add', 'Add', true]];
   return html`
     <p class="dim">Tools your chats' agents can use. They are yours: only turns you sent get them, unless one is marked
-      <strong>All users</strong>. Prompts from admins and devs (and from agents and approvals) get only those, and
+      <strong>All users</strong>. Prompts from other users (and from agents and approvals) get only those, and
       ClickUp with their own token.</p>
     <div class="tabs wrap" role="tablist" aria-label="MCP servers">
       ${tabs.map(([k, label, on]) => html`<button key=${k} role="tab" aria-selected=${current === k} class=${cx('tab', current === k && 'active', !on && 'off')}

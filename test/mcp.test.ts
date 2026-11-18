@@ -190,29 +190,20 @@ describe('MCP gateway', () => {
   });
 });
 
-const DEV_TOOLS = [
-  'cancel_turn', 'create_conversation', 'get_approval', 'get_conversation', 'get_events', 'list_accounts',
-  'list_conversations', 'list_projects', 'list_queue', 'remove_queue_item', 'send_prompt', 'set_draft', 'list_models', 'set_model',
-  'memory_search', 'memory_save', 'memory_update', 'memory_forget',
-];
+/** The tools a user's token did not get while users had roles. */
+const ONCE_ADMIN_ONLY = ['create_project', 'delete_project', 'unblock_accounts'];
 
-describe('MCP for users with a role', () => {
-  it('gives an admin user every tool', async () => {
+describe('MCP for a user with a token of their own', () => {
+  it('gives a user every tool, the project, session and account ones too', async () => {
     const t = await boot();
-    const admin = await mkUser(t, 'sari', 'admin');
-    const names = (await (await t.connect({ authorization: `Bearer ${admin.token}` })).listTools()).tools.map((x) => x.name);
+    const budi = await mkUser(t, 'budi');
+    const c = await t.connect({ authorization: `Bearer ${budi.token}` });
+    const names = (await c.listTools()).tools.map((x) => x.name);
     expect(names.sort()).toEqual([...ALL_TOOLS].sort());
-  });
-
-  it('gives a dev user the everyday tools, without project, session or account tools', async () => {
-    const t = await boot();
-    const dev = await mkUser(t, 'budi', 'dev');
-    const c = await t.connect({ authorization: `Bearer ${dev.token}` });
-    expect((await c.listTools()).tools.map((x) => x.name).sort()).toEqual([...DEV_TOOLS].sort());
-    // and the missing tools really are missing, not just hidden
-    const r = (await c.callTool({ name: 'create_project', arguments: { name: 'x', path: 'proj' } }).catch((e) => e)) as { isError?: boolean; message?: string };
-    expect(Boolean(r.isError) || r instanceof Error).toBe(true);
-    expect(t.store.listProjects()).toEqual([]);
+    for (const once of ONCE_ADMIN_ONLY) expect(names, once).toContain(once);
+    // and they work, not just show
+    expect((await call(c, 'create_project', { name: 'x', path: 'proj' })).isError).toBeFalsy();
+    expect(t.store.listProjects().map((p) => p.name)).toEqual(['x']);
   });
 });
 
@@ -523,7 +514,7 @@ describe('sub-agents', () => {
     expect(reports(t, a.id)).toHaveLength(1);
   });
 
-  it('stay within the admin\'s limits', async () => {
+  it('stay within the limits set in the panel', async () => {
     const t = await boot();
     const { p, a } = await twoConvs(await t.connect());
     expect((await policy(t, { maxChildren: 1, maxDepth: 1, autoSend: true })).statusCode).toBe(204);
@@ -532,7 +523,7 @@ describe('sub-agents', () => {
     expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/already has 1 sub-agents/);
     expect((await call(await t.connectAs(sub.id), 'create_conversation', { project_id: p.id })).text).toMatch(/1 level\(s\) deep/);
     await policy(t, { maxChildren: 0, maxDepth: 2, autoSend: true });
-    expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/turned sub-agents off/);
+    expect((await call(fromA, 'create_conversation', { project_id: p.id })).text).toMatch(/sub-agents are turned off/);
   });
 
   it('stay within the limit when an agent asks for several worktree sub-agents at once', async () => {
@@ -567,7 +558,7 @@ describe('sub-agents', () => {
     expect(t.store.listTurns(sub.id)).toEqual([]);
   });
 
-  it('keep their limits in admin settings', async () => {
+  it('keep their limits in settings every user can open', async () => {
     const t = await boot();
     expect((await t.app.inject({ url: '/api/settings/subagents', headers: AUTH })).json())
       .toEqual({ maxChildren: 5, maxDepth: 2, autoSend: true });
@@ -579,8 +570,10 @@ describe('sub-agents', () => {
     t.store.setKv('subagents', '{"maxChildren":3,"mode":"auto","guide":"x"}');
     expect(t.store.getSubagentPolicy()).toEqual({ maxChildren: 3, maxDepth: 2, autoSend: true });
     expect((await policy(t, { maxChildren: 99, maxDepth: 1, autoSend: true })).statusCode).toBe(400);
-    const dev = await mkUser(t, 'budi', 'dev');
-    expect((await t.app.inject({ url: '/api/settings/subagents', headers: { authorization: `Bearer ${dev.token}` } })).statusCode).toBe(403);
+    const budi = { authorization: `Bearer ${(await mkUser(t, 'budi')).token}` };
+    expect((await t.app.inject({ url: '/api/settings/subagents', headers: budi })).json()).toEqual({ maxChildren: 3, maxDepth: 2, autoSend: true });
+    expect((await t.app.inject({ method: 'PUT', url: '/api/settings/subagents', headers: budi, payload: { maxChildren: 4 } })).statusCode).toBe(204);
+    expect(t.store.getSubagentPolicy().maxChildren).toBe(4);
   });
 });
 
@@ -621,31 +614,31 @@ describe('ClickUp tools', () => {
     expect(only.json.messages.map((m: { id: string }) => m.id)).toEqual(['d1m']);
     expect((await call(owner, 'clickup_chat_history', { from: '2026-10-08', to: '2026-10-01' })).isError).toBe(true);
 
-    // The owner's token is the owner's alone: an admin or dev without one of their own gets nothing.
-    const admin = await mkUser(t, 'u-admin', 'admin');
-    const dev = await mkUser(t, 'u-dev', 'dev');
+    // The owner's token is the owner's alone: any other user without one of their own gets nothing.
+    const sari = await mkUser(t, 'u-sari');
+    const budi = await mkUser(t, 'u-budi');
     const h = (u: { token: string }) => ({ authorization: `Bearer ${u.token}` });
-    for (const u of [admin, dev]) expect(await clickupNames(await t.connect(h(u)))).toEqual([]);
+    for (const u of [sari, budi]) expect(await clickupNames(await t.connect(h(u)))).toEqual([]);
 
-    // A dev saves their own (one ClickUp refuses): they get the tools on it, the owner stays on the owner's.
-    const saved = await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: h(dev), payload: { token: 'pk_wrong', workspaceId: '', timeZone: '' } });
+    // A user saves their own (one ClickUp refuses): they get the tools on it, the owner stays on the owner's.
+    const saved = await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: h(budi), payload: { token: 'pk_wrong', workspaceId: '', timeZone: '' } });
     expect(saved.statusCode).toBe(200);
-    const asDev = await t.connect(h(dev));
-    expect((await clickupNames(asDev)).sort()).toEqual(CLICKUP);
-    expect((await call(asDev, 'clickup_whoami')).isError).toBe(true);
+    const asBudi = await t.connect(h(budi));
+    expect((await clickupNames(asBudi)).sort()).toEqual(CLICKUP);
+    expect((await call(asBudi, 'clickup_whoami')).isError).toBe(true);
     expect((await call(await t.connect(), 'clickup_whoami')).json).toMatchObject({ user: { username: 'luz' } });
-    expect(await clickupNames(await t.connect(h(admin)))).toEqual([]);
+    expect(await clickupNames(await t.connect(h(sari)))).toEqual([]);
 
     // Their token goes with them.
     expect(t.store.getKv('clickup')).toContain('pk_wrong');
-    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${dev.id}`, headers: AUTH })).statusCode).toBe(204);
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${budi.id}`, headers: AUTH })).statusCode).toBe(204);
     expect(t.store.getKv('clickup')).not.toContain('pk_wrong');
     expect(t.store.getKv('clickup')).toContain('pk_test');
   });
 
   it('reach an agent only during a turn sent by someone with a token of their own', async () => {
     const t = await withClickUp();
-    const budi = await mkUser(t, 'budi', 'dev');
+    const budi = await mkUser(t, 'budi');
     const { a } = await twoConvs(await t.connect());
     const as = (author: string) => t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, author)}` });
     expect((await clickupNames(await as('owner'))).sort()).toEqual(CLICKUP);
@@ -661,21 +654,21 @@ describe('ClickUp tools', () => {
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json())
       .toEqual({ configured: true, tokenHint: '…test', workspaceId: '900', timeZone: '', send: true });
     expect((await clickupNames(await t.connect())).sort()).toEqual([...CLICKUP, ...SEND].sort());
-    const dev = await mkUser(t, 'u-dev', 'dev');
-    expect(await clickupNames(await t.connect({ authorization: `Bearer ${dev.token}` }))).toEqual([]); // "all users" is gone
+    const budi = await mkUser(t, 'u-budi');
+    expect(await clickupNames(await t.connect({ authorization: `Bearer ${budi.token}` }))).toEqual([]); // "all users" is gone
   });
 
   it('send messages only once the owner allows it, for everyone with a token', async () => {
     const t = await withClickUp();
     const setSend = (send: boolean) =>
       t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send } });
-    const dev = { authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` };
-    const devPut = (payload: object) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: dev, payload });
-    await devPut({ token: 'pk_test', workspaceId: '', timeZone: '' });
-    const devNames = async () => clickupNames(await t.connect(dev));
+    const budi = { authorization: `Bearer ${(await mkUser(t, 'u-budi')).token}` };
+    const budiPut = (payload: object) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: budi, payload });
+    await budiPut({ token: 'pk_test', workspaceId: '', timeZone: '' });
+    const budiNames = async () => clickupNames(await t.connect(budi));
     expect(await clickupNames(await t.connect())).not.toContain('clickup_send_message');
-    expect((await devNames()).sort()).toEqual(CLICKUP);
-    expect((await devPut({ workspaceId: '', timeZone: '', send: true })).statusCode).toBe(403); // the owner's switch
+    expect((await budiNames()).sort()).toEqual(CLICKUP);
+    expect((await budiPut({ workspaceId: '', timeZone: '', send: true })).statusCode).toBe(403); // the owner's switch
 
     expect((await setSend(true)).json()).toMatchObject({ send: true });
     const owner = await t.connect();
@@ -683,13 +676,13 @@ describe('ClickUp tools', () => {
     const r = await call(owner, 'clickup_send_message', { channel_id: 'c1', content: 'deploy done' });
     expect(r.json).toMatchObject({ status: 'pending_approval', to: { channel: 'dev-team', workspace: 'Acme' } });
     expect((await call(owner, 'clickup_send_message', { channel_id: 'nope', content: 'hi' })).isError).toBe(true);
-    expect((await devNames()).sort()).toEqual([...CLICKUP, ...SEND].sort());
+    expect((await budiNames()).sort()).toEqual([...CLICKUP, ...SEND].sort());
 
     // A user saving their own settings leaves the switch as it is.
-    expect((await devPut({ workspaceId: '900', timeZone: '' })).json()).toMatchObject({ workspaceId: '900', send: true });
+    expect((await budiPut({ workspaceId: '900', timeZone: '' })).json()).toMatchObject({ workspaceId: '900', send: true });
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ workspaceId: '', send: true });
     await setSend(false);
-    expect((await devNames()).sort()).toEqual(CLICKUP);
+    expect((await budiNames()).sort()).toEqual(CLICKUP);
   });
 
   it('hold every message for whoever sent the turn, who may change it before it goes out, and tell the chat', async () => {
@@ -708,11 +701,11 @@ describe('ClickUp tools', () => {
     expect((await call(agent, 'clickup_send_message', { channel_id: 'c1', to_user_id: '22', content: 'x' })).isError).toBe(true);
     expect(posts()).toEqual([]);
 
-    // Nobody else sees or decides them, admins included: the messages go out as the one who asked.
-    const admin = { authorization: `Bearer ${(await mkUser(t, 'u-admin', 'admin')).token}` };
-    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: admin })).json()).toEqual([]);
+    // Nobody else sees or decides them: the messages go out as the one who asked.
+    const sari = { authorization: `Bearer ${(await mkUser(t, 'u-sari')).token}` };
+    expect((await t.app.inject({ url: '/api/clickup/approvals', headers: sari })).json()).toEqual([]);
     const id = (thread.json as { approval_id: number }).approval_id;
-    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(404);
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: sari })).statusCode).toBe(404);
     expect((await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json()).toHaveLength(2);
 
     const ok = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH, payload: { content: 'done, deployed' } });
@@ -761,8 +754,8 @@ describe('ClickUp tools', () => {
     expect(changes()).toEqual([]);
 
     const id = (asked.json as { approval_id: number }).approval_id;
-    const admin = { authorization: `Bearer ${(await mkUser(t, 'u-admin', 'admin')).token}` };
-    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: admin })).statusCode).toBe(404);
+    const sari = { authorization: `Bearer ${(await mkUser(t, 'u-sari')).token}` };
+    expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: sari })).statusCode).toBe(404);
     const [waiting] = (await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json();
     expect(waiting).toMatchObject({ id, status: 'pending', action: { title: 'Change task "Rekap transaksi"', url: 'https://app.clickup.com/t/t1' } });
 
@@ -922,38 +915,38 @@ describe('ClickUp tools', () => {
     const asked = await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'secret draft' });
     const id = (asked.json as { approval_id: number }).approval_id;
 
-    const devAuth = { authorization: `Bearer ${(await mkUser(t, 'u-dev', 'dev')).token}` };
-    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: devAuth, payload: { token: 'pk_test', workspaceId: '', timeZone: '' } });
-    const dev = await t.connect(devAuth);
-    expect((await call(dev, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
-    const own = (await call(dev, 'clickup_send_message', { channel_id: 'c1', content: 'mine' })).json as { approval_id: number };
-    expect((await call(dev, 'clickup_send_status', { approval_id: own.approval_id })).json).toMatchObject({ status: 'pending' });
+    const budiAuth = { authorization: `Bearer ${(await mkUser(t, 'u-budi')).token}` };
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: budiAuth, payload: { token: 'pk_test', workspaceId: '', timeZone: '' } });
+    const budi = await t.connect(budiAuth);
+    expect((await call(budi, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
+    const own = (await call(budi, 'clickup_send_message', { channel_id: 'c1', content: 'mine' })).json as { approval_id: number };
+    expect((await call(budi, 'clickup_send_status', { approval_id: own.approval_id })).json).toMatchObject({ status: 'pending' });
     expect((await call(agent, 'clickup_send_status', { approval_id: own.approval_id })).isError).toBe(true);
     // The same chat, another person's turn: the owner's request is not theirs to read.
-    const devTurn = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'u-dev')}` });
-    expect((await call(devTurn, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
+    const budiTurn = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'u-budi')}` });
+    expect((await call(budiTurn, 'clickup_send_status', { approval_id: id })).isError).toBe(true);
     expect((await call(agent, 'clickup_send_status', { approval_id: id })).json).toMatchObject({ status: 'pending' });
 
-    // Each sees their own only, and the owner cannot send as the dev.
+    // Each sees their own only, and the owner cannot send as the user.
     const ids = async (headers: Record<string, string>) => (await t.app.inject({ url: '/api/clickup/approvals', headers })).json().map((x: { id: number }) => x.id);
     expect(await ids(AUTH)).toEqual([id]);
-    expect(await ids(devAuth)).toEqual([own.approval_id]);
+    expect(await ids(budiAuth)).toEqual([own.approval_id]);
     for (const verb of ['approve', 'reject']) {
       expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/${verb}`, headers: AUTH })).statusCode).toBe(404);
-      expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/${verb}`, headers: devAuth })).statusCode).toBe(404);
+      expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/${verb}`, headers: budiAuth })).statusCode).toBe(404);
     }
 
     const r = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH });
     expect(r.json()).toMatchObject({ status: 'unknown' });
     expect(await ids(AUTH)).toContain(id);
     status.code = 400; // refused outright: nothing was posted
-    const r2 = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/approve`, headers: devAuth });
+    const r2 = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${own.approval_id}/approve`, headers: budiAuth });
     expect(r2.json()).toMatchObject({ status: 'failed' });
 
-    // The dev's requests go with them, and their ids are not given out again.
-    const last = (await call(dev, 'clickup_send_message', { channel_id: 'c1', content: 'last' })).json as { approval_id: number };
-    const devId = t.store.userKeyOf('u-dev');
-    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${devId}`, headers: AUTH })).statusCode).toBe(204);
+    // The user's requests go with them, and their ids are not given out again.
+    const last = (await call(budi, 'clickup_send_message', { channel_id: 'c1', content: 'last' })).json as { approval_id: number };
+    const budiId = t.store.userKeyOf('u-budi');
+    expect((await t.app.inject({ method: 'DELETE', url: `/api/users/${budiId}`, headers: AUTH })).statusCode).toBe(204);
     expect(t.store.getKv('clickup_approvals')).not.toContain('"last"');
     const again = (await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'again' })).json as { approval_id: number };
     expect(again.approval_id).toBeGreaterThan(last.approval_id);
@@ -996,17 +989,17 @@ describe('Settings → ClickUp', () => {
   it('is each user\'s own: nobody sees or changes another person\'s', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
     await put(t, { token: 'pk_test', workspaceId: '900', timeZone: '' });
-    for (const role of ['admin', 'dev'] as const) {
-      const h = { authorization: `Bearer ${(await mkUser(t, `u-${role}`, role)).token}` };
+    for (const who of ['sari', 'budi'] as const) {
+      const h = { authorization: `Bearer ${(await mkUser(t, `u-${who}`)).token}` };
       const get = async () => (await t.app.inject({ url: '/api/settings/clickup', headers: h })).json();
       expect(await get()).toEqual({ configured: false, tokenHint: '', workspaceId: '', timeZone: '', send: false });
       expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(400);
-      expect((await put(t, { token: `pk_${role}`, workspaceId: '901', timeZone: 'Asia/Jakarta' }, h)).statusCode).toBe(200);
-      expect(await get()).toEqual({ configured: true, tokenHint: `…${`pk_${role}`.slice(-4)}`, workspaceId: '901', timeZone: 'Asia/Jakarta', send: false });
+      expect((await put(t, { token: `pk_${who}`, workspaceId: '901', timeZone: 'Asia/Jakarta' }, h)).statusCode).toBe(200);
+      expect(await get()).toEqual({ configured: true, tokenHint: `…${`pk_${who}`.slice(-4)}`, workspaceId: '901', timeZone: 'Asia/Jakarta', send: false });
       expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(502); // on their token, not the owner's
       // removing it leaves nothing of theirs behind
       await put(t, { token: '', workspaceId: '', timeZone: '' }, h);
-      expect(t.store.getKv('clickup')).not.toContain(`pk_${role}`);
+      expect(t.store.getKv('clickup')).not.toContain(`pk_${who}`);
     }
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ configured: true, tokenHint: '…test', workspaceId: '900' });
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(200);

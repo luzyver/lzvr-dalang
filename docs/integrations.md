@@ -148,7 +148,7 @@ Beyond chat, the same token reads the rest of ClickUp:
 **Each person reads with their own token only.** From outside, the tools use the token of whoever signed in (the main
 token: the owner's); inside a chat, that of whoever sent the turn. Someone who saved no token gets no ClickUp tools,
 and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or changes another person's token,
-admins and the owner included, and a deleted user's token is removed. A token saved before every user had their own
+the owner included, and a deleted user's token is removed. A token saved before every user had their own
 stays the owner's.
 
 **Allow sending** is the owner's switch, for everyone: with it, `clickup_send_message` asks to send as the ClickUp
@@ -185,7 +185,7 @@ gateway's own (for Codex and Claude Code alike), and **Add**: an HTTP server (UR
 command started over stdio (command, arguments, environment). **Add** offers Context7, Playwright and Sentry
 filled in; every field can be changed. In a server's tab a switch turns it off without forgetting it.
 
-- **Who gets them**: a turn the owner sent gets every server that is on. Any other turn (an admin's or dev's prompt or
+- **Who gets them**: a turn the owner sent gets every server that is on. Any other turn (another user's prompt or
   schedule, a prompt from another agent, an approval) gets only the servers marked **All users**, with the owner's
   credentials for that server. Unmarked, they never see it.
 - **How**: Codex gets `-c mcp_servers.<name>.…` options, Claude Code `--mcp-config` and `--allowedTools=mcp__<name>`.
@@ -210,17 +210,17 @@ connections belong to the panel.
 
 - **Workspaces**: the picker next to "SQL Editor" switches between named sets of connections ("Production",
   "Shop Dev", ...), each with its own consoles (kept in the browser) and query history; `/sql#w=<id>` opens one
-  directly. Admins add, rename and delete them and choose their connections (`⋯` beside the picker); a connection can
+  directly. Add, rename and delete them and choose their connections (`⋯` beside the picker); a connection can
   be in several, a new one goes into the workspace it was added in, and the first time every connection is in one
   named Default. Workspaces only group: who may open a connection is still set on the connection.
 
-- **Connections** (admins add, change and remove them; the `+` above the tree): PostgreSQL (and what speaks its
+- **Connections** (added, changed and removed with the `+` above the tree and each one's menu): PostgreSQL (and what speaks its
   protocol: Supabase, Neon, CockroachDB, ...), MySQL, MariaDB, MongoDB, Redis, or a SQLite file on this machine (a file
   in `STATE_DIR` is allowed only for an owner-only connection). **Test connection** tries the form before saving and warns about a user whose rights reach past the
   tables (a PostgreSQL superuser or a member of `pg_read_server_files` and the like, MySQL `ALL PRIVILEGES`, `FILE` or
   `SUPER` on `*.*`): read-only does not take those away. Passwords never go back to the panel; like the
-  other secrets they sit in Dalang's database. **Who may open it** works like a project's access: everyone, owner and
-  admins, or the owner only. **Read-only for everyone** makes the database refuse every write, from the panel too.
+  other secrets they sit in Dalang's database. **Who may open it** works like a project's access: everyone, or
+  the owner only. **Read-only for everyone** makes the database refuse every write, from the panel too.
 - **Other databases on a PostgreSQL server**: a PostgreSQL connection is bound to one database, so by default the
   connection opens only the one it names. **Show every database on the server** lists every database its user may
   connect to (`pg_database`) under the connection, each opened through its own connection. Each console picks its
@@ -277,12 +277,12 @@ connections belong to the panel.
 - **Agent access** per connection: **Off** (the default), **Read-only**, **Write with approval** or **Read and
   write**. With approval, agents read freely; a script the database refuses as a write (it runs read-only first, so
   nothing of it is kept) waits in **Approvals** (sidebar count, push notification, a card in the agent's chat). An
-  admin who may open the connection runs it as written (**Approve and run**) or rejects it, and either way the outcome
+  user who may open the connection runs it as written (**Approve and run**) or rejects it, and either way the outcome
   is queued into the agent's chat as a message; the agent can also ask `db_approval`. A connection that is not off is
   given to agents through this gateway's MCP (`db_list_connections`, `db_schema`, `db_query`), so chats
   need `MCP_INJECT=1`. An agent only sees connections the user whose prompt it runs may open (with nobody behind it:
   the "everyone" ones). Every MCP caller counts as an agent here, an outside client with a token too. The last 200
-  agent queries per connection are logged (**Agent queries** in its `⋯` menu, admins). While any connection is not
+  agent queries per connection are logged (**Agent queries** in its `⋯` menu). While any connection is not
   off, every chat turn is also told to reach databases only through these tools (start with `db_list_connections`),
   not with `psql`, `mysql`, `mongosh`, `redis-cli`, a script or credentials from `.env`, unless the person asks for that
   explicitly, and to say so when a database is not listed or is read-only instead of working around it (Claude Code:
@@ -290,14 +290,14 @@ connections belong to the panel.
 - **Approval target and recovery**: a database approval records its original connection target. If that target changes,
   or an old approval has no target record, reject it and request a fresh approval. Before dispatch, its status is saved
   as `executing`. After an interrupted execution it becomes `unknown`, remains visible, and cannot run again. Check
-  the database and any backup to establish what happened before asking for another write. An admin can **Dismiss**
+  the database and any backup to establish what happened before asking for another write. Anyone who may open it can **Dismiss**
   an `unknown` request to remove it from the active list. Its status becomes `dismissed`, with the original outcome
   retained in the recent approval history; dismissal neither runs the write nor confirms success or failure.
-- **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when an admin approves
+- **Backups before an agent's write**: before an agent's write runs (on **Read and write**, or when someone approves
   it), Dalang reads the rows its `UPDATE`, `DELETE`, `TRUNCATE` and `DROP TABLE` statements are about to change (the
   same `WHERE`, joins and `WITH`; MongoDB: the documents its updates, deletes and drops match, only the one picked for
   `updateOne`, `deleteOne`, `findOneAnd...` and the like) and keeps them as JSON in
-  `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection). Admins find them under **Backups** in the connection's `⋯` menu (when, who, which chat, the SQL, how many rows of which tables; **download** gives the file), and an agent query that took one has a **backup** link in its log. If that read
+  `STATE_DIR/db-backups/<connection>/` (the newest 200 per connection). They are under **Backups** in the connection's `⋯` menu (when, who, which chat, the SQL, how many rows of which tables; **download** gives the file), and an agent query that took one has a **backup** link in its log. If that read
   fails, or the write would change more than 50 000 rows, nothing runs (`DROP TABLE IF EXISTS` of a table that is not
   there goes ahead; any other failed read stops it). Inserts change nothing that was there and are not backed up.
   Upserts (`ON CONFLICT DO UPDATE`, `ON DUPLICATE KEY UPDATE`, `INSERT OR REPLACE`), `MERGE`, `REPLACE`,
@@ -359,16 +359,16 @@ stored like the database password and never sent back to the browser.
 
 ## SSH hosts for agents
 
-The **SSH Hosts** page (in the sidebar, admins) keeps logins to servers and VMs that agents may run shell commands on without ever
+The **SSH Hosts** page (in the sidebar) keeps logins to servers and VMs that agents may run shell commands on without ever
 knowing the login. Each host has a name, label, address, port, user, a password or private key (and passphrase), an
 optional sudo password, and a note telling agents what it is ("staging web server, the app is in /opt/app"). Like a
-SQL connection it has **Who may use it** (everyone, owner and admins, owner only; it counts for the person an agent
+SQL connection it has **Who may use it** (everyone or owner only; it counts for the person an agent
 works for) and an agent mode:
 
 - **Off**: agents do not see it.
-- **Every command after approval**: each command waits in Approvals (and as a card in the chat) until an admin runs or
+- **Every command after approval**: each command waits in Approvals (and as a card in the chat) until someone runs or
   rejects it; the output goes back to the agent's chat as a message.
-- **Run**: commands run at once, except those that read as dangerous, with `sudo` or without: they wait for an admin
+- **Run**: commands run at once, except those that read as dangerous, with `sudo` or without: they wait for approval
   as above, and the card says why. That covers deleting files (`rm -r`/`-f`, `find -delete`, `xargs rm`), wiping or
   formatting disks (`mkfs`, `dd of=`, `shred`, writes to `/dev/sd*`), emptying or overwriting system files, shutdown and
   reboot, stopping or restarting services, `kill`, changing users, passwords, `sudoers`, `authorized_keys` or
@@ -395,7 +395,7 @@ keys of its own. Each command goes into the host's log, shown under its form.
 
 SSH approvals also save `executing` before dispatch. After a restart interrupts execution, their status is `unknown`
 and the original approval cannot run again. Check the server's actual state before requesting another command.
-An admin can **Dismiss** an `unknown` request to remove it from the active list. Its status becomes `dismissed`,
+Anyone who may open it can **Dismiss** an `unknown` request to remove it from the active list. Its status becomes `dismissed`,
 with the original outcome retained in the recent approval history; dismissal neither runs the command nor confirms
 success or failure.
 

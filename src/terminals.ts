@@ -143,7 +143,7 @@ export class Terminals {
   }
 
   /**
-   * Who may open a terminal, and as whom: the owner as the server's own account, admins and devs only as TERMINAL_USER
+   * Who may open a terminal, and as whom: the owner as the server's own account, everyone else only as TERMINAL_USER
    * (so never as root); without one they get none. Null when they may not.
    */
   modeFor(user: { id: string | null }): 'server' | 'user' | null {
@@ -159,7 +159,7 @@ export class Terminals {
     let command = this.opts.shell ?? defaultShell();
     let env = o.env;
     const name = o.asServer ? null : this.userName;
-    if (!o.asServer && !name) throw new TerminalError('terminals for admins and devs need TERMINAL_USER on the server');
+    if (!o.asServer && !name) throw new TerminalError('terminals for users other than the owner need TERMINAL_USER on the server');
     // Checked on every new terminal, so a change to the account (a group added) counts straight away.
     const user = name ? shellUser(name) : null;
     if (user) {
@@ -245,7 +245,7 @@ export class TerminalError extends Error {}
 const serverAccount = () => { try { return userInfo().username; } catch { return 'server'; } };
 
 /**
- * The code editor's terminals: admins only, since a shell can do anything the server's user can. A browser cannot put
+ * The code editor's terminals. A shell can do anything the server's user can. A browser cannot put
  * the token on a WebSocket, so the panel first asks (with its token) for a ticket: single use, valid for 30 seconds,
  * for one terminal; the socket presents that instead.
  */
@@ -256,10 +256,10 @@ export function terminalRoutes(app: FastifyInstance, deps: {
   const tickets = new Map<string, { term: string; exp: number }>();
   const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not found' });
   const isOwner = (req: { user?: AuthUser }) => req.user?.id === null;
-  /** Owner: always (as the server's account). Admins and devs: only with TERMINAL_USER, as that account. */
+  /** Owner: always (as the server's account). Everyone else: only with TERMINAL_USER, as that account. */
   const mayUse = async (req: { user?: AuthUser }, reply: FastifyReply) => {
     if (!req.user || !terminals.modeFor(req.user)) {
-      return reply.code(403).send({ error: 'terminals are for the owner only here: admins and devs get one once TERMINAL_USER is set on the server' });
+      return reply.code(403).send({ error: 'terminals are for the owner only here: other users get one once TERMINAL_USER is set on the server' });
     }
   };
   app.addHook('onClose', async () => terminals.killAll());
@@ -287,7 +287,6 @@ export function terminalRoutes(app: FastifyInstance, deps: {
       const conv = store.getConversation(req.params.id);
       const project = conv && store.getProject(conv.project_id);
       if (!conv || !project) return notFound(reply);
-      if (project.sandbox === 'read-only' && req.user!.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
       const asServer = terminals.modeFor(req.user!) === 'server';
       const cwd = conv.worktree ?? project.path;
       if (!existsSync(cwd)) return reply.code(400).send({ error: 'the chat\'s folder does not exist' });

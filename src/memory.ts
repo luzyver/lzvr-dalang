@@ -232,9 +232,6 @@ export const userKeyOf = (user: AuthUser) => user.id ?? 'owner';
  */
 export function memoryRoutes(app: FastifyInstance, d: { store: Store; autoMemory: boolean }): void {
   const { store } = d;
-  const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
-  };
   const notFound = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send({ error: 'not found' });
   const TEXT = { type: 'object', required: ['text'], additionalProperties: false, properties: { text: { type: 'string', minLength: 1, maxLength: 2000 } } };
   const QUERY = { querystring: { type: 'object', properties: { q: { type: 'string', maxLength: 200 } } } };
@@ -283,9 +280,8 @@ export function memoryRoutes(app: FastifyInstance, d: { store: Store; autoMemory
 
   // `serverOff`: the server's AUTO_MEMORY=0 keeps nothing from turns whatever is set here.
   const view = () => ({ ...store.getMemoryPolicy(), defaults: MEMORY_DEFAULTS, serverOff: !d.autoMemory });
-  app.get('/api/settings/memory', { onRequest: requireAdmin }, view);
+  app.get('/api/settings/memory', view);
   app.put<{ Body: MemoryPolicy }>('/api/settings/memory', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', required: ['auto'], additionalProperties: false, properties: {
       auto: { type: 'boolean' }, user: { type: 'boolean' },
       effort: { enum: ['', 'low', 'medium', 'high', 'xhigh', 'max'] },

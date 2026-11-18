@@ -1,4 +1,4 @@
-// The SSH hosts page (admins): servers agents run shell commands on through the gateway's ssh_* MCP tools. Dalang
+// The SSH hosts page: servers agents run shell commands on through the gateway's ssh_* MCP tools. Dalang
 // keeps each login; agents see a host's name, label and note only, and the secrets are taken out of what commands print.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
@@ -6,11 +6,11 @@ import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Seg, Spinner } from './ui.js';
 import { guarded, isOwner, toast, toggleSidebar } from './store.js';
 
-const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
+const ACCESS = { all: 'Everyone', owner: 'Owner only' };
 const AGENT = { off: 'Off', approve: 'Every command after approval', run: 'Run (dangerous ones after approval)' };
 const AGENT_HINT = {
   off: 'Agents do not see this host.',
-  approve: 'Each command waits in Approvals until an admin runs or rejects it; the outcome goes back to the agent\'s chat.',
+  approve: 'Each command waits in Approvals until someone runs or rejects it; the outcome goes back to the agent\'s chat.',
   run: 'Agents run commands at once (ssh_exec), except those that read as dangerous (deleting files, stopping services, '
     + 'rebooting, changing users, sudoers or the firewall, removing packages or containers, piping into a shell, running a '
     + 'script file, ...), sudo or not: those wait in Approvals. Best effort, not a guarantee. Every command is logged below.',
@@ -31,7 +31,7 @@ function HostForm({ h, taken, keys, onSaved, onCancel, onKeys }) {
     keyId: h ? h.keyId ?? '' : keys[0]?.id ?? '',
     id: h?.id ?? '', label: h?.label ?? '', host: h?.host ?? '', port: h?.port ? String(h.port) : '', user: h?.user ?? '',
     auth: h?.auth ?? 'password', password: '', privateKey: '', passphrase: '', sudoPassword: '', note: h?.note ?? '',
-    access: h?.access ?? 'admin', agent: h?.agent ?? 'approve', holdPatterns: (h?.holdPatterns ?? []).join('\n'),
+    access: h?.access ?? 'all', agent: h?.agent ?? 'approve', holdPatterns: (h?.holdPatterns ?? []).join('\n'),
   });
   // The key Test connection saw, trusted once the host is saved with it.
   const [tested, setTested] = useState(null);
@@ -169,7 +169,7 @@ const copy = async (text, what) => {
 
 /** Add or edit a saved key: pasted, loaded from a file, or generated here (then its public half goes in authorized_keys). */
 function KeyForm({ k, taken, onSaved, onCancel }) {
-  const [f, setF] = useState({ id: k?.id ?? '', label: k?.label ?? '', access: k?.access ?? 'admin', source: k ? 'keep' : 'paste', privateKey: '', passphrase: '' });
+  const [f, setF] = useState({ id: k?.id ?? '', label: k?.label ?? '', access: k?.access ?? 'all', source: k ? 'keep' : 'paste', privateKey: '', passphrase: '' });
   const set = (n) => (e) => setF({ ...f, [n]: e.currentTarget.value });
   const loadKey = (e) => {
     const file = e.currentTarget.files?.[0];
@@ -226,7 +226,7 @@ function KeysPane({ keys, reload, onOpenHost }) {
     ${keys.map((k) => (edit === k.id ? html`<${KeyForm} key=${k.id} k=${k} onSaved=${done} onCancel=${() => setEdit(null)} />` : html`<section class="form-card" key=${k.id}>
       <div class="ssh-detail-head">
         <div class="ssh-detail-title"><strong>${k.label}</strong> <span class="mono dim small">${k.id}</span>
-          <div class="dim small mono">${k.fingerprint}${k.hasPassphrase ? ' · passphrase' : ''}${k.access !== 'admin' ? ` · ${ACCESS[k.access]}` : ''}</div></div>
+          <div class="dim small mono">${k.fingerprint}${k.hasPassphrase ? ' · passphrase' : ''}${k.access !== 'all' ? ` · ${ACCESS[k.access]}` : ''}</div></div>
         <div class="row">
           <button class="btn ghost sm" onClick=${() => setEdit(k.id)}>Edit</button>
           <button class="btn ghost danger sm" onClick=${() => remove(k)}><${Icon} name="trash-2" />Remove</button></div>
@@ -239,7 +239,7 @@ function KeysPane({ keys, reload, onOpenHost }) {
   </div>`;
 }
 
-/** The SSH hosts page (admins): Hosts (a searchable list on the left, the one picked or a new one on the right) and Keys. */
+/** The SSH hosts page: Hosts (a searchable list on the left, the one picked or a new one on the right) and Keys. */
 export function SshHostsView() {
   const [list, setList] = useState(null);
   const [keys, setKeys] = useState(null);

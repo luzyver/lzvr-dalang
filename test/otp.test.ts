@@ -28,7 +28,7 @@ describe('email sign-in (OTP)', () => {
     const v = await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: t.codeOf(t.sent[0]!) });
     expect(v.statusCode).toBe(200);
     const me = await t.app.inject({ url: '/api/me', headers: bearer(v.json().token) });
-    expect(me.json()).toEqual({ name: 'owner', role: 'admin', main: false });
+    expect(me.json()).toEqual({ name: 'owner', main: false });
     // a code works once
     expect((await t.post('/api/auth/otp/verify', { email: 'boss@example.com', code: t.codeOf(t.sent[0]!) })).statusCode).toBe(401);
   });
@@ -59,11 +59,11 @@ describe('email sign-in (OTP)', () => {
 
   it('signs a panel user in as themselves, by the email set on the user', async () => {
     const t = withMail();
-    const u = await t.app.inject({ method: 'POST', url: '/api/users', headers: AUTH, payload: { name: 'budi', role: 'dev', email: 'Budi@Example.com' } });
+    const u = await t.app.inject({ method: 'POST', url: '/api/users', headers: AUTH, payload: { name: 'budi', email: 'Budi@Example.com' } });
     expect(u.json()).toMatchObject({ email: 'budi@example.com' });
     await t.post('/api/auth/otp/request', { email: 'budi@example.com' });
     const v = await t.post('/api/auth/otp/verify', { email: 'budi@example.com', code: t.codeOf(t.sent[0]!) });
-    expect((await t.app.inject({ url: '/api/me', headers: bearer(v.json().token) })).json()).toMatchObject({ name: 'budi', role: 'dev' });
+    expect((await t.app.inject({ url: '/api/me', headers: bearer(v.json().token) })).json()).toEqual({ name: 'budi', main: false });
   });
 
   it('answers an unknown email the same way but sends nothing', async () => {
@@ -151,7 +151,7 @@ describe('email sign-in (OTP)', () => {
 
   it('keeps user emails unique and apart from the owner emails', async () => {
     const t = withMail();
-    const mk = (name: string, email: string) => t.app.inject({ method: 'POST', url: '/api/users', headers: AUTH, payload: { name, role: 'dev', email } });
+    const mk = (name: string, email: string) => t.app.inject({ method: 'POST', url: '/api/users', headers: AUTH, payload: { name, email } });
     expect((await mk('a', 'a@example.com')).statusCode).toBe(201);
     expect((await mk('b', 'A@example.com')).statusCode).toBe(409);
     expect((await mk('c', 'boss@example.com')).statusCode).toBe(400);
@@ -170,7 +170,7 @@ describe('email sign-in (OTP)', () => {
 describe('AUTH_BYPASS', () => {
   it('makes every request the owner', async () => {
     const t = setupApp({}, { cfg: { authBypass: true } });
-    expect((await t.app.inject({ url: '/api/me' })).json()).toEqual({ name: 'owner', role: 'admin', main: false });
+    expect((await t.app.inject({ url: '/api/me' })).json()).toEqual({ name: 'owner', main: false });
     expect((await t.app.inject({ url: '/api/auth/status' })).json()).toMatchObject({ bypass: true });
   });
 

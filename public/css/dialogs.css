@@ -184,3 +184,10 @@ dialog.history-modal { width: min(1200px, calc(100vw - 24px)); height: min(860px
 .login-send > .btn { flex: none; height: auto; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; box-shadow: none; }
 .login > .btn.ghost.sm { justify-self: center; }
 
+
+/* The users a project is shared with (the project access dialog). */
+.member-list { display: grid; gap: 2px; max-height: min(320px, 45vh); overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.member { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.member:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.member-name { font-weight: 550; }
+.member > .dim { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

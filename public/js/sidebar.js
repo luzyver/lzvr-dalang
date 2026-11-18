@@ -1,13 +1,13 @@
 // The sidebar: new chat and search, Approvals / Scheduled, the chats by project or by status, the tools, account usage
 // and the user menu.
-// Also the Add project dialog.
+// Also the Add project and project access dialogs.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, clickupApprovals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isAdmin, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
+  approvals, clickupApprovals, convs, dbApprovals, sshApprovals, goHome, indexRequests, guarded, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   setGroupBy, toggleCollapsed, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
@@ -17,7 +17,6 @@ import { removeChat, rootOf } from './agent-tree.js';
 /** Per backend, the first account that is ready and how much of its tightest usage window is left. */
 export const usage = signal([]);
 export async function refreshUsage() {
-  if (!isAdmin.value) return;
   try {
     const [codex, claude] = await Promise.all([api('/api/accounts'), api('/api/accounts?backend=claude')]);
     const pick = (label, list) => {
@@ -32,9 +31,54 @@ export async function refreshUsage() {
   } catch { /* shown on the next refresh */ }
 }
 
-/** Who may open a project (the server enforces it). The owner always may; an admin may only pick what keeps them in. */
-const ACCESS = { all: 'Everyone', admin: 'Owner and admins', owner: 'Owner only' };
+/** Who may open a project (the server enforces it). The owner always may; anyone else may only pick what keeps them in. */
+const ACCESS = { all: 'Everyone', owner: 'Owner only' };
 const grantable = () => Object.keys(ACCESS).filter((k) => isOwner.value || k !== 'owner');
+/** The same in words: below "Everyone" a project is the owner's and that of the users it is shared with. */
+const accessLabel = (p) => (p.access === 'all' ? ACCESS.all : p.members?.length ? 'Owner and selected users' : ACCESS.owner);
+
+/** The project whose access dialog is open. */
+const sharing = signal(null);
+
+/** Who may open a project: everyone, or the owner and the users ticked here. */
+function ProjectAccess({ p }) {
+  const [access, setAccess] = useState(p.access);
+  const [members, setMembers] = useState(new Set(p.members || []));
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => { api('/api/users').then(setUsers, (e) => setError(e.message)); }, []);
+  const close = () => { sharing.value = null; };
+  const toggle = (id) => () => { const next = new Set(members); if (!next.delete(id)) next.add(id); setMembers(next); };
+  const save = async () => {
+    setError('');
+    try {
+      await api(`/api/projects/${p.id}`, { method: 'PATCH', body: { access, members: [...members] } });
+      close();
+      await loadProjects();
+    } catch (e) { setError(e.message); }
+  };
+  // The owner always may; anyone else may pick "selected users" only while they are one of them (the server checks).
+  const levels = [['all', 'Everyone'], ['owner', 'Selected users']];
+  const hint = { all: 'Every user of this panel may open it.', owner: 'The owner and only the users ticked below. With none ticked: the owner only.' }[access];
+  return html`<div class="dialog-body">
+    <div class="dialog-head"><h2>Access to ${p.name}</h2><button class="icon-btn" aria-label="Close" onClick=${close}><${Icon} name="x" /></button></div>
+    <${Seg} label="Who may open it" value=${access} onChange=${setAccess} options=${levels} />
+    <div class="dim small">${hint}</div>
+    ${access !== 'all' && html`<div class="member-list" role="group" aria-label="Users">
+      ${!users ? html`<div class="dim small">Loading users…</div>`
+        : !users.length ? html`<div class="dim small">No users yet. Add them in Settings → Users.</div>`
+        : users.map((u) => html`<label key=${u.id} class="row member">
+          <input type="checkbox" checked=${members.has(u.id)} onChange=${toggle(u.id)} />
+          <span class="member-name">${u.name}${u.name === me.value?.name ? ' (you)' : ''}</span>
+          <span class="dim small">${u.email || ''}</span></label>`)}
+    </div>`}
+    ${error && html`<div class="form-error">${error}</div>`}
+    <div class="row end"><button class="btn" onClick=${close}>Cancel</button>
+      <${AsyncButton} class="btn primary" icon="check" onClick=${save}>Save<//></div>
+  </div>`;
+}
+export const ProjectAccessModal = () => html`<${Modal} open=${!!sharing.value} label="Project access" class="dialog" onClose=${() => { sharing.value = null; }}>
+  ${sharing.value && html`<${ProjectAccess} key=${sharing.value.id} p=${sharing.value} />`}<//>`;
 
 /** `my-app` from `git@github.com:acme/my-app.git` or `https://host/acme/my-app`. */
 const repoName = (url) => url.trim().replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() || '';
@@ -128,26 +172,20 @@ function Project({ p }) {
     await api(`/api/projects/${p.id}`, { method: 'DELETE' });
     await loadProjects();
   });
-  const setAccess = (access) => guarded(async () => {
-    await api(`/api/projects/${p.id}`, { method: 'PATCH', body: { access } });
-    await loadProjects();
-  });
   return html`<div class="project">
     <div class="project-row">
       <button class="project-toggle" aria-expanded=${!collapsed} onClick=${() => toggleCollapsed(p.id)}>
         <${Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} class="caret" />
         <span class="project-meta">
           <${Tag} ...${SANDBOX_TAGS[p.sandbox]} />
-          ${p.access && p.access !== 'all' && html`<${Tag} name=${p.access === 'owner' ? 'user' : 'users'} label=${`Access: ${ACCESS[p.access]}`} />`}
+          ${p.access && p.access !== 'all' && html`<${Tag} name=${p.access === 'owner' && !p.members?.length ? 'user' : 'users'} label=${`Access: ${accessLabel(p)}`} />`}
         </span>
         <span class="project-name" title=${p.path}>${p.name}</span>
       </button>
       <button class="icon-btn sm row-action" aria-label=${`New chat in ${p.name}`} title="New chat" onClick=${newChat(p)}><${Icon} name="plus" /></button>
       <${Menu} label="Project options" buttonClass="sm row-action">
         <${MenuItem} icon="git-branch" title="A new git branch and folder for this chat only; open a Merge Request for it from Changes" onClick=${newChat(p, true)}>New chat in own worktree<//>
-        ${isAdmin.value && html`<div class="menu-label">Access</div>
-          ${grantable().map((k) => html`<button key=${k} role="menuitemradio" aria-checked=${p.access === k} class="menu-item"
-            onClick=${p.access === k ? undefined : setAccess(k)}><${Icon} name="check" class=${cx(p.access !== k && 'invisible')} /><span>${ACCESS[k]}</span></button>`)}
+        ${html`<${MenuItem} icon="users" title=${`Now: ${accessLabel(p)}`} onClick=${() => { sharing.value = p; }}>Access…<//>
           <div class="menu-sep"></div>
           <${MenuItem} icon="trash-2" danger onClick=${remove}>Remove project<//>`}
       <//>
@@ -211,7 +249,7 @@ export function Sidebar() {
       </button>
     </div>
     <nav class="side-nav">
-      ${(isAdmin.value || clickupApprovals.value.length > 0) && html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${go('approvals')}>
+      ${html`<a class=${cx('nav-item', view === 'approvals' && 'active')} href="#" onClick=${go('approvals')}>
         <${Icon} name="shield-check" />Approvals${waiting > 0 && html`<span class="count attention">${waiting}</span>`}</a>`}
       <a class=${cx('nav-item', view === 'schedules' && 'active')} href="#" onClick=${go('schedules')}>
         <${Icon} name="clock" />Scheduled${scheduleCount.value > 0 && html`<span class="count">${scheduleCount.value}</span>`}</a>
@@ -219,16 +257,16 @@ export function Sidebar() {
     <div class="side-section">
       <div class="section-head">
         <${Seg} small label="Group chats by" value=${by} onChange=${setGroupBy} options=${[['project', 'Projects'], ['status', 'Status']]} />
-        ${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}</div>
+        ${html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}</div>
       ${by === 'status' ? html`<${StatusList} />` : html`
         ${projects.value.map((p) => html`<${Project} key=${p.id} p=${p} />`)}
-        ${!projects.value.length && html`<div class="side-empty">${isAdmin.value ? 'No projects yet. Add a folder with the button above.' : 'No projects yet. An admin adds them.'}</div>`}`}
+        ${!projects.value.length && html`<div class="side-empty">No projects yet. Add a folder with the button above.</div>`}`}
     </div>
     <div class="side-bottom">
       <nav class="side-tools" aria-label="Tools">
         <a class="nav-item" href="/sql" target="dalang-sql" title="Opens in its own tab" onClick=${(e) => { e.preventDefault(); openSqlEditor(); }}>
           <${Icon} name="database" />SQL Editor<${Icon} name="external-link" class="tiny trail" /></a>
-        ${isAdmin.value && html`<a class=${cx('nav-item', view === 'ssh' && 'active')} href="#" onClick=${go('ssh')}>
+        ${html`<a class=${cx('nav-item', view === 'ssh' && 'active')} href="#" onClick=${go('ssh')}>
           <${Icon} name="terminal" />SSH Hosts</a>`}
       </nav>
       ${usage.value.map((u) => html`<button class="usage" key=${u.label} title="Accounts" onClick=${() => openSettings(u.label === 'Codex' ? 'codex' : 'claude')}>
@@ -237,7 +275,7 @@ export function Sidebar() {
       </button>`)}
       <div class="user-row">
         <span class="avatar" aria-hidden="true">${(user?.name || '?').slice(0, 1).toUpperCase()}</span>
-        <div class="user-meta"><strong>${user?.name}</strong><span>${user?.role}</span></div>
+        <div class="user-meta"><strong>${user?.name}</strong></div>
         <button class="icon-btn" aria-label="Settings" title="Settings" onClick=${() => openSettings()}><${Icon} name="settings" /></button>
       </div>
     </div>

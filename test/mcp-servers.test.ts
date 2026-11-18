@@ -76,12 +76,10 @@ describe('Settings → MCP servers', () => {
 
   it('is for the owner only', async () => {
     const t = boot();
-    for (const role of ['admin', 'dev'] as const) {
-      const h = { authorization: `Bearer ${(await mkUser(t, `u-${role}`, role)).token}` };
-      expect((await t.app.inject({ url: '/api/settings/mcp-servers', headers: h })).statusCode).toBe(403);
-      expect((await t.put('context7', CONTEXT7, h)).statusCode).toBe(403);
-      expect((await t.app.inject({ method: 'DELETE', url: '/api/settings/mcp-servers/context7', headers: h })).statusCode).toBe(403);
-    }
+    const h = { authorization: `Bearer ${(await mkUser(t, 'budi')).token}` };
+    expect((await t.app.inject({ url: '/api/settings/mcp-servers', headers: h })).statusCode).toBe(403);
+    expect((await t.put('context7', CONTEXT7, h)).statusCode).toBe(403);
+    expect((await t.app.inject({ method: 'DELETE', url: '/api/settings/mcp-servers/context7', headers: h })).statusCode).toBe(403);
   });
 });
 

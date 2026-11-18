@@ -4,7 +4,6 @@ import { batch, computed, signal } from '../vendor/signals.js';
 import { api, Unauthorized } from './api.js';
 
 export const me = signal(null);
-export const isAdmin = computed(() => me.value?.role === 'admin'); // the server enforces this; the panel only hides what would be refused
 export const isOwner = computed(() => me.value?.name === 'owner'); // the main token or the owner's sign-in (no panel user may take the name)
 export const projects = signal([]);
 /** project id -> its chats */
@@ -15,11 +14,11 @@ export const convs = signal(new Map());
  */
 export const route = signal({ view: 'home' });
 export const approvals = signal([]);
-/** Database writes agents asked for on "write with approval" connections of the SQL editor (admins). */
+/** Database writes agents asked for on "write with approval" connections of the SQL editor. */
 export const dbApprovals = signal([]);
-/** Users' requests to index a project's code graph, waiting for an admin. */
+/** Requests to index a project's code graph left from when that took an approval. */
 export const indexRequests = signal([]);
-/** Commands agents asked to run on SSH hosts set to "every command after approval" (admins). */
+/** Commands agents asked to run on SSH hosts set to "every command after approval". */
 export const sshApprovals = signal([]);
 /** ClickUp messages agents ask to send as you (your own ClickUp user), waiting for you; nobody else sees them. */
 export const clickupApprovals = signal([]);
@@ -204,26 +203,25 @@ export const newChat = (project, worktree = false) => guarded(async () => {
   openChat(c.id);
 });
 
-/** What only admins decide. Emptied for everyone else and between sessions: the next one may not see them. */
-function clearAdminApprovals() {
+/** Emptied between sessions: the next one may not see them. */
+function clearSharedApprovals() {
   batch(() => { approvals.value = []; dbApprovals.value = []; indexRequests.value = []; sshApprovals.value = []; });
 }
 export function clearApprovals() {
-  batch(() => { clearAdminApprovals(); clickupApprovals.value = []; });
+  batch(() => { clearSharedApprovals(); clickupApprovals.value = []; });
 }
 
 export async function refreshApprovals() {
   const user = me.value;
   if (!user) return;
   const stale = () => me.value !== user; // signed out or in as another meanwhile: the answer is not this session's
-  // ClickUp messages wait for whoever asked, admin or not; the rest are for admins to decide.
+  // ClickUp messages wait for whoever asked; the rest are anyone's to decide who may open what they are about.
   try {
     const clickup = await api('/api/clickup/approvals');
     if (stale()) return;
     clickupApprovals.value = clickup;
   } catch { /* retried on the next tick */ }
   if (stale()) return;
-  if (!isAdmin.value) { clearAdminApprovals(); return; }
   try {
     const [chats, dbs, indexes, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals')]);
     if (stale()) return;

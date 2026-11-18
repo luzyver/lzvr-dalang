@@ -142,7 +142,7 @@ describe('SSH hosts', () => {
     expect(t.server.commands).toEqual([]);
   });
 
-  it('allows only an authorized admin to dismiss an unknown SSH approval', async () => {
+  it('allows only someone who may use the host to dismiss an unknown SSH approval', async () => {
     const t = await boot();
     await t.put('srv', { agent: 'approve', access: 'owner' });
     const a = createSshApproval(t.store, { host: 'srv', command: 'once', sudo: false, timeoutMs: 5000, who: 'owner', conv: null });
@@ -153,10 +153,8 @@ describe('SSH hosts', () => {
       expect(readSshApprovals(t.store)[0]!.status).toBe(status);
     }
     t.store.setKv('ssh_approvals', JSON.stringify([{ ...a, status: 'unknown' }]));
-    const dev = await mkUser(t, 'devi', 'dev');
-    const admin = await mkUser(t, 'admin', 'admin');
-    expect((await dismiss(bearer(dev.token))).statusCode).toBe(403);
-    expect((await dismiss(bearer(admin.token))).statusCode).toBe(404);
+    const user = await mkUser(t, 'devi');
+    expect((await dismiss(bearer(user.token))).statusCode).toBe(404);
     expect(readSshApprovals(t.store)[0]!.status).toBe('unknown');
     expect((await dismiss()).statusCode).toBe(200);
     expect(t.server.commands).toEqual([]);
@@ -180,7 +178,7 @@ describe('SSH hosts', () => {
     expect((await t.put('vm', { password: undefined, user: 'other' })).statusCode).toBe(400);
   });
 
-  it('logs in on Test connection only to the trusted key, or to the changed key the admin accepts', async () => {
+  it('logs in on Test connection only to the trusted key, or to the changed key the person accepts', async () => {
     const t = await boot();
     await t.put('vm', { hostKey: 'SHA256:theOneTrusted' });
     const test = (extra: object = {}) => t.app.inject({ method: 'POST', url: '/api/ssh/test', headers: AUTH, payload: {
@@ -280,7 +278,7 @@ describe('SSH hosts', () => {
     expect(t.server.commands).toEqual([]);
   });
 
-  it('holds every command on an approval host for an admin, then runs it and tells the chat', async () => {
+  it('holds every command on an approval host for a person, then runs it and tells the chat', async () => {
     const t = await boot();
     await t.put('vm', { agent: 'approve' });
     const conv = t.store.createConversation(t.store.createProject('proj', t.root).id);
@@ -323,16 +321,17 @@ describe('SSH hosts', () => {
   it('gives agents only the hosts open to them and to whoever they work for', async () => {
     const t = await boot();
     await t.put('off', { agent: 'off' });
-    await t.put('admins', { access: 'admin' });
-    await mkUser(t, 'dana', 'dev');
+    await t.put('owners', { access: 'owner' });
+    await mkUser(t, 'dana');
     expect(await (await t.agent('dana')).tools()).not.toContain('ssh_exec');
-    expect(JSON.parse((await (await t.agent('owner')).call('ssh_list_hosts')).text).map((h: { id: string }) => h.id)).toEqual(['admins']);
-    const dev = await mkUser(t, 'devi', 'dev');
-    expect((await t.app.inject({ url: '/api/ssh/hosts', headers: bearer(dev.token) })).statusCode).toBe(403);
+    expect(JSON.parse((await (await t.agent('owner')).call('ssh_list_hosts')).text).map((h: { id: string }) => h.id)).toEqual(['owners']);
+    const user = await mkUser(t, 'devi');
+    // The settings list shows a user the hosts open to them, not the owner's.
+    expect((await t.app.inject({ url: '/api/ssh/hosts', headers: bearer(user.token) })).json().map((h: { id: string }) => h.id)).toEqual(['off']);
     // The composer's @ssh list: what ssh_list_hosts would show the same user, without the address or login.
     await t.put('vm', { note: 'staging' });
-    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: bearer(dev.token) })).json()).toEqual([{ id: 'vm', label: 'vm', note: 'staging' }]);
-    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: AUTH })).json().map((h: { id: string }) => h.id)).toEqual(['admins', 'vm']);
+    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: bearer(user.token) })).json()).toEqual([{ id: 'vm', label: 'vm', note: 'staging' }]);
+    expect((await t.app.inject({ url: '/api/ssh/agent-hosts', headers: AUTH })).json().map((h: { id: string }) => h.id)).toEqual(['owners', 'vm']);
   });
 
   it('holds a dangerous command on a run host, sudo or not, and runs the rest at once', async () => {

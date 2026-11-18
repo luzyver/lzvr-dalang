@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS events (
   type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-  role TEXT NOT NULL CHECK (role IN ('admin','dev')),
   token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
@@ -73,12 +72,13 @@ export interface Approval {
   on_behalf: string;
 }
 
-export type Role = 'admin' | 'dev';
-export interface User { id: string; name: string; role: Role; email: string | null; created_at: string }
-export interface UserSummary { id: string; name: string; role: Role; email: string | null; createdAt: string }
+export interface User { id: string; name: string; email: string | null; created_at: string }
+export interface UserSummary { id: string; name: string; email: string | null; createdAt: string }
 
-/** `access`: who may open it (see canAccess). */
-export interface Project { id: string; name: string; path: string; sandbox: string; access: ProjectAccess }
+/** `access`: who may open it (see canAccess). `members`: ids of the users it is shared with on top of that (see canOpen). */
+export interface Project { id: string; name: string; path: string; sandbox: string; access: ProjectAccess; members: string[] }
+type ProjectRow = Omit<Project, 'members'> & { members: string };
+const toProject = (r: ProjectRow): Project => ({ ...r, members: JSON.parse(r.members) as string[] });
 export interface TurnSelection { backend: Backend; model: string }
 export interface Conversation {
   id: string; project_id: string; thread_id: string | null;
@@ -222,7 +222,19 @@ export class Store {
     this.ensureColumn('conversations', 'effort', "TEXT NOT NULL DEFAULT ''");
     this.dropColumn('projects', 'backend'); // a project no longer has an agent of its own: each chat has one
     this.ensureColumn('projects', 'access', "TEXT NOT NULL DEFAULT 'all'");
+    this.ensureColumn('projects', 'members', "TEXT NOT NULL DEFAULT '[]'");
     this.run("UPDATE projects SET access='all' WHERE access='dev'"); // 'dev' (owner, admins and devs) was the same as 'all'
+    // Users no longer have a role (every one of them may do what admins could). A project that was for the owner and
+    // the admins stays with exactly those people: it becomes one shared with them by name.
+    if (this.hasColumn('users', 'role')) {
+      const admins = this.all<{ id: string }>("SELECT id FROM users WHERE role='admin'").map((u) => u.id);
+      for (const p of this.all<{ id: string; members: string }>("SELECT id, members FROM projects WHERE access='admin'")) {
+        const members = [...new Set([...(JSON.parse(p.members) as string[]), ...admins])];
+        this.run("UPDATE projects SET access='owner', members=? WHERE id=?", JSON.stringify(members), p.id);
+      }
+      this.dropColumn('users', 'role');
+    }
+    this.run("UPDATE projects SET access='all' WHERE access='admin'"); // none left after the above, unless written by hand
     this.ensureColumn('conversations', 'backend', "TEXT NOT NULL DEFAULT 'codex'");
     this.ensureColumn('events', 'created_at', 'TEXT');
     this.ensureColumn('conversations', 'worktree', 'TEXT');
@@ -293,9 +305,11 @@ export class Store {
   }
 
   /** Add a column earlier databases lack; true when it was added now. */
+  private hasColumn(table: string, column: string): boolean {
+    return (this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).some((c) => c.name === column);
+  }
   private dropColumn(table: string, column: string): void {
-    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
-    if (cols.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+    if (this.hasColumn(table, column)) this.db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   }
   private ensureColumn(table: string, column: string, ddl: string): boolean {
     const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
@@ -314,24 +328,23 @@ export class Store {
     return this.db.prepare(sql).run(...args);
   }
 
-  // --- panel users (role admin or dev); the personal token is stored only as a hash ---
+  // --- panel users; the personal token is stored only as a hash ---
   /** `email` is stored lowercased; it is what the user signs in with (a one-time code is mailed to it). */
-  createUser(name: string, role: Role, tokenHash: string, email: string | null = null): User {
+  createUser(name: string, tokenHash: string, email: string | null = null): User {
     const id = randomUUID();
-    this.run('INSERT INTO users (id,name,role,token_hash,email) VALUES (?,?,?,?,?)', id, name, role, tokenHash, email?.toLowerCase() ?? null);
+    this.run('INSERT INTO users (id,name,token_hash,email) VALUES (?,?,?,?)', id, name, tokenHash, email?.toLowerCase() ?? null);
     return this.getUser(id)!;
   }
-  getUser(id: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE id=?', id); }
-  getUserByTokenHash(hash: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE token_hash=?', hash); }
-  getUserByEmail(email: string): User | null { return this.get('SELECT id,name,role,email,created_at FROM users WHERE email=?', email.toLowerCase()); }
+  getUser(id: string): User | null { return this.get('SELECT id,name,email,created_at FROM users WHERE id=?', id); }
+  getUserByTokenHash(hash: string): User | null { return this.get('SELECT id,name,email,created_at FROM users WHERE token_hash=?', hash); }
+  getUserByEmail(email: string): User | null { return this.get('SELECT id,name,email,created_at FROM users WHERE email=?', email.toLowerCase()); }
   /** Throws when another user already has this email. */
   setUserEmail(id: string, email: string | null): boolean {
     return Number(this.run('UPDATE users SET email=? WHERE id=?', email?.toLowerCase() ?? null, id).changes) > 0;
   }
   listUsers(): UserSummary[] {
-    return this.all('SELECT id, name, role, email, created_at AS createdAt FROM users ORDER BY rowid');
+    return this.all('SELECT id, name, email, created_at AS createdAt FROM users ORDER BY rowid');
   }
-  setUserRole(id: string, role: Role): boolean { return Number(this.run('UPDATE users SET role=? WHERE id=?', role, id).changes) > 0; }
   /** New token for a user; their old token and every open session stop working. */
   setUserToken(id: string, tokenHash: string): boolean {
     const changed = Number(this.run('UPDATE users SET token_hash=? WHERE id=?', tokenHash, id).changes) > 0;
@@ -342,7 +355,10 @@ export class Store {
   deleteUser(id: string): boolean {
     // Only once a user really went: 'owner' (whose memories are kept under that key) has no row and must not lose them.
     const deleted = Number(this.run('DELETE FROM users WHERE id=?', id).changes) > 0;
-    if (deleted) { this.run('DELETE FROM memories WHERE user_key=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id); }
+    if (deleted) {
+      this.run('DELETE FROM memories WHERE user_key=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id);
+      for (const p of this.listProjects()) if (p.members.includes(id)) this.setProjectAccess(p.id, p.access, p.members.filter((m) => m !== id));
+    }
     return deleted;
   }
 
@@ -452,16 +468,16 @@ export class Store {
   }
   setReview(convId: string, r: ReviewState): void { this.setKv(`review:${convId}`, JSON.stringify(r)); }
 
-  createProject(name: string, path: string, sandbox = 'workspace-write', access: ProjectAccess = 'all'): Project {
-    const p = { id: randomUUID(), name, path, sandbox, access };
-    this.run('INSERT INTO projects (id,name,path,sandbox,access) VALUES (?,?,?,?,?)', p.id, name, path, sandbox, access);
+  createProject(name: string, path: string, sandbox = 'workspace-write', access: ProjectAccess = 'all', members: string[] = []): Project {
+    const p = { id: randomUUID(), name, path, sandbox, access, members };
+    this.run('INSERT INTO projects (id,name,path,sandbox,access,members) VALUES (?,?,?,?,?,?)', p.id, name, path, sandbox, access, JSON.stringify(members));
     return p;
   }
-  setProjectAccess(id: string, access: ProjectAccess): boolean {
-    return Number(this.run('UPDATE projects SET access=? WHERE id=?', access, id).changes) > 0;
+  setProjectAccess(id: string, access: ProjectAccess, members: string[]): boolean {
+    return Number(this.run('UPDATE projects SET access=?, members=? WHERE id=?', access, JSON.stringify(members), id).changes) > 0;
   }
-  listProjects(): Project[] { return this.all('SELECT * FROM projects ORDER BY name'); }
-  getProject(id: string): Project | null { return this.get('SELECT * FROM projects WHERE id=?', id); }
+  listProjects(): Project[] { return this.all<ProjectRow>('SELECT * FROM projects ORDER BY name').map(toProject); }
+  getProject(id: string): Project | null { const r = this.get<ProjectRow>('SELECT * FROM projects WHERE id=?', id); return r ? toProject(r) : null; }
   deleteConversation(id: string): boolean {
     this.deleteKv(`review:${id}`);
     return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0;

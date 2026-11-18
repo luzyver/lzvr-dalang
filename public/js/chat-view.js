@@ -6,7 +6,7 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { confirmDialog, Icon } from './ui.js';
 import {
-  approvals, clickupApprovals, dbApprovals, sshApprovals, findConv, guarded, isAdmin, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
+  approvals, clickupApprovals, dbApprovals, sshApprovals, findConv, guarded, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Live } from './thread.js';
@@ -104,8 +104,8 @@ const ago = (ms) => {
 };
 
 /**
- * The project's code graph (code memory): when it was indexed, and indexing it again. An admin starts it at once; anyone
- * else asks, and it runs once an admin approves. Hidden while code memory is off.
+ * The project's code graph (code memory): when it was indexed, and indexing it again, which starts at once. A request
+ * from before every user could start it still waits in Approvals. Hidden while code memory is off.
  */
 function CodeGraphButton({ project }) {
   const [s, setS] = useState(null);
@@ -122,8 +122,8 @@ function CodeGraphButton({ project }) {
   useEffect(() => { if (git) load(); }, [git]);
   useEffect(() => { if (reindexed) load(); }, [reindexed]);
   const indexing = s?.index?.status === 'indexing';
-  // Look again while an index runs (often), and while a request waits for an admin (now and then): nothing else says
-  // when an admin decided.
+  // Look again while an index runs (often), and while an old request waits in Approvals (now and then): nothing else
+  // says when it was decided.
   const every = indexing ? 3000 : s?.pending ? 15000 : 0;
   useEffect(() => {
     if (!every) return undefined;
@@ -136,11 +136,11 @@ function CodeGraphButton({ project }) {
   if (!s?.enabled || !(s.changed || !st?.graph || indexing || s.pending)) return null;
   const state = !st?.graph ? (st?.status === 'failed' ? `Failed: ${st.error}` : 'Not indexed yet')
     : indexing ? 'Indexing…' : `Indexed ${ago(st.indexedAt)}${s.changed ? ', files changed since' : ''}`;
-  const action = s.pending ? `Waiting for an admin to approve ${s.pending.who}'s request`
+  const action = s.pending ? `${s.pending.who}'s request waits in Approvals`
     : indexing && s.direct ? 'Click to stop it'
-    : `Click to ${st?.graph ? 'index it again' : 'index it'}${s.direct ? '' : ' (an admin approves)'}`;
+    : `Click to ${st?.graph ? 'index it again' : 'index it'}`;
   const click = guarded(async () => {
-    // An index taking too long: an admin may stop it (which deletes the graph, so turns stop waiting for it).
+    // An index taking too long may be stopped (which deletes the graph, so turns stop waiting for it).
     if (indexing && s.direct) {
       const stop = await confirmDialog({
         title: `Stop indexing ${project.name}?`,
@@ -152,19 +152,19 @@ function CodeGraphButton({ project }) {
       toast('Indexing stopped, code graph deleted');
       return load();
     }
-    if (s.pending || indexing) return toast(s.pending ? 'Already asked: waiting for an admin in Approvals' : 'Already indexing');
+    if (s.pending || indexing) return toast(s.pending ? 'Already asked: it waits in Approvals' : 'Already indexing');
     const ok = await confirmDialog({
       title: `${st?.graph ? 'Reindex' : 'Index'} the code graph of ${project.name}?`,
       message: s.direct
         ? 'It starts now and uses several cores for a while (seconds to minutes; again, it only reads what changed). Chats get the new graph from their next turn.'
-        : 'An admin or the owner approves it first in Approvals; it runs then. Chats get the new graph from their next turn.',
+        : 'It is approved first in Approvals; it runs then. Chats get the new graph from their next turn.',
       confirmText: s.direct ? 'Index now' : 'Ask for approval',
     });
     if (!ok) return;
     const r = await api(`/api/projects/${project.id}/code-memory/index`, { method: 'POST' });
-    toast(r.status === 'indexing' ? 'Indexing started' : 'Asked: an admin approves it in Approvals');
+    toast(r.status === 'indexing' ? 'Indexing started' : 'Asked: it waits in Approvals');
     await load();
-    if (isAdmin.value) refreshApprovals();
+    refreshApprovals();
   });
   return html`<button class=${cx('icon-btn', (s.changed || !st?.graph) && 'on')} aria-label="Code graph" title=${`Code graph: ${state}. ${action}`} onClick=${click}>
     <${Icon} name=${indexing ? 'loader-circle' : 'brain'} spin=${indexing} /></button>`;

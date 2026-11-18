@@ -2,7 +2,7 @@
 // how much the accounts have left. Before the first project, a short welcome instead.
 import { html, cx } from './lib.js';
 import { Icon, Logo } from './ui.js';
-import { approvals, clickupApprovals, convs, dbApprovals, indexRequests, isAdmin, me, newChat, openChat, openSettings, openView, projects, sshApprovals, toggleSidebar, ui } from './store.js';
+import { approvals, clickupApprovals, convs, dbApprovals, indexRequests, me, newChat, openChat, openSettings, openView, projects, sshApprovals, toggleSidebar, ui } from './store.js';
 import { ago, byStatus, WHY } from './inbox.js';
 import { usage } from './sidebar.js';
 import { plural } from './format.js';
@@ -13,8 +13,8 @@ function Welcome() {
   return html`<div class="home">
     <${Logo} size=${56} />
     <h1>What should the agents work on?</h1>
-    <p class="dim">${isAdmin.value ? 'Add a project folder to start chatting with an agent in it.' : 'An admin adds the projects you can work in.'}</p>
-    ${isAdmin.value && html`<button class="btn primary" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" />Add your first project</button>`}
+    <p class="dim">Add a project folder to start chatting with an agent in it.</p>
+    ${html`<button class="btn primary" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" />Add your first project</button>`}
   </div>`;
 }
 
@@ -69,7 +69,7 @@ export function Home() {
         </div>
         <div class="ov-col side">
           <${Section} title="Start a chat"
-            action=${isAdmin.value && html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}>
+            action=${html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}>
             <ul class="ov-list">${list.map((p) => {
               const chats = convs.value.get(p.id) || [];
               const last = chats.reduce((at, c) => ((c.last_at || '') > at ? c.last_at : at), '');

@@ -1,5 +1,5 @@
 /**
- * Document templates: a Word file (.docx) an admin uploads in Settings, with the fields to fill written in it as
+ * Document templates: a Word file (.docx) uploaded in Settings, with the fields to fill written in it as
  * placeholders (`{{field}}`, `[Field]`, whatever the template uses). A prompt that mentions `@template:<name>` has the agent fill that
  * file from the rest of the message and hand back a PDF (see templatePrompt).
  */
@@ -78,7 +78,7 @@ export function templatePrompt(prompt: string, templates: Template[], workDir: s
   const names = templateMentions(prompt, templates.map((t) => t.name));
   if (!names.length) {
     if (prompt.trim().toLowerCase() !== '@template') return prompt;
-    const list = templates.map((t) => `- ${t.name}${t.description ? `: ${t.description}` : ''}`).join('\n') || '(none yet: an admin adds them in Settings)';
+    const list = templates.map((t) => `- ${t.name}${t.description ? `: ${t.description}` : ''}`).join('\n') || '(none yet: add them in Settings)';
     return `${prompt}\n\nThe person typed "@template" without the name of a template. Do nothing else: show them this list and say one is used with "@template:<name>".\n\n${list}`;
   }
   const parts = names.map((name) => {

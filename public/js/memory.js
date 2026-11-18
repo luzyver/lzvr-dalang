@@ -1,7 +1,7 @@
 // Memory: facts kept for later chats, apart from the chats (a deleted chat leaves its memories behind): a project's,
 // for every chat of it, and each person's own preferences, for their turns in any project (only they see those).
 // The chat header's button opens both: search, add, edit and remove.
-// Settings → Project memory (admins): whether each finished turn is mined for them, and with what model.
+// Settings → Project memory: whether each finished turn is mined for them, and with what model.
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
 import { api } from './api.js';
@@ -127,7 +127,7 @@ function ModelFor({ backend, title, value, onChange }) {
     ${options.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select><//>`;
 }
 
-/** Settings → Project memory, for admins. */
+/** Settings → Project memory. */
 export function MemorySection() {
   const [p, setP] = useState(null);
   useEffect(() => { api('/api/settings/memory').then(setP).catch((e) => toast(e.message, 'err')); }, []);

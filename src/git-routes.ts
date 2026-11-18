@@ -251,11 +251,9 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   const busy = (project: Project, dirs: string[]) => agentBusy(store, dispatcher, project, dirs);
 
   /**
-   * Changing files is refused while an agent works in the same folder (both would edit it at once), and in a
-   * read-only project for anyone but an admin: there the agent may not write either.
+   * Changing files is refused while an agent works in the same folder (both would edit it at once).
    */
-  const mayWrite = (req: { user?: { role: string } }, reply: Reply, project: Project, dirs: string[]) => {
-    if (project.sandbox === 'read-only' && req.user?.role !== 'admin') { reply.code(403).send({ error: 'read-only project: admin only' }); return false; }
+  const mayWrite = (reply: Reply, project: Project, dirs: string[]) => {
     if (busy(project, dirs)) { reply.code(409).send({ error: 'an agent is working in this folder: wait for its turn to finish or stop it' }); return false; }
     return true;
   };
@@ -343,7 +341,6 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c) return;
-    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     const name = req.body.name.trim();
     const email = req.body.email.trim();
@@ -380,7 +377,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     } } },
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     const { paths, hunks, amend } = req.body;
     if (paths?.length && !(await pick(c.cwd, paths, reply))) return;
     if (!paths && !amend && hunks) return reply.code(400).send({ error: 'name the files to commit when picking hunks' });
@@ -410,7 +407,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   // rebase, with a lease (see git.push), and never the default branch. The body is optional.
   app.post<{ Params: { id: string }; Body: { force?: unknown } | undefined }>('/api/conversations/:id/git/push', async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     const force = req.body?.force === true;
     if (force && (await git.currentBranch(c.cwd)) === (await git.defaultBranch(c.cwd))?.name) {
@@ -426,7 +423,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   // The body is optional, so it is checked here rather than by a schema.
   app.post<{ Params: { id: string }; Body: { force?: unknown } | undefined }>('/api/conversations/:id/git/undo-commit', async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     try {
       return await git.undoCommit(c.cwd, req.body?.force === true);
@@ -486,7 +483,6 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c) return;
-    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
     if (!(await git.isRepo(c.project.path))) return reply.code(400).send({ error: 'not a git repository' });
     const name = req.body.base.trim();
     const branch = c.conv.worktree && c.conv.branch ? c.conv.branch : await git.currentBranch(c.project.path);
@@ -521,7 +517,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!t) return reply.code(400).send({ error: noTarget });
     const { branch, base: { name: base } } = t;
     if (!base) return reply.code(400).send({ error: 'this chat was branched from a detached HEAD: there is no branch to merge into' });
-    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await aheadOf(c.project.path, t))) return reply.code(400).send({ error: `nothing to propose: ${branch} has no commits that ${base} lacks` });
 
     const push = await git.push(c.cwd);
@@ -556,7 +552,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
       properties: { paths: { ...pathsSchema, minItems: 1 } } } },
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     const files = await pick(c.cwd, req.body.paths, reply);
     if (!files) return;
     try {
@@ -567,7 +563,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
 
   app.post<{ Params: { id: string } }>('/api/conversations/:id/git/discard', async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     try {
       await git.discardAll(c.cwd);
@@ -578,7 +574,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   // Fast-forward the chat's folder from the remote. Never merges: a branch that has gone its own way is refused.
   app.post<{ Params: { id: string } }>('/api/conversations/:id/git/pull', async (req, reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     try {
       return await git.pull(c.cwd);
@@ -632,7 +628,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const c = load(req.params.id, reply);
     if (!c) return;
     if (c.conv.worktree) return reply.code(400).send({ error: 'a worktree chat stays on its own branch: use a chat in the project folder to switch branches' });
-    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     const name = req.body.name.trim();
     try {
@@ -652,7 +648,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const from = c.conv.branch;
     if (!c.conv.worktree || !from) return reply.code(400).send({ error: "only a worktree chat's own branch is renamed here" });
     if (prFor(c.conv, from)) return reply.code(400).send({ error: 'a Merge Request is open for this branch: renaming it would leave that behind' });
-    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!mayWrite(reply, c.project, [c.cwd])) return;
     const name = req.body.name.trim();
     if (name === from) return { branch: name, push: null };
     try {
@@ -670,7 +666,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     const c = load(req.params.id, reply);
     if (!c) return;
     if (c.conv.worktree) return reply.code(400).send({ error: 'manage branches from a chat in the project folder' });
-    if (!mayWrite(req, reply, c.project, [c.cwd])) return;
+    if (!mayWrite(reply, c.project, [c.cwd])) return;
     if (!(await git.isRepo(c.cwd))) return reply.code(400).send({ error: 'not a git repository' });
     try {
       await git.deleteBranch(c.cwd, req.body.name.trim(), req.body.force);
@@ -682,9 +678,9 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   });
 
   /** The chat and its folder for a route that changes files there, or null after replying (404, 403, 409, 400). */
-  const writable = async (req: { params: { id: string }; user?: { role: string } }, reply: Reply) => {
+  const writable = async (req: { params: { id: string } }, reply: Reply) => {
     const c = load(req.params.id, reply);
-    if (!c || !mayWrite(req, reply, c.project, [c.cwd])) return null;
+    if (!c || !mayWrite(reply, c.project, [c.cwd])) return null;
     if (!(await git.isRepo(c.cwd))) { reply.code(400).send({ error: 'not a git repository' }); return null; }
     return c;
   };
@@ -1012,7 +1008,6 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
   }, async (req, reply) => {
     const c = load(req.params.id, reply);
     if (!c) return;
-    if (c.project.sandbox === 'read-only' && req.user?.role !== 'admin') return reply.code(403).send({ error: 'read-only project: admin only' });
     const url = await openPr(c);
     if (!url) return reply.code(404).send({ error: 'this chat has no Merge Request open' });
     const cli = prCli(url);

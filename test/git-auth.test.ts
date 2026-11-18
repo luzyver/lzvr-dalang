@@ -106,8 +106,8 @@ describe('parsing the CLIs', () => {
 describe('Settings → Git', () => {
   it('gives every other user their own setup, apart from the server\'s', async () => {
     const t = setup();
-    const ann = await mkUser(t, 'ann', 'admin');
-    const dev = await mkUser(t, 'dev', 'dev');
+    const ann = await mkUser(t, 'ann');
+    const dev = await mkUser(t, 'dev');
     const asAnn = bearer(ann.token);
     const annDir = join(t.cfg.stateDir, 'git-users', ann.id);
 
@@ -497,7 +497,7 @@ describe('working as a panel user in a chat', () => {
     sh(repo, 'commit', '-q', '--allow-empty', '-m', 'init');
     const project = (await t.call('POST', '/api/projects', { name: 'proj', path: 'proj', sandbox: 'workspace-write' })).json();
     const conv = (await t.call('POST', `/api/projects/${project.id}/conversations`, { worktree: false })).json();
-    const dev = await mkUser(t, 'dev', 'dev');
+    const dev = await mkUser(t, 'dev');
     let n = 0;
     const commitAs = (headers: { authorization: string }) => {
       writeFileSync(join(repo, `f${++n}.txt`), `${n}\n`);

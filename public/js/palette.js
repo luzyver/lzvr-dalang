@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api, Unauthorized } from './api.js';
 import { Icon, Modal, Spinner } from './ui.js';
-import { clickupApprovals, convs, isAdmin, newChat, openChat, openSettings, openSqlEditor, openView, projects, route, toggleInspector, ui } from './store.js';
+import { convs, newChat, openChat, openSettings, openSqlEditor, openView, projects, route, toggleInspector, ui } from './store.js';
 import { theme } from './theme.js';
 import { signOut } from './session.js';
 
@@ -27,15 +27,13 @@ function actions() {
   }
   list.push({ id: 'schedules', icon: 'clock', label: 'Scheduled prompts', run: () => openView('schedules') });
   list.push({ id: 'sql', icon: 'database', label: 'Open SQL Editor', run: () => { ui.palette.value = false; openSqlEditor(); } });
-  if (isAdmin.value || clickupApprovals.value.length > 0) list.push({ id: 'approvals', icon: 'shield-check', label: 'Approvals', run: () => openView('approvals') });
-  if (isAdmin.value) {
-    list.push({ id: 'ssh', icon: 'terminal', label: 'SSH hosts', run: () => openView('ssh') });
-    list.push({ id: 'add-project', icon: 'folder-plus', label: 'Add project', run: () => { ui.addProject.value = true; } });
-    list.push({ id: 'codex', icon: 'key-round', label: 'Settings: Codex accounts', run: () => openSettings('codex') });
-    list.push({ id: 'claude', icon: 'key-round', label: 'Settings: Claude Code accounts', run: () => openSettings('claude') });
-    list.push({ id: 'defaults', icon: 'sliders-horizontal', label: 'Settings: Model & effort defaults', run: () => openSettings('defaults') });
-    list.push({ id: 'users', icon: 'users', label: 'Settings: Users', run: () => openSettings('users') });
-  }
+  list.push({ id: 'approvals', icon: 'shield-check', label: 'Approvals', run: () => openView('approvals') });
+  list.push({ id: 'ssh', icon: 'terminal', label: 'SSH hosts', run: () => openView('ssh') });
+  list.push({ id: 'add-project', icon: 'folder-plus', label: 'Add project', run: () => { ui.addProject.value = true; } });
+  list.push({ id: 'codex', icon: 'key-round', label: 'Settings: Codex accounts', run: () => openSettings('codex') });
+  list.push({ id: 'claude', icon: 'key-round', label: 'Settings: Claude Code accounts', run: () => openSettings('claude') });
+  list.push({ id: 'defaults', icon: 'sliders-horizontal', label: 'Settings: Model & effort defaults', run: () => openSettings('defaults') });
+  list.push({ id: 'users', icon: 'users', label: 'Settings: Users', run: () => openSettings('users') });
   list.push({ id: 'appearance', icon: 'palette', label: 'Settings: Appearance', run: () => openSettings('appearance') });
   list.push({ id: 'theme', icon: theme.value === 'dark' ? 'sun' : 'moon', label: `Switch to ${theme.value === 'dark' ? 'light' : 'dark'} theme`,
     run: () => { theme.value = theme.value === 'dark' ? 'light' : 'dark'; } });

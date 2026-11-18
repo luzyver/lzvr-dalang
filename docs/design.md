@@ -99,7 +99,7 @@ different measurements; see [Active chat context](#active-chat-context).
 - **Automatic reviewer** (off by default): after a completed top-level chat turn changes files in a writable git
   project, a read-only reviewer compares the changes with the person's request using the before/after checkpoints.
   It waits for queued work and sub-agents to finish. Findings are queued back into the original chat for correction;
-  the default limit is two review rounds per request. Admins can choose a backend, model, effort, round limit and
+  the default limit is two review rounds per request. Settings choose a backend, model, effort, round limit and
   review instructions. Reviewer turns consume account usage and do not commit or merge the changes.
 - **Design detector** (on by default): the bundled Impeccable hook checks UI files after edits and makes a deeper
   pass when the turn ends. Findings go into the agent's context; the hook does not block edits. It skips read-only
@@ -140,10 +140,10 @@ The PWA service worker handles installation and push notifications; it does not 
 
 ## Trust boundaries
 
-- The gateway checks authentication, roles and project access. A turn-scoped MCP token opens only `/mcp` and is
+- The gateway checks authentication and project access. A turn-scoped MCP token opens only `/mcp` and is
   revoked when the turn ends; it does not grant the full HTTP API access of the owner token.
-- Database and SSH policies are enforced by their gateway tools. Operations requiring approval are held for an
-  admin. External MCP servers have their own permissions and credentials.
+- Database and SSH policies are enforced by their gateway tools. Operations requiring approval are held for a
+  person who may open that connection or host. External MCP servers have their own permissions and credentials.
 - Agents are host processes. Their effective filesystem and command permissions depend on the backend and
   configured sandbox. Gateway access controls do not isolate a hostile process from readable host files.
 - The subprocess runner removes inherited `LZVR_*` variables and injects the credentials required for that turn.
@@ -214,7 +214,7 @@ it (the owner does not see other people's), and it goes when the user is deleted
 - **People.** The lightbulb button in a chat's header opens the memory, with a tab for the chat's project and one for
   your own: search, add, edit or forget. Everyone who may open the project may change its memory (the same as with its
   chats); your own is yours alone (`/api/me/memories`).
-- **Settings → Project memory** (admins): keeping facts from turns on or off (on by default), the model per backend
+- **Settings → Project memory**: keeping facts from turns on or off (on by default), the model per backend
   (default: the chat's own; a small one is enough), the reasoning effort (default `low`), and whether people's stated
   preferences are kept for them too (on by default). `AUTO_MEMORY=0` on the
   server turns the automatic part off whatever is set there; memories saved on purpose still work and are still shown.
@@ -223,7 +223,7 @@ it (the owner does not see other people's), and it goes when the user is deleted
 
 By default a chat's agent does not commit or push: you do that from the chat's **Changes** tab (commit, push, Merge
 Request), which Dalang runs with its own git, outside any turn. **Settings → Model & effort → Commits and pushes**
-(admins) has a switch for each.
+has a switch for each.
 
 - **Told**: every turn is told not to commit or push, even when asked, and to leave its changes ready for you.
 - **Blocked** in the agent's own git, for Codex and Claude Code alike, through git config in the turn's environment
@@ -243,9 +243,8 @@ file by file. Give the path of the CBM binary (a release from its GitHub page; n
 **Test binary**, turn it on.
 
 - **Dalang runs it**: one CBM session for the whole server, started with Dalang's state dir as its folder. A project's
-  first index is made only when someone asks: the owner with **Index** / **Reindex** in the tab, an admin with the brain button in a chat's
-  header (shown only while code memory is on and the project's code changed since its graph, or it has none yet), and anyone else with that button too, as a request an admin or the owner approves in **Approvals** (it runs
-  then; a push notification says one waits). Everyone only for projects they may open. A first index uses several cores for seconds to minutes;
+  first index is made only when someone asks: the owner with **Index** / **Reindex** in the tab, anyone with the brain button in a chat's
+  header (shown only while code memory is on and the project's code changed since its graph, or it has none yet). Everyone only for projects they may open. A first index uses several cores for seconds to minutes;
   indexing again only reads what changed and takes seconds. The tab lists each project's index, and marks it
   **files changed since** when the project's git state (HEAD or uncommitted changes) differs from the one it indexed.
 - **A turn reads the graph of the code as it is now**: when a prompt arrives for a project whose graph exists but whose
@@ -255,7 +254,7 @@ file by file. Give the path of the CBM binary (a release from its GitHub page; n
   project's main folder, so only changes there count. **Reindex before each turn** in the tab turns this off: graphs
   then stay as they are until someone clicks Reindex.
 - **Deleting an index**: the trash button next to a project in the tab (the owner), or the brain button in a chat while
-  it indexes (an admin), deletes the project's graph, drops an index of it waiting in the queue, and stops one running
+  it indexes, deletes the project's graph, drops an index of it waiting in the queue, and stops one running
   (by restarting the CBM session, so chats keep their tools). A turn waiting for that index starts without it, and
   turns stop reindexing the project until it is indexed again.
 - **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), and
@@ -291,7 +290,7 @@ or restoring project files:
   with unmerged commits are retained; a merged remote branch is removed only when it has not advanced.
 - **Changes inspector:** commit selected files or hunks, inspect diffs and history, switch branches in a plain chat,
   and create Merge Requests. A worktree chat stays on its own branch. Operations that change files are refused
-  while an agent is running in the same folder; in read-only projects they are admin-only.
+  while an agent is running in the same folder.
 - **Publishing:** the commit form's Push option controls whether a commit is pushed immediately. A failed push
   leaves the local commit intact. Merge Requests use `gh` or `glab`; a worktree targets its starting branch, while
   a plain chat targets the remote default branch. See [forge setup](setup.md#merge-requests-gh-and-glab).
@@ -307,7 +306,7 @@ or restoring project files:
 - **History and review:** compare refs, cherry-pick, revert and tag commits. An opened Merge Request shows CI and
   review comments; Address comments and Fix checks queue work for the chat's agent. Merging remains a user action.
 - **Generated text:** commit subjects and Merge Request descriptions use read-only, sessionless requests on the
-  chat's backend/model and consume account usage. Admins can edit the generation instructions.
+  chat's backend/model and consume account usage. The generation instructions can be edited in Settings.
 - **Editor:** the code button opens the chat's project folder or worktree. Search, replace, blame, file history,
   uploads and terminals are available. External edits reload automatically unless there are unsaved changes;
   saving never silently overwrites a newer file. Read-only and running-agent restrictions also apply here.

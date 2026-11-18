@@ -132,7 +132,7 @@ export function codeRoutes(app: FastifyInstance, deps: {
       root: basename(c.root),
       readOnly: c.project.sandbox === 'read-only',
       busy: busy(c),
-      terminal: !!req.user && (await deps.terminalAs(req.user)) !== null && !(c.project.sandbox === 'read-only' && req.user.role !== 'admin'),
+      terminal: !!req.user && (await deps.terminalAs(req.user)) !== null,
       terminalAs: req.user ? await deps.terminalAs(req.user) : null,
     };
   });

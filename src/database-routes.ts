@@ -12,7 +12,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import {
   AGENT_MODES, agentRefusal, countRows, type DbConnection, DEFAULT_PORT, DRIVERS, editRows, findUnsafe, listDatabases, loadConnections, onDatabase,
-  panelRefusal, planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
+  planBackup, previewEdits, QueryError, type QueryResult, readBackup, readDdl, readSchema, type RowEdit, runScript, saveConnections, SSL_MODES,
   streamStatement, testConnection,
 } from './databases.js';
 import { EXPORT_FORMATS, EXPORT_TYPES, type ExportFormat, exportSink } from './db-export.js';
@@ -251,9 +251,6 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   recoverDbApprovals(store);
   /** Downloads whose statement runs, waiting for the browser to fetch the file: ticket -> who takes the response. */
   const exportTickets = new Map<string, { format: ExportFormat; take: (raw: ServerResponse) => void }>();
-  const requireAdmin = async (req: { user?: AuthUser }, reply: { code(n: number): { send(b: unknown): unknown } }) => {
-    if (req.user?.role !== 'admin') return reply.code(403).send({ error: 'admin only' });
-  };
   /** The connection, if this caller may open it (one they may not does not exist for them). */
   const find = (user: AuthUser, id: string) => loadConnections(store).find((c) => c.id === id && canAccess(user, c.access));
 
@@ -320,7 +317,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   app.get('/api/db/agent-connections', (req) => loadConnections(store).filter((c) => c.agent !== 'off' && canAccess(req.user!, c.access))
     .map((c) => ({ id: c.id, label: c.label, engine: c.driver })));
 
-  app.put<{ Params: { id: string }; Body: Body }>('/api/db/connections/:id', { onRequest: requireAdmin, schema: { body: BODY } }, (req, reply) => {
+  app.put<{ Params: { id: string }; Body: Body }>('/api/db/connections/:id', { schema: { body: BODY } }, (req, reply) => {
     const { id } = req.params;
     if (!ID.test(id)) return reply.code(400).send({ error: 'name: lowercase letters, digits, - and _ (at most 32)' });
     const list = loadConnections(store);
@@ -334,7 +331,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     return view(next);
   });
 
-  app.delete<{ Params: { id: string } }>('/api/db/connections/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/db/connections/:id', (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     saveConnections(store, loadConnections(store).filter((c) => c.id !== req.params.id));
     setMembership(store, req.params.id, []);
@@ -347,7 +344,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   app.get('/api/db/workspaces', () => loadWorkspaces(store));
 
   app.post<{ Body: { name: string } }>('/api/db/workspaces', {
-    onRequest: requireAdmin, schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: WS_NAME } } },
+    schema: { body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: WS_NAME } } },
   }, (req, reply) => {
     const list = loadWorkspaces(store);
     const name = req.body.name.trim();
@@ -361,7 +358,6 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   });
 
   app.patch<{ Params: { id: string }; Body: { name?: string; conns?: string[] } }>('/api/db/workspaces/:id', {
-    onRequest: requireAdmin,
     schema: { body: { type: 'object', additionalProperties: false, properties: {
       name: WS_NAME, conns: { type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 32 } },
     } } },
@@ -383,7 +379,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     return w;
   });
 
-  app.delete<{ Params: { id: string } }>('/api/db/workspaces/:id', { onRequest: requireAdmin }, (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/api/db/workspaces/:id', (req, reply) => {
     const list = loadWorkspaces(store);
     if (!list.some((w) => w.id === req.params.id)) return reply.code(404).send({ error: 'not found' });
     if (list.length === 1) return reply.code(409).send({ error: 'the last workspace stays' });
@@ -395,7 +391,6 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   // a trusted key that changed fails before logging in and answers it in `changedKey`: only Test connection again with
   // that key as `acceptKey` (the person saw it and accepted it) logs in.
   app.post<{ Body: Body & { id?: string; acceptKey?: string } }>('/api/db/test', {
-    onRequest: requireAdmin,
     schema: { body: { ...BODY, properties: { ...BODY.properties, id: { type: 'string', maxLength: 32 }, acceptKey: { type: 'string', maxLength: 200 } } } },
   }, async (req, reply) => {
     const { id, acceptKey, ...b } = req.body;
@@ -436,8 +431,6 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
   }, async (req, reply) => {
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
-    const refused = c.readOnly && req.user!.role !== 'admin' ? panelRefusal(req.body.sql, c.driver) : null;
-    if (refused) return reply.code(400).send({ error: refused, index: 0, results: [] });
     if (!c.readOnly && !req.body.confirmed) {
       const unsafe = findUnsafe(req.body.sql, c.driver);
       if (unsafe.length) {
@@ -478,8 +471,6 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     const c = find(req.user!, req.params.id);
     if (!c) return reply.code(404).send({ error: 'not found' });
     const b = req.body;
-    const refused = c.readOnly && req.user!.role !== 'admin' ? panelRefusal(b.sql, c.driver) : null;
-    if (refused) return reply.code(400).send({ error: refused });
     if (b.format === 'sql' && (c.driver === 'mongodb' || c.driver === 'redis' || c.driver === 'elasticsearch')) return reply.code(400).send({ error: 'SQL INSERT statements are for SQL databases' });
     let target: DbConnection;
     try { target = onDatabase(c, b.database); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
@@ -571,19 +562,19 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     try { return { ddl: await readDdl(onDatabase(c, req.query.database), req.query.schema, req.query.table) }; } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
   });
 
-  app.get<{ Params: { id: string } }>('/api/db/connections/:id/log', { onRequest: requireAdmin }, (req, reply) => {
+  app.get<{ Params: { id: string } }>('/api/db/connections/:id/log', (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     return readDbLog(store, req.params.id);
   });
 
   // The backups taken before agents' writes on this connection, newest first.
-  app.get<{ Params: { id: string } }>('/api/db/connections/:id/backups', { onRequest: requireAdmin }, (req, reply) => {
+  app.get<{ Params: { id: string } }>('/api/db/connections/:id/backups', (req, reply) => {
     if (!find(req.user!, req.params.id)) return reply.code(404).send({ error: 'not found' });
     return listBackups(d.stateDir, req.params.id);
   });
 
   // One of them (named in the list and the log), as a JSON file.
-  app.get<{ Params: { id: string; file: string } }>('/api/db/connections/:id/backups/:file', { onRequest: requireAdmin }, async (req, reply) => {
+  app.get<{ Params: { id: string; file: string } }>('/api/db/connections/:id/backups/:file', async (req, reply) => {
     if (!find(req.user!, req.params.id) || !BACKUP_FILE.test(req.params.file)) return reply.code(404).send({ error: 'not found' });
     let body: Buffer;
     try { body = await readFile(join(backupDir(d.stateDir, req.params.id), req.params.file)); } catch { return reply.code(404).send({ error: 'not found (only the newest 200 are kept)' }); }
@@ -592,7 +583,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
 
   // Writes agents asked for on 'approve' connections. Admins see those of connections they may open.
   const visibleApproval = (user: AuthUser, a: DbApproval) => !!find(user, a.conn);
-  app.get<{ Querystring: { status?: string } }>('/api/db/approvals', { onRequest: requireAdmin }, (req) =>
+  app.get<{ Querystring: { status?: string } }>('/api/db/approvals', (req) =>
     readDbApprovals(store).filter((a) => (req.query.status ? a.status === req.query.status : ['pending', 'executing', 'unknown'].includes(a.status)) && visibleApproval(req.user!, a)).reverse());
 
   /** Tells the chat the agent asked from what became of its write, so it can go on. */
@@ -669,7 +660,7 @@ export function databaseRoutes(app: FastifyInstance, d: { store: Store; stateDir
     }
     return a;
   };
-  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/approve', { onRequest: requireAdmin }, decide('approve'));
-  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/reject', { onRequest: requireAdmin }, decide('reject'));
-  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/dismiss', { onRequest: requireAdmin }, decide('dismiss'));
+  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/approve', decide('approve'));
+  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/reject', decide('reject'));
+  app.post<{ Params: { id: string } }>('/api/db/approvals/:id/dismiss', decide('dismiss'));
 }

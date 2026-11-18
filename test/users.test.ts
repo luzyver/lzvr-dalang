@@ -7,104 +7,105 @@ const call = (t: T, method: string, url: string, headers: Record<string, string>
   t.app.inject({ method: method as 'GET', url, headers, payload: payload as object | undefined });
 
 describe('users', () => {
-  it('lets an admin create a user, and shows the personal token only once', async () => {
+  it('creates a user, and shows the personal token only once', async () => {
     const t = setupApp();
-    const r = await call(t, 'POST', '/api/users', AUTH, { name: 'budi', role: 'dev' });
+    const r = await call(t, 'POST', '/api/users', AUTH, { name: 'budi' });
     expect(r.statusCode).toBe(201);
-    expect(r.json()).toMatchObject({ name: 'budi', role: 'dev', token: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(r.json()).toMatchObject({ name: 'budi', token: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(r.json()).not.toHaveProperty('role');
 
     const list = (await call(t, 'GET', '/api/users', AUTH)).json();
-    expect(list).toEqual([{ id: expect.any(String), name: 'budi', role: 'dev', email: null, createdAt: expect.any(String) }]);
+    expect(list).toEqual([{ id: expect.any(String), name: 'budi', email: null, createdAt: expect.any(String) }]);
     expect(JSON.stringify(list)).not.toContain(r.json().token);
     // the database keeps a hash, never the token itself
     expect(JSON.stringify(t.store.db.prepare('SELECT * FROM users').all())).not.toContain(r.json().token);
   });
 
-  it('rejects bad roles, bad or reserved names, and duplicates', async () => {
+  it('ignores a role (users have none), rejects bad or reserved names, and duplicates', async () => {
     const t = setupApp();
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'a', role: 'root' })).statusCode).toBe(400);
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'A B', role: 'dev' })).statusCode).toBe(400);
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: '../x', role: 'dev' })).statusCode).toBe(400);
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'owner', role: 'dev' })).statusCode).toBe(409);
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'budi', role: 'dev' })).statusCode).toBe(201);
-    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'budi', role: 'admin' })).statusCode).toBe(409);
+    const withRole = await call(t, 'POST', '/api/users', AUTH, { name: 'a', role: 'admin' });
+    expect(withRole.statusCode).toBe(201);
+    expect(withRole.json()).not.toHaveProperty('role');
+    expect((await call(t, 'POST', '/api/users', AUTH, {})).statusCode).toBe(400);
+    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'A B' })).statusCode).toBe(400);
+    expect((await call(t, 'POST', '/api/users', AUTH, { name: '../x' })).statusCode).toBe(400);
+    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'owner' })).statusCode).toBe(409);
+    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'budi' })).statusCode).toBe(201);
+    expect((await call(t, 'POST', '/api/users', AUTH, { name: 'budi' })).statusCode).toBe(409);
   });
 
   it('tells each caller who they are', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    const admin = await mkUser(t, 'sari', 'admin');
-    expect((await call(t, 'GET', '/api/me', AUTH)).json()).toEqual({ name: 'owner', role: 'admin', main: true });
-    expect((await call(t, 'GET', '/api/me', bearer(dev.token))).json()).toEqual({ name: 'budi', role: 'dev', main: false });
-    expect((await call(t, 'GET', '/api/me', bearer(admin.token))).json()).toEqual({ name: 'sari', role: 'admin', main: false });
+    const budi = await mkUser(t, 'budi');
+    expect((await call(t, 'GET', '/api/me', AUTH)).json()).toEqual({ name: 'owner', main: true });
+    expect((await call(t, 'GET', '/api/me', bearer(budi.token))).json()).toEqual({ name: 'budi', main: false });
     expect((await call(t, 'GET', '/api/me', {})).statusCode).toBe(401);
   });
 
-  it('lets an admin user manage users, but not a dev', async () => {
+  it('lets any user manage users', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    const admin = await mkUser(t, 'sari', 'admin');
-    expect((await call(t, 'POST', '/api/users', bearer(dev.token), { name: 'x', role: 'dev' })).statusCode).toBe(403);
-    expect((await call(t, 'POST', '/api/users', bearer(admin.token), { name: 'x', role: 'dev' })).statusCode).toBe(201);
+    const budi = await mkUser(t, 'budi');
+    const made = await call(t, 'POST', '/api/users', bearer(budi.token), { name: 'x' });
+    expect(made.statusCode).toBe(201);
+    expect((await call(t, 'GET', '/api/users', bearer(budi.token))).json().map((u: { name: string }) => u.name)).toEqual(['budi', 'x']);
+    expect((await call(t, 'DELETE', `/api/users/${made.json().id}`, bearer(budi.token))).statusCode).toBe(204);
   });
 
   it('rotating a token kills the old one and the user\'s sessions', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    t.store.createSession('sess-hash', Date.now() + 60_000, dev.id);
-    const r = await call(t, 'POST', `/api/users/${dev.id}/token`, AUTH);
+    const budi = await mkUser(t, 'budi');
+    t.store.createSession('sess-hash', Date.now() + 60_000, budi.id);
+    const r = await call(t, 'POST', `/api/users/${budi.id}/token`, AUTH);
     expect(r.statusCode).toBe(200);
     const fresh = r.json().token as string;
-    expect(fresh).not.toBe(dev.token);
-    expect((await call(t, 'GET', '/api/me', bearer(dev.token))).statusCode).toBe(401);
+    expect(fresh).not.toBe(budi.token);
+    expect((await call(t, 'GET', '/api/me', bearer(budi.token))).statusCode).toBe(401);
     expect((await call(t, 'GET', '/api/me', bearer(fresh))).statusCode).toBe(200);
     expect(t.store.hasSession('sess-hash', Date.now())).toBe(false);
     expect((await call(t, 'POST', '/api/users/nope/token', AUTH)).statusCode).toBe(404);
   });
 
-  it('changes a role, with immediate effect', async () => {
+  it('changes an email, and no longer a role', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    expect((await call(t, 'GET', '/api/users', bearer(dev.token))).statusCode).toBe(403);
-    expect((await call(t, 'PATCH', `/api/users/${dev.id}`, AUTH, { role: 'admin' })).statusCode).toBe(204);
-    expect((await call(t, 'GET', '/api/users', bearer(dev.token))).statusCode).toBe(200);
-    expect((await call(t, 'PATCH', `/api/users/${dev.id}`, AUTH, { role: 'god' })).statusCode).toBe(400);
-    expect((await call(t, 'PATCH', '/api/users/nope', AUTH, { role: 'dev' })).statusCode).toBe(404);
+    const budi = await mkUser(t, 'budi');
+    expect((await call(t, 'PATCH', `/api/users/${budi.id}`, AUTH, { email: 'budi@example.com' })).statusCode).toBe(204);
+    expect((await call(t, 'GET', '/api/users', AUTH)).json()[0].email).toBe('budi@example.com');
+    expect((await call(t, 'PATCH', `/api/users/${budi.id}`, AUTH, { role: 'admin' })).statusCode).toBe(400);
+    expect((await call(t, 'PATCH', `/api/users/${budi.id}`, AUTH, {})).statusCode).toBe(400);
+    expect((await call(t, 'PATCH', '/api/users/nope', AUTH, { email: '' })).statusCode).toBe(404);
   });
 
   it('deleting a user ends their access, including sessions', async () => {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    t.store.createSession('sess-hash', Date.now() + 60_000, dev.id);
-    expect((await call(t, 'DELETE', `/api/users/${dev.id}`, AUTH)).statusCode).toBe(204);
-    expect((await call(t, 'GET', '/api/me', bearer(dev.token))).statusCode).toBe(401);
+    const budi = await mkUser(t, 'budi');
+    t.store.createSession('sess-hash', Date.now() + 60_000, budi.id);
+    expect((await call(t, 'DELETE', `/api/users/${budi.id}`, AUTH)).statusCode).toBe(204);
+    expect((await call(t, 'GET', '/api/me', bearer(budi.token))).statusCode).toBe(401);
     expect(t.store.hasSession('sess-hash', Date.now())).toBe(false);
-    expect((await call(t, 'DELETE', `/api/users/${dev.id}`, AUTH)).statusCode).toBe(404);
+    expect((await call(t, 'DELETE', `/api/users/${budi.id}`, AUTH)).statusCode).toBe(404);
   });
 
-  it('an admin can remove their own account without locking the owner out', async () => {
+  it('a user can remove their own account without locking the owner out', async () => {
     const t = setupApp();
-    const admin = await mkUser(t, 'sari', 'admin');
-    expect((await call(t, 'DELETE', `/api/users/${admin.id}`, bearer(admin.token))).statusCode).toBe(204);
+    const sari = await mkUser(t, 'sari');
+    expect((await call(t, 'DELETE', `/api/users/${sari.id}`, bearer(sari.token))).statusCode).toBe(204);
     expect((await call(t, 'GET', '/api/users', AUTH)).json()).toEqual([]); // the main token still works
   });
 });
 
-describe('what a dev may do', () => {
+describe('what a user may do', () => {
   async function world() {
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
-    const admin = await mkUser(t, 'sari', 'admin');
+    const user = await mkUser(t, 'budi');
     const proj = (await call(t, 'POST', '/api/projects', AUTH, { name: 'proj', path: 'proj' })).json();
     const conv = (await call(t, 'POST', `/api/projects/${proj.id}/conversations`, AUTH)).json();
-    return { t, dev: bearer(dev.token), admin: bearer(admin.token), proj, conv };
+    return { t, user: bearer(user.token), proj, conv };
   }
 
-  it('is refused every admin-only route, while an admin is not', async () => {
-    const { t, dev, admin, proj, conv } = await world();
-    const adminOnly: [string, string, unknown?][] = [
+  it('is refused none of the routes that were once for admins', async () => {
+    const { t, user, proj } = await world();
+    const onceAdminOnly: [string, string, unknown?][] = [
       ['POST', '/api/projects', { name: 'x', path: 'proj' }],
-      ['DELETE', `/api/projects/${proj.id}`],
       ['POST', '/api/accounts/unblock'],
       ['POST', '/api/accounts/login', { name: 'x' }],
       ['GET', '/api/accounts/login/abc'],
@@ -113,35 +114,32 @@ describe('what a dev may do', () => {
       ['POST', '/api/approvals/1/approve'],
       ['POST', '/api/approvals/1/reject'],
       ['GET', '/api/users'],
-      ['POST', '/api/users', { name: 'zed', role: 'dev' }],
-      ['PATCH', '/api/users/abc', { role: 'admin' }],
+      ['POST', '/api/users', { name: 'zed' }],
+      ['PATCH', '/api/users/abc', { email: '' }],
       ['POST', '/api/users/abc/token'],
       ['DELETE', '/api/users/abc'],
+      ['DELETE', `/api/projects/${proj.id}`],
     ];
-    for (const [method, url, body] of adminOnly) {
-      expect((await call(t, method, url, dev, body)).statusCode, `dev ${method} ${url}`).toBe(403);
+    for (const [method, url, body] of onceAdminOnly) {
+      expect((await call(t, method, url, user, body)).statusCode, `${method} ${url}`).not.toBe(403);
     }
-    // the project and conversation are untouched by all that
-    expect(t.store.getProject(proj.id)).not.toBeNull();
-    for (const [method, url, body] of adminOnly.filter(([, u]) => !u.startsWith('/api/projects/') || !u.endsWith(proj.id))) {
-      expect((await call(t, method, url, admin, body)).statusCode, `admin ${method} ${url}`).not.toBe(403);
-    }
+    expect(t.store.getProject(proj.id)).toBeNull(); // the last of them removed it
   });
 
   it('can do the everyday work: chat, queue, cancel, draft, files, notifications', async () => {
-    const { t, dev, proj, conv } = await world();
-    expect((await call(t, 'GET', '/api/projects', dev)).statusCode).toBe(200);
-    expect((await call(t, 'GET', `/api/projects/${proj.id}/conversations`, dev)).statusCode).toBe(200);
-    expect((await call(t, 'POST', `/api/projects/${proj.id}/conversations`, dev)).statusCode).toBe(201);
-    const sent = await call(t, 'POST', `/api/conversations/${conv.id}/prompts`, dev, { prompt: 'hello' });
+    const { t, user, proj, conv } = await world();
+    expect((await call(t, 'GET', '/api/projects', user)).statusCode).toBe(200);
+    expect((await call(t, 'GET', `/api/projects/${proj.id}/conversations`, user)).statusCode).toBe(200);
+    expect((await call(t, 'POST', `/api/projects/${proj.id}/conversations`, user)).statusCode).toBe(201);
+    const sent = await call(t, 'POST', `/api/conversations/${conv.id}/prompts`, user, { prompt: 'hello' });
     expect(sent.statusCode).toBe(202);
     await until(() => t.store.listTurns(conv.id).some((x) => x.status === 'completed'));
-    expect((await call(t, 'GET', `/api/conversations/${conv.id}`, dev)).statusCode).toBe(200);
-    expect((await call(t, 'GET', `/api/conversations/${conv.id}/queue`, dev)).statusCode).toBe(200);
-    expect((await call(t, 'POST', `/api/conversations/${conv.id}/cancel`, dev)).statusCode).toBe(200);
-    expect((await call(t, 'PUT', `/api/conversations/${conv.id}/draft`, dev, { draft: 'x' })).statusCode).toBe(204);
-    expect((await call(t, 'GET', '/api/accounts', dev)).statusCode).toBe(200);
-    expect((await call(t, 'GET', '/api/push/key', dev)).statusCode).toBe(200);
+    expect((await call(t, 'GET', `/api/conversations/${conv.id}`, user)).statusCode).toBe(200);
+    expect((await call(t, 'GET', `/api/conversations/${conv.id}/queue`, user)).statusCode).toBe(200);
+    expect((await call(t, 'POST', `/api/conversations/${conv.id}/cancel`, user)).statusCode).toBe(200);
+    expect((await call(t, 'PUT', `/api/conversations/${conv.id}/draft`, user, { draft: 'x' })).statusCode).toBe(204);
+    expect((await call(t, 'GET', '/api/accounts', user)).statusCode).toBe(200);
+    expect((await call(t, 'GET', '/api/push/key', user)).statusCode).toBe(200);
   });
 
 });

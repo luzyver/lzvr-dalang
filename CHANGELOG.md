@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Projects can be shared with selected users: **Access…** in a project's menu picks Everyone or Selected users, and
+  lists the users to tick (`members` on `POST /api/projects` and `PATCH /api/projects/:id`). A ticked user may open
+  the project in the panel and over `/mcp`; with none ticked it is the owner's alone
 - ClickUp beyond chat: agents read spaces, folders and lists, tasks (with comments, checklists, custom fields and
   dependencies), time entries and Docs (`clickup_list_spaces`, `clickup_get_list`, `clickup_find_tasks`,
   `clickup_get_task`, `clickup_time_entries`, `clickup_list_docs`, `clickup_get_doc`). With "Allow sending" on they
@@ -33,11 +36,22 @@ All notable changes to this project are documented here. The format follows
 - Docker: a `Dockerfile` and `compose.yaml` run Dalang in one container with the Codex and Claude Code CLIs, git and
   `gh`, as a user other than root, with the state and that user's home in volumes ("Install with Docker" in
   `docs/setup.md`)
+- Docker: the image has Python 3 (`python3`, also as `python`, with `pip` and `venv`), for the scripts agents write
+  and for Python projects
 - Docker: the image has the PHP CLI (`php-cli`), so agents working on PHP projects can check the files they change
   with `php -l`
 
 ### Changed
 
+- Users no longer have a role. The `dev` role is gone and every user may do what admins could: add and delete
+  projects, manage users, accounts, database connections and SSH hosts, decide approvals, index code memory at once,
+  write in read-only projects from the panel, and use every `/mcp` tool. Downloading a file outside a chat's own
+  folders by its path, which admins could, is now the owner's alone. What stays
+  the owner's alone (the server's git setup, MCP servers, code memory settings, root terminals) is unchanged.
+  `role` is gone from `/api/me`, `/api/users` and its `POST`/`PATCH` bodies
+- The "Owner and admins" access level is gone. Projects that had it are now shared by name with the users who were
+  admins at the upgrade; database connections, SSH hosts and SSH keys that had it are open to **everyone**: set them
+  to Owner only if they should not be. The API refuses `access: "admin"`
 - ClickUp is per user: everyone saves their own ClickUp token in Settings → MCP → ClickUp, their turns read as their
   own ClickUp user, and messages a chat asks to send wait for the approval of whoever sent the turn. "All users"
   (other users reading as the owner) is gone: without a token of their own a user gets no ClickUp tools. "Allow

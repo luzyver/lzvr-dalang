@@ -33,11 +33,11 @@ db_schema and db_query (in Claude Code they may need loading first: search your 
 db_list_connections to find the connection, db_schema for its tables and columns, then db_query. Do not connect any other
 way (psql, mysql, mongosh, redis-cli, a script, or credentials from .env or config files) unless the person asks for that
 explicitly. If the database is not in db_list_connections, or you may only read and need to write, say so instead of
-working around it. A write that answers pending_approval waits for an admin: do not send it again.`;
+working around it. A write that answers pending_approval waits for a person's approval: do not send it again.`;
 const SSH_GUIDE = `Servers: when asked to run something on a server or VM, use the dalang MCP tools ssh_list_hosts and ssh_exec
 (in Claude Code they may need loading first: search your tools for "mcp__dalang"). Dalang keeps the logins: do not look
 for SSH keys, passwords or addresses yourself, and do not run ssh, scp or sshpass unless the person asks for that
-explicitly. If the server is not in ssh_list_hosts, say so. A command that answers pending_approval waits for an admin:
+explicitly. If the server is not in ssh_list_hosts, say so. A command that answers pending_approval waits for a person's approval:
 do not send it again.`;
 /** The abort reason of a turn shutdown() stopped (a person's cancel has the default one). */
 const SHUTDOWN = 'shutdown';
@@ -631,7 +631,7 @@ export class Dispatcher {
           this.emit(convId, turnId, {
             type: 'account.exhausted',
             message: accounts.homes.length === 0
-              ? `no ${label} account has been added yet: an admin needs to add one in the panel and sign in`
+              ? `no ${label} account has been added yet: add one in the panel and sign in`
               : accounts.exhaustedReason(),
           });
           break;

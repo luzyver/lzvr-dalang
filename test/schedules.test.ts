@@ -76,10 +76,10 @@ describe('scheduled prompts', () => {
     await until(() => turnsDone(t.store, t.conv.id, 1));
   });
 
-  it('is open to devs and goes away with its chat', async () => {
+  it('is open to every user and goes away with its chat', async () => {
     const t = await chat();
-    const dev = await mkUser(t, 'dana', 'dev');
-    const r = await t.call('POST', `/api/conversations/${t.conv.id}/schedules`, { prompt: 'x', cron: '@daily' }, bearer(dev.token));
+    const dana = await mkUser(t, 'dana');
+    const r = await t.call('POST', `/api/conversations/${t.conv.id}/schedules`, { prompt: 'x', cron: '@daily' }, bearer(dana.token));
     expect(r.json().created_by).toBe('dana');
     await t.call('DELETE', `/api/conversations/${t.conv.id}`);
     expect(t.store.listSchedules()).toEqual([]);

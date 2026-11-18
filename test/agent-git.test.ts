@@ -64,7 +64,7 @@ describe('agent git policy', () => {
     expect(agentGitGuide({ commit: true, push: false })).toContain('committed but unpushed');
   });
 
-  it('applies to every turn by default, and is set by admins', async () => {
+  it('applies to every turn by default, and is set by any user', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lzvr-agit-'));
     const store = new Store();
     const fake = [process.execPath, fileURLToPath(new URL('./fake-claude.mjs', import.meta.url))];
@@ -83,9 +83,10 @@ describe('agent git policy', () => {
     expect(text().split('echo:two')[1]).not.toContain('gitcfg');
 
     const t = setupApp();
-    const dev = await mkUser(t, 'budi', 'dev');
+    const user = await mkUser(t, 'budi');
     expect((await t.app.inject({ url: '/api/settings/agent-git', headers: AUTH })).json()).toEqual({ commit: false, push: false });
-    expect((await t.app.inject({ method: 'PUT', url: '/api/settings/agent-git', headers: bearer(dev.token), payload: { commit: true, push: true } })).statusCode).toBe(403);
+    expect((await t.app.inject({ method: 'PUT', url: '/api/settings/agent-git', headers: bearer(user.token), payload: { commit: true, push: true } })).statusCode).toBe(204);
+    expect(t.store.getAgentGit()).toEqual({ commit: true, push: true });
     expect((await t.app.inject({ method: 'PUT', url: '/api/settings/agent-git', headers: AUTH, payload: { commit: true, push: false } })).statusCode).toBe(204);
     expect(t.store.getAgentGit()).toEqual({ commit: true, push: false });
     await t.app.close();

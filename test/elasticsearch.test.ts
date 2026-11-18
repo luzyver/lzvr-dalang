@@ -15,7 +15,7 @@ async function fixture(handler: (path: string, body: any, method: string) => unk
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   close.push(() => new Promise<void>(r => server.close(() => r())));
   return { id: 'es', label: 'Elastic', driver: 'elasticsearch', host: '127.0.0.1', port: (server.address() as any).port,
-    user: '', password: '', database: '', ssl: 'disable', file: '', access: 'admin', readOnly: true, agent: 'off' } as DbConnection;
+    user: '', password: '', database: '', ssl: 'disable', file: '', access: 'all', readOnly: true, agent: 'off' } as DbConnection;
 }
 const opts = { readOnly: true, limit: 2, timeoutMs: 1000 };
 const hit = (id: number) => ({ _index: 'books', _id: String(id), _score: 1, _source: { title: `Book ${id}` } });
