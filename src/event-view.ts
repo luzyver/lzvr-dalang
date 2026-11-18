@@ -43,6 +43,15 @@ function compactItem(item: Item): Item {
     case 'reasoning':
     case 'tool_call':
       return long(item.text) ? { ...item, text: `${item.text.slice(0, CUT)}…`, cut: true } : item;
+    case 'mcp_tool_call': {
+      // the thread's line shows the server, the tool and the start of its arguments; the result is in the full event
+      const args = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? '');
+      return { id: item.id, type: item.type, server: item.server, tool: item.tool, status: item.status, arguments: args.slice(0, 200), failed: !!item.error, cut: true };
+    }
+    case 'web_search':
+      return long(item.query) ? { ...item, query: `${item.query.slice(0, CUT)}…` } : item;
+    case 'todo_list':
+      return item; // the thread shows the whole plan
     default:
       return { id: item.id, type: item.type, cut: true }; // the thread shows only its kind; the rest is in the full event
   }
