@@ -60,7 +60,10 @@ describe('links to files for the person', () => {
   const href = (path: string) => `/api/conversations/c1/files/download?${new URLSearchParams({ path })}`;
 
   it('turns the link the agents are told to write into a download, also for a Windows folder', () => {
-    for (const dir of ['/data/state/chat-files/c1', 'D:\\dalang\\state\\chat-files\\c1', 'D:/dalang/state/chat-files/c1']) {
+    // A state folder with a space or a bracket in its path: the link is shown in <...>, which a bare one would end early.
+    const spaced = ['/home/my user/state/chat-files/c1', 'C:\\Users\\Budi Santoso\\dalang (1)\\state\\chat-files\\c1'];
+    for (const dir of spaced) expect(filesGuide(dir)).toContain(`](<${dir}/data.xlsx>)`);
+    for (const dir of ['/data/state/chat-files/c1', 'D:\\dalang\\state\\chat-files\\c1', 'D:/dalang/state/chat-files/c1', ...spaced]) {
       expect(downloads(filesGuide(dir))).toEqual([{ href: href(`${dir}/data.xlsx`), filename: 'data.xlsx' }]);
       expect(downloads(templatePrompt('isi @template:Penawaran', templates, dir))).toEqual([{ href: href(`${dir}/surat.pdf`), filename: 'surat.pdf' }]);
     }

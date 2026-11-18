@@ -106,7 +106,16 @@ How to do it:
 4. Convert the filled copy to PDF (for example \`soffice --headless --convert-to pdf --outdir <folder> <file>.docx\`).
    If no converter is installed, say so and give the filled .docx instead.
 5. Give the person the PDF (and the .docx) as Markdown links to their full paths, such as
-   [surat.pdf](${workDir}/surat.pdf): the chat turns such a link into a download. No spaces in the file names.`;
+   ${fileLink('surat.pdf', workDir)}: the chat turns such a link into a download. No spaces in the file names.`;
+}
+
+/**
+ * The Markdown link to `name` in `dir`, as the agent is shown it. A path with a space or a bracket (a state folder
+ * under "Program Files", a Windows user's folder) ends a bare link early, so it goes in <...>, which the chat reads too.
+ */
+function fileLink(name: string, dir: string): string {
+  const path = `${dir}/${name}`;
+  return /[\s()]/.test(path) ? `[${name}](<${path}>), with the < > around the path as written` : `[${name}](${path})`;
 }
 
 /**
@@ -118,7 +127,7 @@ export function filesGuide(workDir: string): string {
   return `Files for the person: a file you make for the person to take away and that is not part of the project's code (an
 export, a spreadsheet, a report, a chart or image, a PDF or Word document) goes in ${workDir}, not in the project
 folder, unless they ask for it in the project. Name it without spaces. In your answer, give each such file as a Markdown
-link to its full path, such as [data.xlsx](${workDir}/data.xlsx): the chat turns that link into a download. A path in
+link to its full path, such as ${fileLink('data.xlsx', workDir)}: the chat turns that link into a download. A path in
 plain text or in backticks cannot be downloaded. A file the person asks for that is already in the project is linked the
 same way, by its full path.`;
 }

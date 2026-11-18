@@ -72,7 +72,9 @@ describe('Dispatcher with the claude backend', () => {
     await until(() => turnsDone(store, conv.id, 2));
     expect(echoed()).not.toContain('Convert the filled copy to PDF');
     expect(echoed()).not.toContain(dir);
-    expect(echoed()).not.toContain(work);
+    // The turn that takes a report may still make a file for the person (an export from what a sub-agent found).
+    expect(echoed()).toContain(work);
+    expect(echoed()).toContain('Files for the person');
     // A custom skill may name the template: the mention is then in its instructions, not in what was typed.
     store.setCustomSkills([{ name: 'surat', description: '', content: 'Fill @template:surat from the input.' }]);
     store.enqueue(conv.id, '/custom surat untuk PT B', []);

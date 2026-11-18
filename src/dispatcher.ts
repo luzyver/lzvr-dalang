@@ -571,7 +571,8 @@ export class Dispatcher {
       // Files made for the person (an export, a filled template) go outside the project, in the chat's own folder
       // (filesDir, see filesGuide): Claude Code writes there only if given the folder, and so does Codex in its
       // workspace-write sandbox, which otherwise writes to the project and temp folders only.
-      const makesFiles = fills && sandbox !== 'read-only';
+      // Also in a turn that takes a report (a sub-agent's, a reviewer's): what the agent does with it may be such a file.
+      const makesFiles = !reviewer && sandbox !== 'read-only';
       if (makesFiles || filled.length) {
         mkdirSync(this.filesDir(convId), { recursive: true });
         if (claude) extraArgs.push(`--add-dir=${this.filesDir(convId)}`);
