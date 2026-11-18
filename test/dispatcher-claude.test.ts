@@ -72,7 +72,9 @@ describe('Dispatcher with the claude backend', () => {
     await until(() => turnsDone(store, conv.id, 2));
     expect(echoed()).not.toContain('Convert the filled copy to PDF');
     expect(echoed()).not.toContain(dir);
-    expect(echoed()).not.toContain(work);
+    // The turn that takes a report may still make a file for the person (an export from what a sub-agent found).
+    expect(echoed()).toContain(work);
+    expect(echoed()).toContain('Files for the person');
     // A custom skill may name the template: the mention is then in its instructions, not in what was typed.
     store.setCustomSkills([{ name: 'surat', description: '', content: 'Fill @template:surat from the input.' }]);
     store.enqueue(conv.id, '/custom surat untuk PT B', []);
@@ -147,13 +149,18 @@ describe('Dispatcher with the claude backend', () => {
     mkdirSync(join(skillsDir, 'charts'), { recursive: true });
     writeFileSync(join(skillsDir, 'charts', 'SKILL.md'), '---\nname: charts\ndescription: Draw charts\n---\nbody');
     const store = new Store();
-    const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: [join(dir, 'a')], claudeCommand: FAKE_CLAUDE, skillsDir });
+    const filesDir = join(dir, 'chat-files'); // the state folder's, when Dalang runs: links outlive a restart
+    const dispatcher = new Dispatcher(store, { homes: [], claudeHomes: [join(dir, 'a')], claudeCommand: FAKE_CLAUDE, skillsDir, filesDir });
     const conv = store.createConversation(store.createProject('p', dir).id, 'claude');
     store.enqueue(conv.id, 'hello', []);
     dispatcher.kick(conv.id);
     await until(() => turnsDone(store, conv.id, 1));
     const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
     expect(texts.some((t) => t.includes('Check them FIRST') && t.includes('- charts (') && t.includes(`|--add-dir=${skillsDir}`))).toBe(true);
+    // Files made for the person go in the chat's own folder outside the project, linked in the answer: told, and writable.
+    expect(texts.some((t) => t.includes('Files for the person') && t.includes(`](${join(filesDir, conv.id)}/data.xlsx)`) && t.includes(`|--add-dir=${join(filesDir, conv.id)}`))).toBe(true);
+    expect(dispatcher.filesDir(conv.id)).toBe(join(filesDir, conv.id));
+    expect(existsSync(join(filesDir, conv.id))).toBe(true);
     expect(readdirSync(join(dir, 'a')).filter((f) => f.startsWith('dalang-'))).toEqual([]); // the guide file is gone after the turn
   });
 

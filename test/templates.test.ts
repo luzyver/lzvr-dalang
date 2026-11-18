@@ -4,7 +4,9 @@ import { dirname } from 'node:path';
 import { crc32 } from 'node:zlib';
 // @ts-expect-error The panel modules are plain JavaScript.
 import { MENTION, mentionKind, mentionText, menuItems } from '../public/js/mention-kinds.js';
-import { isDocx, templateMentions, templatePrompt } from '../src/templates.js';
+// @ts-expect-error The panel modules are plain JavaScript.
+import { INLINE, localDownload } from '../public/js/file-link.js';
+import { filesGuide, isDocx, templateMentions, templatePrompt } from '../src/templates.js';
 import { AUTH } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
 
@@ -49,6 +51,31 @@ describe('templatePrompt', () => {
     expect(templatePrompt('@template:nope x', templates, '/tmp/work')).toContain('no template of that name');
     expect(templatePrompt('@template ', templates, '/tmp/work')).toContain('- penawaran: Surat penawaran');
     for (const p of ['hello', 'ntar manggilnya pakai @template', 'tambah fitur @template di docs']) expect(templatePrompt(p, templates, '/tmp/work')).toBe(p);
+  });
+});
+
+describe('links to files for the person', () => {
+  /** The downloads the chat makes of the Markdown links in a text (see inline in markdown.js). */
+  const downloads = (text: string) => [...text.matchAll(INLINE)].filter((m) => m[4] != null).map((m) => localDownload(m[5], 'c1'));
+  const href = (path: string) => `/api/conversations/c1/files/download?${new URLSearchParams({ path })}`;
+
+  it('turns the link the agents are told to write into a download, also for a Windows folder', () => {
+    // A state folder with a space or a bracket in its path: the link is shown in <...>, which a bare one would end early.
+    const spaced = ['/home/my user/state/chat-files/c1', 'C:\\Users\\Budi Santoso\\dalang (1)\\state\\chat-files\\c1'];
+    for (const dir of spaced) expect(filesGuide(dir)).toContain(`](<${dir}/data.xlsx>)`);
+    for (const dir of ['/data/state/chat-files/c1', 'D:\\dalang\\state\\chat-files\\c1', 'D:/dalang/state/chat-files/c1', ...spaced]) {
+      expect(downloads(filesGuide(dir))).toEqual([{ href: href(`${dir}/data.xlsx`), filename: 'data.xlsx' }]);
+      expect(downloads(templatePrompt('isi @template:Penawaran', templates, dir))).toEqual([{ href: href(`${dir}/surat.pdf`), filename: 'surat.pdf' }]);
+    }
+  });
+
+  it('takes a Windows path with backslashes, spaces or a line reference, and no other scheme', () => {
+    expect(downloads('[a](C:\\out\\laporan.pdf) [b](<C:\\my files\\data 1.xlsx>) [c](D:/ws/src/app.ts:12)')).toEqual([
+      { href: href('C:\\out\\laporan.pdf'), filename: 'laporan.pdf' },
+      { href: href('C:\\my files\\data 1.xlsx'), filename: 'data 1.xlsx' },
+      { href: href('D:/ws/src/app.ts'), filename: 'app.ts' },
+    ]);
+    expect(downloads('[a](javascript:alert(1)) [b](file:///etc/passwd) [c](data.xlsx)')).toEqual([]);
   });
 });
 

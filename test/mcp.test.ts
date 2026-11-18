@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { reviewDiffDir } from '../src/reviewer.js';
+import { templateWorkDir } from '../src/templates.js';
 import { fakeClickUp } from './fake-clickup.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { mkUser, setupApp, type AppExtras } from './setup-app.js';
@@ -833,6 +834,18 @@ describe('ClickUp tools', () => {
 
     expect((await call(agent, 'clickup_attach_file', { task: 't1', files: ['nope.png'] })).text).toMatch(/no file nope.png/);
     expect((await call(agent, 'clickup_attach_file', { task: 't404', files: ['shot.png'] })).text).toMatch(/no task t404/);
+    // A file the agent made for the person is outside the project, in the chat's own folder: this chat's only.
+    const other = 'another-chat';
+    try {
+      for (const id of [a.id, other]) {
+        mkdirSync(templateWorkDir(id), { recursive: true });
+        writeFileSync(join(templateWorkDir(id), 'data.xlsx'), 'xlsx-bytes');
+      }
+      expect((await call(agent, 'clickup_attach_file', { task: 't404', files: [join(templateWorkDir(a.id), 'data.xlsx')] })).text).toMatch(/no task t404/);
+      expect((await call(agent, 'clickup_attach_file', { task: 't1', files: [join(templateWorkDir(other), 'data.xlsx')] })).text).toMatch(/no file .*data\.xlsx/);
+    } finally {
+      for (const id of [a.id, other]) rmSync(templateWorkDir(id), { recursive: true, force: true });
+    }
     const note = await call(agent, 'clickup_comment_task', { task: 'DEV-42', text: 'lihat gambar', files: ['shot.png'] });
     expect(note.json).toMatchObject({
       status: 'pending_approval',

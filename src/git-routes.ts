@@ -41,7 +41,8 @@ export async function dropWorktrees(dispatcher: Dispatcher, project: Project, co
     for (let i = 0; i < 200 && dispatcher.isRunning(c.id); i++) await new Promise((r) => setTimeout(r, 50));
     await git.dropCheckpoints(project.path, c.id);
     rmSync(reviewDiffDir(c.id), { recursive: true, force: true }); // a reviewer's diff file
-    rmSync(templateWorkDir(c.id), { recursive: true, force: true }); // the templates it filled
+    rmSync(dispatcher.filesDir(c.id), { recursive: true, force: true }); // the files it made for the person
+    rmSync(templateWorkDir(c.id), { recursive: true, force: true }); // and the templates it filled before that folder existed
     if (!c.worktree) continue;
     await git.removeWorktree(project.path, c.worktree, c.branch).catch((e) => console.error(`could not remove worktree ${c.worktree}`, e));
   }

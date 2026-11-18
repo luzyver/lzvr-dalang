@@ -724,8 +724,10 @@ export function buildApp(
     const project = conv && store.getProject(conv.project_id);
     if (!conv || !project) return notFound(reply);
     const root = conv.worktree ?? project.path;
-    // A template is filled outside the project, in the chat's own folder (templateWorkDir): its PDF is this chat's too.
-    let real = insideRoot(root, req.query.path) ?? insideRoot(templateWorkDir(conv.id), req.query.path);
+    // Files made for the person (an export, a filled template) are outside the project, in the chat's own folder
+    // (Dispatcher.filesDir). Templates were filled in a temp folder before that one: a link in an older answer still names it.
+    let real = insideRoot(root, req.query.path) ?? insideRoot(dispatcher.filesDir(conv.id), req.query.path)
+      ?? insideRoot(templateWorkDir(conv.id), req.query.path);
     if (!real && req.user?.role === 'admin') {
       try { real = realpathSync(resolve(root, req.query.path)); } catch { /* no such file */ }
     }
