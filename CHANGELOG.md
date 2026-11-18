@@ -59,6 +59,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A Codex call of an MCP tool showed in the thread only as `mcp_tool_call`; it now shows the server and tool with its
+  arguments, and opens to its result or error. Codex web searches and plans show their query and progress too
+- Codex's notice that `--dangerously-bypass-hook-trust` is enabled, which it gives on every turn Dalang adds a hook
+  to, no longer shows in the thread as an error
 - With `GIT_FORGE=gitlab` set, creating a Merge Request for a `github.com` remote ran `glab` and failed with "none of
   the git remotes point to a known GitLab host" (and the other way round); the host name now decides, and
   `GIT_FORGE` only for a host whose name says neither

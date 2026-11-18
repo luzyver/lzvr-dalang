@@ -60,7 +60,7 @@ export function startStream(convId, onEvents, after = 0) {
 }
 
 const ms = (ts) => toDate(ts)?.getTime() ?? Date.now();
-const HOOK_TRUST_NOTICE = '--dangerously-bypass-hook-trust is enabled.';
+const HOOK_TRUST_NOTICE = /--dangerously-bypass-hook-trust`? is enabled/; // Codex puts the flag in backticks
 
 /**
  * A page of a chat's history in whole turns: `{ events, before, more, last }`. Without `before`, the last turns
@@ -72,6 +72,18 @@ export const historyPage = (convId, { before, focus } = {}) => {
   if (focus) q.set('focus', focus);
   return api(`/api/conversations/${convId}/history?${q}`);
 };
+
+const asText = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, null, 2));
+
+/** What a Codex MCP tool call shows when opened: its arguments, then its result (the text parts) or its error. */
+function mcpBody(item) {
+  const args = asText(item.arguments);
+  const content = item.result?.content;
+  const result = item.error ? `Error: ${item.error.message || asText(item.error)}`
+    : Array.isArray(content) ? content.map((c) => (c?.type === 'text' ? String(c.text ?? '') : `[${c?.type || 'content'}]`)).join('\n')
+      : asText(item.result?.structured_content ?? item.result);
+  return [args && args !== '{}' ? args : '', result].filter(Boolean).join('\n\n');
+}
 
 /**
  * One tool step from a completed item; a file change gives one step per file. `cut`: the server cut its long output
@@ -86,6 +98,22 @@ function steps(item, id, at) {
       return (item.changes || []).map((c, i) => ({ kind: 'file', id: `${id}.${i}`, at, cut: !!c.stat, stat: c.stat, path: String(c.path || ''), movePath: c.movePath, change: c.kind, diff: c.diff || '' }));
     case 'tool_call': return [{ kind: 'tool', id, at, tool: item.tool || 'tool', text: item.text || '' }];
     case 'reasoning': return item.text ? [{ kind: 'reasoning', id, at, cut, text: String(item.text) }] : [];
+    case 'mcp_tool_call': { // Codex's call of an MCP tool
+      const args = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? '');
+      return [{
+        kind: 'tool', id, at, cut, tool: [item.server, item.tool].filter(Boolean).join(' · ') || 'tool',
+        text: args === '{}' || args === '""' ? '' : args.slice(0, 200), failed: !!(item.error || item.failed || item.status === 'failed'), body: cut ? '' : mcpBody(item),
+      }];
+    }
+    case 'web_search': return [{ kind: 'tool', id, at, tool: 'Web search', text: String(item.query || '') }];
+    case 'todo_list': {
+      const items = Array.isArray(item.items) ? item.items : [];
+      if (!items.length) return [];
+      return [{
+        kind: 'tool', id, at, tool: 'Plan', text: `${items.filter((t) => t?.completed).length}/${items.length} done`,
+        body: items.map((t) => `${t?.completed ? '[x]' : '[ ]'} ${t?.text ?? ''}`).join('\n'),
+      }];
+    }
     default: return [{ kind: 'tool', id, at, tool: item.type || 'item', text: '' }];
   }
 }
@@ -147,15 +175,17 @@ export class ThreadModel {
         if (d.item?.type === 'command_execution') this.live = { label: 'Running', detail: String(d.item.command || '') };
         else if (d.item?.type === 'file_change') this.live = { label: 'Editing files', detail: '' };
         else if (d.item?.type === 'reasoning') this.live = { label: 'Thinking', detail: '' };
+        else if (d.item?.type === 'mcp_tool_call') this.live = { label: 'Calling', detail: [d.item.server, d.item.tool].filter(Boolean).join(' · ') };
         break;
       case 'item.completed': {
         const item = d.item;
         if (!item) break;
         this.live = null;
         if (item.type === 'error') {
-          this.#closeSteps();
           const message = typeof item.message === 'string' ? item.message : 'The agent reported an error.';
-          this.#note(message, message.includes(HOOK_TRUST_NOTICE) ? 'warn' : 'err', e.id);
+          if (HOOK_TRUST_NOTICE.test(message)) break; // Codex says so on every turn Dalang gives a hook: not an error
+          this.#closeSteps();
+          this.#note(message, 'err', e.id);
           break;
         }
         if (item.type === 'agent_message') {

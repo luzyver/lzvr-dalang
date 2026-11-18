@@ -118,9 +118,9 @@ describe('MCP gateway', () => {
     const before = (await call(c, 'get_events', { conversation_id: a.id, last_turns: 2, before_turn: last.earlier_before_turn })).json;
     expect(before.events[0].data.text).toBe('p0');
     expect(before.more_earlier).toBe(false);
-    const odd = t.store.addEvent(t.store.startTurn(a.id, 'q'), 'item.completed', JSON.stringify({ type: 'item.completed', item: { id: 'w', type: 'web_search', query: out } }));
+    const odd = t.store.addEvent(t.store.startTurn(a.id, 'q'), 'item.completed', JSON.stringify({ type: 'item.completed', item: { id: 'w', type: 'other_item', text: out } }));
     const oddCut = (await call(c, 'get_events', { conversation_id: a.id, after_id: odd - 1, limit: 1 })).json;
-    expect(oddCut.events[0].data.item).toEqual({ id: 'w', type: 'web_search', cut: true }); // an item of another kind says it was cut too
+    expect(oddCut.events[0].data.item).toEqual({ id: 'w', type: 'other_item', cut: true }); // an item of another kind says it was cut too
   });
 
   it('reads full messages without tool output and keeps both paging modes usable', async () => {

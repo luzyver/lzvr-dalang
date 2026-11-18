@@ -120,6 +120,12 @@ function Reasoning({ s, conversationId }) {
   return html`<div class="step-body"><div class="reasoning">${full ? full.text : html`<${Spinner} />`}</div></div>`;
 }
 
+/** What a tool call sent and got back, in full once opened. */
+function ToolBody({ s, conversationId }) {
+  const full = useFull(s, conversationId);
+  return html`<div class="step-body">${!full ? html`<${Spinner} />` : full.body ? html`<pre class="output">${full.body}</pre>` : html`<div class="reasoning">No output.</div>`}</div>`;
+}
+
 function Step({ s, root, conversationId, onOpen }) {
   const [open, setOpen] = useState(false);
   let icon;
@@ -149,6 +155,8 @@ function Step({ s, root, conversationId, onOpen }) {
     icon = 'wrench';
     label = s.tool;
     detail = s.text;
+    if (s.failed) side = html`<span class="exit bad"><${Icon} name="x" />failed</span>`;
+    if (s.body || s.cut) body = html`<${ToolBody} s=${s} conversationId=${conversationId} />`;
   }
   if (pops) return html`<li class="step expandable">
     <button class="step-line" aria-haspopup="dialog" onClick=${() => onOpen(s.id)}>

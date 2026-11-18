@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error The panel modules are plain JavaScript.
 import { ThreadModel } from '../public/js/stream.js';
+import { compactPayload } from '../src/event-view.js';
 
 const event = (id: number, data: Record<string, unknown>) => ({ id, type: 'turn.selection', data });
 
@@ -48,5 +49,59 @@ describe('selection changes in the chat thread', () => {
       { type: 'note', text: 'Model changed: gpt-big → Codex default' },
       { type: 'note', text: 'Agent changed: Codex → Claude Code' },
     ]);
+  });
+
+  it('shows a Codex MCP tool call with its server, tool, arguments and result', () => {
+    const thread = new ThreadModel();
+    const item = { id: 'm', type: 'mcp_tool_call', server: 'dalang', tool: 'db_query', arguments: { sql: 'select 1' }, result: { content: [{ type: 'text', text: 'one row' }] }, status: 'completed' };
+    thread.apply([
+      { id: 1, type: 'item.started', data: { item: { ...item, result: null, status: 'in_progress' } } },
+    ]);
+    expect(thread.live).toEqual({ label: 'Calling', detail: 'dalang · db_query' });
+    thread.apply([
+      { id: 2, type: 'item.completed', data: { item } },
+      { id: 3, type: 'item.completed', data: { item: { ...item, result: null, error: { message: 'no such table' }, status: 'failed' } } },
+      { id: 4, type: 'item.completed', data: { item: { type: 'web_search', query: 'codex hooks' } } },
+    ]);
+    expect(thread.blocks[0].items).toMatchObject([
+      { kind: 'tool', tool: 'dalang · db_query', text: '{"sql":"select 1"}', failed: false, body: expect.stringMatching(/"sql": "select 1"[^]*one row/) },
+      { kind: 'tool', failed: true, body: expect.stringContaining('Error: no such table') },
+      { kind: 'tool', tool: 'Web search', text: 'codex hooks' },
+    ]);
+  });
+
+  it('keeps the server, tool and arguments of a long MCP tool call the server cut', () => {
+    const item = { id: 'm', type: 'mcp_tool_call', server: 'dalang', tool: 'db_query', arguments: { sql: 'select 1' }, result: { content: [{ type: 'text', text: 'r'.repeat(10_000) }] } };
+    const cut = JSON.parse(compactPayload('item.completed', JSON.stringify({ type: 'item.completed', item }))!);
+    expect(cut.item).toMatchObject({ server: 'dalang', tool: 'db_query', arguments: '{"sql":"select 1"}', cut: true });
+    expect(cut.item.result).toBeUndefined();
+    const thread = new ThreadModel();
+    thread.apply([{ id: 1, type: 'item.completed', data: cut }]);
+    expect(thread.blocks[0].items[0]).toMatchObject({ tool: 'dalang · db_query', text: '{"sql":"select 1"}', cut: true, body: '' });
+  });
+
+  it('keeps the query of a long web search and the items of a long plan the server cut', () => {
+    const compact = (item: Record<string, unknown>) => JSON.parse(compactPayload('item.completed', JSON.stringify({ type: 'item.completed', item }))!);
+    const items = Array.from({ length: 200 }, (_, i) => ({ text: `step ${i} ${'x'.repeat(40)}`, completed: i < 3 }));
+    const thread = new ThreadModel();
+    thread.apply([
+      { id: 1, type: 'item.completed', data: compact({ id: 'w', type: 'web_search', query: 'q'.repeat(10_000) }) },
+      { id: 2, type: 'item.completed', data: compact({ id: 't', type: 'todo_list', items }) },
+    ]);
+    const [search, plan] = thread.blocks[0].items;
+    expect(search).toMatchObject({ tool: 'Web search' });
+    expect(search.text).toHaveLength(2001);
+    expect(plan).toMatchObject({ tool: 'Plan', text: '3/200 done' });
+    expect(plan.body.split('\n')).toHaveLength(200);
+  });
+
+  it('leaves out the notice Codex gives about bypassed hook trust', () => {
+    const thread = new ThreadModel();
+    thread.apply([
+      { id: 1, type: 'item.completed', data: { item: { type: 'error', message: '`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.' } } },
+      { id: 2, type: 'item.completed', data: { item: { type: 'error', message: 'real failure' } } },
+    ]);
+    expect(thread.blocks).toMatchObject([{ type: 'note', text: 'real failure', tone: 'err' }]);
+    expect(thread.blocks).toHaveLength(1);
   });
 });
