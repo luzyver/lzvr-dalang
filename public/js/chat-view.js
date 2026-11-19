@@ -216,6 +216,7 @@ export function ChatView({ id, focusEvent }) {
     });
   }
 
+  const session = chat.session;
   useEffect(() => {
     stick.current = true;
     setHitShown(false);
@@ -223,9 +224,11 @@ export function ChatView({ id, focusEvent }) {
     let pending = [];
     let stop = () => {};
     let gone = false;
+    const current = () => !gone && chat.session === session && chat.id.peek() === id;
     // Many events arrive at once while the history replays: fold them in once per frame.
     const flush = () => {
       frame = 0;
+      if (!current()) return;
       const events = pending;
       pending = [];
       chat.events.push(...events);
@@ -240,19 +243,20 @@ export function ChatView({ id, focusEvent }) {
       if (events.some((e) => e.type === 'conversation.title')) refreshConv(id).catch(() => {});
     };
     const take = (events) => {
+      if (!current()) return;
       pending.push(...events);
       frame ||= requestAnimationFrame(flush);
     };
     // The last turns first (a long chat is megabytes), then the stream on from them; earlier turns on request.
     historyPage(id, { focus: focusEvent }).then((page) => {
-      if (gone) return;
+      if (!current()) return;
       chat.older.value = { before: page.before, more: page.more };
       chat.first = page.events[0]?.id ?? null;
       if (page.events.length) take(page.events);
       focusWanted(id, keepScroll); // a search hit in this chat that came while this page loaded
       stop = startStream(id, take, page.last);
     }, () => {
-      if (gone) return;
+      if (!current()) return;
       chat.older.value = { before: null, more: false };
       stop = startStream(id, take); // the whole history over the stream
     });
@@ -263,7 +267,7 @@ export function ChatView({ id, focusEvent }) {
       gone = true;
       stop();
       cancelAnimationFrame(frame);
-      if (chat.id.peek() === id) chat.id.value = null; // reopening it later replays the stream into a fresh model
+      if (chat.session === session && chat.id.peek() === id) chat.id.value = null; // reopening it later replays the stream into a fresh model
     };
   }, [id]);
 

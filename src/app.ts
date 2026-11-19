@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import multipart from '@fastify/multipart';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
 import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
@@ -24,6 +24,7 @@ import { gitAuthRoutes } from './git-auth-routes.js';
 import { databaseRoutes } from './database-routes.js';
 import { sshRoutes } from './ssh-routes.js';
 import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
+import { sessionUsage } from './token-usage.js';
 import { compactPayload } from './event-view.js';
 import { insideRoot } from './paths.js';
 import { PANEL_PATHS, panelRoutes } from './panel.js';
@@ -246,7 +247,34 @@ export function buildApp(
     const mode = terminals.modeFor(user);
     return mode && (await terminals.available()) ? (mode === 'server' ? 'server' : terminals.userName) : null;
   } });
-  terminalRoutes(app, { store, dispatcher, terminals, noteFailure });
+  // The ticket and its eventual connection share the issuing identity and its expiry.
+  const chatAccess = (req: FastifyRequest, convId: string) => {
+    const user = req.user!;
+    const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
+    const bypass = cfg.authBypass && (!token || !resolveUser(token, Date.now()));
+    const expires = token && store.getSession(sessionHash(token), Date.now())?.expires_at;
+    const valid = () => {
+      const current = bypass ? user : token && resolveUser(token, Date.now());
+      const projectId = convProject(convId);
+      const project = projectId && store.getProject(projectId);
+      return !!current && current.id === user.id && !!project && canOpen(current, project);
+    };
+    const watch = (close: () => void) => {
+      let timer: NodeJS.Timeout | undefined;
+      const check = () => { if (!valid()) close(); };
+      const arm = () => {
+        if (!expires) return;
+        const left = expires - Date.now();
+        if (left <= 0) close();
+        else timer = setTimeout(arm, Math.min(left, 2_147_483_647)).unref();
+      };
+      store.accessListeners.add(check);
+      arm();
+      return () => { store.accessListeners.delete(check); clearTimeout(timer); };
+    };
+    return { valid, watch };
+  };
+  terminalRoutes(app, { store, dispatcher, terminals, noteFailure, chatAccess });
 
   // Search the chats: titles, prompts and the agents' answers. Every word has to occur (in any order).
   app.get<{ Querystring: { q: string; project?: string } }>('/api/search', {
@@ -918,51 +946,50 @@ export function buildApp(
     if (!store.getConversation(id)) return notFound(reply);
     const after = Number(req.headers['last-event-id'] ?? req.query.after ?? 0) || 0;
     const compact = req.query.compact === '1';
-    let usage = compact ? store.tokenUsage(id) : null;
+    const usage = compact ? sessionUsage() : null;
+    if (usage && after > 0) for (const event of store.usageThrough(id, after)) usage(event);
     reply.hijack();
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.flushHeaders(); // otherwise headers wait for the first event and an idle stream looks hung
     type Ev = { id: number; type: string; payload: string; created_at: string };
     const write = (e: Ev) => {
+      const turnUsage = usage?.(e);
       let payload = compact ? compactPayload(e.type, e.payload) : e.payload;
       if (payload === null) return true; // nothing written, so nothing to wait for
       if (compact && e.type === 'turn.completed') {
-        if (!usage?.byEvent.has(e.id)) usage = store.tokenUsage(id); // a new live completion
-        try { payload = JSON.stringify({ ...JSON.parse(payload), turn_usage: usage!.byEvent.get(e.id) ?? null }); } catch { /* retain the original payload */ }
+        try { payload = JSON.stringify({ ...JSON.parse(payload), turn_usage: turnUsage ?? null }); } catch { /* retain the original payload */ }
       }
       return res.write(`id: ${e.id}\nevent: ${e.type.replace(/[\r\n]/g, ' ')}\ndata: ${payload}\ntimestamp: ${e.created_at}\n\n`);
     };
-    // The history is replayed at the pace the reader takes it (a long chat is megabytes); live events that come
-    // meanwhile wait behind it. Only after that does a full buffer mean a reader that stopped reading: it is dropped,
-    // and reconnects with Last-Event-ID.
+    // Events arriving during replay are already persisted. The next page reads them with the
+    // same cursor, so a slow client never needs its own buffer of pending events.
     let replaying = true;
-    const held: Ev[] = [];
-    const send = (e: Ev) => {
-      if (replaying) { held.push(e); return; }
+    const off = dispatcher.subscribe(id, (e) => {
+      if (replaying || res.writableEnded || res.destroyed) return;
       if (res.writableLength > 1_000_000) { res.destroy(); return; }
       write(e);
-    };
-    // Subscribe and read the history in the same tick so no event can slip between them.
-    const off = dispatcher.subscribe(id, send);
-    const history = store.eventsAfter(id, after);
-    const ping = setInterval(() => res.write(': ping\n\n'), 15000);
+    });
+    const ping = setInterval(() => { if (!res.writableEnded && !res.writableNeedDrain) res.write(': ping\n\n'); }, 15000);
     streams.add(res);
-    res.on('close', () => { off(); clearInterval(ping); streams.delete(res); });
+    const unwatch = chatAccess(req, id).watch(() => res.end());
+    res.on('close', () => { unwatch(); off(); clearInterval(ping); streams.delete(res); });
     void (async () => {
-      for (const e of history) {
-        if (res.destroyed) return;
-        // Both listeners go once either fires: a long replay waits for drain many times, and a 'close' left behind
-        // each time piles up on the response.
-        if (!write(e)) await new Promise<void>((done) => {
-          const fin = () => { res.off('drain', fin); res.off('close', fin); done(); };
-          res.on('drain', fin); res.on('close', fin);
-        });
+      let cursor = after;
+      while (!res.destroyed && !res.writableEnded) {
+        const page = store.eventsAfter(id, cursor, 32);
+        if (!page.length) { replaying = false; return; }
+        for (const e of page) {
+          if (res.destroyed || res.writableEnded) return;
+          cursor = e.id;
+          if (!write(e)) await new Promise<void>((done) => {
+            const fin = () => { res.off('drain', fin); res.off('close', fin); done(); };
+            res.on('drain', fin); res.on('close', fin);
+          });
+        }
+        if (page.length === 32) await new Promise<void>((done) => setImmediate(done));
       }
-      const last = history.length ? history[history.length - 1]!.id : after;
-      replaying = false;
-      for (const e of held) if (e.id > last) send(e);
-    })();
+    })().catch(() => res.destroy());
   });
 
   return app;

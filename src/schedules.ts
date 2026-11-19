@@ -8,12 +8,14 @@ import { canOpen } from './util.js';
 export const serverTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /**
- * Queue a schedule's prompt into its chat, like a person pressing Send. Returns false when the same prompt from an
- * earlier run is still waiting in the queue: a busy chat gets one pending copy, not a pile.
+ * Queue a schedule's prompt into its chat, like a person pressing Send. Skips a creator who lost access and a prompt from an
+ * earlier run still waiting in the queue: a busy chat gets one pending copy, not a pile.
  */
 export function runSchedule(store: Store, dispatcher: Dispatcher, s: Schedule): boolean {
+  const author = store.scheduleAuthor(s.conversation_id, s.creator_key);
+  if (!author) return false;
   if (store.listQueue(s.conversation_id).some((q) => q.prompt === s.prompt)) return false;
-  store.enqueue(s.conversation_id, s.prompt, [], s.created_by);
+  store.enqueue(s.conversation_id, s.prompt, [], author, author, '', undefined, s.creator_key);
   dispatcher.kick(s.conversation_id);
   return true;
 }
@@ -79,11 +81,12 @@ const scheduleBody = {
 export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispatcher: Dispatcher }): void {
   const { store, dispatcher } = deps;
   const notFound = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send({ error: 'not found' });
-  const withNames = (id: number) => store.listSchedules().find((s) => s.id === id);
+  const forUser = (s: Schedule, userId: string | null) => ({ ...s, can_edit: s.creator_key === (userId ?? 'owner') });
+  const withNames = (id: number, userId: string | null) => forUser(store.listSchedules().find((s) => s.id === id)!, userId);
 
   app.get('/api/schedules', (req) => {
     const ok = new Set(store.listProjects().filter((p) => canOpen(req.user!, p)).map((p) => p.id));
-    return store.listSchedules().filter((s) => ok.has(s.project_id));
+    return store.listSchedules().filter((s) => ok.has(s.project_id)).map((s) => forUser(s, req.user!.id));
   });
 
   // For the form: when an expression would run, in which time zone, or why it is not valid.
@@ -99,7 +102,7 @@ export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispa
   });
 
   app.get<{ Params: { id: string } }>('/api/conversations/:id/schedules', (req, reply) =>
-    store.getConversation(req.params.id) ? store.listSchedules(req.params.id) : notFound(reply));
+    store.getConversation(req.params.id) ? store.listSchedules(req.params.id).map((s) => forUser(s, req.user!.id)) : notFound(reply));
 
   app.post<{ Params: { id: string }; Body: { prompt: string; cron: string; enabled?: boolean } }>('/api/conversations/:id/schedules', {
     schema: { body: { type: 'object', required: ['prompt', 'cron'], additionalProperties: false, properties: scheduleBody } },
@@ -110,7 +113,7 @@ export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispa
       const s = store.createSchedule(req.params.id, {
         prompt: req.body.prompt.trim(), cron: req.body.cron.trim(), enabled: req.body.enabled ?? true, nextRunAt: next!, createdBy: req.user!.name,
       });
-      return reply.code(201).send(withNames(s.id));
+      return reply.code(201).send(withNames(s.id, req.user!.id));
     } catch (e) {
       if (e instanceof CronError) return reply.code(400).send({ error: e.message });
       throw e;
@@ -122,11 +125,12 @@ export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispa
   }, (req, reply) => {
     const s = store.getSchedule(Number(req.params.id));
     if (!s) return notFound(reply);
+    if (s.creator_key !== (req.user!.id ?? 'owner')) return reply.code(403).send({ error: 'only the creator may edit or run this schedule' });
     const cron = req.body.cron?.trim() ?? s.cron;
     try {
       const [next] = upcoming(cron, Date.now(), 1);
       store.updateSchedule(s.id, { prompt: req.body.prompt?.trim() ?? s.prompt, cron, enabled: req.body.enabled ?? s.enabled, nextRunAt: next! });
-      return withNames(s.id);
+      return withNames(s.id, req.user!.id);
     } catch (e) {
       if (e instanceof CronError) return reply.code(400).send({ error: e.message });
       throw e;
@@ -140,6 +144,7 @@ export function scheduleRoutes(app: FastifyInstance, deps: { store: Store; dispa
   app.post<{ Params: { id: string } }>('/api/schedules/:id/run', (req, reply) => {
     const s = store.getSchedule(Number(req.params.id));
     if (!s) return notFound(reply);
+    if (s.creator_key !== (req.user!.id ?? 'owner')) return reply.code(403).send({ error: 'only the creator may edit or run this schedule' });
     if (!runSchedule(store, dispatcher, s)) return reply.code(409).send({ error: 'this prompt is already waiting in the chat\'s queue' });
     return reply.code(202).send({ queued: true });
   });

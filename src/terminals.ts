@@ -4,7 +4,7 @@ import { userInfo } from 'node:os';
 import { basename, join } from 'node:path';
 import websocket from '@fastify/websocket';
 import type { IPty } from '@lydell/node-pty';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { Dispatcher } from './dispatcher.js';
 import type { Store } from './store.js';
@@ -209,6 +209,7 @@ export class Terminals {
     if (t.scrollback) ws.send(JSON.stringify({ t: 'o', d: t.scrollback }));
     if (t.info.exitCode !== null) ws.send(JSON.stringify({ t: 'x', code: t.info.exitCode }));
     ws.on('message', (raw) => {
+      if (ws.readyState !== ws.OPEN) return;
       let m: { t?: string; d?: unknown; c?: unknown; r?: unknown };
       try { m = JSON.parse(String(raw)); } catch { return; }
       if (t.info.exitCode !== null) return;
@@ -244,16 +245,23 @@ export class TerminalError extends Error {}
 
 const serverAccount = () => { try { return userInfo().username; } catch { return 'server'; } };
 
+interface ChatAccess { valid(): boolean; watch(close: () => void): () => void }
+interface TerminalTicket { term: string; exp: number; access: ChatAccess }
+
+declare module 'fastify' {
+  interface FastifyRequest { terminalTicket?: TerminalTicket }
+}
+
 /**
  * The code editor's terminals. A shell can do anything the server's user can. A browser cannot put
  * the token on a WebSocket, so the panel first asks (with its token) for a ticket: single use, valid for 30 seconds,
  * for one terminal; the socket presents that instead.
  */
 export function terminalRoutes(app: FastifyInstance, deps: {
-  store: Store; dispatcher: Dispatcher; terminals: Terminals; noteFailure: (ip: string) => void;
+  store: Store; dispatcher: Dispatcher; terminals: Terminals; noteFailure: (ip: string) => void; chatAccess(req: FastifyRequest, convId: string): ChatAccess;
 }): void {
   const { store, dispatcher, terminals } = deps;
-  const tickets = new Map<string, { term: string; exp: number }>();
+  const tickets = new Map<string, TerminalTicket>();
   const notFound = (reply: FastifyReply) => reply.code(404).send({ error: 'not found' });
   const isOwner = (req: { user?: AuthUser }) => req.user?.id === null;
   /** Owner: always (as the server's account). Everyone else: only with TERMINAL_USER, as that account. */
@@ -305,11 +313,12 @@ export function terminalRoutes(app: FastifyInstance, deps: {
       terminals.convOf(req.params.tid, { owner: isOwner(req) }) && terminals.kill(req.params.tid) ? reply.code(204).send() : notFound(reply));
 
     f.post<{ Params: { tid: string } }>('/api/terminals/:tid/ticket', { onRequest: mayUse }, (req, reply) => {
-      if (!terminals.convOf(req.params.tid, { owner: isOwner(req) })) return notFound(reply);
+      const convId = terminals.convOf(req.params.tid, { owner: isOwner(req) });
+      if (!convId) return notFound(reply);
       const now = Date.now();
       for (const [k, v] of tickets) if (v.exp <= now) tickets.delete(k);
       const ticket = randomBytes(24).toString('base64url');
-      tickets.set(ticket, { term: req.params.tid, exp: now + TICKET_MS });
+      tickets.set(ticket, { term: req.params.tid, exp: now + TICKET_MS, access: deps.chatAccess(req, convId) });
       return { ticket };
     });
 
@@ -319,12 +328,18 @@ export function terminalRoutes(app: FastifyInstance, deps: {
       preValidation: async (req, reply) => {
         const t = tickets.get(req.query.ticket ?? '');
         tickets.delete(req.query.ticket ?? '');
-        if (!t || t.exp <= Date.now()) {
+        if (!t || t.exp <= Date.now() || !t.access.valid()) {
           deps.noteFailure(req.ip);
           return reply.code(401).send({ error: 'unauthorized' });
         }
-        (req as { termId?: string }).termId = t.term;
+        req.terminalTicket = t;
       },
-    }, (socket, req) => terminals.attach((req as { termId?: string }).termId!, socket));
+    }, (socket, req) => {
+      const { term, access } = req.terminalTicket!;
+      if (!access.valid()) { socket.close(4403, 'access revoked'); return; }
+      const unwatch = access.watch(() => socket.terminate());
+      socket.once('close', unwatch);
+      terminals.attach(term, socket);
+    });
   });
 }

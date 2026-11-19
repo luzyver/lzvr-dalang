@@ -19,6 +19,35 @@ beforeAll(async () => {
 });
 
 describe('unread chats in the panel', () => {
+  it('drops a queued reviewer frame from A after B has rendered', async () => {
+    // @ts-expect-error The panel modules are plain JavaScript.
+    const hooks = await import('../public/vendor/preact-hooks.js');
+    const effects: (() => void | (() => void))[] = [];
+    vi.spyOn(hooks, 'useEffect').mockImplementation((fn: any) => effects.push(fn));
+    vi.spyOn(hooks, 'useLayoutEffect').mockImplementation(() => {});
+    vi.spyOn(hooks, 'useState').mockImplementation((v: any) => [v, () => {}]);
+    vi.spyOn(hooks, 'useRef').mockImplementation((v: any) => ({ current: v }));
+    let frame: (() => void) | undefined;
+    vi.stubGlobal('requestAnimationFrame', (fn: () => void) => { frame = fn; return 1; });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    vi.stubGlobal('fetch', (url: string) => url.includes('/history?')
+      ? Promise.resolve({ ok: true, json: async () => ({ events: [{ id: 9, type: 'review.issues', data: {} }], last: 9 }) })
+      : new Promise(() => {}));
+    let stop: void | (() => void) = undefined;
+    try {
+      view.ChatView({ id: 'a' });
+      stop = effects[0]!();
+      await vi.waitFor(() => expect(frame).toBeDefined());
+      view.ChatView({ id: 'b' });
+      frame!();
+      expect(view.chat.events).toEqual([]);
+      expect(view.chat.model.blocks).toEqual([]);
+    } finally {
+      if (typeof stop === 'function') stop();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("marks a turn watched to its end as read when its details arrive after another chat opened", async () => {
     store.projects.value = [{ id: 'p' }];
     store.convs.value = new Map([['p', [
