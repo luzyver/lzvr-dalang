@@ -77,6 +77,12 @@ describe('links to files for the person', () => {
     ]);
     expect(downloads('[a](javascript:alert(1)) [b](file:///etc/passwd) [c](data.xlsx)')).toEqual([]);
   });
+
+  it('offers an HTML file as a page too, and no other file', () => {
+    const [page, sheet] = downloads('[a](/data/state/chat-files/c1/laporan.HTML) [b](/data/state/chat-files/c1/data.xlsx)');
+    expect(page!.view).toEqual({ url: '/api/conversations/c1/files/view', path: '/data/state/chat-files/c1/laporan.HTML' });
+    expect(sheet!.view).toBeUndefined();
+  });
 });
 
 describe('isDocx', () => {

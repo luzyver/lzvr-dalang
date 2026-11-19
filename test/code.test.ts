@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { badName, globList, inGitDir, searchRegExp } from '../src/code-routes.js';
 import { templateWorkDir } from '../src/templates.js';
 import { asUser, shellUser, Terminals, userShell } from '../src/terminals.js';
@@ -207,6 +207,41 @@ describe('code editor: files', () => {
     expect((await t.call('GET', url, undefined, bearer(user.token))).statusCode).toBe(404);
     expect((await t.call('GET', '/files/download?path=..%2Foutside.txt', undefined, bearer(user.token))).statusCode).toBe(404);
     expect((await t.call('GET', `/files/download?path=${encodeURIComponent(t.root)}`, undefined, bearer(user.token))).statusCode).toBe(404);
+  });
+
+  it('opens an HTML file of the chat as a sandboxed page, once, for a ticket', async () => {
+    const t = await withChat();
+    writeFileSync(join(t.dir, 'report.html'), '<script>1</script>');
+    const ask = (path: string, headers = AUTH) => t.call('POST', '/files/view', { path }, headers);
+    const view = (ticket: string) => t.app.inject({ url: `/api/files/view?ticket=${ticket}` }); // a new tab: no token
+    const { ticket } = (await ask('report.html')).json();
+    const page = await view(ticket);
+    expect(page.body).toBe('<script>1</script>');
+    expect(page.headers['content-type']).toBe('text/html; charset=utf-8');
+    const csp = String(page.headers['content-security-policy']);
+    expect(csp).toMatch(/^sandbox allow-scripts /);
+    expect(csp).not.toContain('allow-same-origin');
+    expect(csp).toContain("default-src 'none'");
+    expect(page.headers['content-disposition']).toBeUndefined();
+    expect((await view(ticket)).statusCode).toBe(404); // single use
+    expect((await view('nope')).statusCode).toBe(404);
+    expect((await t.app.inject({ url: '/api/files/view' })).statusCode).toBe(404);
+
+    expect((await ask('README.md')).statusCode).toBe(415);
+    expect((await ask('missing.html')).statusCode).toBe(404);
+    expect((await t.app.inject({ method: 'POST', url: `/api/conversations/${t.id}/files/view`, payload: { path: 'report.html' } })).statusCode).toBe(401);
+
+    // The same reach as a download: the owner anywhere, a user inside the chat's folders only.
+    const outside = join(t.root, 'outside.html');
+    writeFileSync(outside, 'out');
+    const user = await mkUser(t, 'user1');
+    expect((await ask(outside)).statusCode).toBe(200);
+    expect((await ask(outside, bearer(user.token))).statusCode).toBe(404);
+    expect((await ask('report.html', bearer(user.token))).statusCode).toBe(200);
+
+    const late = (await ask('report.html')).json().ticket;
+    vi.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+    try { expect((await view(late)).statusCode).toBe(404); } finally { vi.useRealTimers(); }
   });
 
   it('lets a user download what the chat made from a template, not what another chat made', async () => {

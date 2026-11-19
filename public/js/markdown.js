@@ -2,7 +2,7 @@
 // text, external links, project-scoped file downloads and highlighted code.
 import { html } from './lib.js';
 import { CodeBlock } from './code.js';
-import { downloadFile } from './api.js';
+import { downloadFile, openPage } from './api.js';
 import { toast } from './store.js';
 import { INLINE, localDownload, ownDownload } from './file-link.js';
 
@@ -16,13 +16,19 @@ function inline(text, conversationId) {
     else if (m[3] != null) out.push(html`<em>${inline(m[3])}</em>`);
     else if (m[4] != null) {
       const file = localDownload(m[5], conversationId);
-      if (file) out.push(html`<a href=${file.href} download=${file.filename} onClick=${(event) => {
-        event.preventDefault();
-        void downloadFile(file.href, file.filename).catch((error) => {
-          console.error('File download failed:', error);
-          toast(`Could not download file: ${error.message}`, 'err');
-        });
-      }}>${m[4]}</a>`);
+      if (file) {
+        out.push(html`<a href=${file.href} download=${file.filename} onClick=${(event) => {
+          event.preventDefault();
+          void downloadFile(file.href, file.filename).catch((error) => {
+            console.error('File download failed:', error);
+            toast(`Could not download file: ${error.message}`, 'err');
+          });
+        }}>${m[4]}</a>`);
+        if (file.view) out.push(html`<a class="file-open" href="#" title="Open as a page in a new tab" onClick=${(event) => {
+          event.preventDefault();
+          void openPage(file.view.url, file.view.path).catch((error) => toast(`Could not open file: ${error.message}`, 'err'));
+        }}>Open</a>`);
+      }
       else if (/^https?:\/\//i.test(m[5])) out.push(html`<a href=${m[5]} target="_blank" rel="noopener noreferrer">${m[4]}</a>`);
       else out.push(m[0]);
     }

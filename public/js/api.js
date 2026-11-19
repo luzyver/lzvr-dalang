@@ -66,3 +66,21 @@ export async function downloadFile(path, filename) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
+
+/**
+ * Opens an HTML file of the chat as a page in a new tab. The tab cannot send the token, so this asks for a single-use
+ * ticket first; the tab is opened before that answer, while the click still counts, or the browser blocks it.
+ */
+export async function openPage(url, path) {
+  const tab = window.open('', '_blank');
+  try {
+    const { ticket } = await api(url, { method: 'POST', body: { path } });
+    const target = `/api/files/view?ticket=${encodeURIComponent(ticket)}`;
+    if (!tab) throw new Error('the browser blocked the new tab');
+    tab.opener = null; // the page is an agent's: it gets no handle on the panel
+    tab.location.replace(target);
+  } catch (e) {
+    tab?.close();
+    throw e;
+  }
+}
