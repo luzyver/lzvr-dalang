@@ -59,6 +59,17 @@ const UPLOAD_IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
 };
 
+/** The files of a chat that may be opened as a page (see /api/files/view). */
+const VIEWABLE = new Set(['.html', '.htm']);
+const VIEW_TICKET_MS = 60_000;
+/**
+ * For a page an agent wrote: `sandbox` without allow-same-origin puts it in an origin of its own, away from the panel's
+ * storage and API; the rest keeps it to what is inline in the file, so it can fetch or send nothing.
+ */
+const VIEW_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads; default-src 'none'; "
+  + "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; "
+  + "form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
+
 /** A filename that is safe on Linux and Windows: no directory part, no reserved/illegal characters or device names. */
 function safeName(raw: string): string {
   let n = raw.replace(/[\\/]+/g, '/').split('/').pop() ?? '';
@@ -165,6 +176,7 @@ export function buildApp(
     if (path.startsWith('/api/auth/')) return; // login endpoints; their handlers report failures via noteFailure
     if (path === '/api/terminals/socket') return; // a browser WebSocket cannot send the token: its route checks a ticket
     if (path === '/api/db/export') return; // nor can a download link: its route checks a ticket too
+    if (path === '/api/files/view') return; // nor can a new tab: same
 
     const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
     const user = m ? resolveUser(m[1]!, now) : null;
@@ -716,32 +728,69 @@ export function buildApp(
   // Serve links from agent answers only from this chat's own worktree/project and template folder. The owner may fetch a
   // file anywhere on the machine (an agent often writes its output to /tmp); for anyone else that would reach past the
   // projects they may open, into other chats' files and Dalang's own state.
+  const chatFile = (convId: string, path: string, user: AuthUser): string | null => {
+    const conv = store.getConversation(convId);
+    const project = conv && store.getProject(conv.project_id);
+    if (!conv || !project) return null;
+    const root = conv.worktree ?? project.path;
+    // Files made for the person (an export, a filled template) are outside the project, in the chat's own folder
+    // (Dispatcher.filesDir). Templates were filled in a temp folder before that one: a link in an older answer still names it.
+    let real = insideRoot(root, path) ?? insideRoot(dispatcher.filesDir(conv.id), path) ?? insideRoot(templateWorkDir(conv.id), path);
+    if (!real && user.id === null) {
+      try { real = realpathSync(resolve(root, path)); } catch { /* no such file */ }
+    }
+    try { return real && statSync(real).isFile() ? real : null; } catch { return null; }
+  };
   app.get<{ Params: { id: string }; Querystring: { path: string } }>('/api/conversations/:id/files/download', {
     schema: { querystring: { type: 'object', required: ['path'], additionalProperties: false,
       properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } },
   }, (req, reply) => {
-    const conv = store.getConversation(req.params.id);
-    const project = conv && store.getProject(conv.project_id);
-    if (!conv || !project) return notFound(reply);
-    const root = conv.worktree ?? project.path;
-    // Files made for the person (an export, a filled template) are outside the project, in the chat's own folder
-    // (Dispatcher.filesDir). Templates were filled in a temp folder before that one: a link in an older answer still names it.
-    let real = insideRoot(root, req.query.path) ?? insideRoot(dispatcher.filesDir(conv.id), req.query.path)
-      ?? insideRoot(templateWorkDir(conv.id), req.query.path);
-    if (!real && req.user!.id === null) {
-      try { real = realpathSync(resolve(root, req.query.path)); } catch { /* no such file */ }
-    }
+    const real = chatFile(req.params.id, req.query.path, req.user!);
     if (!real) return notFound(reply);
-    let stat;
-    try { stat = statSync(real); } catch { return notFound(reply); }
-    if (!stat.isFile()) return notFound(reply);
     return reply
       .header('content-type', 'application/octet-stream')
       .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName(real))}`)
-      .header('content-length', stat.size)
+      .header('content-length', statSync(real).size)
       .header('cache-control', 'private, no-store')
       .header('x-content-type-options', 'nosniff')
       .send(createReadStream(real));
+  });
+
+  // An HTML file of the chat (a report an agent made) shown as a page in a new tab instead of downloaded. A tab cannot
+  // send the token, so the panel first asks for a ticket: single use, short-lived. The page is whatever an agent wrote,
+  // so it is served sandboxed: its scripts run in an origin of their own, without the panel's storage (where the token
+  // is), and may load or send nothing over the network. Only what is inline in the file works.
+  const viewTickets = new Map<string, { real: string; exp: number }>();
+  app.post<{ Params: { id: string }; Body: { path: string } }>('/api/conversations/:id/files/view', {
+    schema: { body: { type: 'object', required: ['path'], additionalProperties: false,
+      properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } },
+  }, (req, reply) => {
+    const real = chatFile(req.params.id, req.body.path, req.user!);
+    if (!real) return notFound(reply);
+    if (!VIEWABLE.has(extname(real).toLowerCase())) return reply.code(415).send({ error: 'only an HTML file can be opened as a page' });
+    const now = Date.now();
+    for (const [k, v] of viewTickets) if (v.exp <= now) viewTickets.delete(k);
+    const ticket = randomBytes(24).toString('base64url');
+    viewTickets.set(ticket, { real, exp: now + VIEW_TICKET_MS });
+    return { ticket };
+  });
+  // The auth hook lets this path through: the ticket stands for the token.
+  app.get<{ Querystring: { ticket?: string } }>('/api/files/view', (req, reply) => {
+    const t = viewTickets.get(req.query.ticket ?? '');
+    viewTickets.delete(req.query.ticket ?? '');
+    let stat;
+    try { stat = t && t.exp > Date.now() ? statSync(t.real) : undefined; } catch { /* removed since */ }
+    if (!t || !stat?.isFile()) {
+      return reply.code(404).type('text/plain; charset=utf-8').send('This link was already used or has expired. Open the file again from the chat.');
+    }
+    return reply
+      .header('content-type', 'text/html; charset=utf-8')
+      .header('content-length', stat.size)
+      .header('content-security-policy', VIEW_CSP)
+      .header('cache-control', 'private, no-store')
+      .header('referrer-policy', 'no-referrer')
+      .header('x-content-type-options', 'nosniff')
+      .send(createReadStream(t.real));
   });
 
   /** Attached files follow their projects' current permissions; a pending upload is private to its uploader. */

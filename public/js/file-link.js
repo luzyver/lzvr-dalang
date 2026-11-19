@@ -28,5 +28,7 @@ export function localDownload(path, conversationId) {
   let filename = path.split(/[\\/]/).pop() || 'download';
   try { filename = decodeURIComponent(filename); } catch { /* keep the literal name */ }
   const query = new URLSearchParams({ path });
-  return { href: `/api/conversations/${encodeURIComponent(conversationId)}/files/download?${query}`, filename };
+  const base = `/api/conversations/${encodeURIComponent(conversationId)}/files`;
+  // An HTML file can also be opened as a page (see openPage in api.js): what to ask a ticket for.
+  return { href: `${base}/download?${query}`, filename, ...(/\.html?$/i.test(filename) && { view: { url: `${base}/view`, path } }) };
 }
