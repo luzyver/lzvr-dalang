@@ -24,7 +24,9 @@ export interface TurnOpts {
 export function buildArgs(o: Pick<TurnOpts, 'cwd' | 'sandbox' | 'threadId' | 'images' | 'extraArgs'>): string[] {
   const a = ['exec'];
   for (const img of o.images ?? []) a.push('-i', img);
-  a.push('--json', '--skip-git-repo-check', '-C', o.cwd, '-s', o.sandbox, ...(o.extraArgs ?? []));
+  // Without these Codex adds the apps and plugins of its own ChatGPT account (ClickUp, Gmail, GitHub, ...), which act as
+  // whoever owns that account, not as the person the turn runs for. An agent gets its tools from Dalang's MCP servers only.
+  a.push('--json', '--skip-git-repo-check', '--disable', 'apps', '--disable', 'plugins', '-C', o.cwd, '-s', o.sandbox, ...(o.extraArgs ?? []));
   if (o.threadId) a.push('resume', o.threadId);
   a.push('-'); // prompt is read from stdin
   return a;

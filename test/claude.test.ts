@@ -139,5 +139,8 @@ describe('buildClaudeArgs', () => {
       expect(buildClaudeArgs({ sandbox, mcpUrl: 'http://127.0.0.1:9876/mcp' })).toEqual(expect.arrayContaining(['--mcp-config', '--allowedTools=mcp__dalang']));
     }
     expect(buildClaudeArgs({ sandbox: 'read-only' })).not.toContain('--allowedTools=mcp__dalang');
+    // The account's own claude.ai connectors and configured servers stay out, with or without servers of ours.
+    expect(buildClaudeArgs({ sandbox: 'read-only' })).toContain('--strict-mcp-config');
+    expect(buildClaudeArgs({ sandbox: 'read-only', mcpUrl: 'http://127.0.0.1:9876/mcp' })).toContain('--strict-mcp-config');
   });
 });
