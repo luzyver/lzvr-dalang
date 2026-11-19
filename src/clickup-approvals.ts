@@ -29,7 +29,10 @@ export interface ClickUpApproval {
   /** What sending gave (or why it failed). */
   outcome?: string;
   messageId?: string | null;
-  /** Files sent with it: copied when asked (see `filesDir`), uploaded to `task` on sending and linked from the message or comment. */
+  /**
+   * Files sent with it, copied when asked (see `filesDir`). A message's go into the message itself; a change's are
+   * uploaded to `task` and named at the end of its comment.
+   */
   files?: { name: string; size: number }[];
   task?: TaskRef;
 }
@@ -62,12 +65,12 @@ export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'us
   store.setKv(SEQ, String(id));
   const next: ClickUpApproval = { ...rest, id, at: Date.now(), status: 'pending' };
   if (files.length) {
-    if (!stateDir || !task) throw new Error('files need a task and a place to wait');
+    if (!stateDir) throw new Error('files need a place to wait');
     const dir = filesDir(stateDir, next.id);
     rmSync(dir, { recursive: true, force: true }); // left by an approval of the same id from before a reset
     mkdirSync(dir, { recursive: true });
     files.forEach((f, i) => writeFileSync(join(dir, String(i)), f.data)); // by place: names may differ only in case
-    Object.assign(next, { files: files.map((f) => ({ name: f.name, size: f.data.length })), task });
+    Object.assign(next, { files: files.map((f) => ({ name: f.name, size: f.data.length })), ...(task && { task }) });
   }
   save(store, [...list, next]);
   return next;
@@ -161,12 +164,15 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
       return a;
     }
     const cu = d.client(userOf(a));
-    if (!cu) return reply.code(409).send({ error: 'no ClickUp token saved; reject it instead' });
+    if (!cu) return reply.code(409).send({ error: 'ClickUp is not connected (Settings → MCP → ClickUp); connect it, or reject this' });
     let files: OutFile[];
     try {
       files = (a.files ?? []).map((f, i) => ({ name: f.name, data: readFileSync(join(filesDir(d.stateDir, a.id), String(i))) }));
     } catch {
       return reply.code(409).send({ error: 'its files are gone from the server; reject it instead' });
+    }
+    if (files.length && !a.action && a.task) {
+      return reply.code(409).send({ error: 'this message was asked for with its files on a task, which is no longer done; reject it and ask again' });
     }
     if (a.action) {
       done({ status: 'sending' }); // persisted before the change is made
@@ -193,9 +199,9 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
     done({ status: 'sending', content, ...(edited && { edited: true }) }); // persisted before the message goes out
     sending.add(a.id);
     try {
-      const r = await cu.deliver(a.dest, content, files, a.task);
+      const r = await cu.deliver(a.dest, content, files);
       done({ status: 'sent', messageId: r.id, outcome: `Sent ${r.date} ${r.time}` });
-      tellChat(a, `[ClickUp] The person approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) uploaded to task "${a.task!.name}" and linked at its end` : ''}.${quote(a)}`);
+      tellChat(a, `[ClickUp] The person approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) in the message itself` : ''}.${quote(a)}`);
     } catch (e) {
       const msg = (e as Error).message;
       // Failing before the message went out, or ClickUp refusing it, means nothing was posted; a 5xx or timeout does not say.

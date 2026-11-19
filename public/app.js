@@ -8,6 +8,7 @@ import { ConfirmDialog, Toasts } from './js/ui.js';
 import { openChat, route, toast, ui } from './js/store.js';
 import './js/theme.js';
 import { bootSession, session } from './js/session.js';
+import { finishClickUpSignIn } from './js/clickup-connect.js';
 import { Login } from './js/login.js';
 import { AddProjectModal, ProjectAccessModal, Sidebar } from './js/sidebar.js';
 import { ChatView } from './js/chat-view.js';
@@ -73,3 +74,5 @@ if ('serviceWorker' in navigator) {
 }
 render(html`<${App} />`, document.getElementById('root'));
 bootSession();
+// A ClickUp sign-in that came back to the panel is finished once the person is signed in here.
+session.subscribe((v) => { if (v === 'in') finishClickUpSignIn(); });
