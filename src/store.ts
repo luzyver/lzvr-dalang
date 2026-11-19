@@ -8,7 +8,7 @@ import { summarizeUsage, type ChatUsage } from './token-usage.js';
 import type { ContextUsage } from './context.js';
 import type { CustomSkill } from './skills.js';
 import type { Template } from './templates.js';
-import type { Backend, ProjectAccess } from './util.js';
+import { canOpen, type Backend, type ProjectAccess } from './util.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -125,6 +125,8 @@ export interface QueueItem {
   from_turn: number | null;
   /** Set on the turn a restart cut off, queued again so it continues in the same session after the restart. */
   resume?: boolean;
+  /** Stable account key to recheck before a scheduled prompt starts or resumes. */
+  schedule_creator?: string;
   /**
    * 'report': an agent's report coming back (a sub-agent's or reviewer's), queued by the dispatcher itself. A prompt a
    * person or an agent wrote that only starts like one ("[Sub-agent] ...") is none.
@@ -153,7 +155,7 @@ export interface Turn {
 /** A prompt queued into a chat on a cron schedule. Times are epoch milliseconds; `next_run_at` is null when off. */
 export interface Schedule {
   id: number; conversation_id: string; prompt: string; cron: string; enabled: boolean;
-  next_run_at: number | null; last_run_at: number | null; created_by: string; created_at: string;
+  next_run_at: number | null; last_run_at: number | null; creator_key: string; created_by: string; created_at: string;
 }
 /** A schedule with the names the overview shows. */
 export interface ScheduleSummary extends Schedule { project_id: string; project: string; title: string | null }
@@ -191,12 +193,14 @@ const likeTerm = (t: string) => `%${t.replace(/[\\%_]/g, '\\$&')}%`;
 type ScheduleRow = Omit<Schedule, 'enabled'> & { enabled: number };
 const toSchedule = <T extends ScheduleRow>(r: T): Omit<T, 'enabled'> & { enabled: boolean } => ({ ...r, enabled: !!r.enabled });
 
-interface QueueRow { id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; from_turn: number | null; resume: number; kind: string }
-const toItem = ({ resume, kind, ...r }: QueueRow): QueueItem =>
-  ({ ...r, attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}), ...(kind === 'report' ? { kind } : {}) });
+interface QueueRow { schedule_creator: string; id: number; conversation_id: string; prompt: string; attachments: string; author: string; on_behalf: string; from_conv: string; from_turn: number | null; resume: number; kind: string }
+const toItem = ({ resume, kind, schedule_creator, ...r }: QueueRow): QueueItem =>
+  ({ ...r, ...(schedule_creator && { schedule_creator }), attachments: JSON.parse(r.attachments) as string[], ...(resume ? { resume: true } : {}), ...(kind === 'report' ? { kind } : {}) });
 
 export class Store {
   readonly db: DatabaseSync;
+  readonly accessListeners = new Set<() => void>();
+  private accessChanged(): void { for (const check of this.accessListeners) check(); }
 
   constructor(file = ':memory:') {
     this.db = new DatabaseSync(file);
@@ -265,6 +269,23 @@ export class Store {
       this.run(`UPDATE events SET created_at=(SELECT started_at FROM turns WHERE turns.id=events.turn_id) WHERE created_at IS NULL`);
       this.setKv('events_created_at_filled', '1');
     }
+    this.atomically(() => {
+      if (this.ensureColumn('schedules', 'creator_key', "TEXT NOT NULL DEFAULT ''")) {
+        this.run(`UPDATE schedules SET creator_key = CASE WHEN created_by='owner' THEN 'owner' ELSE
+          COALESCE((SELECT id FROM users WHERE name=schedules.created_by AND users.created_at<schedules.created_at), '') END`);
+        this.run("UPDATE schedules SET enabled=0,next_run_at=NULL WHERE creator_key=''");
+      }
+      // Older queues did not distinguish scheduled prompts from a person typing the same text.
+      // Apply the same identity check to any matching entry, including a turn waiting to resume.
+      for (const table of ['queue', 'running_items']) {
+        if (this.ensureColumn(table, 'schedule_creator', "TEXT NOT NULL DEFAULT ''")) {
+          this.run(`UPDATE ${table} SET schedule_creator=COALESCE((
+            SELECT CASE WHEN MIN(creator_key)='' THEN 'revoked' ELSE MIN(creator_key) END FROM schedules
+            WHERE conversation_id=${table}.conversation_id AND prompt=${table}.prompt AND created_by=${table}.author
+          ), '') WHERE author<>''`);
+        }
+      }
+    });
     this.ensureColumn('queue', 'from_turn', 'INTEGER');
     this.ensureColumn('queue', 'kind', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('running_items', 'kind', "TEXT NOT NULL DEFAULT ''");
@@ -349,6 +370,7 @@ export class Store {
   setUserToken(id: string, tokenHash: string): boolean {
     const changed = Number(this.run('UPDATE users SET token_hash=? WHERE id=?', tokenHash, id).changes) > 0;
     if (changed) { this.run('DELETE FROM sessions WHERE user_id=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id); }
+    if (changed) this.accessChanged();
     return changed;
   }
   /** Their personal memory goes with them. */
@@ -359,6 +381,7 @@ export class Store {
       this.run('DELETE FROM memories WHERE user_key=?', id); this.run('DELETE FROM push_subs WHERE user_key=?', id);
       for (const p of this.listProjects()) if (p.members.includes(id)) this.setProjectAccess(p.id, p.access, p.members.filter((m) => m !== id));
     }
+    if (deleted) this.accessChanged();
     return deleted;
   }
 
@@ -371,9 +394,10 @@ export class Store {
   deleteSession(tokenHash: string): void {
     this.run('DELETE FROM sessions WHERE token_hash=?', tokenHash);
     this.run('DELETE FROM push_subs WHERE auth_hash=?', tokenHash);
+    this.accessChanged();
   }
-  getSession(tokenHash: string, now: number): { user_id: string | null } | null {
-    return this.get('SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?', tokenHash, now);
+  getSession(tokenHash: string, now: number): { user_id: string | null; expires_at: number } | null {
+    return this.get('SELECT user_id,expires_at FROM sessions WHERE token_hash=? AND expires_at>?', tokenHash, now);
   }
   hasSession(tokenHash: string, now: number): boolean { return this.getSession(tokenHash, now) !== null; }
 
@@ -474,18 +498,24 @@ export class Store {
     return p;
   }
   setProjectAccess(id: string, access: ProjectAccess, members: string[]): boolean {
-    return Number(this.run('UPDATE projects SET access=?, members=? WHERE id=?', access, JSON.stringify(members), id).changes) > 0;
+    const changed = Number(this.run('UPDATE projects SET access=?, members=? WHERE id=?', access, JSON.stringify(members), id).changes) > 0;
+    if (changed) this.accessChanged();
+    return changed;
   }
   listProjects(): Project[] { return this.all<ProjectRow>('SELECT * FROM projects ORDER BY name').map(toProject); }
   getProject(id: string): Project | null { const r = this.get<ProjectRow>('SELECT * FROM projects WHERE id=?', id); return r ? toProject(r) : null; }
   deleteConversation(id: string): boolean {
     this.deleteKv(`review:${id}`);
-    return Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0;
+    const changed = Number(this.run('DELETE FROM conversations WHERE id=?', id).changes) > 0;
+    if (changed) this.accessChanged();
+    return changed;
   }
   deleteProject(id: string): boolean {
     // Its chats go by cascade, which never reaches their review state in kv.
     this.run("DELETE FROM kv WHERE key IN (SELECT 'review:' || id FROM conversations WHERE project_id=?)", id);
-    return Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0;
+    const changed = Number(this.run('DELETE FROM projects WHERE id=?', id).changes) > 0;
+    if (changed) this.accessChanged();
+    return changed;
   }
 
   createConversation(projectId: string, backend: Backend = 'codex', parent = ''): Conversation {
@@ -537,17 +567,17 @@ export class Store {
   setBackend(id: string, backend: Backend): void {
     this.run("UPDATE conversations SET backend=?, thread_id=NULL, model='', effort='' WHERE id=? AND backend<>?", backend, id, backend);
   }
-  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = '', kind: QueueItem['kind'] = undefined): number {
-    const r = this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,kind)
-      VALUES (?,?,?,?,?,?,(SELECT MAX(id) FROM turns WHERE conversation_id=?),?)`,
-      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv, fromConv, kind ?? '');
+  enqueue(convId: string, prompt: string, attachments: string[], author = '', onBehalf = author, fromConv = '', kind: QueueItem['kind'] = undefined, scheduleCreator = ''): number {
+    const r = this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,kind,schedule_creator)
+      VALUES (?,?,?,?,?,?,(SELECT MAX(id) FROM turns WHERE conversation_id=?),?,?)`,
+      convId, prompt, JSON.stringify(attachments), author, onBehalf, fromConv, fromConv, kind ?? '', scheduleCreator);
     return Number(r.lastInsertRowid);
   }
   /** Queue a turn a restart cut off again, ahead of what was waiting behind it (see QueueItem.resume). */
   requeueResume(item: QueueItem): void {
     this.atomically(() => {
-      this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind) VALUES (?,?,?,?,?,?,?,1,?)',
-        item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv, item.from_turn ?? null, item.kind ?? '');
+      this.run('INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind,schedule_creator) VALUES (?,?,?,?,?,?,?,1,?,?)',
+        item.conversation_id, item.prompt, JSON.stringify(item.attachments), item.author, item.on_behalf, item.from_conv, item.from_turn ?? null, item.kind ?? '', item.schedule_creator ?? '');
       this.endRunning(item.conversation_id); // queued again already: a crash before the turn is gone must not add a second
     });
   }
@@ -564,11 +594,16 @@ export class Store {
    * a crash that gives the turn no chance to be queued again (resetRunning) does not lose it.
    */
   popQueue(convId: string): QueueItem | null {
-    const row = this.get<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id LIMIT 1', convId);
+    const next = () => this.get<QueueRow>('SELECT * FROM queue WHERE conversation_id=? ORDER BY resume DESC, id LIMIT 1', convId);
+    let row = next();
+    while (row?.schedule_creator && !this.scheduleAuthor(convId, row.schedule_creator)) {
+      this.deleteQueueItem(row.id);
+      row = next();
+    }
     if (!row) return null;
     this.atomically(() => {
-      this.run(`INSERT OR REPLACE INTO running_items (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind)
-        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind FROM queue WHERE id=?`, row.id);
+      this.run(`INSERT OR REPLACE INTO running_items (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind,schedule_creator)
+        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind,schedule_creator FROM queue WHERE id=?`, row.id);
       this.run('DELETE FROM queue WHERE id=?', row.id);
     });
     return toItem(row);
@@ -652,6 +687,12 @@ export class Store {
     return summarizeUsage(this.all<{ id: number; type: string; payload: string }>(
       `SELECT e.id,e.type,e.payload FROM events e JOIN turns t ON t.id=e.turn_id
        WHERE t.conversation_id=? AND e.type IN ('thread.started','turn.completed') ORDER BY e.id`, convId));
+  }
+  /** Seed a reconnecting stream's session counters without retaining the historical events. */
+  usageThrough(convId: string, through: number) {
+    return this.db.prepare(`SELECT e.id,e.type,e.payload FROM events e JOIN turns t ON t.id=e.turn_id
+      WHERE t.conversation_id=? AND e.id<=? AND e.type IN ('thread.started','turn.completed') ORDER BY e.id`)
+      .iterate(convId, through) as Iterable<{ id: number; type: string; payload: string }>;
   }
   /** `limit`: at most that many (all when not given). */
   eventsAfter(convId: string, afterId: number, limit?: number): StoredEvent[] {
@@ -740,9 +781,17 @@ export class Store {
   }
 
   // --- scheduled prompts ---
+  scheduleAuthor(convId: string, key: string): string | null {
+    const conv = this.getConversation(convId);
+    const project = conv && this.getProject(conv.project_id);
+    if (!project) return null;
+    if (key === 'owner') return 'owner';
+    const user = this.getUser(key);
+    return user && canOpen(user, project) ? user.name : null;
+  }
   createSchedule(convId: string, s: { prompt: string; cron: string; enabled: boolean; nextRunAt: number | null; createdBy: string }): Schedule {
-    const r = this.run('INSERT INTO schedules (conversation_id,prompt,cron,enabled,next_run_at,created_by) VALUES (?,?,?,?,?,?)',
-      convId, s.prompt, s.cron, s.enabled ? 1 : 0, s.enabled ? s.nextRunAt : null, s.createdBy);
+    const r = this.run('INSERT INTO schedules (conversation_id,prompt,cron,enabled,next_run_at,created_by,creator_key) VALUES (?,?,?,?,?,?,?)',
+      convId, s.prompt, s.cron, s.enabled ? 1 : 0, s.enabled ? s.nextRunAt : null, s.createdBy, this.userKeyOf(s.createdBy));
     return this.getSchedule(Number(r.lastInsertRowid))!;
   }
   getSchedule(id: number): Schedule | null {
@@ -810,8 +859,8 @@ export class Store {
    */
   resetRunning(): string[] {
     this.atomically(() => {
-      this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind)
-        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,1,kind FROM running_items WHERE resume=0 ORDER BY rowid`);
+      this.run(`INSERT INTO queue (conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,resume,kind,schedule_creator)
+        SELECT conversation_id,prompt,attachments,author,on_behalf,from_conv,from_turn,1,kind,schedule_creator FROM running_items WHERE resume=0 ORDER BY rowid`);
       this.run('DELETE FROM running_items');
     });
     // Close each stale turn in the event stream too, or a replaying client would show it as still live.

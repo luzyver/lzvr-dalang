@@ -40,7 +40,7 @@ function ScheduleCard({ s, overview, reload }) {
   return html`<div class=${cx('sched', !s.enabled && 'off')}>
     <div class="sched-top">
       ${overview ? html`<a class="sched-chat" onClick=${() => openChat(s.conversation_id)}>${s.project} / ${s.title || 'New chat'}</a>` : html`<span class="sched-when">${human || s.cron}</span>`}
-      <${Switch} checked=${s.enabled} title="Run on schedule" onChange=${toggle} />
+      ${s.can_edit && html`<${Switch} checked=${s.enabled} title="Run on schedule" onChange=${toggle} />`}
     </div>
     <div class="sched-prompt">${s.prompt}</div>
     <div class="sched-meta">
@@ -49,7 +49,7 @@ function ScheduleCard({ s, overview, reload }) {
     </div>
     <div class="sched-meta">by ${s.created_by || 'unknown'}${s.last_run_at ? ` · last run ${dateTime(s.last_run_at)}` : ' · not run yet'}</div>
     <div class="row">
-      <${AsyncButton} class="btn sm" icon="play" title="Queue the prompt now; the schedule stays as it is" onClick=${run}>Run now<//>
+      ${s.can_edit && html`<${AsyncButton} class="btn sm" icon="play" title="Queue the prompt now; the schedule stays as it is" onClick=${run}>Run now<//>`}
       <div class="spacer"></div>
       <button class="btn ghost danger sm" onClick=${remove}><${Icon} name="trash-2" />Delete</button>
     </div>

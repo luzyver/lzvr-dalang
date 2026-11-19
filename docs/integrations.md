@@ -157,8 +157,9 @@ Beyond chat, the same connection reads the rest of ClickUp:
 - `clickup_list_docs` (found by ClickUp's search) and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
 
 **Each person reads on their own connection only.** From outside, the tools use the connection of whoever signed in
-(the main token: the owner's); inside a chat, that of whoever sent the turn. Someone who has not connected gets no
-ClickUp tools, and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or uses another person's
+(the main token: the owner's); inside a chat, that of whoever sent the turn. A scheduled turn runs as its creator
+while they have access to the project. Only that person may edit the schedule or run it on demand. Someone who has not connected gets no
+ClickUp tools, and neither do prompts nobody sent (agents, approvals). Nobody sees or uses another person's
 connection, the owner included, and a deleted user's connection is removed.
 
 **Allow sending** is the owner's switch, for everyone: with it, `clickup_send_message` asks to send as the ClickUp

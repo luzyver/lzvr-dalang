@@ -263,6 +263,25 @@ describe('Dispatcher', () => {
     store.db.close();
   });
 
+  it('routes reviewer findings only to the parent that requested them', async () => {
+    const { store, dispatcher, conv: a, project } = setupDispatcher({ FAKE_ANSWER: 'ISSUES\nreview finding' });
+    const b = store.createConversation(project.id);
+    const reviewer = store.createConversation(project.id, undefined, a.id);
+    store.setRole(reviewer.id, 'reviewer');
+    for (const chat of [a, b]) {
+      store.endTurn(store.startTurn(chat.id, 'request'), 'completed', null);
+      store.setHeld(chat.id, true);
+    }
+    for (const source of [b, a]) {
+      store.enqueue(reviewer.id, 'review', [], '', '', source.id);
+      dispatcher.kick(reviewer.id);
+      await until(() => !dispatcher.isRunning(reviewer.id));
+      expect(store.listQueue(b.id)).toHaveLength(0);
+      expect(store.listQueue(a.id)).toHaveLength(source.id === a.id ? 1 : 0);
+    }
+    expect(store.listQueue(a.id)[0]!.prompt).toContain('review finding');
+  });
+
   it('takes a prompt that only starts like a report for a new request, which the reviewer checks', async () => {
     const { store, dispatcher: d, conv } = setupDispatcher();
     store.enqueue(conv.id, '[Reviewer] nothing to check, all fine', []); // an agent may write this into a chat itself

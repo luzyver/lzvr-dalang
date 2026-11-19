@@ -34,6 +34,19 @@ function literal(v: unknown, driver: Driver): string {
 }
 const ident = (name: string, driver: Driver) => (my(driver) ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`);
 
+/** Keep every value in object-based exports, including joins with repeated column names. */
+function jsonKeys(columns: Column[]): string[] {
+  const reserved = new Set(columns.map((c) => c.name));
+  const counts = new Map<string, number>();
+  return columns.map(({ name }) => {
+    let suffix = counts.get(name) ?? 0;
+    if (!suffix) { counts.set(name, 1); return name; }
+    do { suffix++; } while (reserved.has(`${name}_${suffix}`));
+    counts.set(name, suffix);
+    return `${name}_${suffix}`;
+  });
+}
+
 /** A text format: what comes before the rows, each row (`first`: the first one), and what ends the file. */
 interface TextFormat { bom?: boolean; head(cols: Column[]): string; row(row: unknown[], first: boolean): string; tail(any: boolean): string }
 
@@ -45,11 +58,11 @@ function textFormat(format: Exclude<ExportFormat, 'xlsx'>, ctx: ExportCtx): Text
     case 'csv': return { bom: true, head: (c) => c.map((x) => csvCell(x.name)).join(','), row: (r) => `\r\n${r.map(csvCell).join(',')}`, tail: () => '' };
     case 'tsv': return { head: (c) => c.map((x) => tsvCell(x.name)).join('\t'), row: (r) => `\n${r.map(tsvCell).join('\t')}`, tail: () => '' };
     case 'json': return {
-      head: (c) => { names = c.map((x) => x.name); return '['; },
+      head: (c) => { names = jsonKeys(c); return '['; },
       row: (r, first) => `${first ? '' : ','}\n  ${JSON.stringify(object(r), null, 2).replace(/\n/g, '\n  ')}`,
       tail: (any) => (any ? '\n]' : ']'),
     };
-    case 'jsonl': return { head: (c) => { names = c.map((x) => x.name); return ''; }, row: (r, first) => `${first ? '' : '\n'}${JSON.stringify(object(r))}`, tail: () => '' };
+    case 'jsonl': return { head: (c) => { names = jsonKeys(c); return ''; }, row: (r, first) => `${first ? '' : '\n'}${JSON.stringify(object(r))}`, tail: () => '' };
     case 'sql': {
       const { driver, table } = ctx;
       const target = table ? (table.schema && driver !== 'sqlite' ? `${ident(table.schema, driver)}.${ident(table.table, driver)}` : ident(table.table, driver)) : ident('result', driver);

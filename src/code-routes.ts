@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, createWriteStream, type Stats } from 'node:fs';
+import { linkSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, createWriteStream, type Stats } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
@@ -381,14 +381,23 @@ export function codeRoutes(app: FastifyInstance, deps: {
       part.file.resume();
       return reply.code(409).send({ error: `${basename(real)} already exists`, exists: true });
     }
-    const tmp = `${real}.dalang-upload`;
-    await pipeline(part.file, createWriteStream(tmp));
-    if (part.file.truncated) { // multipart silently cuts the stream at the limit
-      rmSync(tmp, { force: true });
-      return reply.code(413).send({ error: 'the file is too large' });
+    const tempDir = mkdtempSync(join(dirname(real), '.dalang-upload-'));
+    const tmp = join(tempDir, 'file');
+    try {
+      await pipeline(part.file, createWriteStream(tmp, { flags: 'wx' }));
+      if (part.file.truncated) return reply.code(413).send({ error: 'the file is too large' });
+      if (!mayWrite(c, reply)) return;
+      if (req.query.replace === '1') renameSync(tmp, real);
+      else {
+        try { linkSync(tmp, real); } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+          return reply.code(409).send({ error: `${basename(real)} already exists`, exists: true });
+        }
+      }
+      return reply.code(201).send({ path: rel(c.root, real) });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
-    renameSync(tmp, real);
-    return reply.code(201).send({ path: rel(c.root, real) });
   });
 
   // The open files' modification times, and whether an agent works in the folder: the editor polls this to notice

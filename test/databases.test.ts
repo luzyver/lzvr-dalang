@@ -354,6 +354,16 @@ describe('SQL editor connections', () => {
       expect(sql.body!.toString()).toBe('INSERT INTO "users" ("id", "note") VALUES (1, NULL);\nINSERT INTO "users" ("id", "note") VALUES (2, \'x\');');
     });
 
+    it('preserves repeated column names in JSON and JSONL', async () => {
+      const t = await boot();
+      await t.put('app', {});
+      for (const format of ['json', 'jsonl']) {
+        const file = await download(t, { format, sql: 'SELECT 17 AS id, 23 AS id, 42 AS id_2' });
+        const row = { id: 17, id_3: 23, id_2: 42 };
+        expect(JSON.parse(file.body!.toString())).toEqual(format === 'json' ? [row] : row);
+      }
+    });
+
     it('writes a real .xlsx as it reads', async () => {
       const t = await boot();
       await t.put('app', {});

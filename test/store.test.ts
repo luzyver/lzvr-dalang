@@ -13,6 +13,26 @@ function fresh() {
 }
 
 describe('Store', () => {
+  it('binds old schedules and their waiting prompts when opening an existing store', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'dalang-schedules-')), 'state.db');
+    const old = new Store(file);
+    const project = old.createProject('shared', '/workspace');
+    const conv = old.createConversation(project.id);
+    const user = old.createUser('reader', 'token');
+    old.db.prepare("UPDATE users SET created_at='2020-01-01' WHERE id=?").run(user.id);
+    const schedule = old.createSchedule(conv.id, { createdBy: user.name, enabled: true, nextRunAt: 42, cron: '@hourly', prompt: 'read' });
+    old.enqueue(conv.id, 'read', [], user.name);
+    old.db.exec('ALTER TABLE schedules DROP COLUMN creator_key; ALTER TABLE queue DROP COLUMN schedule_creator; ALTER TABLE running_items DROP COLUMN schedule_creator');
+    old.db.close();
+
+    const upgraded = new Store(file);
+    try {
+      expect(upgraded.getSchedule(schedule.id)?.creator_key).toBe(user.id);
+      upgraded.setProjectAccess(project.id, 'owner', []);
+      expect(upgraded.popQueue(conv.id)).toBeNull();
+    } finally { upgraded.db.close(); }
+  });
+
   it('keeps context samples separate from usage and invalidates them on compaction or backend/session switches', () => {
     const { store, conv } = fresh();
     const turn = store.startTurn(conv.id, 'task');
@@ -83,7 +103,7 @@ describe('Store', () => {
     expect(() => store.createUser('other', 'hash-1')).toThrow(); // unique token
 
     store.createSession('s1', Date.now() + 60_000, u.id);
-    expect(store.getSession('s1', Date.now())).toEqual({ user_id: u.id });
+    expect(store.getSession('s1', Date.now())).toMatchObject({ user_id: u.id });
     expect(store.listUsers()[0]).toMatchObject({ name: 'budi' });
 
     store.setUserToken(u.id, 'hash-3'); // rotating drops the old token and every session
@@ -106,7 +126,7 @@ describe('Store', () => {
               INSERT INTO passkeys VALUES ('old-pk', x'0102', 1, NULL);`);
     old.close();
     const store = new Store(file);
-    expect(store.getSession('old-session', Date.now())).toEqual({ user_id: null }); // still valid, as the owner
+    expect(store.getSession('old-session', Date.now())).toMatchObject({ user_id: null }); // still valid, as the owner
     // passkey sign-in is gone, and its table with it
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='passkeys'").get()).toBeUndefined();
   });
@@ -176,6 +196,24 @@ describe('Store', () => {
     expect(JSON.parse(last.payload).error.message).toMatch(/restarted/);
     store.resetRunning(); // a second reset must not add another
     expect(store.eventsAfter(conv.id, 0)).toHaveLength(2);
+  });
+
+  it('rechecks the creator’s access before resuming a scheduled prompt after restart', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'dalang-resume-')), 'state.db');
+    const store = new Store(file);
+    const project = store.createProject('shared', '/workspace');
+    const chat = store.createConversation(project.id);
+    const creator = store.createUser('reader', 'token');
+    store.enqueue(chat.id, 'scheduled task', [], creator.name, creator.name, '', undefined, creator.id);
+    store.requeueResume(store.popQueue(chat.id)!);
+    store.setProjectAccess(project.id, 'owner', []);
+    store.db.close();
+
+    const restarted = new Store(file);
+    try {
+      expect(restarted.listQueue(chat.id)).toMatchObject([{ resume: true, schedule_creator: creator.id }]);
+      expect(restarted.popQueue(chat.id)).toBeNull();
+    } finally { restarted.db.close(); }
   });
 
   it('queues the prompt a crash cut off again, to resume in its session, once', () => {

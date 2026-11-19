@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Scheduler } from '../src/schedules.js';
 import { AUTH, turnsDone, until } from './helpers.js';
 import { bearer, mkUser, setupApp } from './setup-app.js';
@@ -33,6 +33,32 @@ describe('scheduled prompts', () => {
 
     expect((await t.call('DELETE', `/api/schedules/${s.id}`)).statusCode).toBe(204);
     expect((await t.call('GET', '/api/schedules')).json()).toEqual([]);
+  });
+
+  it('binds edits and manual runs to the creator and checks project access when due', async () => {
+    const t = await chat();
+    const dana = await mkUser(t, 'dana');
+    const schedule = (await t.call('POST', `/api/conversations/${t.conv.id}/schedules`, { prompt: 'first', cron: '@daily' })).json();
+    const url = `/api/schedules/${schedule.id}`;
+    expect((await t.call('PATCH', url, { prompt: 'changed' }, bearer(dana.token))).statusCode).toBe(403);
+    expect((await t.call('POST', url + '/run', undefined, bearer(dana.token))).statusCode).toBe(403);
+    const own = (await t.call('POST', `/api/conversations/${t.conv.id}/schedules`, { prompt: 'second', cron: '@daily' }, bearer(dana.token))).json();
+    t.store.setProjectAccess(t.project.id, 'owner', []);
+    expect(new Scheduler(t.store, t.dispatcher).tick(own.next_run_at)).not.toContain(own.id);
+  });
+
+  it('drops a queued schedule when a new account takes the deleted creator’s name', async () => {
+    const t = await chat();
+    vi.spyOn(t.dispatcher, 'kick').mockImplementation(() => {});
+    const original = await mkUser(t, 'dana');
+    const s = (await t.call('POST', `/api/conversations/${t.conv.id}/schedules`, { prompt: 'scheduled', cron: '@daily' }, bearer(original.token))).json();
+    expect((await t.call('POST', `/api/schedules/${s.id}/run`, undefined, bearer(original.token))).statusCode).toBe(202);
+    expect(t.store.listQueue(t.conv.id)).toHaveLength(1);
+    t.store.deleteUser(original.id);
+    const replacement = await mkUser(t, 'dana');
+    expect(t.store.popQueue(t.conv.id)).toBeNull();
+    expect((await t.call('POST', `/api/schedules/${s.id}/run`, undefined, bearer(replacement.token))).statusCode).toBe(403);
+    expect(new Scheduler(t.store, t.dispatcher).tick(s.next_run_at)).toEqual([]);
   });
 
   it('refuses a bad expression, and previews a good one', async () => {

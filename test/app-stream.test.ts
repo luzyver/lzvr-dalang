@@ -187,6 +187,18 @@ describe('SSE', () => {
     await live.body!.cancel().catch(() => {});
   });
 
+  it('closes an open stream when project membership is revoked', async () => {
+    const t = setupApp();
+    close = () => t.app.close();
+    const user = await mkUser(t, 'reader');
+    const project = t.store.createProject('p', t.root);
+    const chat = t.store.createConversation(project.id);
+    const base = await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const res = await fetch(`${base}/api/conversations/${chat.id}/events`, { headers: bearer(user.token), signal: AbortSignal.timeout(3000) });
+    await t.app.inject({ method: 'PATCH', url: `/api/projects/${project.id}`, headers: AUTH, payload: { access: 'owner' } });
+    expect((await res.body!.getReader().read()).done).toBe(true);
+  });
+
   it('lets a request still running finish while the app closes', async () => {
     const t = setupApp();
     await t.app.listen({ host: '127.0.0.1', port: 0 });
@@ -232,6 +244,26 @@ describe('SSE', () => {
     });
     const replayed = await readUntil(replay, (s) => s.includes('event: turn.completed'));
     expect(replayed).not.toContain('event: thread.started');
+  });
+
+  it('replays long histories in bounded pages and includes events added between pages', async () => {
+    const t = setupApp();
+    close = () => t.app.close();
+    const conv = t.store.createConversation(t.store.createProject('p', t.root).id);
+    const turn = t.store.startTurn(conv.id, 'task');
+    const add = () => t.store.addEvent(turn, 'item.completed', '{}');
+    const expected = Array.from({ length: 100 }, add);
+    const original = t.store.eventsAfter.bind(t.store);
+    const reads = vi.spyOn(t.store, 'eventsAfter').mockImplementation((id, after, limit) => {
+      const page = original(id, after, limit);
+      if (after === 0) expected.push(add());
+      return page;
+    });
+    const base = await t.app.listen({ host: '127.0.0.1', port: 0 });
+    const res = await fetch(`${base}/api/conversations/${conv.id}/events`, { headers: AUTH, signal: AbortSignal.timeout(5000) });
+    const text = await readUntil(res, (s) => s.includes(`id: ${expected.at(-1)}\n`));
+    expect([...text.matchAll(/^id: (\d+)/gm)].map((m) => Number(m[1]))).toEqual(expected);
+    expect(reads.mock.calls.every(([, , limit]) => limit && limit < expected.length)).toBe(true);
   });
 
   it('returns one-turn counts for paged history and SSE, and a chat-wide total across agents', async () => {

@@ -3,6 +3,7 @@ import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symli
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { ownerSessionToken, sessionHash } from '../src/auth.js';
 import { badName, globList, inGitDir, searchRegExp } from '../src/code-routes.js';
 import { templateWorkDir } from '../src/templates.js';
 import { asUser, shellUser, Terminals, userShell } from '../src/terminals.js';
@@ -153,8 +154,11 @@ describe('code editor: files', () => {
       return app.inject({ method: 'POST', url: `/api/conversations/${id}/fs/upload${query}`, payload,
         headers: { ...AUTH, 'content-type': `multipart/form-data; boundary=${boundary}` } });
     };
+    const neighbor = join(dir, 'src', 'notes.txt.dalang-upload');
+    writeFileSync(neighbor, 'keep');
     expect((await upload('notes.txt', 'one', '?dir=src')).json()).toEqual({ path: 'src/notes.txt' });
     expect(readFileSync(join(dir, 'src', 'notes.txt'), 'utf8')).toBe('one');
+    expect(readFileSync(neighbor, 'utf8')).toBe('keep');
     const again = await upload('notes.txt', 'two', '?dir=src');
     expect(again.statusCode).toBe(409);
     expect(again.json()).toMatchObject({ exists: true });
@@ -433,6 +437,25 @@ describe('code editor: terminals', () => {
     const made = await t.call('POST', '/terminals', {}, bearer(user.token));
     if (made.statusCode === 201) expect(made.json().account).toBe('dalang');
     else expect(made.statusCode).toBe(409);
+  });
+
+  it('revokes an attached terminal and outstanding tickets on logout', async () => {
+    const t = await withChat({ terminals: echo() });
+    const email = 'owner@example.org';
+    t.cfg.ownerEmails.push(email);
+    const token = ownerSessionToken(t.cfg, email);
+    t.store.createSession(sessionHash(token), Date.now() + 60_000);
+    const term = (await t.call('POST', '/terminals', {}, bearer(token))).json();
+    const ticket = async () => (await t.app.inject({ method: 'POST', url: `/api/terminals/${term.id}/ticket`, headers: bearer(token) })).json().ticket;
+    const url = '/api/terminals/socket?ticket=';
+    const ws = await t.app.injectWS(url + await ticket());
+    const pending = await ticket();
+    const closed = new Promise<void>((done) => ws.once('close', () => done()));
+    try {
+      await t.app.inject({ method: 'POST', url: '/api/auth/logout', headers: bearer(token) });
+      await closed;
+      await expect(t.app.injectWS(url + pending)).rejects.toThrow();
+    } finally { ws.terminate(); await t.app.close(); }
   });
 
   it('opens a shell in the chat folder, streams it over a ticketed socket, and closes it', async () => {
