@@ -42,6 +42,9 @@ export function buildClaudeArgs(o: Pick<ClaudeTurnOpts, 'sandbox' | 'threadId' |
   if (o.effort) a.push('--effort', o.effort);
   const servers: Record<string, object> = { ...o.mcpServers };
   if (o.mcpUrl) servers.dalang = { type: 'http', url: o.mcpUrl, headers: { Authorization: 'Bearer ${LZVR_MCP_TOKEN}' } };
+  // Without this Claude Code adds the connectors of its own claude.ai account and the servers in the account's settings,
+  // which act as whoever owns that account, not as the person the turn runs for. Only the servers named here are used.
+  a.push('--strict-mcp-config');
   if (Object.keys(servers).length) {
     a.push('--mcp-config', JSON.stringify({ mcpServers: servers }));
     // Nothing can ask before an MCP call either, so the servers' tools are allowed up front (the gateway's per-turn

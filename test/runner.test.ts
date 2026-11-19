@@ -34,19 +34,19 @@ describe('inheritedEnv', () => {
 describe('buildArgs', () => {
   it('builds a fresh run', () => {
     expect(buildArgs({ cwd: '/w', sandbox: 'workspace-write' })).toEqual([
-      'exec', '--json', '--skip-git-repo-check', '-C', '/w', '-s', 'workspace-write', '-',
+      'exec', '--json', '--skip-git-repo-check', '--disable', 'apps', '--disable', 'plugins', '-C', '/w', '-s', 'workspace-write', '-',
     ]);
   });
 
   it('inserts extra config overrides before resume', () => {
     expect(buildArgs({ cwd: '/w', sandbox: 'read-only', threadId: 't', extraArgs: ['-c', 'a=1'] })).toEqual([
-      'exec', '--json', '--skip-git-repo-check', '-C', '/w', '-s', 'read-only', '-c', 'a=1', 'resume', 't', '-',
+      'exec', '--json', '--skip-git-repo-check', '--disable', 'apps', '--disable', 'plugins', '-C', '/w', '-s', 'read-only', '-c', 'a=1', 'resume', 't', '-',
     ]);
   });
 
   it('puts images first and adds resume before the stdin marker', () => {
     expect(buildArgs({ cwd: '/w', sandbox: 'read-only', threadId: 'tid', images: ['a.png', 'b.png'] })).toEqual([
-      'exec', '-i', 'a.png', '-i', 'b.png', '--json', '--skip-git-repo-check', '-C', '/w', '-s', 'read-only',
+      'exec', '-i', 'a.png', '-i', 'b.png', '--json', '--skip-git-repo-check', '--disable', 'apps', '--disable', 'plugins', '-C', '/w', '-s', 'read-only',
       'resume', 'tid', '-',
     ]);
   });
