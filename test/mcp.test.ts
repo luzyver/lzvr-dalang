@@ -1048,6 +1048,18 @@ describe('Settings → ClickUp', () => {
     expect(t.store.getKv('clickup')).not.toContain('mcp_test');
   });
 
+  it('refuses a sign-in from an http address that is not this machine, which ClickUp would not take', async () => {
+    const calls: string[] = [];
+    const t = await boot({ clickupFetch: fakeClickUp(calls), cfg: { origin: undefined } });
+    const start = (origin: string) => t.app.inject({ method: 'POST', url: '/api/settings/clickup/oauth/start', headers: { ...AUTH, origin } });
+    const r = await start('http://192.168.1.20:9876');
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error).toMatch(/https address, or to http:\/\/localhost: the panel is open on http:\/\/192\.168\.1\.20:9876/);
+    expect(calls).toEqual([]);
+    for (const ok of ['http://127.0.0.1:9876', 'http://localhost:9876', 'https://dalang.example']) expect((await start(ok)).statusCode).toBe(200);
+    expect(calls).toEqual(['REGISTER http://127.0.0.1:9876/', 'REGISTER http://localhost:9876/', 'REGISTER https://dalang.example/']);
+  });
+
   it('rejects a bad time zone or workspace id', async () => {
     const t = await boot();
     expect((await put(t, { workspaceId: '', timeZone: 'Mars/Base' })).statusCode).toBe(400);

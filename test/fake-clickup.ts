@@ -40,7 +40,7 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
   const teams: Record<string, any> = {
     '900': {
       name: 'Acme', members: [{ id: 11, username: 'luz', email: 'luz@example.com' }, { id: 22, username: 'sari', email: 'sari@example.com' }],
-      channels: [{ id: 'c1', name: 'dev-team', type: 'CHANNEL', created_at: wib('2026-01-01T00:00:00') }, { id: 'c2', type: 'DM' }, { id: 'c9', name: 'later', type: 'CHANNEL', created_at: wib('2026-11-01T00:00:00') }],
+      channels: [{ id: 'c1', name: 'dev-team', type: 'CHANNEL', created_at: wib('2026-01-01T00:00:00') }, { id: 'c2', type: 'DM', latest_comment_at: wib('2026-08-01T09:00:00') }, { id: 'c9', name: 'later', type: 'CHANNEL', created_at: wib('2026-11-01T00:00:00') }],
       spaces: [{ id: 's1', name: 'Engineering', type: 'space', children: [
         { id: 'l1', name: 'Backlog', type: 'list' },
         { id: 'f1', name: 'Sprints', type: 'folder', children: [{ id: 'l2', name: 'Sprint 12', type: 'list' }] },
@@ -58,6 +58,18 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
     '901': {
       name: 'Side', members: [{ id: 11, username: 'luz' }, { id: 33, username: 'budi', email: 'budi@example.com' }],
       channels: [{ id: 'd1', type: 'DM' }], spaces: [], filter: [t3], entries: [], docs: [],
+    },
+    // more channels than one call may read, each said to be last written in a minute before the one above it; tasks
+    // whose last change is an ISO date, or not said
+    '902': {
+      name: 'Big', members: [{ id: 11, username: 'luz' }],
+      channels: Array.from({ length: 300 }, (_, i) => ({ id: `b${i}`, name: `big-${i}`, type: 'CHANNEL', latest_comment_at: wib('2026-10-10T12:00:00') - i * 60_000 })).reverse(),
+      spaces: [], entries: [], docs: [],
+      filter: [
+        { id: 't8', name: 'Iso date', status: 'open', assignees: [], date_updated: '2026-10-07T02:00:00.000Z' },
+        { id: 't7', name: 'No date', status: 'open', assignees: [] },
+        { id: 't6', name: 'Old', status: 'open', assignees: [], date_updated: '2026-09-01T02:00:00.000Z' },
+      ],
     },
   };
   // channel -> pages of messages, newest first; the cursor of a page is its number
@@ -94,7 +106,7 @@ export function fakeClickUp(calls: string[] = []): typeof fetch {
       case 'clickup_get_workspace_members': return { members: ws.members };
       case 'clickup_get_chat_channels': return { channels: ws.channels, has_more: false };
       case 'clickup_get_chat_channel_messages': {
-        const all = (ws.channels as any[]).some((c) => c.id === a.channel_id) ? pages[a.channel_id]! : no('Channel not found');
+        const all = (ws.channels as any[]).some((c) => c.id === a.channel_id) ? pages[a.channel_id] ?? [[msg(`x-${a.channel_id}`, '2026-10-09T10:00:00', ME, 'hi')]] : no('Channel not found');
         const n = Number(a.cursor ?? 0);
         if (n >= all.length) throw new Error('read past the start of the range');
         return { messages: all[n], has_more: n + 1 < all.length + (a.channel_id === 'c1' ? 1 : 0), next_cursor: String(n + 1) };

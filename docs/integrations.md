@@ -120,7 +120,9 @@ shows which ClickUp user it reads as and its workspace. Optional: a default work
 own) and the time zone times are given in (default your ClickUp profile's). The access token is stored in the
 database and never sent back to the panel. **Disconnect** turns the tools off here; ClickUp keeps the access until the
 app "Dalang" is removed in ClickUp's own settings. The sign-in comes back to `LZVR_ORIGIN`, or to the address the
-browser has the panel open on when that is unset.
+browser has the panel open on when that is unset. ClickUp takes that address only when it is `https`, or `http` on
+the machine itself (`http://localhost:9876`, `http://127.0.0.1:9876`): a panel opened on `http://192.168.x.x` or another
+plain-http name cannot connect until it is opened on one of those.
 
 A connection reaches the workspace (or workspaces) picked at the sign-in. A chat can ask for another one by id
 (`workspace_ids`) when the connection was allowed it; one that was not is refused with "connect ClickUp again and pick
@@ -192,8 +194,9 @@ from before (asked for with the token) cannot be approved: reject it and ask aga
 
 The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp access token sits
 where an agent that reads files as root could find it (the database), so the "What this does and does not protect" note
-above applies to it too. One call makes at most 250 ClickUp requests; a busy workspace over a long range may stop early
-with a warning, so ask for a shorter range or particular channels.
+above applies to it too. One call makes at most 250 ClickUp requests, and ClickUp cannot be asked which channels have messages in a range, so
+each one is read. A workspace with more channels than that stops early with a warning that names the channels left
+(the ones last written in are read first, where ClickUp says when that was): ask for a shorter range or particular channels.
 
 ## Other MCP servers
 

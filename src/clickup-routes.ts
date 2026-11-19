@@ -137,6 +137,10 @@ export function clickupRoutes(app: FastifyInstance, d: {
     let origin: URL;
     try { origin = new URL(d.origin ?? String(req.headers.origin ?? '')); } catch { return reply.code(400).send({ error: 'the panel address is unknown; set LZVR_ORIGIN' }); }
     if (origin.protocol !== 'https:' && origin.protocol !== 'http:') return reply.code(400).send({ error: 'the panel address is unknown; set LZVR_ORIGIN' });
+    // ClickUp takes a sign-in back over http only on this machine itself; any other address must be https.
+    if (origin.protocol === 'http:' && !/^(localhost|127(\.\d+){3}|\[::1\])$/.test(origin.hostname)) {
+      return reply.code(400).send({ error: `ClickUp only signs in to an https address, or to http://localhost: the panel is open on ${origin.origin}. Open it on https or on http://localhost:${origin.port || '80'}, or set LZVR_ORIGIN to its https address` });
+    }
     const redirectUri = `${origin.origin}/`;
     try {
       let clientId = load(store).clients[redirectUri];

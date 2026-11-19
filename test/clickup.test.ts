@@ -60,7 +60,22 @@ describe('ClickUp chat history', () => {
     // a channel made after the range is not read
     expect(of(calls, 'clickup_get_chat_message_replies')).toEqual([]);
     expect(calls.some((c) => c.includes('"channel_id":"c9"'))).toBe(false);
-    expect(r.channels_read).toBe(2);
+    // nor one ClickUp says was last written in before the range, unless replies are asked for (a reply may be newer)
+    expect(calls.some((c) => c.includes('"channel_id":"c2"'))).toBe(false);
+    expect(r.channels_read).toBe(1);
+    await fakeClient(calls).history({ from: '2026-10-05', to: '2026-10-11', includeReplies: true });
+    expect(calls.some((c) => c.includes('"channel_id":"c2"'))).toBe(true);
+  });
+
+  it('reads the channels last written in first when there are more than one call may read, and names the ones left', async () => {
+    const calls: string[] = [];
+    const r = await fakeClient(calls, '902').history({ from: '2026-10-05', to: '2026-10-11' });
+    const asked = of(calls, 'clickup_get_chat_channel_messages').map((c) => Number(/"channel_id":"b(\d+)"/.exec(c)![1]));
+    expect(asked.length).toBeLessThan(300);
+    expect(Math.max(...asked)).toBe(asked.length - 1); // the newest ones, none skipped among them
+    expect(r.messages).toHaveLength(asked.length);
+    expect(r.channels_read).toBe(asked.length);
+    expect(r.warnings?.join()).toMatch(new RegExp(`stopped early.* ${300 - asked.length} of 300 channels were not read.*big-${asked.length}, .*…\\. Narrow the range or pick channels`));
   });
 
   it('includes replies and other people on request', async () => {

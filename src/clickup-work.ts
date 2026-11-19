@@ -64,6 +64,13 @@ const WHEN_RE = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2}))?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const num = (v: unknown): number | null => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+/** A moment in ms, as ClickUp gives it (ms as a number or text) or as an ISO date; null when it is neither. */
+const moment = (v: unknown): number | null => {
+  const n = num(v);
+  if (n !== null) return n;
+  const d = typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isNaN(d) ? null : d;
+};
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 /** "2026-10-08", or with its time "2026-10-08 14:00". */
@@ -283,8 +290,10 @@ export class ClickUpWork {
           const r = await this.cu.call('clickup_filter_tasks', { ...filters, page }, ws.id, budget);
           const tasks = (r?.tasks ?? []) as any[];
           for (const t of tasks) {
-            const ts = num(t.date_updated) ?? 0;
-            if (since !== undefined && ts < since) break pages; // last changed first: the rest is older still
+            const at = moment(t.date_updated);
+            // Last changed first: the rest is older still. A task that does not say when it changed is kept, not taken as old.
+            if (since !== undefined && at !== null && at < since) break pages;
+            const ts = at ?? 0;
             if (!hit(t)) continue;
             rows.push({ ts, ...row(t, tz, uz), ...(workspaces.length > 1 && { workspace: ws.name }) });
             own++;

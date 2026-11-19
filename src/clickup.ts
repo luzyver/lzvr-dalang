@@ -71,6 +71,8 @@ export const onTask = (task: TaskRef, files: Uploaded[]) => (files.length ? ` Al
 export interface TaskRef { id: string; name: string; url: string; workspace_id?: string }
 
 interface Channel { id: string; name: string; type: string; workspace_id: string; workspace: string }
+/** A channel as listed: with when it was made and when it was last written in (ms), where ClickUp says so. */
+type Listed = Channel & { created?: number; latest?: number };
 interface Person { id: string; name: string; email: string }
 export interface Workspace { id: string; name: string; members: Map<string, string>; people: Person[] }
 interface RawMessage { id: string; user_id: string; content?: string; date: number; has_replies?: boolean; parent_message?: string }
@@ -222,8 +224,8 @@ export class ClickUp {
   }
 
   /** Every chat channel, DM and group DM the user can see in the given workspaces, DMs not named yet. */
-  private async listChannels(workspaces: Workspace[], budget: { left: number }): Promise<(Channel & { created?: number })[]> {
-    const out: (Channel & { created?: number })[] = [];
+  private async listChannels(workspaces: Workspace[], budget: { left: number }): Promise<Listed[]> {
+    const out: Listed[] = [];
     for (const ws of workspaces) {
       let cursor: string | undefined;
       do {
@@ -232,7 +234,7 @@ export class ClickUp {
           const id = String(c.id);
           const ch = { id, name: this.dmNames.get(id) ?? channelName(c), type: String(c.type ?? ''), workspace_id: ws.id, workspace: ws.name };
           this.known.set(id, ch);
-          out.push({ ...ch, ...(Number(c.created_at) > 0 && { created: Number(c.created_at) }) });
+          out.push({ ...ch, ...(Number(c.created_at) > 0 && { created: Number(c.created_at) }), ...(Number(c.latest_comment_at) > 0 && { latest: Number(c.latest_comment_at) }) });
         }
         cursor = (r?.has_more ?? true) ? r?.next_cursor || undefined : undefined;
       } while (cursor);
@@ -254,7 +256,7 @@ export class ClickUp {
         this.nameDm(c, messages(r), workspaces.find((w) => w.id === c.workspace_id)!, me.id);
       } catch { /* keep the generic name */ }
     });
-    return out.map(({ created: _created, ...c }) => c);
+    return out.map(({ created: _created, latest: _latest, ...c }) => c);
   }
 
   private unnamed(c: Channel) { return (c.type === 'DM' || c.type === 'GROUP_DM') && !this.dmNames.has(c.id); }
@@ -314,21 +316,28 @@ export class ClickUp {
     const warnings: string[] = [];
     const all = await this.listChannels(workspaces, budget);
     for (const id of q.channelIds ?? []) if (!all.some((c) => c.id === id)) warnings.push(`channel ${id} not found`);
-    // ClickUp does not say which channels have a message in the range, so each one is asked (a channel made later has none).
-    const channels = (q.channelIds?.length ? all.filter((c) => q.channelIds!.includes(c.id)) : all).filter((c) => !c.created || c.created < endMs);
+    // ClickUp has no filter for the channels with a message in the range, so each one is asked, but one made after the
+    // range or, where ClickUp says when it was last written in, quiet since before it. Those last written in go first,
+    // so that when the requests run out it is the quiet ones that are left. A reply may be newer than what ClickUp
+    // calls the latest message, so with replies no channel is left out for being quiet.
+    const channels = (q.channelIds?.length ? all.filter((c) => q.channelIds!.includes(c.id)) : all)
+      .filter((c) => (!c.created || c.created < endMs) && (q.includeReplies || !c.latest || c.latest >= fromMs))
+      .sort((a, b) => (b.latest ?? 0) - (a.latest ?? 0));
 
     const raw: { m: RawMessage; c: Channel }[] = [];
-    let spent = false;
+    const unread: string[] = [];
     await pool(channels, PARALLEL, async (c) => {
-      if (spent) return;
+      if (unread.length) { unread.push(c.name); return; }
       try {
         for (const msg of await this.channelMessages(c, byId.get(c.workspace_id)!, me.id, fromMs, endMs, Boolean(q.includeReplies), budget)) raw.push({ m: msg, c });
       } catch (e) {
-        if (budget.left <= 0) spent = true;
+        if (budget.left <= 0) unread.push(c.name);
         else warnings.push(`${c.name}: ${(e as Error).message}`);
       }
     });
-    if (spent) warnings.push('stopped early: too many ClickUp requests for one call; narrow the range or pick channels');
+    if (unread.length) {
+      warnings.push(`stopped early: too many ClickUp requests for one call. ${unread.length} of ${channels.length} channels were not read (in full): ${unread.slice(0, 20).join(', ')}${unread.length > 20 ? ', …' : ''}. Narrow the range or pick channels (channel_ids)`);
+    }
 
     const mineOnly = q.mineOnly ?? true;
     const rows = raw
@@ -350,7 +359,7 @@ export class ClickUp {
     if (rows.length > limit) warnings.push(`${rows.length} messages matched; only the last ${limit} are listed (raise limit or narrow the range)`);
     return {
       time_zone: tz, range: { from: q.from, to: q.to }, user: mineOnly ? me.username : 'everyone',
-      workspaces: workspaces.map((w) => w.name), channels_read: channels.length,
+      workspaces: workspaces.map((w) => w.name), channels_read: channels.length - unread.length,
       messages: rows.slice(-limit).map(({ ts: _ts, ...r }) => r),
       ...(warnings.length && { warnings }),
     };

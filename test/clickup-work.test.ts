@@ -48,6 +48,8 @@ describe('ClickUp work, reading', () => {
     expect((await w.findTasks({ query: 'login' })).tasks.map((t: any) => t.id)).toEqual(['t2']);
     expect((await w.findTasks({ query: 'dev-4' })).tasks.map((t: any) => t.id)).toEqual(['t1']);
     expect((await w.findTasks({ updatedSince: '2026-10-06' })).tasks.map((t: any) => t.id)).toEqual(['t1']);
+    // a last change given as an ISO date is read as one; a task that does not say is kept, not taken as older than all
+    expect((await work([], '902').findTasks({ updatedSince: '2026-10-06' })).tasks.map((t: any) => t.id)).toEqual(['t8', 't7']);
     const one = await w.findTasks({ limit: 1 });
     expect(one.tasks).toHaveLength(1);
     expect(one.warnings?.join()).toMatch(/more tasks match/);
