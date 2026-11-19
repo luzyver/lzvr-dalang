@@ -212,7 +212,7 @@ export function buildApp(
   codeIndexRoutes(app, { store, codeMemory, push });
   memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
   dispatcher.codeMemory = codeMemory;
-  clickupRoutes(app, { store, client: clickup });
+  clickupRoutes(app, { store, client: clickup, origin: cfg.origin, fetch: deps.clickupFetch });
   clickupApprovalRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, client: clickup });
   mcpServerRoutes(app, { store });
   databaseRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, noteFailure });

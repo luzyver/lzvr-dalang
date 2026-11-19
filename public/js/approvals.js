@@ -154,7 +154,9 @@ function ClickUpMessageCard({ a, showChat }) {
       <${ClickUpWhere} d=${a.dest} />
       ${a.files?.length > 0 && html`<div class="small">
         <div><span class="dim">Files</span> ${a.files.map((f) => `${f.name} (${size(f.size)})`).join(', ')}</div>
-        <div><span class="dim">Uploaded to task</span> <a href=${a.task.url} target="_blank" rel="noopener">${a.task.name}</a>, linked at the end of the message</div>
+        ${a.task
+          ? html`<div><span class="dim">Uploaded to task</span> <a href=${a.task.url} target="_blank" rel="noopener">${a.task.name}</a>, linked at the end of the message</div>`
+          : html`<div class="dim">Sent in the message itself</div>`}
       </div>`}
       ${pending
         ? html`<textarea rows="4" value=${text} aria-label="Message text" onInput=${(e) => setText(e.currentTarget.value)}></textarea>`

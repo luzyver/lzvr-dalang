@@ -396,7 +396,7 @@ Known limits:
 | `LZVR_SECRET_KEY` | `<STATE_DIR>/secret.key` | Encrypts the passwords, keys and tokens stored in the database (see "Security"). Use a long random value (`openssl rand -base64 32`); keep it, since without it they cannot be read. |
 | `HOST` / `PORT` | `127.0.0.1` / `9876` | Listen address. Keep loopback and put a TLS proxy in front. |
 | `TRUST_PROXY` | off | Set `1` when a reverse proxy **on this machine** (nginx/Caddy) fronts the gateway, or list its IPs/CIDRs (`10.0.0.5,10.0.1.0/24`). Rate limiting then uses the client address that proxy saw. Without it, every visitor looks like `127.0.0.1` and ten bad tokens from anyone lock everyone out. Never trust addresses that are not your proxy. |
-| `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset. |
+| `LZVR_ORIGIN` | unset | Full `https://` origin of the panel; the Web Push contact when `LZVR_VAPID_SUBJECT` is unset, and where a ClickUp sign-in comes back to. |
 | `LZVR_VAPID_SUBJECT` | origin | Contact URL for Web Push (`mailto:` or `https:`). |
 | `LIMIT_BLOCK_MINUTES` | `60` | How long an account is skipped after a usage limit. |
 | `DRAIN_MINUTES` | `5` | On a restart (SIGTERM, `scripts/update.sh`, `autostart.cmd restart`), how long running turns may still finish before they are cut off; a cut-off turn continues in its session after the restart. `0` cuts them off at once. On the VM keep the unit's `TimeoutStopSec` longer (see "Install on the VM"). |
@@ -422,7 +422,7 @@ context, so keep secrets (`.env`, keys) out of the folders you register, or use 
 a narrower `WORKSPACE_ROOT` (for example `/var/www`).
 
 **Secrets in the database are encrypted.** SSH hosts, SQL editor connections (and their SSH tunnels), the ClickUp
-token, other MCP servers' tokens and environment, and the push key are stored with AES-256-GCM, so `lzvr.db` alone (a
+connections, other MCP servers' tokens and environment, and the push key are stored with AES-256-GCM, so `lzvr.db` alone (a
 copy, a backup, an agent reading it) does not give them away. The key is `LZVR_SECRET_KEY`, which no agent, terminal
 or git process Dalang starts receives (no `LZVR_*` variable does). Without it, Dalang makes `<STATE_DIR>/secret.key`
 and warns at start: that file sits next to the database, so for agents that can read the state folder, put its content

@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type ClickUpApproval, createClickUpApproval, describeDestination, readClickUpApprovals } from './clickup-approvals.js';
-import { type ClickUp, MAX_FILES, MAX_SEND, type OutFile, startOfDay } from './clickup.js';
+import { type ClickUp, MAX_FILES, MAX_SEND, type OutFile } from './clickup.js';
 import { clickupWorkTools } from './clickup-work-tools.js';
 import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
@@ -462,13 +462,13 @@ function codeTools(server: McpServer, cm: CodeMemory, own: string | undefined, g
 }
 
 const WORKSPACES = z.array(z.string()).optional()
-  .describe('ClickUp workspace ids (from clickup_whoami); default: the one set in Settings, else every workspace');
+  .describe('ClickUp workspace ids (from clickup_whoami); default: the one set in Settings, else the one ClickUp was connected to');
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
- * ClickUp tools: chat here, tasks, time and Docs in clickup-work-tools.ts. Each person has their own ClickUp token
+ * ClickUp tools: chat here, tasks, time and Docs in clickup-work-tools.ts. Each person connects their own ClickUp
  * (Settings → MCP → ClickUp), and the tools read as its ClickUp user: from outside the caller's own, inside a chat that
- * of whoever sent the turn. Someone with no token gets none, and so do prompts nobody sent (agents, approvals). They
+ * of whoever sent the turn. Someone not connected gets none, and so do prompts nobody sent (agents, approvals). They
  * only read, unless the owner allowed sending: clickup_send_message then asks to send as that person and the change
  * tools ask to change things as them, and each message or change waits for their own approval.
  */
@@ -498,13 +498,13 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
   const run = async (f: () => Promise<unknown>) => { try { return text(await f()); } catch (e) { return fail((e as Error).message); } };
 
   server.registerTool('clickup_whoami', {
-    description: 'The ClickUp user the ClickUp tools read as, every workspace it can see (and which one is read by default), and the time zone dates are given in.',
+    description: 'The ClickUp user the ClickUp tools read as, the workspace read by default, and the time zone dates are given in.',
   }, async () => run(() => cu.whoami()));
 
   server.registerTool('clickup_list_channels', {
-    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type, workspace). With since, only those with a message since that date.',
-    inputSchema: { since: DATE.optional(), workspace_ids: WORKSPACES },
-  }, async ({ since, workspace_ids }) => run(async () => cu.channels(since ? startOfDay(since, await cu.timeZone()) : undefined, workspace_ids)));
+    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type, workspace). A DM is named after who wrote in it.',
+    inputSchema: { workspace_ids: WORKSPACES },
+  }, async ({ workspace_ids }) => run(async () => cu.channels(workspace_ids)));
 
   server.registerTool('clickup_chat_history', {
     description: 'Read ClickUp Chat messages (channels, DMs and group DMs) between two local dates (both included, at most 93 days), '
@@ -524,7 +524,7 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
 
   server.registerTool('clickup_list_threads', {
     description: 'The latest top-level messages of a ClickUp Chat channel or DM, newest first (id, local date and time, '
-      + 'author, how many replies, the start of the text), to pick one whose thread to reply in.',
+      + 'author, whether it has replies, the start of the text), to pick one whose thread to reply in.',
     inputSchema: {
       channel_id: z.string().min(1).describe('from clickup_list_channels'),
       workspace_id: z.string().optional().describe("the channel's workspace; default: looked up"),
@@ -548,10 +548,8 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
       + 'in it or reply in a thread and which one (clickup_list_threads), or, for a private message, the person '
       + '(clickup_find_people). Then show the text and send only what they agreed to. Nothing is sent at once: the '
       + 'message waits for the person to approve it in Dalang (status pending_approval), who may change the text; the '
-      + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits. Files '
-      + '(files, paths in this chat folder) cannot go into ClickUp Chat itself: they are uploaded to a ClickUp task '
-      + '(task_id, an id or link the person gives you; ask which one) when the message is sent, and the message ends with '
-      + 'a link to each, which whoever may open the task can follow.',
+      + 'outcome comes to this chat as a message, or ask clickup_send_status. Do not ask again while it waits. '
+      + 'Files (files, paths in this chat folder; images too) go into the message itself when it is sent.',
     inputSchema: {
       channel_id: z.string().optional().describe('from clickup_list_channels'),
       to_user_id: z.string().optional().describe('instead of channel_id: a person from clickup_find_people'),
@@ -559,19 +557,16 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
       content: z.string().min(1).max(MAX_SEND),
       workspace_id: z.string().optional().describe("the channel's or person's workspace; default: looked up"),
       files: z.array(z.string().min(1)).max(MAX_FILES).optional()
-        .describe(`files to send along: paths in this chat's folder, at most ${MAX_FILES} of 25 MB each (needs task_id)`),
-      task_id: z.string().optional().describe('with files: the ClickUp task (id or https://app.clickup.com/t/... link) they are uploaded to'),
+        .describe(`files to send along: paths in this chat's folder, at most ${MAX_FILES} of 25 MB each`),
     },
   }, async (a) => run(async () => {
     if (!a.content.trim()) throw new Error('the message is empty');
-    if (a.files?.length && !a.task_id) throw new Error('files need task_id: ClickUp Chat takes no files over its API, so they go to a task and the message links them');
     const files = a.files?.length ? readChatFiles(store, dispatcher, by.conv, a.files) : [];
     const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
-    const task = files.length ? await cu.task(a.task_id!) : undefined;
-    const p = createClickUpApproval(store, { user: by.user, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, task, stateDir });
+    const p = createClickUpApproval(store, { user: by.user, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, stateDir });
     void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { user: by.user } });
     return {
-      status: 'pending_approval', approval_id: p.id, to: dest, ...(task && { files: p.files, task }),
+      status: 'pending_approval', approval_id: p.id, to: dest, ...(files.length && { files: p.files, files_go: 'into the message itself' }),
       note: 'Nothing was sent yet: the person approves it in Dalang. The outcome will arrive in this chat as a message; do not send it again.',
     };
   }));

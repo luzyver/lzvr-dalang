@@ -112,71 +112,91 @@ keep secrets out of what Codex can read if that matters to you. Agents can also 
 
 ## ClickUp
 
-Set up in the panel: **Settings → MCP**, tab **ClickUp**. Every panel user saves their own there (for users other than
-the owner, ClickUp is all Settings → MCP shows). Paste a personal API token (ClickUp → Settings
-→ Apps → API Token) and Save; **Test connection** shows which ClickUp user it reads as and the workspaces it can see.
-One token reads every workspace that ClickUp user is in (a workspace under another ClickUp login needs that login's
-token, which is not supported). Optional: a default workspace ID (default: all of them; a chat can still ask for
-particular ones) and the time zone message times are given in (default your ClickUp profile's). The token is stored
-in the database and never sent back to the panel, only its last four characters. **Remove token** turns the tools off.
+Dalang does everything in ClickUp through ClickUp's own MCP server (`mcp.clickup.com`), which takes no personal API
+token (`pk_...`), only a sign-in (OAuth). Set up in the panel: **Settings → MCP**, tab **ClickUp** (for users other
+than the owner, ClickUp is all Settings → MCP shows). Every panel user presses **Connect ClickUp** there, signs in to
+ClickUp, picks the workspace to allow and comes back to the panel; the connection is theirs alone. **Test connection**
+shows which ClickUp user it reads as and its workspace. Optional: a default workspace ID (default: the connection's
+own) and the time zone times are given in (default your ClickUp profile's). The access token is stored in the
+database and never sent back to the panel. **Disconnect** turns the tools off here; ClickUp keeps the access until the
+app "Dalang" is removed in ClickUp's own settings. The sign-in comes back to `LZVR_ORIGIN`, or to the address the
+browser has the panel open on when that is unset. ClickUp takes that address only when it is `https`, or `http` on
+the machine itself (`http://localhost:9876`, `http://127.0.0.1:9876`): a panel opened on `http://192.168.x.x` or another
+plain-http name cannot connect until it is opened on one of those.
 
-Once a token is saved, `/mcp` has read-only tools for ClickUp Chat:
+A connection reaches the workspace (or workspaces) picked at the sign-in. A chat can ask for another one by id
+(`workspace_ids`) when the connection was allowed it; one that was not is refused with "connect ClickUp again and pick
+it".
 
-- `clickup_whoami`: the ClickUp user it reads as, its workspaces (and the default) and the time zone.
-- `clickup_list_channels`: chat channels, DMs and group DMs (optionally only those with messages since a date), with
-  their workspace. DMs are named after who they are with (`DM with sari`).
+Once connected, `/mcp` has read-only tools for ClickUp Chat:
+
+- `clickup_whoami`: the ClickUp user it reads as, the default workspace and the time zone.
+- `clickup_list_channels`: chat channels, DMs and group DMs, with their workspace. A DM is named after who wrote in
+  it (`DM with sari`), as far as its latest messages say.
 - `clickup_chat_history`: messages between two dates (at most 93 days per call), oldest first, each with local date,
   time, weekday, workspace, channel (DMs and group DMs included) and author. Options: `workspace_ids`, `mine_only`
   (default: only your own messages), `channel_ids`, `include_replies` (thread replies; one more request per thread) and `limit`.
+- `clickup_list_threads`: the latest top-level messages of a channel or DM, to find the one to reply to.
+  `clickup_find_people`: the people of the workspace.
 
 The tools only return messages; what to make of them is up to the prompt. For example: *"cek chat ClickUp gue bulan
 September, jam kerja gue 09:00-18:00, kapan aja gue lembur (di luar jam kerja atau weekend) dan ngerjain apa?"* The agent
 reads the month's messages and works out the late days and the work from their times and content. Work you did not
 chat about does not show.
 
-Beyond chat, the same token reads the rest of ClickUp:
+Beyond chat, the same connection reads the rest of ClickUp:
 
 - `clickup_list_spaces`: every space with its folders and lists. `clickup_get_list`: a list's statuses and custom fields.
 - `clickup_find_tasks`: tasks by list, space, folder, assignee (`me`), status, tag, due date or part of the name.
   `clickup_get_task`: one task in full (description, custom fields, checklists, subtasks, dependencies, attachments)
   and, on request, its latest comments (`comment_limit`, default 50; `comments_more` says older ones are left). A
-  task is named by its id, its custom id (`DEV-42`) or its link; a custom id that is a task in two workspaces is
-  refused until its link says which. Tasks of several workspaces are listed together, last changed first.
-- `clickup_time_entries`: time tracked between two dates, with the total of each day and of the range.
-- `clickup_list_docs` and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
+  task is named by its id, its custom id (`DEV-42`) or its link. Tasks of several workspaces are listed together,
+  last changed first.
+- `clickup_time_entries`: time tracked between two dates, with the total of each day and of the range (other
+  people's entries only when ClickUp lets you see them).
+- `clickup_list_docs` (found by ClickUp's search) and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
 
-**Each person reads with their own token only.** From outside, the tools use the token of whoever signed in (the main
-token: the owner's); inside a chat, that of whoever sent the turn. Someone who saved no token gets no ClickUp tools,
-and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or changes another person's token,
-the owner included, and a deleted user's token is removed. A token saved before every user had their own
-stays the owner's.
+**Each person reads on their own connection only.** From outside, the tools use the connection of whoever signed in
+(the main token: the owner's); inside a chat, that of whoever sent the turn. Someone who has not connected gets no
+ClickUp tools, and neither do prompts nobody sent (agents, approvals, schedules). Nobody sees or uses another person's
+connection, the owner included, and a deleted user's connection is removed.
 
 **Allow sending** is the owner's switch, for everyone: with it, `clickup_send_message` asks to send as the ClickUp
 user of whoever sent the turn, and each message waits for that same person's approval (a card in the chat and in
-Approvals, shown to them alone).
+Approvals, shown to them alone). `files` (paths in the chat's folder, at most 5 of 25 MB each) go into the message
+itself, where an image shows in place. They are copied when asked, so what is approved is what goes. To a person with
+no DM open yet the text goes first, which opens the DM, and the files follow in a second message.
 
 The same switch lets a chat ask for changes, each held for approval the same way, with a card that says what it
 does (old value → new value where there is one):
 
 - `clickup_create_task` and `clickup_update_task`: a task or subtask made; name, description, status, priority,
-  dates, assignees, tags, custom fields, parent, list or archiving changed.
-- `clickup_comment_task`: a comment, or a reply to one; with `files` (paths in the chat's folder, at most 5 of 25 MB
-  each) they are attached to the task and the comment ends with a link to each. `clickup_attach_file`: files attached
-  to a task with no comment. The files are copied when asked, so what is approved is what goes. `clickup_checklist`: a checklist added, items added, an item
-  ticked or renamed. `clickup_link_tasks`: a task waits on, blocks or is linked to another, or no longer.
-- `clickup_log_time`: time worked, on a task or without one. `clickup_write_doc`: a Doc or a page made, a page's text
-  replaced or added to.
+  dates, assignees, tags, custom fields, parent or list changed.
+- `clickup_comment_task`: a comment, or a reply to one; with `files` they are attached to the task and the comment
+  names each at its end. `clickup_attach_file`: files attached to a task with no comment. `clickup_link_tasks`: a task
+  waits on, blocks or is linked to another, or no longer.
+- `clickup_log_time`: time worked on a task. `clickup_write_doc`: a Doc (private until shared, or `visibility: public`)
+  or a page made, a page's text replaced or added to.
 
 A change is checked when asked (the list, status, people and fields must exist) and made only on approval. A task
 moved to another list takes its status from that list: if the list lacks the task's status, the new one must be named. If
 ClickUp refuses a step the card says failed; if a step is cut off midway it says unknown, names the steps already
-done, and is not made again. Nothing is deleted through these tools (a task is archived instead), and spaces,
-folders, lists, goals and views are not created or changed.
+done, and is not made again. Nothing is deleted or archived through these tools, and spaces, folders, lists, goals
+and views are not created or changed.
 
-The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp token sits where an
-agent that reads files as root could find it (the database), so the "What this does and does not protect" note above
-applies to it too. One call makes at most 250 ClickUp requests (ClickUp allows about 100 a minute on most plans); a busy workspace over a long
-range may stop early with a warning, so ask for a shorter range or particular channels.
+**Not there, because ClickUp's MCP server has no tool for it:** checklists are read with a task but not changed;
+tasks and spaces are not archived; time is not logged without a task; lists come without their task counts; channels
+cannot be filtered by the date of their last message; a thread says that it has replies, not how many.
+
+**Coming from a personal API token.** Earlier versions used a `pk_...` token per person. It is not read any more and
+is removed from the saved settings when Dalang starts; each person connects once instead. A request for approval kept
+from before (asked for with the token) cannot be approved: reject it and ask again.
+
+The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp access token sits
+where an agent that reads files as root could find it (the database), so the "What this does and does not protect" note
+above applies to it too. One call makes at most 250 ClickUp requests, and ClickUp cannot be asked which channels have messages in a range, so
+each one is read. A workspace with more channels than that stops early with a warning that names the channels left
+(the ones last written in are read first, where ClickUp says when that was): ask for a shorter range or particular channels.
 
 ## Other MCP servers
 

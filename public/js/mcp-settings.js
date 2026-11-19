@@ -5,29 +5,30 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Seg, Spinner, Switch } from './ui.js';
 import { guarded, isOwner, toast } from './store.js';
+import { connectClickUp } from './clickup-connect.js';
 
 /**
- * Your own ClickUp token, workspace and time zone, for the ClickUp tools on /mcp (chat, tasks, time, Docs): every user has their own, and
- * their turns read as their ClickUp user. Read-only unless the owner allows sending (for everyone).
+ * Your own ClickUp connection, workspace and time zone, for the ClickUp tools on /mcp (chat, tasks, time, Docs): every user connects their
+ * own, and their turns read as their ClickUp user. Read-only unless the owner allows sending (for everyone).
  */
 function ClickUpCard() {
   const [s, setS] = useState(null);
-  const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
-  const load = (v) => { setS(v); setToken(''); setResult(null); };
+  const load = (v) => { setS(v); setResult(null); };
   useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
   // Only the owner may say whether sending is allowed.
-  const body = (extra) => ({ workspaceId: s.workspaceId, timeZone: s.timeZone, ...(isOwner.value && { send: s.send }), ...extra });
-  // An empty token field keeps the saved token.
   const save = guarded(async () => {
-    load(await api('/api/settings/clickup', { method: 'PUT', body: body(token.trim() ? { token } : {}) }));
+    load(await api('/api/settings/clickup', { method: 'PUT', body: { workspaceId: s.workspaceId, timeZone: s.timeZone, ...(isOwner.value && { send: s.send }) } }));
     toast('ClickUp settings saved');
   });
-  const remove = guarded(async () => {
-    if (!await confirmDialog({ title: 'Remove the ClickUp token?', message: 'The ClickUp tools stop working until a new one is saved.', confirmText: 'Remove', danger: true })) return;
-    load(await api('/api/settings/clickup', { method: 'PUT', body: body({ token: '' }) }));
-    toast('ClickUp token removed');
+  const connect = guarded(connectClickUp);
+  const disconnect = guarded(async () => {
+    if (!await confirmDialog({ title: 'Disconnect ClickUp?', message: 'The ClickUp tools stop working until you connect again. ClickUp keeps the access until you also remove the app there (ClickUp → Settings → Apps).', confirmText: 'Disconnect', danger: true })) return;
+    const v = await api('/api/settings/clickup/oauth', { method: 'DELETE' });
+    setS({ ...s, connected: v.connected });
+    setResult(null);
+    toast('ClickUp disconnected');
   });
   const test = async () => {
     try { setResult({ ok: true, ...(await api('/api/settings/clickup/test', { method: 'POST' })) }); }
@@ -37,14 +38,24 @@ function ClickUpCard() {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`<section class="form-card">
     <strong>ClickUp</strong>
-    <span class="dim small">ClickUp tools on this gateway's own MCP (chat, tasks, time tracking, Docs), e.g. "what did I work on last week?". The token is yours alone:
-      only turns you sent use it, and every user saves their own. Read-only unless sending is allowed below.
-      Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
-    <${Field} label="Personal API token" hint=${s.configured ? `Saved (${s.tokenHint}). Leave empty to keep it.` : 'ClickUp → Settings → Apps → API Token (pk_...).'}>
-      <input type="password" class="mono" autocomplete="off" value=${token} onInput=${(e) => setToken(e.currentTarget.value)}
-        placeholder=${s.configured ? '••••••••' : 'pk_...'} /><//>
-    <${Field} label="Default workspace ID" hint="Empty = every workspace the token can see. A chat can still ask for a particular one.">
-      <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="all workspaces" /><//>
+    <span class="dim small">ClickUp tools on this gateway's own MCP (chat, tasks, time tracking, Docs), e.g. "what did I work on last week?". They work
+      through ClickUp's own MCP server with a ClickUp sign-in that is yours alone: only turns you sent use it, and every user connects their own.
+      Read-only unless sending is allowed below. Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
+    <div class="row wrap">
+      ${s.connected
+        ? html`<span class="small"><${Icon} name="circle-check" /> Connected</span>
+            <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test}>Test connection<//>
+            <button class="btn ghost danger sm" onClick=${disconnect}><${Icon} name="trash-2" />Disconnect</button>`
+        : html`<${AsyncButton} class="btn primary sm" icon="external-link" onClick=${connect}>Connect ClickUp<//>
+            <span class="dim small">Opens ClickUp's sign-in, where you choose the workspace to allow.</span>`}
+    </div>
+    ${result && (result.ok
+      ? html`<p class="small"><${Icon} name="circle-check" /> Connected as <strong>${result.user.username || result.user.email}</strong>,
+          workspace ${result.workspaces.map((w) => `${w.name || 'unnamed'} (${w.id})`).join(', ')}.
+          Time zone ${result.time_zone}.</p>`
+      : html`<div class="form-error" role="alert">${result.error}</div>`)}
+    <${Field} label="Default workspace ID" hint="Empty = the workspace you connected. With several allowed at sign-in, the one read by default; a chat can still ask for another.">
+      <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="the connected workspace" /><//>
     <${Field} label="Time zone" hint="Message dates and times are given in it. Empty = your ClickUp profile's time zone.">
       <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>
     <datalist id="clickup-zones">${zones.map((z) => html`<option value=${z} />`)}</datalist>
@@ -56,14 +67,7 @@ function ClickUpCard() {
           : 'Sending is not allowed by the owner: the tools only read.'}</span>`}
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
-      <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.configured}>Test connection<//>
-      ${s.configured && html`<button class="btn ghost danger sm" onClick=${remove}><${Icon} name="trash-2" />Remove token</button>`}
     </div>
-    ${result && (result.ok
-      ? html`<p class="small"><${Icon} name="circle-check" /> Connected as <strong>${result.user.username || result.user.email}</strong>
-          with ${result.workspaces.length} workspace(s): ${result.workspaces.map((w) => `${w.name || 'unnamed'} (${w.id})`).join(', ')}.
-          Time zone ${result.time_zone}.</p>`
-      : html`<div class="form-error" role="alert">${result.error}</div>`)}
   </section>`;
 }
 
@@ -280,7 +284,7 @@ function OwnerMcpSection() {
   return html`
     <p class="dim">Tools your chats' agents can use. They are yours: only turns you sent get them, unless one is marked
       <strong>All users</strong>. Prompts from other users (and from agents and approvals) get only those, and
-      ClickUp with their own token.</p>
+      ClickUp with their own connection.</p>
     <div class="tabs wrap" role="tablist" aria-label="MCP servers">
       ${tabs.map(([k, label, on]) => html`<button key=${k} role="tab" aria-selected=${current === k} class=${cx('tab', current === k && 'active', !on && 'off')}
         title=${on ? '' : 'Off'} onClick=${() => setTab(k)}>${k === 'add' && html`<${Icon} name="plus" />`}<span class=${cx(k !== 'clickup' && k !== 'code' && k !== 'add' && 'mono')}>${label}</span></button>`)}
