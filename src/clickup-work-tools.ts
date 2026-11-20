@@ -96,7 +96,7 @@ export function clickupWorkTools(
   server.registerTool('clickup_list_docs', {
     description: 'ClickUp Docs of the workspaces that its search finds (id, name, link, last change), optionally for query: words of the name or the text.',
     inputSchema: { query: z.string().optional(),
-      search_in: z.enum(['name', 'name_and_content']).optional().describe('Use name for title searches via the API. Searching page contents requires ClickUp MCP.'),
+      search_in: z.enum(['name', 'name_and_content']).optional().describe('Use name for title searches via the API. By default, page contents are included when ClickUp OAuth is connected.'),
       workspace_ids: WORKSPACES, limit: z.number().int().min(1).max(200).optional().describe('default 50') },
   }, async (a) => run(() => work.docs(a.workspace_ids, a.query, a.limit, a.search_in)));
 

@@ -39,6 +39,7 @@ it('refuses mixed identities before uploading a file or opening a DM', async () 
 it('can search Doc names with only an API key', async () => {
   const calls: string[] = [];
   const work = new ClickUpWork(new ClickUp({ token: 'pk_test', workspaceId: '900', fetch: fakeClickUp(calls) }));
+  expect(await work.docs(undefined, 'run')).toMatchObject({ docs: [{ id: 'doc1' }], warnings: [expect.stringMatching(/titles only/i)] });
   expect(await work.docs(undefined, 'run', 50, 'name')).toMatchObject([{ id: 'doc1' }]);
   expect(await work.docs(undefined, 'other', 50, 'name')).toEqual([]);
   expect(calls.some((x) => x.startsWith('clickup_'))).toBe(false);
@@ -53,4 +54,17 @@ it('orders tasks across workspaces when ClickUp sends ISO or millisecond timesta
     return inner(input, init);
   } }));
   expect((await work.findTasks({ workspaceIds: ['900', '901'] })).tasks.map((t: any) => t.id)).toEqual(['new', 'old']);
+});
+
+it('returns the newest match when the task limit stops pagination after the first page', async () => {
+  const inner = fakeClickUp();
+  const tasks = Array.from({ length: 101 }, (_, i) => ({ id: String(i + 1), date_updated: String(i + 1) }));
+  const work = new ClickUpWork(new ClickUp({ token: 'pk_test', workspaceId: '900', fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith('/900/task')) return inner(input, init);
+    const ordered = url.searchParams.get('reverse') === 'true' ? [...tasks].reverse() : tasks;
+    const start = Number(url.searchParams.get('page')) * 100;
+    return Response.json({ tasks: ordered.slice(start, start + 100) });
+  } }));
+  expect((await work.findTasks({ limit: 1 })).tasks).toMatchObject([{ id: '101' }]);
 });

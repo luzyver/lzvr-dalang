@@ -227,7 +227,7 @@ export class ClickUpWork {
         ...(subs.length > limit && { warnings: [`more than ${limit} subtasks match`] }) };
     }
     const filters: Query = {
-      order_by: 'updated', subtasks: q.subtasks || undefined, include_closed: q.includeClosed || undefined,
+      order_by: 'updated', reverse: true, subtasks: q.subtasks || undefined, include_closed: q.includeClosed || undefined,
       'list_ids[]': q.listIds, 'space_ids[]': q.spaceIds, 'project_ids[]': q.folderIds, 'statuses[]': q.statuses, 'tags[]': q.tags,
       'assignees[]': q.assignees?.map((a) => (a === 'me' ? me.id : a)),
       due_date_gt: q.dueFrom ? dayStart(q.dueFrom, tz) - 1 : undefined, due_date_lt: q.dueTo ? dayStart(q.dueTo, tz, true) : undefined,
@@ -396,10 +396,10 @@ export class ClickUpWork {
   }
 
   /** Docs of the workspaces, optionally those whose name contains `query`. */
-  async docs(workspaceIds?: string[], query?: string, limit = 50, searchIn: 'name' | 'name_and_content' = 'name_and_content') {
+  async docs(workspaceIds?: string[], query?: string, limit = 50, searchIn?: 'name' | 'name_and_content') {
     const max = Math.min(Math.max(limit, 1), 200);
     const words = query?.trim();
-    if (words && searchIn === 'name_and_content') return this.searchDocs(workspaceIds, words, max);
+    if (words && (searchIn === 'name_and_content' || (searchIn === undefined && this.cu.hasMcp))) return this.searchDocs(workspaceIds, words, max);
     const needle = words?.toLowerCase();
     const tz = await this.cu.timeZone();
     const budget = { left: 30 };
@@ -418,7 +418,11 @@ export class ClickUpWork {
         cursor = r.next_cursor || undefined;
       } while (cursor && out.length < max && budget.left > 0);
     }
-    return out.slice(0, max);
+    const docs = out.slice(0, max);
+    if (words && searchIn === undefined) {
+      return { docs, warnings: ['Searched Doc titles only. Connect ClickUp OAuth to include page contents.'] };
+    }
+    return docs;
   }
 
   private async searchDocs(workspaceIds: string[] | undefined, query: string, max: number) {
@@ -510,16 +514,18 @@ export class ClickUpWork {
     for (const [key, label] of [['due', 'Due'], ['start', 'Start']] as const) {
       const v = f[key];
       if (v === undefined) continue;
-      const was = old ? taskDate(old, key, tz, await this.cu.userZone()) ?? '' : undefined;
+      const userZone = await this.cu.userZone();
+      const was = old ? taskDate(old, key, tz, userZone) ?? '' : undefined;
       if (!v.trim()) {
         if (!old) continue;
         body[`${key}_date`] = null;
         change(label, 'none', was);
       } else {
-        const w = when(v, tz);
+        const zone = DATE_RE.test(v.trim()) ? userZone : tz;
+        const w = when(v, zone);
         body[`${key}_date`] = w.ms;
         body[`${key}_date_time`] = w.time;
-        change(label, fmt(w.ms, w.time, tz), was);
+        change(label, fmt(w.ms, w.time, zone), was);
       }
     }
     if (f.timeEstimateMinutes !== undefined) {

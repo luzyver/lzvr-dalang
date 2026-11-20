@@ -39,6 +39,8 @@ describe('ClickUp work, reading', () => {
       list: 'Backlog', url: 'https://app.clickup.com/t/t1',
     });
     const asked = new URL(`https://x${calls.find((c) => c.startsWith('/api/v2/team/900/task'))}`).searchParams;
+    expect(asked.get('order_by')).toBe('updated');
+    expect(asked.get('reverse')).toBe('true');
     expect(asked.getAll('list_ids[]')).toEqual(['l1', 'l2']);
     expect(asked.getAll('assignees[]')).toEqual(['11']);
     expect(asked.getAll('statuses[]')).toEqual(['in progress']);
@@ -112,7 +114,7 @@ describe('ClickUp work, reading', () => {
   it('lists Docs, shows a Doc as a tree of pages and one page as text', async () => {
     const w = work();
     expect(await w.docs()).toEqual([{ id: 'doc1', name: 'Runbook', workspace_id: '900', workspace: 'Acme', updated: '2026-10-07' }]);
-    await expect(w.docs(undefined, 'nothing')).rejects.toThrow(/OAuth/);
+    await expect(w.docs(undefined, 'nothing', 50, 'name_and_content')).rejects.toThrow(/OAuth/);
     expect(await w.doc('doc1')).toEqual({
       doc_id: 'doc1', doc: 'Runbook', workspace: 'Acme', pages: [{ id: 'p1', name: 'Deploy', pages: [{ id: 'p2', name: 'Rollback' }] }],
     });
@@ -272,8 +274,9 @@ describe('ClickUp work, changing', () => {
     expect(spring.details[0]!.value).toBe('2026-03-08 09:00 to 10:00 (1h 00m)');
     const fall = await ny.planLogTime({ task: 't1', date: '2026-11-01', start: '09:00', minutes: 60 }); // and back at 02:00
     expect(fall.calls[0]!.body).toMatchObject({ start: Date.parse('2026-11-01T09:00:00-05:00') });
-    const due = await ny.planCreateTask({ listId: 'l1', name: 'x', due: '2026-03-08' });
-    expect(due.calls[0]!.body).toMatchObject({ due_date: Date.parse('2026-03-08T04:00:00-04:00') });
+    const due = await ny.planCreateTask({ listId: 'l1', name: 'x', due: '2026-03-08', start: '2026-03-07' });
+    expect(due.calls[0]!.body).toMatchObject({ due_date: Date.parse('2026-03-08T04:00:00+07:00'), start_date: Date.parse('2026-03-07T04:00:00+07:00') });
+    expect(due.details).toEqual(expect.arrayContaining([{ label: 'Due', value: '2026-03-08' }, { label: 'Start', value: '2026-03-07' }]));
   });
 
   it('writes Docs: a new Doc with its first page, a new page, a page changed', async () => {
