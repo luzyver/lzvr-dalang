@@ -5,7 +5,7 @@
  * address to open, the code exchanged for a token), a tool call, and a file upload.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { ClickUpError, ClickUpUncertain, type OutFile } from './clickup.js';
+import { ClickUpError, ClickUpOAuthError, ClickUpUncertain, type OutFile } from './clickup.js';
 
 export const CLICKUP_MCP = 'https://mcp.clickup.com';
 const PROTOCOL = '2025-06-18';
@@ -116,7 +116,7 @@ export class ClickUpMcp {
       }
       break;
     }
-    if (res.status === 401) throw new ClickUpError('ClickUp no longer accepts the connection; connect ClickUp again in Settings → MCP', 401);
+    if (res.status === 401) throw new ClickUpOAuthError('ClickUp no longer accepts the connection; connect ClickUp again in Settings → MCP', 401);
     if (!res.ok) {
       const msg = `ClickUp ${res.status} on ${name}: ${text.slice(0, 300)}`;
       throw res.status >= 400 && res.status < 500 && res.status !== 408 ? new ClickUpError(msg, res.status) : new ClickUpUncertain(msg, res.status);

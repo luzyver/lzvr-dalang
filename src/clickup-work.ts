@@ -5,7 +5,7 @@
  * the person's approval and only then runs (`perform`).
  */
 import {
-  type ClickUp, ClickUpError, ClickUpUncertain, DAY_MS, localParts, MAX_DAYS, MAX_REQUESTS, onTask, type OutFile, type Query, refused, stamp,
+  type ClickUp, ClickUpError, ClickUpOAuthError, ClickUpUncertain, DAY_MS, localParts, MAX_DAYS, MAX_REQUESTS, onTask, type OutFile, type Query, refused, stamp,
   startOfDay, type TaskRef,
 } from './clickup.js';
 
@@ -399,7 +399,12 @@ export class ClickUpWork {
   async docs(workspaceIds?: string[], query?: string, limit = 50, searchIn?: 'name' | 'name_and_content') {
     const max = Math.min(Math.max(limit, 1), 200);
     const words = query?.trim();
-    if (words && (searchIn === 'name_and_content' || (searchIn === undefined && this.cu.hasMcp))) return this.searchDocs(workspaceIds, words, max);
+    if (words && searchIn === 'name_and_content') return this.searchDocs(workspaceIds, words, max);
+    if (words && searchIn === undefined && this.cu.hasMcp) {
+      try { return await this.searchDocs(workspaceIds, words, max); } catch (e) {
+        if (!(e instanceof ClickUpOAuthError)) throw e;
+      }
+    }
     const needle = words?.toLowerCase();
     const tz = await this.cu.timeZone();
     const budget = { left: 30 };
@@ -420,7 +425,8 @@ export class ClickUpWork {
     }
     const docs = out.slice(0, max);
     if (words && searchIn === undefined) {
-      return { docs, warnings: ['Searched Doc titles only. Connect ClickUp OAuth to include page contents.'] };
+      const action = this.cu.hasMcp ? 'Reconnect' : 'Connect';
+      return { docs, warnings: [`Searched Doc titles only. ${action} ClickUp OAuth to include page contents.`] };
     }
     return docs;
   }

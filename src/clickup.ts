@@ -114,6 +114,8 @@ export class ClickUpError extends Error {
   /** The HTTP status ClickUp answered with, for an error response. */
   constructor(message: string, readonly status?: number) { super(message); }
 }
+/** ClickUp rejected the OAuth token on its MCP endpoint. */
+export class ClickUpOAuthError extends ClickUpError {}
 /** Sending a message failed in a way that does not tell whether ClickUp kept it (a 5xx, a timeout, a lost connection). */
 export class ClickUpUncertain extends ClickUpError {}
 

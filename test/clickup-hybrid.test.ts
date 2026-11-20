@@ -68,3 +68,17 @@ it('returns the newest match when the task limit stops pagination after the firs
   } }));
   expect((await work.findTasks({ limit: 1 })).tasks).toMatchObject([{ id: '101' }]);
 });
+
+it.each(['clickup_get_user', 'clickup_search'])('searches titles if OAuth expires during %s', async (method) => {
+  const inner = fakeClickUp();
+  const work = new ClickUpWork(new ClickUp({ token: 'pk_test', oauth: 'expired', workspaceId: '900', fetch: async (input, init) => {
+    if (new URL(String(input)).hostname === 'mcp.clickup.com' && JSON.parse(String(init?.body)).params.name === method) {
+      return new Response(null, { status: 401 });
+    }
+    return inner(input, init);
+  } }));
+  expect(await work.docs(undefined, 'run')).toMatchObject({
+    docs: [{ id: 'doc1' }], warnings: [expect.stringMatching(/titles only.*reconnect/i)],
+  });
+  await expect(work.docs(undefined, 'run', 50, 'name_and_content')).rejects.toMatchObject({ status: 401 });
+});
