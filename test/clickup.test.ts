@@ -170,6 +170,30 @@ describe('ClickUp files', () => {
     await expect(c.task('not a task')).rejects.toThrow(/not a task id or link/);
   });
 
+  it.each([{ ECODE: 'OAUTH_027' }, { err: 'Team not authorized' }])('resolves a bare custom id after a workspace-specific 401 (%j)', async (body) => {
+    const inner = fakeClickUp();
+    const client = new ClickUp({ token: 'pk_test', workspaceId: '900', fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/DEV-42') && !url.searchParams.has('team_id')) return Response.json(body, { status: 401 });
+      return inner(input, init);
+    } });
+    expect(await client.task('DEV-42')).toMatchObject({ id: 't1' });
+  });
+
+  it.each([
+    ['DEV-42', 'Token not found'],
+    ['t1', 'Team not authorized'],
+    ['https://app.clickup.com/t/900/DEV-42', 'Team not authorized'],
+  ])('propagates the 401 for %s (%s) without searching other workspaces', async (ref, err) => {
+    const paths: string[] = [];
+    const client = new ClickUp({ token: 'pk_test', fetch: async (input) => {
+      paths.push(new URL(String(input)).pathname);
+      return Response.json({ err }, { status: 401 });
+    } });
+    await expect(client.task(ref)).rejects.toMatchObject({ status: 401, message: expect.stringContaining(err) });
+    expect(paths).toHaveLength(1);
+  });
+
   it('calls an upload refused up front failed, posting nothing', async () => {
     const calls: string[] = [];
     const c = fakeClient(calls);

@@ -474,6 +474,7 @@ export class ClickUp {
     const found = taskId(ref);
     if (!found) throw new ClickUpError(`not a task id or link: ${ref}`);
     const { id, team } = found;
+    const bareCustomId = !team && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id);
     const none = (e: unknown) => {
       const s = e instanceof ClickUpError ? e.status : undefined;
       return s !== undefined && (s === 400 || s === 404);
@@ -483,10 +484,14 @@ export class ClickUp {
     try {
       return await this.get(path, { ...query, ...(team && { custom_task_ids: true, team_id: team }) });
     } catch (e) {
-      if (!none(e)) throw e;
-      status = (e as ClickUpError).status;
+      if (!(e instanceof ClickUpError)) throw e;
+      // ClickUp can reject an unscoped custom ID with a workspace authorization error.
+      const needsWorkspace = bareCustomId && e.status === 401
+        && /\b(?:team not authorized|OAUTH_0(?:23|26|27|29|3\d|4[0-5]))\b/i.test(e.message);
+      if (!none(e) && !needsWorkspace) throw e;
+      status = e.status;
     }
-    if (!team && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) {
+    if (bareCustomId) {
       // Every workspace is asked: the same custom id in two of them must not pick a task by the order they come in.
       const hits: { ws: Workspace; task: any }[] = [];
       for (const ws of await this.workspaces()) {
