@@ -579,6 +579,7 @@ describe('sub-agents', () => {
 
 /** Connects a person's own ClickUp (the owner's unless told otherwise) by the sign-in of Settings → MCP → ClickUp. */
 async function connectClickUp(t: Booted, headers: Record<string, string> = AUTH) {
+  await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers, payload: { apiKey: 'pk_test', workspaceId: '900', timeZone: '' } });
   const start = await t.app.inject({ method: 'POST', url: '/api/settings/clickup/oauth/start', headers });
   const state = new URL(start.json().url).searchParams.get('state')!;
   const done = await t.app.inject({ method: 'POST', url: '/api/settings/clickup/oauth/finish', headers, payload: { code: 'code1', state } });
@@ -595,7 +596,7 @@ describe('ClickUp tools', () => {
     'clickup_send_status', 'clickup_update_task', 'clickup_write_doc',
   ];
   const clickupNames = async (c: C) => (await c.listTools()).tools.map((x) => x.name).filter((n) => n.startsWith('clickup_'));
-  const allowSend = (t: Booted) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send: true } });
+  const allowSend = (t: Booted) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '900', timeZone: '', send: true } });
   /** Boot with the fake ClickUp MCP server and the owner connected to it. */
   async function withClickUp(calls?: string[]) {
     const t = await boot({ clickupFetch: fakeClickUp(calls) });
@@ -608,7 +609,7 @@ describe('ClickUp tools', () => {
     expect(await clickupNames(await t.connect())).toEqual([]);
     await connectClickUp(t);
     expect((await clickupNames(await t.connect())).sort()).toEqual(CLICKUP);
-    await t.app.inject({ method: 'DELETE', url: '/api/settings/clickup/oauth', headers: AUTH });
+    await t.app.inject({ method: 'DELETE', url: '/api/settings/clickup/key', headers: AUTH });
     expect(await clickupNames(await t.connect())).toEqual([]);
   });
 
@@ -630,13 +631,13 @@ describe('ClickUp tools', () => {
 
     // A user with their own (one ClickUp no longer accepts): they get the tools on it, the owner stays on the owner's.
     const s = JSON.parse(t.store.getKv('clickup')!);
-    s.users[t.store.userKeyOf('u-budi')] = { workspaceId: '', timeZone: '', oauth: 'mcp_gone' };
+    s.users[t.store.userKeyOf('u-budi')] = { workspaceId: '', timeZone: '', oauth: 'mcp_gone', apiKey: 'pk_gone' };
     t.store.setKv('clickup', JSON.stringify(s));
     const asBudi = await t.connect(h(budi));
     expect((await clickupNames(asBudi)).sort()).toEqual(CLICKUP);
     const gone = await call(asBudi, 'clickup_whoami');
     expect(gone.isError).toBe(true);
-    expect(gone.text).toMatch(/connect ClickUp again/);
+    expect(gone.text).toMatch(/401/);
     expect((await call(await t.connect(), 'clickup_whoami')).json).toMatchObject({ user: { username: 'luz' } });
     expect(await clickupNames(await t.connect(h(sari)))).toEqual([]);
 
@@ -660,20 +661,20 @@ describe('ClickUp tools', () => {
 
   it('do not read a personal API token saved before ClickUp went through its own MCP server', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
-    t.store.setKv('clickup', JSON.stringify({ token: 'pk_test', workspaceId: '900', timeZone: '', allUsers: true, send: true }));
-    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toEqual({ connected: false, workspaceId: '900', timeZone: '', send: true });
+    t.store.setKv('clickup', JSON.stringify({ token: 'pk_retired', workspaceId: '900', timeZone: '', allUsers: true, send: true }));
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toEqual({ hasApiKey: false, connected: false, workspaceId: '900', timeZone: '', send: true });
     expect(await clickupNames(await t.connect())).toEqual([]);
     // the owner's other settings are kept, the token goes on the next save
     await connectClickUp(t);
-    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toEqual({ connected: true, workspaceId: '900', timeZone: '', send: true });
-    expect(t.store.getKv('clickup')).not.toContain('pk_test');
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toEqual({ hasApiKey: true, connected: true, workspaceId: '900', timeZone: '', send: true });
+    expect(t.store.getKv('clickup')).not.toContain('pk_retired');
     expect((await clickupNames(await t.connect())).sort()).toEqual([...CLICKUP, ...SEND].sort());
   });
 
   it('send messages only once the owner allows it, for everyone who connected', async () => {
     const t = await withClickUp();
     const setSend = (send: boolean) =>
-      t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '', timeZone: '', send } });
+      t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '900', timeZone: '', send } });
     const budi = { authorization: `Bearer ${(await mkUser(t, 'u-budi')).token}` };
     const budiPut = (payload: object) => t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: budi, payload });
     await connectClickUp(t, budi);
@@ -692,7 +693,7 @@ describe('ClickUp tools', () => {
 
     // A user saving their own settings leaves the switch and their connection as they are.
     expect((await budiPut({ workspaceId: '900', timeZone: '' })).json()).toMatchObject({ workspaceId: '900', send: true, connected: true });
-    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ workspaceId: '', send: true });
+    expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toMatchObject({ workspaceId: '900', send: true });
     await setSend(false);
     expect((await budiNames()).sort()).toEqual(CLICKUP);
   });
@@ -721,19 +722,19 @@ describe('ClickUp tools', () => {
 
     const ok = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH, payload: { content: 'done, deployed' } });
     expect(ok.json()).toMatchObject({ status: 'sent', content: 'done, deployed', edited: true, messageId: 'new1' });
-    expect(changes(calls)).toEqual(['clickup_send_chat_message {"parent_message_id":"m3","content":"done, deployed","content_format":"text/md","workspace_id":"900"}']);
+    expect(changes(calls)).toEqual(['POST /api/v3/workspaces/900/chat/messages/m3/replies {"type":"message","content":"done, deployed","content_format":"text/md"}']);
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).statusCode).toBe(409);
     await told(/approved your message[\s\S]*> done, deployed/);
 
     const dmId = (dm.json as { approval_id: number }).approval_id;
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${dmId}/approve`, headers: AUTH })).json()).toMatchObject({ status: 'sent' });
-    expect(changes(calls).slice(1)).toEqual(['clickup_send_chat_message {"user_ids":["22"],"content":"hi sari","content_format":"text/md","workspace_id":"900"}']);
+    expect(changes(calls).slice(1)).toEqual(['POST /api/v3/workspaces/900/chat/channels/direct_message {"user_ids":["22"]}', 'POST /api/v3/workspaces/900/chat/channels/c2/messages {"type":"message","content":"hi sari","content_format":"text/md"}']);
     expect((await call(agent, 'clickup_send_status', { approval_id: dmId })).json).toMatchObject({ status: 'sent' });
 
     const no = await call(agent, 'clickup_send_message', { channel_id: 'c1', content: 'nope' });
     const noId = (no.json as { approval_id: number }).approval_id;
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${noId}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
-    expect(changes(calls)).toHaveLength(2);
+    expect(changes(calls)).toHaveLength(3);
     await told(/did not send your message/);
   });
 
@@ -771,7 +772,7 @@ describe('ClickUp tools', () => {
     const ok = (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
     expect(ok).toMatchObject({ status: 'sent', messageId: 't1', action: { calls: [] } }); // made once: its calls are not kept
     expect(ok.outcome).toMatch(/^Done .*https:\/\/app\.clickup\.com\/t\/t1$/);
-    expect(changes(calls)).toEqual(['clickup_update_task {"task_id":"t1","status":"done"}', 'clickup_add_tag_to_task {"task_id":"t1","tag_name":"urgent fix"}']);
+    expect(changes(calls)).toEqual(['PUT /api/v2/task/t1 {"status":"done"}', 'POST /api/v2/task/t1/tag/urgent%20fix undefined']);
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).statusCode).toBe(409);
     await told(/approved your change \(Change task "Rekap transaksi"\) and it was made/);
     expect((await call(agent, 'clickup_send_status', { approval_id: id })).json).toMatchObject({ status: 'sent' });
@@ -792,7 +793,7 @@ describe('ClickUp tools', () => {
     expect(cut.outcome).toMatch(/Already on task "Rekap transaksi".*a\.xlsx/);
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${cut.id}/approve`, headers: AUTH })).statusCode).toBe(409);
     expect(changes(calls).map((c) => c.split(' ')[0])).toEqual([
-      'clickup_update_task', 'clickup_add_tag_to_task', 'clickup_create_comment', 'UPLOAD', 'clickup_create_comment',
+      'PUT', 'POST', 'POST', 'UPLOAD', 'POST',
     ]);
   });
 
@@ -837,15 +838,16 @@ describe('ClickUp tools', () => {
     expect(changes(calls)).toHaveLength(4);
   });
 
-  it('attach files from the chat folder to a task, with a comment that names them or alone, once approved', async () => {
+  it('attach files from the chat folder to a task, with a comment that links them or alone, once approved', async () => {
     const calls: string[] = [];
     const t = await withClickUp(calls);
-    await allowSend(t);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '900', timeZone: '', send: true } });
     const { p, a } = await twoConvs(await t.connect());
     const dir = t.store.getProject(p.id)!.path;
     writeFileSync(join(dir, 'shot.png'), 'png-bytes');
     const agent = await t.connect({ authorization: `Bearer ${t.dispatcher.issueMcpToken(a.id, 'owner')}` });
     const approve = async (id: number) => (await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH })).json();
+    const sent = () => calls.filter((c) => /^(POST|UPLOAD) /.test(c));
     const filesOf = (id: number) => join(t.cfg.stateDir, 'clickup-files', String(id));
 
     expect((await call(agent, 'clickup_attach_file', { task: 't1', files: ['nope.png'] })).text).toMatch(/no file nope.png/);
@@ -865,18 +867,18 @@ describe('ClickUp tools', () => {
     const note = await call(agent, 'clickup_comment_task', { task: 'DEV-42', text: 'lihat gambar', files: ['shot.png'] });
     expect(note.json).toMatchObject({
       status: 'pending_approval',
-      change: 'Comment on task "Rekap transaksi"\nComment: lihat gambar\nFiles: shot.png (9 B): attached to the task, named at the end of the comment',
+      change: 'Comment on task "Rekap transaksi"\nComment: lihat gambar\nFiles: shot.png (9 B): attached to the task, linked at the end of the comment',
     });
     const noteId = (note.json as { approval_id: number }).approval_id;
     const [waiting] = (await t.app.inject({ url: '/api/clickup/approvals', headers: AUTH })).json();
     expect(waiting).toMatchObject({ id: noteId, files: [{ name: 'shot.png', size: 9 }], task: { id: 't1' } });
     writeFileSync(join(dir, 'shot.png'), 'changed after asking'); // what the person approved is what goes
-    expect(changes(calls)).toEqual([]);
+    expect(sent()).toEqual([]);
 
     expect(await approve(noteId)).toMatchObject({ status: 'sent', messageId: 'cm9' });
-    expect(changes(calls)).toEqual([
-      'UPLOAD task:t1 shot.png 9',
-      `clickup_create_comment ${JSON.stringify({ entity_type: 'task', entity_id: 't1', comment_text: 'lihat gambar\n\n📎 [shot.png](https://files.example/shot.png)', notify_all: false })}`,
+    expect(sent()).toEqual([
+      'UPLOAD /api/v2/task/t1/attachment shot.png 9',
+      `POST /api/v2/task/t1/comment ${JSON.stringify({ notify_all: false, comment: [{ text: 'lihat gambar\n', attributes: {} }, { text: '\n📎 ', attributes: {} }, { text: 'shot.png', attributes: { link: 'https://files.example/shot.png' } }] })}`,
     ]);
     expect(existsSync(filesOf(noteId))).toBe(false);
     await until(() => [...t.store.listQueue(a.id), ...t.store.listTurns(a.id)].some((x) => /with 1 file\(s\) attached to task "Rekap transaksi"/.test(x.prompt)));
@@ -887,20 +889,20 @@ describe('ClickUp tools', () => {
     const done = await approve(aloneId);
     expect(done).toMatchObject({ status: 'sent' });
     expect(done.outcome).toMatch(/^Done .*https:\/\/app\.clickup\.com\/t\/t1$/);
-    expect(changes(calls).slice(2)).toEqual(['UPLOAD task:t1 shot.png 20']);
+    expect(sent().slice(2)).toEqual(['UPLOAD /api/v2/task/t1/attachment shot.png 20']);
 
     // A rejected one uploads nothing and its files are dropped.
     const no = ((await call(agent, 'clickup_attach_file', { task: 't1', files: ['shot.png'] })).json as { approval_id: number }).approval_id;
     expect(existsSync(filesOf(no))).toBe(true);
     expect((await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${no}/reject`, headers: AUTH })).json()).toMatchObject({ status: 'rejected' });
     expect(existsSync(filesOf(no))).toBe(false);
-    expect(changes(calls)).toHaveLength(3);
+    expect(sent()).toHaveLength(3);
   });
 
   it('keep files whose names differ only in case apart, and keep the files of an upload cut off midway until dismissed', async () => {
     const calls: string[] = [];
     const t = await withClickUp(calls);
-    await allowSend(t);
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH, payload: { workspaceId: '900', timeZone: '', send: true } });
     const { p, a } = await twoConvs(await t.connect());
     const dir = t.store.getProject(p.id)!.path;
     for (const [sub, name, body] of [['a', 'rekap.xlsx', 'first'], ['b', 'REKAP.xlsx', 'second one'], ['b', 'bad-502.xlsx', 'x']]) {
@@ -914,7 +916,7 @@ describe('ClickUp tools', () => {
 
     const both = await ask(['a/rekap.xlsx', 'b/REKAP.xlsx']);
     expect(await approve(both)).toMatchObject({ status: 'sent' });
-    expect(calls.filter((c) => c.startsWith('UPLOAD '))).toEqual(['UPLOAD task:t1 rekap.xlsx 5', 'UPLOAD task:t1 REKAP.xlsx 10']);
+    expect(calls.filter((c) => c.startsWith('UPLOAD '))).toEqual(['UPLOAD /api/v2/task/t1/attachment rekap.xlsx 5', 'UPLOAD /api/v2/task/t1/attachment REKAP.xlsx 10']);
     expect(existsSync(filesOf(both))).toBe(false);
 
     const cut = await ask(['a/rekap.xlsx', 'b/bad-502.xlsx']);
@@ -926,6 +928,25 @@ describe('ClickUp tools', () => {
     expect(existsSync(filesOf(cut))).toBe(false);
   });
 
+  it('keeps a pending write bound to its ClickUp user when the API key changes', async () => {
+    const calls: string[] = [];
+    const inner = fakeClickUp(calls);
+    const t = await boot({ clickupFetch: async (input, init) => {
+      if (new Headers(init?.headers).get('authorization') === 'pk_another' && String(input).endsWith('/user')) {
+        return Response.json({ user: { id: 99 } });
+      }
+      return inner(input, init);
+    } });
+    await connectClickUp(t);
+    await allowSend(t);
+    const pending = await call(await t.connect(), 'clickup_send_message', { channel_id: 'c1', content: 'draft' });
+    const path = `/api/clickup/approvals/${pending.json.approval_id}/approve`;
+    await t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers: AUTH,
+      payload: { apiKey: 'pk_another', workspaceId: '900', timeZone: 'UTC' } });
+    expect((await t.app.inject({ method: 'POST', url: path, headers: AUTH })).json()).toMatchObject({ status: 'failed' });
+    expect(changes(calls)).toEqual([]);
+  });
+
   it('refuse a request kept from before ClickUp went through its own MCP server, which is rejected and asked again', async () => {
     const calls: string[] = [];
     const t = await withClickUp(calls);
@@ -935,17 +956,18 @@ describe('ClickUp tools', () => {
     const id = ((await call(agent, 'clickup_update_task', { task: 't1', name: 'x' })).json as { approval_id: number }).approval_id;
     const kept = JSON.parse(t.store.getKv('clickup_approvals')!);
     const row = (Array.isArray(kept) ? kept : kept.items ?? kept.approvals).find((x: { id: number }) => x.id === id);
+    delete row.clickupUserId;
     row.action.calls = [{ method: 'PUT', path: '/api/v2/task/t1', body: { name: 'x' }, what: 'changing the task' }];
     t.store.setKv('clickup_approvals', JSON.stringify(kept));
     const r = await t.app.inject({ method: 'POST', url: `/api/clickup/approvals/${id}/approve`, headers: AUTH });
-    expect(JSON.stringify(r.json())).toMatch(/reject it and ask again/);
+    expect(JSON.stringify(r.json())).toMatch(/reject it and ask again/i);
     expect(changes(calls)).toEqual([]);
   });
 
   it('show a request only to whoever asked, who alone decides it, and call a 5xx on sending unknown, not failed', async () => {
     const inner = fakeClickUp();
     const status = { code: 502 };
-    const flaky = (async (input: string | URL, init?: RequestInit) => (status.code && String(init?.body ?? '').includes('clickup_send_chat_message')
+    const flaky = (async (input: string | URL, init?: RequestInit) => (status.code && init?.method === 'POST' && String(input).endsWith('/messages')
       ? new Response('{"err":"bad gateway"}', { status: status.code }) : inner(input, init))) as typeof fetch;
     const t = await boot({ clickupFetch: flaky });
     await connectClickUp(t);
@@ -996,13 +1018,35 @@ describe('ClickUp tools', () => {
 describe('Settings → ClickUp', () => {
   const put = (t: Booted, payload: object, headers: Record<string, string> = AUTH) =>
     t.app.inject({ method: 'PUT', url: '/api/settings/clickup', headers, payload });
-  const NOTHING = { connected: false, workspaceId: '', timeZone: '', send: false };
+  const NOTHING = { hasApiKey: false, connected: false, workspaceId: '', timeZone: '', send: false };
 
-  it('saves the workspace and time zone, and takes no personal API token any more', async () => {
+  it('uses the saved personal key for ordinary tools without an OAuth connection', async () => {
+    const urls: string[] = [];
+    const t = await boot({ clickupFetch: async (input, init) => {
+      const url = new URL(String(input));
+      urls.push(url.origin);
+      expect(new Headers(init?.headers).get('authorization')).toBe('pk_personal');
+      if (url.pathname === '/api/v2/user') return Response.json({ user: { id: 11, username: 'API user' } });
+      if (url.pathname === '/api/v2/team') return Response.json({ teams: [{ id: '900', name: 'Acme' }] });
+      return new Response(null, { status: 404 });
+    } });
+    const saved = await put(t, { workspaceId: '900', timeZone: 'UTC', apiKey: 'pk_personal' });
+    expect(saved.json()).toMatchObject({ hasApiKey: true });
+    expect(saved.body).not.toContain('pk_personal');
+    const result = await call(await t.connect(), 'clickup_whoami');
+    expect(result.json.user.username).toBe('API user');
+    expect(new Set(urls)).toEqual(new Set(['https://api.clickup.com']));
+    await put(t, { workspaceId: '900', timeZone: 'UTC' });
+    expect((await call(await t.connect(), 'clickup_whoami')).json.user.username).toBe('API user');
+    await put(t, { workspaceId: '900', timeZone: 'UTC', apiKey: '' });
+    expect(t.store.getKv('clickup')).not.toContain('pk_personal');
+  });
+
+  it('saves preferences and ignores the retired token field from older panels', async () => {
     const t = await boot({ clickupFetch: fakeClickUp() });
     expect((await t.app.inject({ url: '/api/settings/clickup', headers: AUTH })).json()).toEqual(NOTHING);
     const saved = await put(t, { workspaceId: '900', timeZone: 'Asia/Jakarta' });
-    expect(saved.json()).toEqual({ connected: false, workspaceId: '900', timeZone: 'Asia/Jakarta', send: false });
+    expect(saved.json()).toEqual({ hasApiKey: false, connected: false, workspaceId: '900', timeZone: 'Asia/Jakarta', send: false });
     await put(t, { token: 'pk_test', workspaceId: '900', timeZone: '' }); // a token sent by an old panel page is not kept
     expect(t.store.getKv('clickup')).not.toContain('pk_test');
   });
@@ -1072,9 +1116,9 @@ describe('Settings → ClickUp', () => {
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(400);
     await connectClickUp(t);
     const r = await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH });
-    expect(r.json()).toMatchObject({ user: { username: 'luz' }, workspaces: [{ id: '900' }], time_zone: 'Asia/Jakarta' });
+    expect(r.json()).toMatchObject({ user: { username: 'luz' }, workspaces: [{ id: '900' }, { id: '901' }], time_zone: 'Asia/Jakarta' });
     const s = JSON.parse(t.store.getKv('clickup')!);
-    s.users.owner.oauth = 'mcp_gone';
+    s.users.owner.apiKey = 'pk_gone';
     t.store.setKv('clickup', JSON.stringify(s));
     expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: AUTH })).statusCode).toBe(502);
   });
@@ -1089,7 +1133,7 @@ describe('Settings → ClickUp', () => {
       expect(await get()).toEqual(NOTHING);
       expect((await t.app.inject({ method: 'POST', url: '/api/settings/clickup/test', headers: h })).statusCode).toBe(400); // not on the owner's connection
       expect((await put(t, { workspaceId: '901', timeZone: 'Asia/Jakarta' }, h)).statusCode).toBe(200);
-      expect(await get()).toEqual({ connected: false, workspaceId: '901', timeZone: 'Asia/Jakarta', send: false });
+      expect(await get()).toEqual({ hasApiKey: false, connected: false, workspaceId: '901', timeZone: 'Asia/Jakarta', send: false });
       // clearing them leaves nothing of theirs behind
       await put(t, { workspaceId: '', timeZone: '' }, h);
       expect(Object.keys(JSON.parse(t.store.getKv('clickup')!).users)).toEqual(['owner']);

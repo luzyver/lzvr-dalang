@@ -10,7 +10,7 @@ const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.st
 const fail = (m: string) => ({ isError: true, content: [{ type: 'text' as const, text: m }] });
 
 const WORKSPACES = z.array(z.string()).optional()
-  .describe('ClickUp workspace ids (from clickup_whoami); default: the one set in Settings, else the one ClickUp was connected to');
+  .describe('ClickUp workspace ids (from clickup_whoami); default: the default in Settings, or the only workspace the API key can access');
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 const WHEN = z.string().regex(/^(\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2})?)?$/, 'a date like 2026-10-01 or 2026-10-01 14:30');
 const TASK = z.string().min(1).describe('a task id, a custom id (DEV-42) or a https://app.clickup.com/t/... link');
@@ -95,8 +95,10 @@ export function clickupWorkTools(
 
   server.registerTool('clickup_list_docs', {
     description: 'ClickUp Docs of the workspaces that its search finds (id, name, link, last change), optionally for query: words of the name or the text.',
-    inputSchema: { query: z.string().optional(), workspace_ids: WORKSPACES, limit: z.number().int().min(1).max(200).optional().describe('default 50') },
-  }, async (a) => run(() => work.docs(a.workspace_ids, a.query, a.limit)));
+    inputSchema: { query: z.string().optional(),
+      search_in: z.enum(['name', 'name_and_content']).optional().describe('Use name for title searches via the API. Searching page contents requires ClickUp MCP.'),
+      workspace_ids: WORKSPACES, limit: z.number().int().min(1).max(200).optional().describe('default 50') },
+  }, async (a) => run(() => work.docs(a.workspace_ids, a.query, a.limit, a.search_in)));
 
   server.registerTool('clickup_get_doc', {
     description: 'A ClickUp Doc: its pages as a tree of ids and names (a Doc of a single page comes with its text); with '
@@ -113,7 +115,7 @@ export function clickupWorkTools(
     const sent = paths.length ? files.read(paths) : [];
     const action = await plan(sent);
     const task = sent.length ? await cu.task(taskRef!) : undefined;
-    const p = createClickUpApproval(store, { user: by.user, action, content: inWords(action), who: by.who, conv: by.conv, files: sent, task, stateDir: files.stateDir });
+    const p = createClickUpApproval(store, { user: by.user, clickupUserId: (await cu.user()).id, action, content: inWords(action), who: by.who, conv: by.conv, files: sent, task, stateDir: files.stateDir });
     void push.notify({ title: 'ClickUp change needs approval', body: action.title.slice(0, 140), convId: by.conv ?? '', audience: { user: by.user } });
     return {
       status: 'pending_approval', approval_id: p.id, change: p.content,

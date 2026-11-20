@@ -112,27 +112,16 @@ keep secrets out of what Codex can read if that matters to you. Agents can also 
 
 ## ClickUp
 
-Dalang does everything in ClickUp through ClickUp's own MCP server (`mcp.clickup.com`), which takes no personal API
-token (`pk_...`), only a sign-in (OAuth). Set up in the panel: **Settings → MCP**, tab **ClickUp** (for users other
-than the owner, ClickUp is all Settings → MCP shows). Every panel user presses **Connect ClickUp** there, signs in to
-ClickUp, picks the workspace to allow and comes back to the panel; the connection is theirs alone. **Test connection**
-shows which ClickUp user it reads as and its workspace. Optional: a default workspace ID (default: the connection's
-own) and the time zone times are given in (default your ClickUp profile's). The access token is stored in the
-database and never sent back to the panel. **Disconnect** turns the tools off here; ClickUp keeps the access until the
-app "Dalang" is removed in ClickUp's own settings. The sign-in comes back to `LZVR_ORIGIN`, or to the address the
-browser has the panel open on when that is unset. ClickUp takes that address only when it is `https`, or `http` on
-the machine itself (`http://localhost:9876`, `http://127.0.0.1:9876`): a panel opened on `http://192.168.x.x` or another
-plain-http name cannot connect until it is opened on one of those.
+In **Settings → MCP → ClickUp**, save your personal ClickUp API key (`pk_...`, from ClickUp **Settings → Apps**).
+Dalang uses the public API for chat history, text messages, tasks, comments, task attachments, time entries, and listing, searching titles, reading or writing Docs.
+If the key reaches several workspaces, set a default workspace ID or specify workspaces in your request. Dates use the configured time zone or your ClickUp profile.
 
-A connection reaches the workspace (or workspaces) picked at the sign-in. A chat can ask for another one by id
-(`workspace_ids`) when the connection was allowed it; one that was not is refused with "connect ClickUp again and pick
-it".
+**Connect ClickUp MCP** enables two additional operations: searching Doc contents and uploading files directly into chat messages. Sign in as the same ClickUp user and select the workspace where you need these features. Dalang checks that both connections belong to the same user before it uses MCP. API failures are reported directly. Both credentials are stored per person and can be removed separately. The OAuth callback requires an HTTPS panel address or HTTP on localhost.
 
 Once connected, `/mcp` has read-only tools for ClickUp Chat:
 
 - `clickup_whoami`: the ClickUp user it reads as, the default workspace and the time zone.
-- `clickup_list_channels`: chat channels, DMs and group DMs, with their workspace. A DM is named after who wrote in
-  it (`DM with sari`), as far as its latest messages say.
+- `clickup_list_channels`: chat channels, DMs and group DMs, with their workspace. DM names use channel membership.
 - `clickup_chat_history`: messages between two dates (at most 93 days per call), oldest first, each with local date,
   time, weekday, workspace, channel (DMs and group DMs included) and author. Options: `workspace_ids`, `mine_only`
   (default: only your own messages), `channel_ids`, `include_replies` (thread replies; one more request per thread) and `limit`.
@@ -154,7 +143,7 @@ Beyond chat, the same connection reads the rest of ClickUp:
   last changed first.
 - `clickup_time_entries`: time tracked between two dates, with the total of each day and of the range (other
   people's entries only when ClickUp lets you see them).
-- `clickup_list_docs` (found by ClickUp's search) and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
+- `clickup_list_docs` (use `search_in: name` for title queries over the API) and `clickup_get_doc`: Docs, their pages, and a page's text as markdown.
 
 **Each person reads on their own connection only.** From outside, the tools use the connection of whoever signed in
 (the main token: the owner's); inside a chat, that of whoever sent the turn. A scheduled turn runs as its creator
@@ -166,7 +155,7 @@ connection, the owner included, and a deleted user's connection is removed.
 user of whoever sent the turn, and each message waits for that same person's approval (a card in the chat and in
 Approvals, shown to them alone). `files` (paths in the chat's folder, at most 5 of 25 MB each) go into the message
 itself, where an image shows in place. They are copied when asked, so what is approved is what goes. To a person with
-no DM open yet the text goes first, which opens the DM, and the files follow in a second message.
+no DM open yet Dalang opens the DM, uploads the files, and posts one message.
 
 The same switch lets a chat ask for changes, each held for approval the same way, with a card that says what it
 does (old value → new value where there is one):
@@ -185,19 +174,9 @@ ClickUp refuses a step the card says failed; if a step is cut off midway it says
 done, and is not made again. Nothing is deleted or archived through these tools, and spaces, folders, lists, goals
 and views are not created or changed.
 
-**Not there, because ClickUp's MCP server has no tool for it:** checklists are read with a task but not changed;
-tasks and spaces are not archived; time is not logged without a task; lists come without their task counts; channels
-cannot be filtered by the date of their last message; a thread says that it has replies, not how many.
+Existing OAuth connections are retained. After upgrading, save a personal API key to enable the gateway tools. Approval cards created before this change can be rejected and requested again under the current API identity.
 
-**Coming from a personal API token.** Earlier versions used a `pk_...` token per person. It is not read any more and
-is removed from the saved settings when Dalang starts; each person connects once instead. A request for approval kept
-from before (asked for with the token) cannot be approved: reject it and ask again.
-
-The agent in the chat needs `MCP_INJECT=1` to reach `/mcp` at all. Like the main token, the ClickUp access token sits
-where an agent that reads files as root could find it (the database), so the "What this does and does not protect" note
-above applies to it too. One call makes at most 250 ClickUp requests, and ClickUp cannot be asked which channels have messages in a range, so
-each one is read. A workspace with more channels than that stops early with a warning that names the channels left
-(the ones last written in are read first, where ClickUp says when that was): ask for a shorter range or particular channels.
+The agent in the chat needs `MCP_INJECT=1` to reach the gateway. A history request has a budget of 250 ClickUp requests and reports unread channels when it reaches that budget.
 
 ## Other MCP servers
 

@@ -1,5 +1,5 @@
 /**
- * ClickUp's own MCP server (https://mcp.clickup.com/mcp), through which Dalang does everything in ClickUp. It takes no
+ * ClickUp's own MCP server (https://mcp.clickup.com/mcp), for Doc content search and native chat attachments. It takes no
  * personal API token, only OAuth 2.1 with PKCE, so each person connects their own ClickUp (Settings → MCP → ClickUp →
  * Connect) and the access token is theirs alone. Here: that sign-in (a client registered once per panel address, the
  * address to open, the code exchanged for a token), a tool call, and a file upload.
@@ -161,7 +161,7 @@ export class ClickUpMcp {
     let a: any;
     try {
       const res = await this.fetch(url, {
-        method: 'POST', headers: { 'x-upload-ticket': String(t.upload_ticket), accept: 'application/json' }, body: form,
+        method: 'POST', redirect: 'error', headers: { 'x-upload-ticket': String(t.upload_ticket), accept: 'application/json' }, body: form,
         signal: AbortSignal.timeout(120_000),
       });
       a = await json(res, 'the upload');

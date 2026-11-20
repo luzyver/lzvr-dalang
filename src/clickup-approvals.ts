@@ -22,6 +22,7 @@ export interface ClickUpApproval {
   dest?: Destination;
   /** A change instead of a message: `content` is then what it does, in words. */
   action?: ClickUpAction;
+  clickupUserId?: string;
   content: string; who: string; conv: string | null; at: number;
   status: 'pending' | 'sending' | 'unknown' | 'sent' | 'rejected' | 'failed' | 'dismissed'; decidedAt?: number;
   /** The person changed the text before sending. */
@@ -55,7 +56,7 @@ function save(store: Store, list: ClickUpApproval[]): void {
   const decided = list.filter((a) => !unresolved(a)).slice(-KEEP);
   store.setKv(KEY, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
 }
-export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'dest' | 'action' | 'content' | 'who' | 'conv'> & {
+export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'clickupUserId' | 'dest' | 'action' | 'content' | 'who' | 'conv'> & {
   files?: OutFile[]; task?: TaskRef; stateDir?: string;
 }): ClickUpApproval {
   const { files = [], task, stateDir, ...rest } = a;
@@ -163,8 +164,12 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
         : `[ClickUp] The person did not send your message to ${where}. Do not ask again unless you are told to.${quote(a)}`);
       return a;
     }
+    if (!a.clickupUserId) {
+      return reply.code(409).send({ error: 'This request predates API-key routing. Reject it and ask again with the current ClickUp connection.' });
+    }
     const cu = d.client(userOf(a));
     if (!cu) return reply.code(409).send({ error: 'ClickUp is not connected (Settings → MCP → ClickUp); connect it, or reject this' });
+    if (a.dest && a.files?.length && !cu.hasMcp) return reply.code(409).send({ error: 'ClickUp MCP is not connected. Reconnect to send these files.' });
     let files: OutFile[];
     try {
       files = (a.files ?? []).map((f, i) => ({ name: f.name, data: readFileSync(join(filesDir(d.stateDir, a.id), String(i))) }));
@@ -178,6 +183,7 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
       done({ status: 'sending' }); // persisted before the change is made
       sending.add(a.id);
       try {
+        if ((await cu.user()).id !== a.clickupUserId) throw new Error('The ClickUp account changed since this approval was requested');
         const r = await new ClickUpWork(cu).perform(a.action, files, a.task);
         done({ status: 'sent', messageId: r.id, outcome: `Done ${r.date} ${r.time}${r.url ? `: ${r.url}` : ''}` });
         tellChat(a, `[ClickUp] The person approved your change (${a.action.title}) and it was made at ${r.date} ${r.time}${r.id ? ` (id ${r.id})` : ''}${r.url ? `: ${r.url}` : ''}${files.length ? `, with ${files.length} file(s) attached to task "${a.task!.name}"` : ''}.`);
@@ -199,6 +205,7 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
     done({ status: 'sending', content, ...(edited && { edited: true }) }); // persisted before the message goes out
     sending.add(a.id);
     try {
+      if ((await cu.user()).id !== a.clickupUserId) throw new Error('The ClickUp account changed since this approval was requested');
       const r = await cu.deliver(a.dest, content, files);
       done({ status: 'sent', messageId: r.id, outcome: `Sent ${r.date} ${r.time}` });
       tellChat(a, `[ClickUp] The person approved your message to ${where}${edited ? ' (with the text changed as below)' : ''} and it was sent at ${r.date} ${r.time} (message ${r.id ?? 'id unknown'})${files.length ? `, with ${files.length} file(s) in the message itself` : ''}.${quote(a)}`);

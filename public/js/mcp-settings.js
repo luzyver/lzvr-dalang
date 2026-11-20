@@ -13,20 +13,22 @@ import { connectClickUp } from './clickup-connect.js';
  */
 function ClickUpCard() {
   const [s, setS] = useState(null);
+  const [apiKey, setApiKey] = useState('');
   const [result, setResult] = useState(null);
   const load = (v) => { setS(v); setResult(null); };
   useEffect(() => { api('/api/settings/clickup').then(load).catch((e) => toast(e.message, 'err')); }, []);
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
   // Only the owner may say whether sending is allowed.
   const save = guarded(async () => {
-    load(await api('/api/settings/clickup', { method: 'PUT', body: { workspaceId: s.workspaceId, timeZone: s.timeZone, ...(isOwner.value && { send: s.send }) } }));
+    load(await api('/api/settings/clickup', { method: 'PUT', body: { workspaceId: s.workspaceId, timeZone: s.timeZone, ...(apiKey && { apiKey: apiKey.trim() }), ...(isOwner.value && { send: s.send }) } }));
+    setApiKey('');
     toast('ClickUp settings saved');
   });
   const connect = guarded(connectClickUp);
   const disconnect = guarded(async () => {
-    if (!await confirmDialog({ title: 'Disconnect ClickUp?', message: 'The ClickUp tools stop working until you connect again. ClickUp keeps the access until you also remove the app there (ClickUp → Settings → Apps).', confirmText: 'Disconnect', danger: true })) return;
+    if (!await confirmDialog({ title: 'Disconnect ClickUp?', message: 'Doc content search and native chat attachments require this connection. ClickUp keeps the access until you also remove the app there (ClickUp → Settings → Apps).', confirmText: 'Disconnect', danger: true })) return;
     const v = await api('/api/settings/clickup/oauth', { method: 'DELETE' });
-    setS({ ...s, connected: v.connected });
+    load(v);
     setResult(null);
     toast('ClickUp disconnected');
   });
@@ -38,15 +40,20 @@ function ClickUpCard() {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
   return html`<section class="form-card">
     <strong>ClickUp</strong>
-    <span class="dim small">ClickUp tools on this gateway's own MCP (chat, tasks, time tracking, Docs), e.g. "what did I work on last week?". They work
-      through ClickUp's own MCP server with a ClickUp sign-in that is yours alone: only turns you sent use it, and every user connects their own.
-      Read-only unless sending is allowed below. Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
+    <${Field} label="Personal API key" hint="From ClickUp → Settings → Apps. Used for chat, tasks, time tracking and Docs.">
+      <input type="password" autocomplete="new-password" placeholder=${s.hasApiKey ? 'Key saved' : 'pk_…'} value=${apiKey} onInput=${(e) => setApiKey(e.currentTarget.value)} /><//>
+    ${s.hasApiKey && html`<div class="row wrap">
+      <${AsyncButton} class="btn sm" onClick=${test}>Test API key<//>
+      <${AsyncButton} class="btn ghost sm" onClick=${guarded(async () => {
+        load(await api('/api/settings/clickup/key', { method: 'DELETE' }));
+        setApiKey('');
+      })}>Remove API key<//></div>`}
+    <span class="dim small">Connect the same ClickUp account to search Doc content and attach files directly to chat messages.</span>
     <div class="row wrap">
       ${s.connected
-        ? html`<span class="small"><${Icon} name="circle-check" /> Connected</span>
-            <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test}>Test connection<//>
+        ? html`<span class="small"><${Icon} name="circle-check" /> MCP connected</span>
             <button class="btn ghost danger sm" onClick=${disconnect}><${Icon} name="trash-2" />Disconnect</button>`
-        : html`<${AsyncButton} class="btn primary sm" icon="external-link" onClick=${connect}>Connect ClickUp<//>
+        : html`<${AsyncButton} class="btn primary sm" icon="external-link" onClick=${connect}>Connect ClickUp MCP<//>
             <span class="dim small">Opens ClickUp's sign-in, where you choose the workspace to allow.</span>`}
     </div>
     ${result && (result.ok
@@ -54,7 +61,7 @@ function ClickUpCard() {
           workspace ${result.workspaces.map((w) => `${w.name || 'unnamed'} (${w.id})`).join(', ')}.
           Time zone ${result.time_zone}.</p>`
       : html`<div class="form-error" role="alert">${result.error}</div>`)}
-    <${Field} label="Default workspace ID" hint="Empty = the workspace you connected. With several allowed at sign-in, the one read by default; a chat can still ask for another.">
+    <${Field} label="Default workspace ID" hint="If your API key can access several workspaces, choose the one to use by default.">
       <input class="mono" inputmode="numeric" value=${s.workspaceId} onInput=${set('workspaceId')} placeholder="the connected workspace" /><//>
     <${Field} label="Time zone" hint="Message dates and times are given in it. Empty = your ClickUp profile's time zone.">
       <input list="clickup-zones" value=${s.timeZone} onInput=${set('timeZone')} placeholder="Asia/Jakarta" /><//>

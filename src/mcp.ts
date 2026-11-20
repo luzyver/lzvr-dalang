@@ -462,7 +462,7 @@ function codeTools(server: McpServer, cm: CodeMemory, own: string | undefined, g
 }
 
 const WORKSPACES = z.array(z.string()).optional()
-  .describe('ClickUp workspace ids (from clickup_whoami); default: the one set in Settings, else the one ClickUp was connected to');
+  .describe('ClickUp workspace ids (from clickup_whoami); default: the default in Settings, or the only workspace the API key can access');
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date like 2026-10-01');
 
 /**
@@ -502,7 +502,7 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
   }, async () => run(() => cu.whoami()));
 
   server.registerTool('clickup_list_channels', {
-    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type, workspace). A DM is named after who wrote in it.',
+    description: 'List ClickUp Chat channels, DMs and group DMs (id, name, type, workspace). A DM is named after its members.',
     inputSchema: { workspace_ids: WORKSPACES },
   }, async ({ workspace_ids }) => run(async () => cu.channels(workspace_ids)));
 
@@ -562,8 +562,9 @@ function clickupTools(server: McpServer, store: Store, dispatcher: Dispatcher, p
   }, async (a) => run(async () => {
     if (!a.content.trim()) throw new Error('the message is empty');
     const files = a.files?.length ? readChatFiles(store, dispatcher, by.conv, a.files) : [];
+    if (files.length) await cu.special();
     const dest = await cu.destination({ channelId: a.channel_id, toUserId: a.to_user_id, replyTo: a.reply_to, workspaceId: a.workspace_id });
-    const p = createClickUpApproval(store, { user: by.user, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, stateDir });
+    const p = createClickUpApproval(store, { user: by.user, clickupUserId: (await cu.user()).id, dest, content: a.content.trim(), who: by.who, conv: by.conv, files, stateDir });
     void push.notify({ title: 'ClickUp message needs approval', body: `${describeDestination(dest)}: ${p.content.replace(/\s+/g, ' ').slice(0, 100)}`, convId: by.conv ?? '', audience: { user: by.user } });
     return {
       status: 'pending_approval', approval_id: p.id, to: dest, ...(files.length && { files: p.files, files_go: 'into the message itself' }),
