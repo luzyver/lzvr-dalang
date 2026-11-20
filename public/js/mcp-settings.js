@@ -20,7 +20,8 @@ function ClickUpCard() {
   const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
   // Only the owner may say whether sending is allowed.
   const save = guarded(async () => {
-    load(await api('/api/settings/clickup', { method: 'PUT', body: { workspaceId: s.workspaceId, timeZone: s.timeZone, ...(apiKey && { apiKey: apiKey.trim() }), ...(isOwner.value && { send: s.send }) } }));
+    const trimmedKey = apiKey.trim();
+    load(await api('/api/settings/clickup', { method: 'PUT', body: { workspaceId: s.workspaceId, timeZone: s.timeZone, ...(trimmedKey && { apiKey: trimmedKey }), ...(isOwner.value && { send: s.send }) } }));
     setApiKey('');
     toast('ClickUp settings saved');
   });
