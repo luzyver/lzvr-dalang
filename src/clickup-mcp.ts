@@ -1,11 +1,11 @@
 /**
- * ClickUp's own MCP server (https://mcp.clickup.com/mcp), through which Dalang does everything in ClickUp. It takes no
+ * ClickUp's own MCP server (https://mcp.clickup.com/mcp), for Doc content search and native chat attachments. It takes no
  * personal API token, only OAuth 2.1 with PKCE, so each person connects their own ClickUp (Settings → MCP → ClickUp →
  * Connect) and the access token is theirs alone. Here: that sign-in (a client registered once per panel address, the
  * address to open, the code exchanged for a token), a tool call, and a file upload.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { ClickUpError, ClickUpUncertain, type OutFile } from './clickup.js';
+import { ClickUpError, ClickUpOAuthError, ClickUpUncertain, type OutFile } from './clickup.js';
 
 export const CLICKUP_MCP = 'https://mcp.clickup.com';
 const PROTOCOL = '2025-06-18';
@@ -116,7 +116,7 @@ export class ClickUpMcp {
       }
       break;
     }
-    if (res.status === 401) throw new ClickUpError('ClickUp no longer accepts the connection; connect ClickUp again in Settings → MCP', 401);
+    if (res.status === 401) throw new ClickUpOAuthError('ClickUp no longer accepts the connection; connect ClickUp again in Settings → MCP', 401);
     if (!res.ok) {
       const msg = `ClickUp ${res.status} on ${name}: ${text.slice(0, 300)}`;
       throw res.status >= 400 && res.status < 500 && res.status !== 408 ? new ClickUpError(msg, res.status) : new ClickUpUncertain(msg, res.status);
@@ -161,7 +161,7 @@ export class ClickUpMcp {
     let a: any;
     try {
       const res = await this.fetch(url, {
-        method: 'POST', headers: { 'x-upload-ticket': String(t.upload_ticket), accept: 'application/json' }, body: form,
+        method: 'POST', redirect: 'error', headers: { 'x-upload-ticket': String(t.upload_ticket), accept: 'application/json' }, body: form,
         signal: AbortSignal.timeout(120_000),
       });
       a = await json(res, 'the upload');

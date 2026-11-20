@@ -6,9 +6,9 @@ import type { AuthUser } from './util.js';
 
 /**
  * One person's ClickUp: `oauth`, the access token of their connection to ClickUp's own MCP server (see clickup-mcp.ts),
- * through which everything is read and done, and their default workspace and time zone. Empty strings mean "not set".
+ * and `apiKey`, the personal key for the public API, with their default workspace and time zone. Empty strings mean "not set".
  */
-interface Account { workspaceId: string; timeZone: string; oauth: string }
+interface Account { workspaceId: string; timeZone: string; oauth: string; apiKey: string }
 
 /**
  * What Settings → MCP → ClickUp saves (kv `clickup`). `users`: every person's own ClickUp, by their user key (see
@@ -19,11 +19,11 @@ interface Account { workspaceId: string; timeZone: string; oauth: string }
 interface Saved { send: boolean; users: Record<string, Account>; clients: Record<string, string> }
 
 const KEY = 'clickup';
-const NONE: Account = { workspaceId: '', timeZone: '', oauth: '' };
+const NONE: Account = { workspaceId: '', timeZone: '', oauth: '', apiKey: '' };
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 /** A personal API token (pk_...) saved before ClickUp went through its MCP server is not read any more, and goes on the next save. */
-const account = (v: any): Account => ({ workspaceId: str(v?.workspaceId), timeZone: str(v?.timeZone), oauth: str(v?.oauth) });
-const blank = (a: Account) => !a.workspaceId && !a.timeZone && !a.oauth;
+const account = (v: any): Account => ({ workspaceId: str(v?.workspaceId), timeZone: str(v?.timeZone), oauth: str(v?.oauth), apiKey: str(v?.apiKey) });
+const blank = (a: Account) => !a.workspaceId && !a.timeZone && !a.oauth && !a.apiKey;
 
 /** Whose ClickUp a request or turn uses: a panel user's id, 'owner' for the owner (as Store.userKeyOf gives). */
 export const clickupUserKey = (u: AuthUser): string => u.id ?? 'owner';
@@ -41,7 +41,7 @@ function load(store: Store): Saved {
 }
 
 /** The access token is never sent back to the panel, only that the connection is there. */
-const view = (a: Account, send: boolean) => ({ connected: Boolean(a.oauth), workspaceId: a.workspaceId, timeZone: a.timeZone, send });
+const view = (a: Account, send: boolean) => ({ connected: Boolean(a.oauth), hasApiKey: Boolean(a.apiKey), workspaceId: a.workspaceId, timeZone: a.timeZone, send });
 
 /** Whether whoever has the ClickUp tools may also send messages with them. */
 export const clickupSend = (store: Store): boolean => load(store).send;
@@ -62,13 +62,13 @@ export function clickupClient(store: Store, fetchImpl?: typeof fetch): (userKey:
   const last = new Map<string, { raw: string; client: ClickUp | undefined }>();
   return (userKey) => {
     const a = load(store).users[userKey];
-    if (!a?.oauth) { last.delete(userKey); return undefined; }
+    if (!a?.apiKey) { last.delete(userKey); return undefined; }
     const raw = JSON.stringify(a);
     let hit = last.get(userKey);
     if (hit?.raw !== raw) {
       let client: ClickUp | undefined;
       try {
-        client = new ClickUp({ token: a.oauth, workspaceId: a.workspaceId || undefined, timeZone: a.timeZone || undefined, fetch: fetchImpl });
+        client = new ClickUp({ token: a.apiKey, oauth: a.oauth || undefined, workspaceId: a.workspaceId || undefined, timeZone: a.timeZone || undefined, fetch: fetchImpl });
       } catch { client = undefined; } // saved settings are checked on save; never let a bad row break /mcp
       hit = { raw, client };
       last.set(userKey, hit);
@@ -99,12 +99,12 @@ export function clickupRoutes(app: FastifyInstance, d: {
     return view(s.users[clickupUserKey(req.user!)] ?? NONE, s.send);
   });
 
-  app.put<{ Body: { workspaceId: string; timeZone: string; send?: boolean } }>('/api/settings/clickup', {
+  app.put<{ Body: { workspaceId: string; timeZone: string; apiKey?: string; send?: boolean } }>('/api/settings/clickup', {
     schema: { body: {
       type: 'object', required: ['workspaceId', 'timeZone'], additionalProperties: false,
       properties: {
         workspaceId: { type: 'string', pattern: '^[0-9]{0,20}$' },
-        timeZone: { type: 'string', maxLength: 64 }, send: { type: 'boolean' },
+        timeZone: { type: 'string', maxLength: 64 }, apiKey: { type: 'string', maxLength: 512, pattern: '^$|^pk_[^\\s]+$' }, send: { type: 'boolean' },
       },
     } },
   }, (req, reply) => {
@@ -113,10 +113,19 @@ export function clickupRoutes(app: FastifyInstance, d: {
     if (b.send !== undefined && !owner) return reply.code(403).send({ error: 'only the owner allows sending' });
     const s = load(store);
     const key = clickupUserKey(req.user!);
-    const next: Account = { workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(), oauth: s.users[key]?.oauth ?? '' };
+    const next: Account = { ...(s.users[key] ?? NONE), workspaceId: b.workspaceId.trim(), timeZone: b.timeZone.trim(), apiKey: b.apiKey ?? s.users[key]?.apiKey ?? '' };
     if (next.timeZone && !validTimeZone(next.timeZone)) return reply.code(400).send({ error: `unknown time zone: ${next.timeZone}` });
     if (blank(next)) delete s.users[key]; else s.users[key] = next;
-    if (owner) s.send = b.send ?? false;
+    if (owner && b.send !== undefined) s.send = b.send;
+    store.setKv(KEY, JSON.stringify(s));
+    return view(next, s.send);
+  });
+
+  app.delete('/api/settings/clickup/key', (req) => {
+    const s = load(store);
+    const key = clickupUserKey(req.user!);
+    const next = { ...(s.users[key] ?? NONE), apiKey: '' };
+    if (blank(next)) delete s.users[key]; else s.users[key] = next;
     store.setKv(KEY, JSON.stringify(s));
     return view(next, s.send);
   });
@@ -124,7 +133,7 @@ export function clickupRoutes(app: FastifyInstance, d: {
   // Try the connection against ClickUp: who is connected, which workspace, which time zone.
   app.post('/api/settings/clickup/test', async (req, reply) => {
     const client = d.client(clickupUserKey(req.user!));
-    if (!client) return reply.code(400).send({ error: 'ClickUp is not connected' });
+    if (!client) return reply.code(400).send({ error: 'Save your ClickUp personal API key in Settings → MCP → ClickUp' });
     try { return await client.whoami(); } catch (e) { return reply.code(502).send({ error: (e as Error).message }); }
   });
 
@@ -179,8 +188,7 @@ export function clickupRoutes(app: FastifyInstance, d: {
     return view(s.users[key], s.send);
   });
 
-  // Forget the connection, which turns the ClickUp tools off for this person. ClickUp itself keeps the access until
-  // the person removes the app there.
+  // Forget OAuth separately from the personal API key.
   app.delete('/api/settings/clickup/oauth', (req) => {
     const s = load(store);
     const key = clickupUserKey(req.user!);
