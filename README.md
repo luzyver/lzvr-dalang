@@ -203,7 +203,7 @@ vulnerability, and [CHANGELOG.md](CHANGELOG.md) for notable changes.
 
 ## License
 
-[MIT](LICENSE) © luzyver. Bundled third-party code keeps its own license: the browser libraries and fonts in
+[MIT](LICENSE) © 𝙻𝚄𝚉𝚈𝚅𝙴𝚁. Bundled third-party code keeps its own license: the browser libraries and fonts in
 `public/vendor` and `public/fonts` (see [public/vendor/README.md](public/vendor/README.md)), the Lucide icons in
 `public/icons` ([public/icons/LICENSE](public/icons/LICENSE)), and the diagram-design skill
 ([skills/diagram-design/LICENSE](skills/diagram-design/LICENSE)).
