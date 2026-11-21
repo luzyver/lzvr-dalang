@@ -216,8 +216,9 @@ def generate_html(data: dict, auto_refresh: bool = False, skill_name: str = "") 
         test_passed = h.get("test_passed")
         test_total = h.get("test_total")
         description = h.get("description", "")
-        train_results = h.get("train_results", h.get("results", []))
-        test_results = h.get("test_results", [])
+        # A run without a holdout set stores null here, not a missing key.
+        train_results = h.get("train_results", h.get("results", [])) or []
+        test_results = h.get("test_results") or []
 
         # Create lookups for results by query
         train_by_query = {r["query"]: r for r in train_results}
