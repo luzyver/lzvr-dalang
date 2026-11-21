@@ -58,10 +58,23 @@ describe('agent git policy', () => {
   });
 
   it('tells the turn what it may not do, and nothing when it may do both', () => {
-    expect(agentGitGuide({ commit: true, push: true })).toBe('');
+    expect(agentGitGuide({ commit: false, push: false }, { commit: 'C-RULES', mr: 'M-RULES' })).not.toMatch(/C-RULES|M-RULES|attribution/);
     expect(agentGitGuide({ commit: false, push: false })).toContain('git commit and git push are blocked');
     expect(agentGitGuide({ commit: true, push: false })).toContain('do not push yourself');
     expect(agentGitGuide({ commit: true, push: false })).toContain('committed but unpushed');
+  });
+
+  it('tells a turn that may commit or push to write by the panel\'s instructions, unsigned', () => {
+    const writing = { commit: 'C-RULES', mr: 'M-RULES' };
+    const both = agentGitGuide({ commit: true, push: true }, writing);
+    expect(both).not.toContain('do not');
+    expect(both).toContain('no\nCo-Authored-By trailer');
+    expect(both).toContain('<commit_message_instructions>\nC-RULES\n</commit_message_instructions>');
+    expect(both).toContain('<merge_request_instructions>\nM-RULES\n</merge_request_instructions>');
+    const commitOnly = agentGitGuide({ commit: true, push: false }, writing);
+    expect(commitOnly).toContain('C-RULES');
+    expect(commitOnly).not.toContain('M-RULES');
+    expect(agentGitGuide({ commit: false, push: true }, writing)).not.toContain('C-RULES');
   });
 
   it('applies to every turn by default, and is set by any user', async () => {
@@ -80,7 +93,19 @@ describe('agent git policy', () => {
     store.enqueue(conv.id, 'two', []);
     dispatcher.kick(conv.id);
     await until(() => turnsDone(store, conv.id, 2));
-    expect(text().split('echo:two')[1]).not.toContain('gitcfg');
+    const two = text().split('echo:two')[1]!;
+    expect(two).not.toContain('gitcfg');
+    // Allowed: written as the panel's "Generate message" and "Generate MR description" are, and signed by no agent.
+    expect(two).toContain('Use Conventional Commit format');
+    expect(two).toContain('expert at writing Merge Request descriptions');
+    expect(two).toContain('|settings:{"attribution":{"commit":"","pr":""}}');
+    store.setKv('commit_prompt', 'Subject in Indonesian');
+    store.enqueue(conv.id, 'three', []);
+    dispatcher.kick(conv.id);
+    await until(() => turnsDone(store, conv.id, 3));
+    const three = text().split('echo:three')[1]!;
+    expect(three).toContain('Subject in Indonesian');
+    expect(three).not.toContain('Use Conventional Commit format');
 
     const t = setupApp();
     const user = await mkUser(t, 'budi');
