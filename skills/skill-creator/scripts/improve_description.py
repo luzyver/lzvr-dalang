@@ -9,6 +9,7 @@ uses the session's Claude Code auth, no separate ANTHROPIC_API_KEY needed).
 import argparse
 import json
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -23,7 +24,11 @@ def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
     Prompt goes over stdin (not argv) because it embeds the full SKILL.md
     body and can easily exceed comfortable argv length.
     """
-    cmd = ["claude", "-p", "--output-format", "text"]
+    # Resolve the executable ourselves: on Windows a bare name only finds .exe, not an npm claude.cmd.
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise RuntimeError("claude CLI not found on PATH")
+    cmd = [claude_bin, "-p", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
 
@@ -37,6 +42,8 @@ def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
         input=prompt,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         timeout=timeout,
     )
@@ -61,12 +68,15 @@ def improve_description(
     """Call Claude to improve the description based on eval results."""
     failed_triggers = [
         r for r in eval_results["results"]
-        if r["should_trigger"] and not r["pass"]
+        if r["should_trigger"] and not r["pass"] and r.get("runs", 1) > 0
     ]
     false_triggers = [
         r for r in eval_results["results"]
-        if not r["should_trigger"] and not r["pass"]
+        if not r["should_trigger"] and not r["pass"] and r.get("runs", 1) > 0
     ]
+    # Queries whose every run failed to execute (timeout, rate limit) say nothing about the
+    # description: keep them out of both lists so the model does not "fix" a failure that never happened.
+    not_evaluated = [r for r in eval_results["results"] if r.get("runs", 1) == 0]
 
     # Build scores summary
     train_score = f"{eval_results['summary']['passed']}/{eval_results['summary']['total']}"
@@ -100,6 +110,12 @@ Current scores ({scores_summary}):
             prompt += f'  - "{r["query"]}" (triggered {r["triggers"]}/{r["runs"]} times)\n'
         prompt += "\n"
 
+    if not_evaluated:
+        prompt += "NOT EVALUATED (the runs failed to execute; they count as not passed in the scores but say nothing about the description, ignore them):\n"
+        for r in not_evaluated:
+            prompt += f'  - "{r["query"]}"\n'
+        prompt += "\n"
+
     if history:
         prompt += "PREVIOUS ATTEMPTS (do NOT repeat these — try something structurally different):\n\n"
         for h in history:
@@ -111,7 +127,7 @@ Current scores ({scores_summary}):
             if "results" in h:
                 prompt += "Train results:\n"
                 for r in h["results"]:
-                    status = "PASS" if r["pass"] else "FAIL"
+                    status = "PASS" if r["pass"] else ("NOT EVALUATED" if r.get("runs", 1) == 0 else "FAIL")
                     prompt += f'  [{status}] "{r["query"][:80]}" (triggered {r["triggers"]}/{r["runs"]})\n'
             if h.get("note"):
                 prompt += f'Note: {h["note"]}\n'
@@ -186,7 +202,7 @@ Please respond with only the new description text in <new_description> tags, not
     if log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"improve_iter_{iteration or 'unknown'}.json"
-        log_file.write_text(json.dumps(transcript, indent=2))
+        log_file.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
 
     return description
 
@@ -205,10 +221,10 @@ def main():
         print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)
         sys.exit(1)
 
-    eval_results = json.loads(Path(args.eval_results).read_text())
+    eval_results = json.loads(Path(args.eval_results).read_text(encoding="utf-8"))
     history = []
     if args.history:
-        history = json.loads(Path(args.history).read_text())
+        history = json.loads(Path(args.history).read_text(encoding="utf-8"))
 
     name, _, content = parse_skill_md(skill_path)
     current_description = eval_results["description"]

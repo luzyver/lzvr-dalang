@@ -269,7 +269,8 @@ def generate_html(data: dict, auto_refresh: bool = False, skill_name: str = "") 
             triggers = r.get("triggers", 0)
             runs = r.get("runs", 0)
 
-            icon = "✓" if did_pass else "✗"
+            # 0 runs: every run failed to execute, which is not a failed trigger
+            icon = "✓" if did_pass else ("⚠" if runs == 0 and r.get("errors") else "✗")
             css_class = "pass" if did_pass else "fail"
 
             html_parts.append(f'                <td class="result {css_class}">{icon}<span class="rate">{triggers}/{runs}</span></td>\n')
@@ -281,7 +282,8 @@ def generate_html(data: dict, auto_refresh: bool = False, skill_name: str = "") 
             triggers = r.get("triggers", 0)
             runs = r.get("runs", 0)
 
-            icon = "✓" if did_pass else "✗"
+            # 0 runs: every run failed to execute, which is not a failed trigger
+            icon = "✓" if did_pass else ("⚠" if runs == 0 and r.get("errors") else "✗")
             css_class = "pass" if did_pass else "fail"
 
             html_parts.append(f'                <td class="result test-result {css_class}">{icon}<span class="rate">{triggers}/{runs}</span></td>\n')
@@ -311,12 +313,12 @@ def main():
     if args.input == "-":
         data = json.load(sys.stdin)
     else:
-        data = json.loads(Path(args.input).read_text())
+        data = json.loads(Path(args.input).read_text(encoding="utf-8"))
 
     html_output = generate_html(data, skill_name=args.skill_name)
 
     if args.output:
-        Path(args.output).write_text(html_output)
+        Path(args.output).write_text(html_output, encoding="utf-8")
         print(f"Report written to {args.output}", file=sys.stderr)
     else:
         print(html_output)
