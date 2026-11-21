@@ -1,17 +1,17 @@
 ---
 name: vue-expert
-description: Builds Vue 3 components with Composition API patterns, configures Nuxt 3 SSR/SSG projects, sets up Pinia stores, scaffolds Quasar/Capacitor mobile apps, implements PWA features, and optimises Vite builds. Use when creating Vue 3 applications with Composition API, writing reusable composables, managing state with Pinia, building hybrid mobile apps with Quasar or Capacitor, configuring service workers, or tuning Vite configuration and TypeScript integration.
+description: Builds Vue 3 components with Composition API patterns, renders Vue on the server without Nuxt, sets up Pinia stores, scaffolds Quasar/Capacitor mobile apps, implements PWA features, and optimises Vite builds. Use when creating Vue 3 applications with Composition API, writing reusable composables, managing state with Pinia, building hybrid mobile apps with Quasar or Capacitor, configuring service workers, or tuning Vite configuration and TypeScript integration. For Nuxt projects, use nuxt-expert.
 license: MIT
 metadata:
   author: https://github.com/Jeffallan
   company: https://synergetic.solutions
-  version: "1.1.0"
+  version: "1.2.0"
   domain: frontend
-  triggers: Vue 3, Composition API, Nuxt, Pinia, Vue composables, reactive, ref, Vue Router, Vite Vue, Quasar, Capacitor, PWA, service worker, Fastify SSR, sourcemap, Vite config, build optimization
+  triggers: Vue 3, Composition API, Pinia, Vue composables, reactive, ref, Vue Router, Vite Vue, Quasar, Capacitor, PWA, service worker, Fastify SSR, sourcemap, Vite config, build optimization
   role: specialist
   scope: implementation
   output-format: code
-  related-skills: typescript-pro, fullstack-guardian
+  related-skills: typescript-pro, fullstack-guardian, nuxt-expert
 ---
 
 # Vue Expert
@@ -20,10 +20,12 @@ Senior Vue specialist with deep expertise in Vue 3 Composition API, reactivity s
 
 ## Running inside Dalang
 
+- Source: `Jeffallan/claude-skills` at commit `4b94d98` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - Use it only when the project already uses this stack; do not suggest moving a project to it.
 - Follow the project first: use the versions, framework, style, tooling and test setup it already has. Versions and tools named in this skill are defaults, not requirements; never upgrade or switch them on your own.
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Keep code modular: small files, one responsibility each; match the surrounding code's naming and comment density.
+- Nuxt projects (a `nuxt.config.*` or a `nuxt` dependency): use `nuxt-expert`; this skill covers Vue itself.
 - Not installed here: fullstack-guardian; use the project's conventions.
 
 ## Core Workflow
@@ -44,7 +46,7 @@ Load detailed guidance based on context:
 | Composition API | `references/composition-api.md` | ref, reactive, computed, watch, lifecycle |
 | Components | `references/components.md` | Props, emits, slots, provide/inject |
 | State Management | `references/state-management.md` | Pinia stores, actions, getters |
-| Nuxt 3 | `references/nuxt.md` | SSR, file-based routing, useFetch, Fastify, hydration |
+| Vue SSR (non-Nuxt) | `references/ssr.md` | Custom SSR with Fastify, hydration mismatches, lazy hydration; Nuxt apps use `nuxt-expert` |
 | TypeScript | `references/typescript.md` | Typing props, generic components, type safety |
 | Mobile & Hybrid | `references/mobile-hybrid.md` | Quasar, Capacitor, PWA, service worker, mobile |
 | Build Tooling | `references/build-tooling.md` | Vite config, sourcemaps, optimization, bundling |
@@ -104,7 +106,7 @@ When implementing Vue features, provide:
 
 ## Knowledge Reference
 
-Vue 3 Composition API, Pinia, Nuxt 3, Vue Router 4, Vite, VueUse, TypeScript, Vitest, Vue Test Utils, SSR/SSG, reactive programming, performance optimization
+Vue 3 Composition API, Pinia, Vue Router 4, Vite, VueUse, TypeScript, Vitest, Vue Test Utils, SSR/SSG, reactive programming, performance optimization
 
 Maintained by [@jeffallan](https://github.com/jeffallan), Principal Consultant at [Synergetic Solutions](https://synergetic.solutions)
 

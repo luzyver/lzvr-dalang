@@ -9,6 +9,7 @@ Comprehensive guide to writing effective, blameless postmortems that drive organ
 
 ## Running inside Dalang
 
+- Source: `wshobson/agents` at commit `91ff753` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - A postmortem the person will share with others goes in the chat as ready-to-copy text, not as a file or PDF, unless they ask for a file.
 - Build the timeline from evidence you can read (logs through `ssh_exec`, data through `db_query`, git history) and mark anything you could not verify.
 - Keep it blameless: describe systems and decisions, never name a person as the cause.

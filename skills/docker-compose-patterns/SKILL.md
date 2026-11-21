@@ -12,7 +12,7 @@ compatibility: Requires Docker Compose v2 (compose.yaml format).
 - Only use this skill when the project actually has, or the person asks for, a Dockerfile or `compose.yaml`. Many projects here run directly on a VM under systemd (Dalang itself does); do not move them into containers on your own initiative.
 - Run Docker commands on a server only through the dalang `ssh_list_hosts` / `ssh_exec` tools. A command that answers `pending_approval` waits for an admin: do not send it again.
 - Before any destructive Docker command (rm, prune, `down -v`, volume removal), state exactly what will be lost and wait for confirmation, as `docker-destructive-guardrails` describes.
-- Skills this one mentions that are not installed here: `docker-project-foundations` and the `docker-sandboxes-*` / Docker Desktop skills. Use the guidance in this skill and the project's existing files instead.
+- `docker-project-foundations` is installed here (first Docker setup of a project). Not installed: the `docker-sandboxes-*` / Docker Desktop skills. Use the guidance in this skill and the project's existing files instead.
 - `scripts/*.sh` are optional helpers; you can run the same `docker` commands directly.
 
 ## Overview
