@@ -9,7 +9,7 @@ description: Use when implementation is complete, all tests pass, and you need t
 
 - The git rules of this turn come first. When they say not to commit or push, stop after the tests: leave the changes in place and say they are ready. When committing is allowed, the commit message and the Merge/Pull Request description follow the instructions the person set in the Dalang panel, with no line naming an agent or a tool.
 - When the person already said what they want (merge, open a request, keep the branch), do that and skip the menu, per `decision-maker`. Show the options only when the choice is really open.
-- Dalang makes and removes the worktrees of its chats. Do not remove a worktree or delete a branch you did not create in this turn.
+- Dalang makes and removes the worktrees of its chats. Do not remove a worktree or delete a branch you did not create in this turn. This overrides Step 6: a chat's worktree lives under a `worktrees/` folder too (`<state dir>/worktrees/<chat id>`), so the path alone does not make a worktree yours to remove. In Step 6 treat any worktree you did not create in this turn as owned by the host and leave it in place.
 - Never force-push, reset or discard work without an explicit request; "your human partner" is the person you work for in this chat.
 - Source: `obra/superpowers` at commit `22f0b46` (see LICENSE). When updating from upstream, keep this section.
 
