@@ -10,7 +10,7 @@ description: Audits existing interfaces for WCAG 2.2 AA conformance and remediat
 - Scope: auditing an existing interface against WCAG 2.2 AA and fixing what the audit finds. Designing or building UI, and broader UX review, belong to `impeccable`; where this text names `frontend-ui-engineering` (not installed), use `impeccable` or the framework skill of the project.
 - The checklist is bundled as `references/accessibility-checklist.md`. The `accessibility-auditor` agent of the upstream repository is not installed: do the audit yourself.
 - The audit commands download `@axe-core/cli` and `pa11y` through `npx` and need a browser and a running page. Run them against the local app of the project; ask before pointing them at a production URL. When they cannot run, say so and do the manual checks: never report an audit as passed that did not run.
-- `scripts/audit-a11y.sh` is in this skill's folder (not `skills/accessibility-engineering/` of the project) and needs bash.
+- `scripts/audit-a11y.sh` is in this skill's folder (not `skills/accessibility-engineering/` of the project) and needs bash. Local fix to keep when updating from upstream: its inline `node` scripts get the temp directory as an argument, not written into the script text, so it also runs under Git Bash with a Windows `node`.
 - You cannot operate a screen reader: list those checks as untested for the person to do.
 - Source: `addyosmani/agent-skills` at commit `8c99fa3` (see LICENSE). When updating from upstream, keep this section.
 

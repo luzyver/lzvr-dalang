@@ -306,7 +306,8 @@ def _kill_port(port: int) -> None:
     """Kill any process listening on the given port."""
     try:
         result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
+            # -sTCP:LISTEN: without it lsof also lists clients connected to the port (a browser tab).
+            ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
             capture_output=True, text=True, timeout=5,
         )
         for pid_str in result.stdout.strip().split("\n"):
