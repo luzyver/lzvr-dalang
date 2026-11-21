@@ -110,7 +110,10 @@ def load_run_results(benchmark_dir: Path) -> dict:
             try:
                 with open(metadata_path, encoding="utf-8") as mf:
                     eval_id = json.load(mf).get("eval_id", eval_idx)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, AttributeError):
+                eval_id = eval_idx
+            # An id that is null or not a number or name (a list, true) cannot be ordered with the rest.
+            if isinstance(eval_id, bool) or not isinstance(eval_id, (int, float, str)):
                 eval_id = eval_idx
         else:
             try:
