@@ -9,6 +9,7 @@ Secure secrets management practices for CI/CD pipelines using Vault, AWS Secrets
 
 ## Running inside Dalang
 
+- Source: `wshobson/agents` at commit `91ff753` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - Never write a real secret value into a file, commit, log, chat message or memory. Use placeholders (`<DB_PASSWORD>`) and tell the person where to set the real value.
 - Do not read secrets from `.env` or config files to log in somewhere yourself. Databases go through the dalang `db_*` tools and servers through `ssh_exec`; Dalang keeps those logins.
 - Fit the project's existing approach first (for example, an environment file on the server read by systemd, or the CI provider's secret store). Bring in Vault or a cloud secret manager only when the person asks for it.
@@ -208,8 +209,9 @@ deploy:
 ```yaml
 deploy:
   script:
-    - echo "Deploying with $API_KEY"
-    - echo "Database: $DATABASE_URL"
+    # Fail if a variable is missing, but never print its value
+    - test -n "$API_KEY" || { echo "API_KEY is not set"; exit 1; }
+    - test -n "$DATABASE_URL" || { echo "DATABASE_URL is not set"; exit 1; }
 ```
 
 ### Protected and Masked Variables

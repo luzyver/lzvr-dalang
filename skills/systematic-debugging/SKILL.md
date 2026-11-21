@@ -7,6 +7,7 @@ description: Use when encountering any bug, test failure, or unexpected behavior
 
 ## Running inside Dalang
 
+- Source: `obra/superpowers` at commit `22f0b46` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - The `superpowers:` skills named below are the Dalang skills of the same name without the prefix (`test-driven-development`, `verification-before-completion`), listed with the other Dalang skills.
 
 ## Overview

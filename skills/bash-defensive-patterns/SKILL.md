@@ -9,6 +9,7 @@ Comprehensive guidance for writing production-ready Bash scripts using defensive
 
 ## Running inside Dalang
 
+- Source: `wshobson/agents` at commit `91ff753` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - Follow the project's existing scripts first (shebang, strict mode, logging style). The person prefers Python for local scripts; on servers that cannot run Python, use what the server supports.
 - Commands on servers go only through ssh_list_hosts/ssh_exec; never use ssh, scp or credentials from files. A command that answers pending_approval waits for an admin: do not send it again.
 - Before any destructive command (rm -rf, overwriting files, restarts), say what will change and prefer a backup or dry run.

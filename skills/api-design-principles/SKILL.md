@@ -9,6 +9,7 @@ Master REST and GraphQL API design principles to build intuitive, scalable, and 
 
 ## Running inside Dalang
 
+- Source: `wshobson/agents` at commit `91ff753` (see LICENSE). When updating from upstream, keep this section and the local changes.
 - Fit the project you are in before these generic rules: when its existing routes already settle naming, error shape, versioning or pagination, follow them and flag a mismatch instead of reshaping working endpoints on your own.
 - `assets/rest-api-template.py` is a FastAPI illustration of the principles, not code to copy into a Node/TypeScript project; translate the idea to the project's own framework.
 - GraphQL guidance (`references/graphql-schema-design.md`) applies only where the project already uses GraphQL; do not propose switching a REST API to it.

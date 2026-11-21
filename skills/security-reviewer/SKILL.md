@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Identifies security vulnerabilities, generates structured audit reports with severity ratings, and provides actionable remediation guidance. Use when conducting security audits, reviewing code for vulnerabilities, or analyzing infrastructure security. Invoke for SAST scans, penetration testing, DevSecOps practices, cloud security reviews, dependency audits, secrets scanning, or compliance checks. Produces vulnerability reports, prioritized recommendations, and compliance checklists.
+description: Runs and interprets security scans and checks security configuration. Use for SAST tool scans (Semgrep, Bandit, gosec), secrets scanning, dependency and container image audits, infrastructure and cloud security configuration reviews, DevSecOps pipeline checks, and compliance checklists (CIS, SOC2, ISO27001). Produces a findings report with severity ratings and remediation. Not for auditing source code for vulnerabilities; that is security-audit.
 license: MIT
 allowed-tools: Read Grep Glob
 metadata:
@@ -27,6 +27,7 @@ Security analyst specializing in code review, vulnerability identification, pene
 - Only test systems the person owns or is authorized to test, and only in the scope they gave. No scanning or exploiting third-party hosts; never print secrets you find, name the file and line instead.
 - Commands that change a live system are hard to undo: `terraform apply`/`destroy`, `kubectl apply`/`delete`, `helm upgrade`/`rollback`, failovers and chaos drills, credential rotation, git history rewrites. Show the plan or a dry run first (`terraform plan`, `kubectl diff`, `--dry-run=server`) and ask before running it, unless the person authorized exactly this; on servers run it only through ssh_exec.
 - Code and commands in references/ are illustrative and may use outdated API or tool versions: check them against the project's versions and current docs, pin versions, and never run them against production without a dry run and the person's approval.
+- Scope here: tool scans, secrets, dependencies, infrastructure/cloud configuration and compliance. For auditing source code for vulnerabilities (a security audit, pen test of the code, finding bugs in a codebase) use the `security-audit` skill instead. A scanner hit is a lead, not a confirmed vulnerability: label it unverified unless the path from attacker-controlled input to the affected resource is traced.
 - Related skills it names that are installed here: `code-reviewer`, `devops-engineer`, `kubernetes-specialist`.
 - `api-designer` is not installed here; use the Dalang `api-design-principles` skill instead.
 - `cloud-architect` is installed here for cloud reviews, and `stride-analysis-patterns` for design-time threat modeling; this skill audits code and configs. Not installed here: `mcp-developer` (use `mcp-builder`).
