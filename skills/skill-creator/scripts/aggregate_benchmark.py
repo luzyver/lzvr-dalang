@@ -64,6 +64,29 @@ def calculate_stats(values: list[float]) -> dict:
     }
 
 
+# Configurations a skill is compared against: they go after the one being measured.
+BASELINE_CONFIGS = ("without_skill", "old_skill", "baseline")
+
+
+def _has_runs(config_dir: Path) -> bool:
+    """A config directory holds grading.json itself or run-N/ directories."""
+    return config_dir.is_dir() and (
+        (config_dir / "grading.json").exists() or any(d.is_dir() for d in config_dir.glob("run-*"))
+    )
+
+
+def _eval_dirs(search_dir: Path) -> list[Path]:
+    """
+    The eval directories: SKILL.md asks for descriptive names, so "eval-*" is not required.
+    Any directory with eval_metadata.json or a config directory in it counts; others
+    (skill-snapshot/, a previous benchmark's files) are left out.
+    """
+    return sorted(
+        d for d in search_dir.iterdir()
+        if d.is_dir() and ((d / "eval_metadata.json").exists() or any(_has_runs(c) for c in d.iterdir()))
+    )
+
+
 def load_run_results(benchmark_dir: Path) -> dict:
     """
     Load all run results from a benchmark directory.
@@ -73,17 +96,15 @@ def load_run_results(benchmark_dir: Path) -> dict:
     """
     # Support both layouts: eval dirs directly under benchmark_dir, or under runs/
     runs_dir = benchmark_dir / "runs"
-    if runs_dir.exists():
-        search_dir = runs_dir
-    elif list(benchmark_dir.glob("eval-*")):
-        search_dir = benchmark_dir
-    else:
+    search_dir = runs_dir if runs_dir.exists() else benchmark_dir
+    eval_dirs = _eval_dirs(search_dir)
+    if not eval_dirs:
         print(f"No eval directories found in {benchmark_dir} or {benchmark_dir / 'runs'}")
         return {}
 
     results: dict[str, list] = {}
 
-    for eval_idx, eval_dir in enumerate(sorted(search_dir.glob("eval-*"))):
+    for eval_idx, eval_dir in enumerate(eval_dirs):
         metadata_path = eval_dir / "eval_metadata.json"
         if metadata_path.exists():
             try:
@@ -94,7 +115,7 @@ def load_run_results(benchmark_dir: Path) -> dict:
         else:
             try:
                 eval_id = int(eval_dir.name.split("-")[1])
-            except ValueError:
+            except (ValueError, IndexError):
                 eval_id = eval_idx
 
         # Discover config directories dynamically rather than hardcoding names
@@ -175,7 +196,9 @@ def load_run_results(benchmark_dir: Path) -> dict:
 
                 results[config].append(result)
 
-    return results
+    # The delta is "first config minus second": a baseline must not come first just because its
+    # name sorts first ("old_skill" before "with_skill"). The sort is stable, so the rest keep their order.
+    return dict(sorted(results.items(), key=lambda kv: kv[0] in BASELINE_CONFIGS))
 
 
 def aggregate_results(results: dict) -> dict:
@@ -378,7 +401,7 @@ def main():
     if not benchmark.get("runs"):
         print(
             f"Error: no graded runs found in {args.benchmark_dir}. Expected "
-            "eval-*/<config>/grading.json or eval-*/<config>/run-N/grading.json.",
+            "<eval>/<config>/grading.json or <eval>/<config>/run-N/grading.json.",
             file=sys.stderr,
         )
         sys.exit(1)
