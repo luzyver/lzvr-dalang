@@ -33,12 +33,49 @@ export function agentGitEnv(p: AgentGitPolicy, inherited: Record<string, string 
   return env;
 }
 
-/** What a turn is told when it may not commit or push. Empty when it may do both. */
-export function agentGitGuide(p: AgentGitPolicy): string {
-  if (p.commit && p.push) return '';
-  const what = !p.commit && !p.push ? 'commit or push' : !p.commit ? 'commit' : 'push';
-  const blocked = !p.commit && !p.push ? 'git commit and git push are' : `git ${what} is`;
-  return `Git: do not ${what} yourself, even when asked to: in Dalang the person does that from the panel (the chat's
+/** The panel's instructions for a commit message and for a Merge Request description (Settings, or the built-in ones). */
+export interface GitWriting { commit: string; mr: string }
+
+/**
+ * Claude Code signs its commits (Co-Authored-By) and Merge Requests ("Generated with") unless its settings say what to
+ * add instead: nothing. For turns that may commit or push; goes with the turn's other `--settings` (mergeHookArgs).
+ */
+export const NO_ATTRIBUTION_ARGS = ['--settings', JSON.stringify({ attribution: { commit: '', pr: '' } })];
+
+/**
+ * What a turn is told about git: what it may not do, and for what it may do, how the panel wants it written (the same
+ * instructions "Generate message" and "Generate MR description" follow) and that nothing signs it as the agent's.
+ */
+export function agentGitGuide(p: AgentGitPolicy, writing?: GitWriting): string {
+  const parts: string[] = [];
+  if (!p.commit || !p.push) {
+    const what = !p.commit && !p.push ? 'commit or push' : !p.commit ? 'commit' : 'push';
+    const blocked = !p.commit && !p.push ? 'git commit and git push are' : `git ${what} is`;
+    parts.push(`Git: do not ${what} yourself, even when asked to: in Dalang the person does that from the panel (the chat's
 Changes tab), and ${blocked} blocked for you. Leave your changes ${p.commit ? 'committed but unpushed' : 'uncommitted'} and
-say they are ready. Other git commands (status, diff, log, show, branch, stash) are fine.`;
+say they are ready. Other git commands (status, diff, log, show, branch, stash) are fine.`);
+  }
+  if (p.commit || p.push) {
+    parts.push(`Git attribution: commits, Merge Requests and Pull Requests you make carry no line naming an agent or a tool: no
+Co-Authored-By trailer, no "Generated with" line, whatever else you were told to add. This comes from the person's
+settings in Dalang.`);
+  }
+  // Written for a request that answers with the text alone, so the turn is told to keep the rules and not the reply format.
+  if (p.commit && writing?.commit.trim()) {
+    parts.push(`Commit messages: write every commit message by the instructions below, which the person set in the Dalang panel.
+They were written for a request that answers with the message alone: follow what they say about the message, and
+ignore what they say about how to reply.
+<commit_message_instructions>
+${writing.commit.trim()}
+</commit_message_instructions>`);
+  }
+  if (p.push && writing?.mr.trim()) {
+    parts.push(`Merge Request and Pull Request descriptions: when you open one, or are asked to write its description, follow the
+instructions below, which the person set in the Dalang panel. When they ask for a Title section, its line (without
+backticks) is the request's title and the other sections are its description.
+<merge_request_instructions>
+${writing.mr.trim()}
+</merge_request_instructions>`);
+  }
+  return parts.join('\n\n');
 }

@@ -4,8 +4,9 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isBusy, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
-import { agentGitEnv, agentGitGuide } from './agent-git.js';
+import { agentGitEnv, agentGitGuide, NO_ATTRIBUTION_ARGS } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
+import { DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT } from './git-routes.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
@@ -605,7 +606,7 @@ export class Dispatcher {
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
-        agentGitGuide(agentGit),
+        agentGitGuide(agentGit, { commit: this.store.getKv('commit_prompt') || DEFAULT_COMMIT_PROMPT, mr: this.store.getKv('mr_prompt') || DEFAULT_MR_PROMPT }),
         makesFiles ? filesGuide(this.filesDir(convId)) : '',
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');
@@ -622,6 +623,8 @@ export class Dispatcher {
         if (hooks) hooks.args = mergeHookArgs(hooks.args, design); else extraArgs.push(...design);
       }
       if (hooks) extraArgs.push(...hooks.args);
+      // An agent that may commit or push does not sign what it makes (Claude Code would; Codex is told, like Claude Code).
+      if (claude && (agentGit.commit || agentGit.push)) extraArgs.splice(0, extraArgs.length, ...mergeHookArgs(extraArgs, NO_ATTRIBUTION_ARGS));
       // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread. A turn
       // cancelled before it started (while its code graph was reindexed) runs none.
       while (!ac.signal.aborted) {

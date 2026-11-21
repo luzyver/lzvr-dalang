@@ -232,6 +232,10 @@ has a switch for each.
   exist. Fetching, branches, stashes and the rest work as before.
 - **Limits**: `--no-verify` skips the commit hooks, and the hooks path leaves the repository's own git hooks out of the
   agent's git. This stops habit, not an agent set on getting round it; a push needs more (an explicit `pushurl`).
+- **Allowed**: a turn that may commit is given the instructions "Generate message" follows (Settings, or the built-in
+  ones) and told to write its commit messages by them; one that may push is given those for "Generate MR description".
+  Nothing it makes is signed as an agent's: it is told to add no `Co-Authored-By` or "Generated with" line, and Claude
+  Code's own attribution is set empty (`--settings` `attribution`).
 
 
 ## Code memory

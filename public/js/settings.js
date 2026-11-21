@@ -110,7 +110,8 @@ function AgentGit() {
     <strong>Commits and pushes</strong>
     <span class="dim small">Off: agents leave their changes for you to commit and push from the chat's Changes tab, as they are
       told, and their own git refuses (a pre-commit hook, and push URLs that lead nowhere). Your commits and pushes from the
-      panel always work.</span>
+      panel always work. On: agents write their commit messages and Merge Request descriptions by the instructions under
+      Settings → Generate prompts, and add no Co-Authored-By or "Generated with" line.</span>
     <label class="row"><input type="checkbox" checked=${p.commit} onChange=${(e) => save({ ...p, commit: e.currentTarget.checked })} />
       <span>Agents may commit</span></label>
     <label class="row"><input type="checkbox" checked=${p.push} onChange=${(e) => save({ ...p, push: e.currentTarget.checked })} />
@@ -311,7 +312,8 @@ const COMMIT_HELP = '"Generate" in Changes. The selected files, their diffs, rec
 const MR_HELP = '"Generate description" in Changes, for a worktree chat or a feature branch. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.';
 
 const Prompts = () => html`
-  <p class="dim">Used by Codex and Claude Code alike: the chat's agent, with the default model and effort under "Model & effort" (not the chat's own).</p>
+  <p class="dim">Used by Codex and Claude Code alike: the chat's agent, with the default model and effort under "Model & effort" (not the chat's own).
+    Agents that may commit or push themselves ("Model & effort" → Commits and pushes) write by the same instructions.</p>
   <${PromptFor} path="commit-prompt" title="Commit message" help=${COMMIT_HELP} />
   <${PromptFor} path="mr-prompt" title="Merge Request description" help=${MR_HELP} />`;
 
