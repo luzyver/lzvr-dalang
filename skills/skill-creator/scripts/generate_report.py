@@ -325,4 +325,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # What is printed may hold non-ASCII (icons, rules, a skill's own text): before Python 3.15 a
+    # redirected stdout on Windows uses the locale's code page and fails on it.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     main()

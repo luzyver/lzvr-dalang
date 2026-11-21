@@ -57,11 +57,21 @@ def get_mime_type(path: Path) -> str:
     return mime or "application/octet-stream"
 
 
+def _run_order(run: dict) -> tuple:
+    """Numbered evals first, then named ones, then runs without an eval id (no metadata)."""
+    eval_id = run.get("eval_id")
+    if isinstance(eval_id, (int, float)) and not isinstance(eval_id, bool):
+        return (0, eval_id, "", run["id"])
+    if eval_id is None:
+        return (2, 0, "", run["id"])
+    return (1, 0, str(eval_id), run["id"])
+
+
 def find_runs(workspace: Path) -> list[dict]:
     """Recursively find directories that contain an outputs/ subdirectory."""
     runs: list[dict] = []
     _find_runs_recursive(workspace, workspace, runs)
-    runs.sort(key=lambda r: (r.get("eval_id", float("inf")), r["id"]))
+    runs.sort(key=_run_order)
     return runs
 
 
@@ -475,4 +485,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # What is printed may hold non-ASCII (icons, rules, a skill's own text): before Python 3.15 a
+    # redirected stdout on Windows uses the locale's code page and fails on it.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     main()

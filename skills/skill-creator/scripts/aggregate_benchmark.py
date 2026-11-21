@@ -282,11 +282,11 @@ def generate_benchmark(benchmark_dir: Path, skill_name: str = "", skill_path: st
             })
 
     # Determine eval IDs from results
-    eval_ids = sorted(set(
-        r["eval_id"]
-        for config in results.values()
-        for r in config
-    ))
+    # Ids may be numbers and names mixed (eval_metadata.json decides): numbers first, then names.
+    eval_ids = sorted(
+        set(r["eval_id"] for config in results.values() for r in config),
+        key=lambda e: (isinstance(e, str), e),
+    )
 
     benchmark = {
         "metadata": {
@@ -435,4 +435,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # What is printed may hold non-ASCII (icons, rules, a skill's own text): before Python 3.15 a
+    # redirected stdout on Windows uses the locale's code page and fails on it.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     main()
