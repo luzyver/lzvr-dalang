@@ -129,20 +129,6 @@ describe('Dispatcher with the claude backend', () => {
     expect(store.eventsAfter(conv.id, 0).some((e) => e.payload.includes('|system:Sub-agents (dalang MCP tools'))).toBe(true);
   });
 
-  it('gives a Claude Code turn the code memory hooks and their environment', async () => {
-    const { store, dispatcher, conv } = setup();
-    const project = store.getProject(conv.project_id)!;
-    dispatcher.codeMemory = {
-      guide: () => '',
-      hooks: (p, backend) => (p.id === project.id && backend === 'claude' ? { args: ['--settings', '{"hooks":{}}'], env: { LZVR_CODE_ROOT: p.path } } : null),
-    };
-    store.enqueue(conv.id, 'hello', []);
-    dispatcher.kick(conv.id);
-    await until(() => turnsDone(store, conv.id, 1));
-    const texts = store.eventsAfter(conv.id, 0).map((e) => String(JSON.parse(e.payload).item?.text ?? ''));
-    expect(texts.some((t) => t.includes(`|settings:{"hooks":{}}|root:${project.path}`))).toBe(true);
-  });
-
   it("offers Dalang's skills: listed in the system prompt (a file, past Windows' command-line limit), their folder readable", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lzvr-claude-'));
     const skillsDir = join(dir, 'skills');

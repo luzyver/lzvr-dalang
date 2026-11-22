@@ -171,7 +171,7 @@ def response(path, query, method):
     fixed = {
         "/api/auth/status": dict(bypass=True), "/api/me": dict(id="demo", name="Rani", role="admin"),
         "/api/projects": PROJECTS, "/api/schedules": [], "/api/approvals": [],
-        "/api/db/approvals": [], "/api/code-memory/requests": [],
+        "/api/db/approvals": [],
         "/api/ssh/approvals": [dict(id="approval-demo", conv="deploy")],
         "/api/db/connections": [CONNECTION], "/api/db/workspaces": [dict(id="demo", name="Shop workspace", conns=["catalogue"])],
         "/api/db/connections/catalogue/schema": SCHEMA,
@@ -187,8 +187,6 @@ def response(path, query, method):
         base = f'/api/projects/{project["id"]}'
         if path == base + "/conversations":
             return [c for c in CHATS if c["project_id"] == project["id"]]
-        if path == base + "/code-memory":
-            return dict(enabled=True, changed=False, direct=True, index=dict(status="ready", graph=True, indexedAt=stamp(3)))
     base = "/api/conversations/pagination"
     if path == base:
         return CHATS[0]

@@ -1,5 +1,3 @@
-// Settings → MCP: everyone's own ClickUp, and for the owner code memory and the other MCP servers agents get. Those
-// servers are the owner's only unless marked "All users" (code memory is every user's, each on the projects they may open).
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
@@ -76,102 +74,6 @@ function ClickUpCard() {
     <div class="row wrap">
       <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
     </div>
-  </section>`;
-}
-
-/** "3 min ago" for a time in ms. */
-const ago = (ms) => {
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
-};
-
-/**
- * Code memory: the codebase-memory-mcp binary Dalang runs to keep a graph of every project's code, and each project's
- * index. Chats query it through this gateway's MCP (code_* tools), each on its own project.
- */
-function CodeMemoryCard() {
-  const [s, setS] = useState(null);
-  const [result, setResult] = useState(null);
-  const load = () => api('/api/settings/code-memory').then(setS).catch((e) => toast(e.message, 'err'));
-  // The projects' indexes only: the settings fields stay as edited until Save.
-  const loadIndexes = () => api('/api/settings/code-memory')
-    .then((r) => setS((cur) => ({ ...cur, projects: r.projects, active: r.active, tools: r.tools }))).catch((e) => toast(e.message, 'err'));
-  useEffect(() => { load(); }, []);
-  // While an index runs, look again every few seconds.
-  const busy = s?.projects.some((p) => p.index?.status === 'indexing');
-  useEffect(() => { if (!busy) return undefined; const t = setInterval(loadIndexes, 3000); return () => clearInterval(t); }, [busy]);
-  const set = (k) => (e) => setS({ ...s, [k]: e.currentTarget.value });
-  const save = guarded(async (enabled = s.enabled) => {
-    setS(await api('/api/settings/code-memory', { method: 'PUT', body: { enabled, command: s.command, cacheDir: s.cacheDir, runtimeDir: s.runtimeDir, hooks: s.hooks, autoReindex: s.autoReindex } }));
-    toast(enabled ? 'Code memory saved: projects are being indexed' : 'Code memory saved');
-  });
-  const test = async () => {
-    try { setResult({ ok: true, ...(await api('/api/settings/code-memory/test', { method: 'POST' })) }); }
-    catch (e) { setResult({ ok: false, error: e.message }); }
-  };
-  const reindex = guarded(async (id) => {
-    await api(`/api/settings/code-memory/projects/${encodeURIComponent(id)}/index`, { method: 'POST' });
-    await loadIndexes();
-  });
-  const drop = guarded(async (p) => {
-    const indexing = p.index?.status === 'indexing';
-    const ok = await confirmDialog({
-      title: `${indexing ? 'Stop indexing and delete' : 'Delete'} the code graph of ${p.name}?`,
-      message: 'Its chats go back to grep and file reads, and turns no longer reindex it. Index it again any time.',
-      confirmText: indexing ? 'Stop and delete' : 'Delete', danger: true,
-    });
-    if (!ok) return;
-    await api(`/api/settings/code-memory/projects/${encodeURIComponent(p.id)}/index`, { method: 'DELETE' });
-    toast('Code graph deleted');
-    await loadIndexes();
-  });
-  if (s == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
-  return html`<section class="form-card">
-    <div class="row" style="justify-content: space-between">
-      <strong>Code memory</strong>
-      <${Switch} title=${s.enabled ? 'On' : 'Off'} checked=${s.enabled} onChange=${(v) => save(v)} />
-    </div>
-    <span class="dim small">A graph of every project's code (symbols, calls, imports, routes) from${' '}
-      <a href="https://github.com/DeusData/codebase-memory-mcp" target="_blank" rel="noopener">codebase-memory-mcp</a>, built
-      only when you click Index or Reindex below. Every user's chats query it as <span class="mono">code_*</span> tools on this gateway's MCP,
-      each on its own project only. Chats reach them only with <span class="mono">MCP_INJECT=1</span>.</span>
-    <${Field} label="Binary" hint="Path of codebase-memory-mcp on this machine (from its GitHub releases).">
-      <input class="mono" value=${s.command} onInput=${set('command')} placeholder="/usr/local/bin/codebase-memory-mcp" /><//>
-    <${Field} label="Cache folder" hint="CBM_CACHE_DIR: where the graphs live. Empty = ~/.cache/codebase-memory-mcp.">
-      <input class="mono" value=${s.cacheDir} onInput=${set('cacheDir')} placeholder="default" /><//>
-    <${Field} label="Runtime folder" hint="CBM_RUNTIME_DIR: only if CBM refuses its default because another account can write there.">
-      <input class="mono" value=${s.runtimeDir} onInput=${set('runtimeDir')} placeholder="default" /><//>
-    <label class="check small"><input type="checkbox" checked=${s.hooks} onChange=${(e) => setS({ ...s, hooks: e.currentTarget.checked })} />
-      Hooks: next to each search (Claude Code: Grep, Glob, Bash; Codex: rg or grep in its shell), the agent also sees the
-      matching symbols from the graph. Codex runs it with --dangerously-bypass-hook-trust, never in a repository with its own .codex hooks</label>
-    <label class="check small"><input type="checkbox" checked=${s.autoReindex} onChange=${(e) => setS({ ...s, autoReindex: e.currentTarget.checked })} />
-      Reindex before each turn: a project whose files changed since its index is reindexed first, and the turn waits for it.
-      Off, indexes are redone only with Reindex (here or the brain button in a chat)</label>
-    <div class="row wrap">
-      <${AsyncButton} class="btn primary sm" onClick=${() => save()}>Save<//>
-      <${AsyncButton} class="btn sm" icon="refresh-cw" onClick=${test} disabled=${!s.command}>Test binary<//>
-    </div>
-    ${result && (result.ok ? html`<p class="small"><${Icon} name="circle-check" /> ${result.version}</p>`
-      : html`<div class="form-error" role="alert">${result.error}</div>`)}
-    ${s.enabled && !s.active && html`<div class="form-error" role="alert">Not running yet: check the binary and folders (Test binary), then Save.</div>`}
-    ${s.enabled && html`<div>
-      ${s.projects.map((p) => html`<div class="setting-row" key=${p.id}>
-        <div><strong>${p.name}</strong>
-          <div class="dim small">${!p.index ? 'Not indexed yet'
-            : p.index.status === 'indexing' ? html`<${Spinner} /> Indexing…`
-            : p.index.status === 'failed' && !p.index.graph ? html`<span class="note err">Failed: ${p.index.error}</span>`
-            : html`${p.index.nodes.toLocaleString()} nodes, ${p.index.edges.toLocaleString()} edges · indexed ${ago(p.index.indexedAt)}${
-              p.changed ? html` · <span class="pill warn">files changed since</span>` : ''}${
-              p.index.status === 'failed' ? html`<div class="note err">Last reindex failed: ${p.index.error}</div>` : ''}`}</div></div>
-        <div class="row" style="flex-shrink: 0">
-          <button class=${cx('btn sm', p.changed || !p.index?.graph ? '' : 'ghost')} disabled=${p.index?.status === 'indexing'} onClick=${() => reindex(p.id)}>
-            <${Icon} name="refresh-cw" />${p.index?.graph ? 'Reindex' : 'Index'}</button>
-          <button class="icon-btn sm danger" style=${p.index ? '' : 'visibility: hidden'} disabled=${!p.index} aria-hidden=${!p.index}
-            title=${p.index?.status === 'indexing' ? 'Stop indexing and delete the graph' : 'Delete the graph'}
-            aria-label="Delete the code graph" onClick=${() => drop(p)}><${Icon} name="trash-2" /></button>
-        </div>
-      </div>`)}
-    </div>`}
   </section>`;
 }
 
@@ -275,7 +177,7 @@ function AddTab({ list, onSaved }) {
   </section>`;
 }
 
-/** The owner: ClickUp, code memory, every saved server and "+ Add", one tab each. Everyone else: their own ClickUp. */
+/** The owner: ClickUp, every saved server and "+ Add", one tab each. Everyone else: their own ClickUp. */
 export function McpSection() {
   return isOwner.value ? html`<${OwnerMcpSection} />` : html`<${ClickUpCard} />`;
 }
@@ -287,18 +189,17 @@ function OwnerMcpSection() {
   useEffect(() => { load(); }, []);
   if (list == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
   const server = list.find((s) => s.name === tab);
-  const current = tab === 'clickup' || tab === 'code' || tab === 'add' || server ? tab : 'clickup';
-  const tabs = [['clickup', 'ClickUp', true], ['code', 'Code memory', true], ...list.map((s) => [s.name, s.name, s.enabled]), ['add', 'Add', true]];
+  const current = tab === 'clickup' || tab === 'add' || server ? tab : 'clickup';
+  const tabs = [['clickup', 'ClickUp', true], ...list.map((s) => [s.name, s.name, s.enabled]), ['add', 'Add', true]];
   return html`
     <p class="dim">Tools your chats' agents can use. They are yours: only turns you sent get them, unless one is marked
       <strong>All users</strong>. Prompts from other users (and from agents and approvals) get only those, and
       ClickUp with their own connection.</p>
     <div class="tabs wrap" role="tablist" aria-label="MCP servers">
       ${tabs.map(([k, label, on]) => html`<button key=${k} role="tab" aria-selected=${current === k} class=${cx('tab', current === k && 'active', !on && 'off')}
-        title=${on ? '' : 'Off'} onClick=${() => setTab(k)}>${k === 'add' && html`<${Icon} name="plus" />`}<span class=${cx(k !== 'clickup' && k !== 'code' && k !== 'add' && 'mono')}>${label}</span></button>`)}
+        title=${on ? '' : 'Off'} onClick=${() => setTab(k)}>${k === 'add' && html`<${Icon} name="plus" />`}<span class=${cx(k !== 'clickup' && k !== 'add' && 'mono')}>${label}</span></button>`)}
     </div>
     ${current === 'clickup' ? html`<${ClickUpCard} />`
-      : current === 'code' ? html`<${CodeMemoryCard} />`
       : current === 'add' ? html`<${AddTab} list=${list} onSaved=${async (name) => { await load(); setTab(name); }} />`
       : html`<${ServerTab} key=${server.name} s=${server} onChange=${load} onRemoved=${async () => { await load(); setTab('clickup'); }} />`}`;
 }

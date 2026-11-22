@@ -20,6 +20,12 @@ const CONTEXT7 = { enabled: true, allUsers: false, url: 'https://mcp.context7.co
 const SENTRY = { enabled: true, allUsers: true, command: 'npx', args: ['-y', '@sentry/mcp-server'], env: { SENTRY_ACCESS_TOKEN: 'sntry-abcd' } };
 
 describe('Settings → MCP servers', () => {
+  it('ignores legacy code-memory settings and exposes no indexing route', async () => {
+    const t = boot();
+    t.store.setKv('code_memory', JSON.stringify({ enabled: true }));
+    expect((await t.app.inject({ method: 'POST', url: '/api/settings/code-memory/test', headers: AUTH })).statusCode).toBe(404);
+  });
+
   it('saves servers and never sends a secret back', async () => {
     const t = boot();
     const r = await t.put('context7', CONTEXT7);

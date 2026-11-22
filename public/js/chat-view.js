@@ -4,9 +4,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-h
 import { batch, signal } from '../vendor/signals.js';
 import { html, cx } from './lib.js';
 import { api } from './api.js';
-import { confirmDialog, Icon } from './ui.js';
+import { Icon } from './ui.js';
 import {
-  approvals, clickupApprovals, dbApprovals, sshApprovals, findConv, guarded, openCodeEditor, patchConv, refreshApprovals, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
+  approvals, clickupApprovals, dbApprovals, sshApprovals, findConv, openCodeEditor, patchConv, route, toast, autoOpenInspector, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { historyPage, startStream, ThreadModel } from './stream.js';
 import { Block, Live } from './thread.js';
@@ -20,8 +20,6 @@ export const chat = {
   id: signal(null),
   conv: signal(null),
   git: signal(null),
-  /** Goes up when a turn reindexed the code graph (or started or failed to): the Code graph button looks again. */
-  codeGraph: signal(0),
   queue: signal([]),
   version: signal(0),
   model: new ThreadModel(),
@@ -103,73 +101,6 @@ const ago = (ms) => {
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 };
 
-/**
- * The project's code graph (code memory): when it was indexed, and indexing it again, which starts at once. A request
- * from before every user could start it still waits in Approvals. Hidden while code memory is off.
- */
-function CodeGraphButton({ project }) {
-  const [s, setS] = useState(null);
-  const git = chat.git.value; // refreshed after each turn and git action: the code may have changed
-  const shown = useRef(null); // the project whose state `s` is, so an answer for the one before is dropped
-  // A failed look (the network, a restart) keeps what was known: the next one corrects it.
-  const load = () => {
-    if (!project) return;
-    const id = project.id;
-    api(`/api/projects/${id}/code-memory`).then((r) => { if (shown.current === id) setS(r); }, () => {});
-  };
-  useEffect(() => { shown.current = project?.id ?? null; setS(null); load(); }, [project?.id]);
-  const reindexed = chat.codeGraph.value; // a turn reindexed it before its agent started
-  useEffect(() => { if (git) load(); }, [git]);
-  useEffect(() => { if (reindexed) load(); }, [reindexed]);
-  const indexing = s?.index?.status === 'indexing';
-  // Look again while an index runs (often), and while an old request waits in Approvals (now and then): nothing else
-  // says when it was decided.
-  const every = indexing ? 3000 : s?.pending ? 15000 : 0;
-  useEffect(() => {
-    if (!every) return undefined;
-    const t = setInterval(load, every);
-    return () => clearInterval(t);
-  }, [every, project?.id]);
-  const st = s?.index;
-  // Only when there is something to index: code changed since the graph was built, or no graph yet; and while it is
-  // being indexed or asked for, so the click shows.
-  if (!s?.enabled || !(s.changed || !st?.graph || indexing || s.pending)) return null;
-  const state = !st?.graph ? (st?.status === 'failed' ? `Failed: ${st.error}` : 'Not indexed yet')
-    : indexing ? 'Indexing…' : `Indexed ${ago(st.indexedAt)}${s.changed ? ', files changed since' : ''}`;
-  const action = s.pending ? `${s.pending.who}'s request waits in Approvals`
-    : indexing && s.direct ? 'Click to stop it'
-    : `Click to ${st?.graph ? 'index it again' : 'index it'}`;
-  const click = guarded(async () => {
-    // An index taking too long may be stopped (which deletes the graph, so turns stop waiting for it).
-    if (indexing && s.direct) {
-      const stop = await confirmDialog({
-        title: `Stop indexing ${project.name}?`,
-        message: 'The index stops and the code graph is deleted: chats go back to grep and file reads, and a turn waiting for it starts. Index it again any time.',
-        confirmText: 'Stop and delete', danger: true,
-      });
-      if (!stop) return;
-      await api(`/api/projects/${project.id}/code-memory/index`, { method: 'DELETE' });
-      toast('Indexing stopped, code graph deleted');
-      return load();
-    }
-    if (s.pending || indexing) return toast(s.pending ? 'Already asked: it waits in Approvals' : 'Already indexing');
-    const ok = await confirmDialog({
-      title: `${st?.graph ? 'Reindex' : 'Index'} the code graph of ${project.name}?`,
-      message: s.direct
-        ? 'It starts now and uses several cores for a while (seconds to minutes; again, it only reads what changed). Chats get the new graph from their next turn.'
-        : 'It is approved first in Approvals; it runs then. Chats get the new graph from their next turn.',
-      confirmText: s.direct ? 'Index now' : 'Ask for approval',
-    });
-    if (!ok) return;
-    const r = await api(`/api/projects/${project.id}/code-memory/index`, { method: 'POST' });
-    toast(r.status === 'indexing' ? 'Indexing started' : 'Asked: it waits in Approvals');
-    await load();
-    refreshApprovals();
-  });
-  return html`<button class=${cx('icon-btn', (s.changed || !st?.graph) && 'on')} aria-label="Code graph" title=${`Code graph: ${state}. ${action}`} onClick=${click}>
-    <${Icon} name=${indexing ? 'loader-circle' : 'brain'} spin=${indexing} /></button>`;
-}
-
 function ChatHead({ project, conv }) {
   const c = chat.conv.value || conv;
   return html`<header class="chat-head">
@@ -180,7 +111,6 @@ function ChatHead({ project, conv }) {
       <span class="crumb-title" title=${c?.title || 'New chat'}>${c?.title || 'New chat'}</span>
     </div>
     <div class="spacer"></div>
-    <${CodeGraphButton} project=${project} />
     <${MemoryButton} project=${project} />
     <button class="icon-btn" aria-label="Open code editor" title="Open code editor (new tab): files, editor and terminal" onClick=${() => openCodeEditor(chat.id.value)}><${Icon} name="square-code" /></button>
     <button class=${cx('icon-btn', ui.inspectorOpen.value && 'on')} aria-label="Inspector" title="Inspector: changes, schedules and info" aria-pressed=${ui.inspectorOpen.value} onClick=${() => toggleInspector()}><${Icon} name="panel-right" /></button>
@@ -239,7 +169,6 @@ export function ChatView({ id, focusEvent }) {
         refreshConv(id, true).catch(() => {});
       }
       if (events.some((e) => e.type === 'turn.status')) refreshGit(id).catch(() => {});
-      if (events.some((e) => e.type.startsWith('code_memory.'))) chat.codeGraph.value++;
       if (events.some((e) => e.type === 'conversation.title')) refreshConv(id).catch(() => {});
     };
     const take = (events) => {

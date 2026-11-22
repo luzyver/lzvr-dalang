@@ -9,9 +9,9 @@ Comprehensive patterns for creating, maintaining, and managing Architecture Deci
 
 ## Running inside Dalang
 
-- Record architecture decisions with the Dalang `code_manage_adr` tool, and in the project's ADR folder if it has one.
+- Record architecture decisions in the project's ADR folder.
 - Put ADR files where the project already keeps them; if it has none, `docs/adr/` is a fine default. Leave them uncommitted for the person to review.
-- Do not install adr-tools (the `brew`/`adr` commands below); write the files yourself or use `code_manage_adr`.
+- Do not install adr-tools (the `brew`/`adr` commands below); write the files yourself.
 
 ## When to Use This Skill
 

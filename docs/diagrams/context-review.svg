@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="context-review-title context-review-desc" id="context-review-root">
 <title id="context-review-title">Context and review</title>
-<desc id="context-review-desc">Project and personal memory, the optional code graph, and shared skills feed turn context. The agent produces checkpointed changes. The optional read-only reviewer returns issues for bounded correction rounds; design hooks provide separate advisory feedback.</desc>
+<desc id="context-review-desc">Project and personal memory and shared skills feed turn context. The agent produces checkpointed changes. The optional read-only reviewer returns issues for bounded correction rounds; design hooks provide separate advisory feedback.</desc>
 <defs>
       <style>#context-review-root { color-scheme: dark;
       --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
@@ -54,9 +54,6 @@
 <path class="dg-arrow" d="M 256,132 H 424 Q 432,132 432,140 V 248" marker-end="url(#context-review-dg-arrow)"/>
 <rect class="dg-mask" x="319.0" y="106" width="42" height="14" rx="2"/>
 <text class="dg-label" x="340" y="116">INJECT</text>
-<path class="dg-arrow" d="M 256,296 H 368" marker-end="url(#context-review-dg-arrow)" stroke-dasharray="4 3"/>
-<rect class="dg-mask" x="292.0" y="270" width="40" height="14" rx="2"/>
-<text class="dg-label" x="312" y="280">GUIDE</text>
 <path class="dg-arrow" d="M 256,468 H 296 Q 304,468 304,460 V 376 Q 304,368 312,368 H 424 Q 432,368 432,360 V 352" marker-end="url(#context-review-dg-arrow)"/>
 <path class="dg-arrow" d="M 592,296 H 704" marker-end="url(#context-review-dg-arrow)"/>
 <rect class="dg-mask" x="624.5" y="270" width="47" height="14" rx="2"/>
@@ -82,15 +79,6 @@
 <text class="dg-sub" x="144" y="148">Project facts · preferences</text>
 <text class="dg-sub" x="144" y="165">Optional auto-extraction</text>
 </g>
-<g class="dg-node is-external">
-<rect class="dg-mask" x="32" y="248" width="224" height="104" rx="6"/>
-<rect class="dg-box" x="32" y="248" width="224" height="104" rx="6"/>
-<rect class="dg-tag" x="44" y="260" width="44" height="16" rx="2"/>
-<text class="dg-tag-text" x="66" y="271">GRAPH</text>
-<text class="dg-name" x="144" y="296">Code memory</text>
-<text class="dg-sub" x="144" y="316">Refresh stale index first</text>
-<text class="dg-sub" x="144" y="333">Symbols · calls · routes</text>
-</g>
 <g class="dg-node is-backend">
 <rect class="dg-mask" x="32" y="416" width="224" height="104" rx="6"/>
 <rect class="dg-box" x="32" y="416" width="224" height="104" rx="6"/>
@@ -107,7 +95,7 @@
 <text class="dg-tag-text" x="402" y="271">CORE</text>
 <text class="dg-name" x="480" y="296">Turn context</text>
 <text class="dg-sub" x="480" y="316">Prompt · history · memory</text>
-<text class="dg-sub" x="480" y="333">Guides · graph availability</text>
+<text class="dg-sub" x="480" y="333">Guides · policies</text>
 </g>
 <g class="dg-node is-backend">
 <rect class="dg-mask" x="704" y="248" width="224" height="104" rx="6"/>

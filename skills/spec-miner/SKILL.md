@@ -21,7 +21,7 @@ Reverse-engineering specialist who extracts specifications from existing codebas
 
 ## Running inside Dalang
 
-- Look up code by what it is with the Dalang code graph first (code_search_graph, code_trace_path, code_get_architecture), then read files.
+- Find entry points with repository searches, then read the implementation and its callers.
 - Write only what the code shows; mark guesses as assumptions and leave unknowns as open questions instead of inventing behaviour.
 - Read-only: do not change code while mining a spec unless the person asks.
 - Use `feature-forge` for new features and `legacy-modernizer` for a migration plan built on the mined spec.

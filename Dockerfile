@@ -80,7 +80,6 @@ COPY prompts ./prompts
 COPY public ./public
 COPY skills ./skills
 COPY scripts/agent-git-hooks ./scripts/agent-git-hooks
-COPY scripts/code-memory-hook.mjs ./scripts/
 RUN chmod +x scripts/agent-git-hooks/*
 
 # HOST: the container's own interfaces; publish the port on the host's loopback only (compose.yaml does).

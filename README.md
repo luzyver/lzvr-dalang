@@ -98,7 +98,7 @@ Email codes, users, per-project access, read-only projects, approvals, and store
 <td valign="top">
 
 **Memory across chats**<br>
-Project decisions and personal preferences carry into later turns. Optional code graphs map symbols, calls and routes.
+Project decisions and personal preferences carry into later turns.
 
 </td>
 <td valign="top">
@@ -139,7 +139,7 @@ queued to resume after startup. See the [design and execution flow](docs/design.
 The gateway combines access controls, SQLite-backed queues, scheduled prompts and account failover. CLI sessions
 work in project folders or isolated worktrees; live events feed the panel, and interrupted work can resume after restart.
 
-Memory, code graphs and shared skills prepare each turn. Sub-agent reports and optional review findings return to
+Memory and shared skills prepare each turn. Sub-agent reports and optional review findings return to
 the parent chat. Built-in database and SSH tools enforce configured access and approval policies.
 
 Open the [scrollable overview](docs/diagrams/overview.html), or see the three detailed diagrams in the
@@ -181,8 +181,7 @@ Open the panel, add a Codex or Claude Code account in Settings, add a project fo
 in a container: [Install with Docker](docs/setup.md#install-with-docker).
 
 Set `MCP_INJECT=1` in `.env` to give chat agents the gateway's tools for sub-agents, memory, databases and SSH.
-Configure connections and access policies in the panel; the optional code graph also needs a configured
-`codebase-memory-mcp` binary. Neither is required to start a basic chat.
+Configure connections and access policies in the panel.
 
 Agents execute on the host with the selected backend's permissions. Gateway approvals and git hooks are not an
 OS isolation boundary; review the [security model](docs/setup.md#security) before exposing a server.

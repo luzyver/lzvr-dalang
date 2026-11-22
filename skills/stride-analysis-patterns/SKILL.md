@@ -10,7 +10,7 @@ Systematic threat identification using the STRIDE methodology.
 ## Running inside Dalang
 
 - Use it at design time (new feature, new integration, architecture change); for auditing written code use `security-audit`, for scans and configuration checks `security-reviewer`.
-- Base the model on the real system: read the code, configs and architecture (code_get_architecture) and mark assumptions.
+- Base the model on the real system: read the code, configs and architecture and mark assumptions.
 - A document the person will send to others goes in the chat as ready-to-copy text in their language (usually Indonesian), unless they ask for a file.
 - Paths in this skill (`references/`) are relative to this skill's folder.
 

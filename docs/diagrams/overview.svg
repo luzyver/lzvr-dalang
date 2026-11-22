@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="overview-title overview-desc" id="overview-root">
 <title id="overview-title">System overview</title>
-<desc id="overview-desc">The panel and API reach a gateway with authentication, scheduling, durable queues, account failover and restart recovery. Memory, code graph and skills prepare turns. Native CLI agents use model APIs, project worktrees and tools. Sub-agent reports and review findings return to the parent conversation. SQLite stores state; database and SSH tools enforce scoped access and approvals.</desc>
+<desc id="overview-desc">The panel and API reach a gateway with authentication, scheduling, durable queues, account failover and restart recovery. Memory and skills prepare turns. Native CLI agents use model APIs, project worktrees and tools. Sub-agent reports and review findings return to the parent conversation. SQLite stores state; database and SSH tools enforce scoped access and approvals.</desc>
 <defs>
       <style>#overview-root { color-scheme: dark;
       --bg: #0C0D0F; --surface: #121417; --surface-2: #181B1F;
@@ -86,7 +86,7 @@
 <text class="dg-tag-text" x="70" y="71">CONTEXT</text>
 <text class="dg-name" x="144" y="96">Memory &amp; guidance</text>
 <text class="dg-sub" x="144" y="120">Project / personal memory</text>
-<text class="dg-sub" x="144" y="139">Code graph · shared skills</text>
+<text class="dg-sub" x="144" y="139">Shared skills</text>
 <text class="dg-sub" x="144" y="158">Prepared before each turn</text>
 </g>
 <g class="dg-node is-backend">

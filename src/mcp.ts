@@ -7,7 +7,6 @@ import { z } from 'zod';
 import { type ClickUpApproval, createClickUpApproval, describeDestination, readClickUpApprovals } from './clickup-approvals.js';
 import { type ClickUp, MAX_FILES, MAX_SEND, type OutFile } from './clickup.js';
 import { clickupWorkTools } from './clickup-work-tools.js';
-import { type CodeMemory, shapeOf } from './code-memory.js';
 import type { Config } from './config.js';
 import { BACKUP_MAX_ROWS, backupWrite, createDbApproval, type DbBackup, type DbLogEntry, dbTarget, describeBackup, logDbQuery, readDbApprovals } from './database-routes.js';
 import {
@@ -23,12 +22,12 @@ import { reviewTools } from './review-tools.js';
 import { REVIEWER_ROLE } from './reviewer.js';
 import { createSshApproval, findDangerous, loadHosts, logSsh, readSshApprovals, runCommand, type SshHost, targetOf } from './ssh-hosts.js';
 import { compactPayload, CUT } from './event-view.js';
-import type { Conversation, Memory, MemoryScope, Project, Store, StoredEvent } from './store.js';
+import type { Conversation, Memory, MemoryScope, Store, StoredEvent } from './store.js';
 import { BACKENDS, type Backend, canAccess, canOpen, SANDBOXES } from './util.js';
 
 type Deps = {
   cfg: Config; store: Store; dispatcher: Dispatcher; push: Push; clickup?: (userKey: string) => ClickUp | undefined;
-  clickupSend?: () => boolean; codeMemory?: CodeMemory;
+  clickupSend?: () => boolean;
 };
 
 const text = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o, null, 2) }] });
@@ -46,7 +45,7 @@ const AGENT_TOOLS = new Set([
   'memory_search', 'memory_save', 'memory_update', 'memory_forget',
 ]);
 
-// A reviewer is a read-only chat: through MCP too it only reads (its own review_* tools and code memory come on top), so
+// A reviewer is a read-only chat: through MCP too it only reads (its own review_* tools come on top), so
 // it cannot start, message or retune a chat that writes, save memories, or reach a database, server or ClickUp.
 const REVIEWER_TOOLS = new Set([
   'list_projects', 'list_conversations', 'get_conversation', 'list_queue', 'get_events', 'memory_search',
@@ -128,7 +127,6 @@ function buildServer(d: Deps, source: string | null, viewer: Viewer, onBehalf = 
     for (const c of convs) dispatcher.cancel(c.id);
     store.deleteProject(project_id);
     void dropWorktrees(dispatcher, project, convs);
-    void d.codeMemory?.forget(project);
     return text({ deleted: true });
   });
 
@@ -424,7 +422,6 @@ function buildServer(d: Deps, source: string | null, viewer: Viewer, onBehalf = 
   const hidden = source ? (name: string) => !allowed.has(name) : () => false;
   for (const [name, tool] of tools) if (hidden(name)) tool.remove();
   if (reviewer) {
-    if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
     reviewTools(server, store, source);
     return server;
   }
@@ -435,30 +432,8 @@ function buildServer(d: Deps, source: string | null, viewer: Viewer, onBehalf = 
   if (dbs.length) databaseTools(server, store, push, cfg.stateDir, dbs, { who: onBehalf, conv: source });
   const hosts = loadHosts(store).filter((h) => h.agent !== 'off' && canAccess(viewer, h.access));
   if (hosts.length) sshTools(server, store, push, hosts, { who: onBehalf, conv: source });
-  if (d.codeMemory?.active) codeTools(server, d.codeMemory, ownProject, getProject);
   reviewTools(server, store, source);
   return server;
-}
-
-/**
- * Code memory: CBM's query tools as code_<name>, on the graph of the caller's own chat project or of another project it
- * may open (never one it may not: CBM is asked for that project's graph only).
- */
-function codeTools(server: McpServer, cm: CodeMemory, own: string | undefined, getProject: (id: string) => Project | null): void {
-  for (const t of cm.tools()) {
-    server.registerTool(`code_${t.name}`, {
-      description: `Code memory: ${t.description ?? t.name}`,
-      inputSchema: {
-        ...shapeOf(t.inputSchema, ['project']),
-        project_id: own ? z.string().optional().describe("another project you may open (default: this chat's project)") : z.string(),
-      },
-    }, async ({ project_id, ...args }: Record<string, unknown>) => {
-      const id = (project_id as string | undefined) || own;
-      const project = id ? getProject(id) : null;
-      if (!project) return fail(`no such project: ${id ?? ''}`);
-      try { return await cm.query(project, t.name, args); } catch (e) { return fail((e as Error).message); }
-    });
-  }
 }
 
 const WORKSPACES = z.array(z.string()).optional()

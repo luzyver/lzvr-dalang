@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, isAbsolute, dirname } from 'node:path';
 import { git } from './git.js';
-import { hasCodexHooks } from './code-memory.js';
 import type { Backend } from './util.js';
 
 /**
@@ -26,6 +25,11 @@ export function launcher(skillsDir: string): string | null {
   return existsSync(path) ? path : null;
 }
 
+function hasCodexHooks(dir: string): boolean {
+  if (existsSync(join(dir, '.codex', 'hooks.json'))) return true;
+  try { return /^\s*\[*\s*hooks\b/m.test(readFileSync(join(dir, '.codex', 'config.toml'), 'utf8')); } catch { return false; }
+}
+
 /** Whether a folder already has Impeccable's hook installed itself (then that one runs, not ours as well). */
 function installedIn(dir: string, backend: Backend): boolean {
   if (backend !== 'claude') return hasCodexHooks(dir);
@@ -43,7 +47,7 @@ function installedIn(dir: string, backend: Backend): boolean {
 /**
  * The CLI flags that add the hook to a turn, or null when it has none: off, no skill, or the folder brings its own.
  * Codex needs `--dangerously-bypass-hook-trust` (the caller checks this Codex knows it), so a folder with Codex hooks of
- * its own gets none from us, as with code memory's hook.
+ * its own gets none from us.
  */
 export function designHookArgs(policy: DesignHookPolicy, skillsDir: string | undefined, backend: Backend, dirs: string[]): string[] | null {
   const path = policy.enabled && skillsDir ? launcher(skillsDir) : null;
