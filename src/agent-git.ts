@@ -33,7 +33,7 @@ export function agentGitEnv(p: AgentGitPolicy, inherited: Record<string, string 
   return env;
 }
 
-/** The panel's instructions for a commit message and for a Merge Request description (Settings, or the built-in ones). */
+/** The panel's instructions for a commit message and for a Merge Request description. */
 export interface GitWriting { commit: string; mr: string }
 
 /**
@@ -62,7 +62,7 @@ settings in Dalang.`);
   }
   // Written for a request that answers with the text alone, so the turn is told to keep the rules and not the reply format.
   if (p.commit && writing?.commit.trim()) {
-    parts.push(`Commit messages: write every commit message by the instructions below, which the person set in the Dalang panel.
+    parts.push(`Commit messages: write every commit message by the instructions below.
 They were written for a request that answers with the message alone: follow what they say about the message, and
 ignore what they say about how to reply.
 <commit_message_instructions>
@@ -71,7 +71,7 @@ ${writing.commit.trim()}
   }
   if (p.push && writing?.mr.trim()) {
     parts.push(`Merge Request and Pull Request descriptions: when you open one, or are asked to write its description, follow the
-instructions below, which the person set in the Dalang panel. When they ask for a Title section, its line (without
+instructions below. When they ask for a Title section, its line (without
 backticks) is the request's title and the other sections are its description.
 <merge_request_instructions>
 ${writing.mr.trim()}

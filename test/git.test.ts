@@ -214,6 +214,7 @@ describe('commit message drafts', () => {
   it('asks the chat agent with the chosen diffs, the repo history and what the chat was asked', async () => {
     const t = await gitProject();
     const conv = (await t.chat(false)).json();
+    t.store.setKv('commit_prompt', 'Legacy commit instructions');
     t.store.startTurn(conv.id, 'please add a second line');
     writeFileSync(join(t.repo, 'a.txt'), 'one\ntwo\n');
     writeFileSync(join(t.repo, 'skip.txt'), 'not this one\n');
@@ -226,23 +227,15 @@ describe('commit message drafts', () => {
     expect(prompt).toContain('--- M a.txt\n@@');
     expect(prompt).toContain('+two');
     expect(prompt).not.toContain('skip.txt');
-    expect(prompt.startsWith('You are an expert at writing Git commits. Write a single-sentence commit subject only.')).toBe(true);
+    expect(prompt.startsWith('Write one English Conventional Commit subject')).toBe(true);
     expect(readFileSync(join(t.repo, 'a.txt'), 'utf8')).toBe('one\ntwo\n'); // nothing was committed or changed
   });
 
-  it('uses the prompt a user saved, for Codex and Claude Code alike', async () => {
+  it.each(['commit-prompt', 'mr-prompt'])('removes the %s settings endpoint', async (path) => {
     const t = await gitProject();
-    const user = await mkUser(t, 'dana');
-    const url = '/api/settings/commit-prompt';
-    expect((await t.call('GET', url)).json()).toEqual({ prompt: '', default: expect.stringContaining('Conventional Commit format') });
-    expect((await t.app.inject({ method: 'PUT', url, headers: bearer(user.token), payload: { prompt: '  Write a haiku about the change.  ' } })).statusCode).toBe(204);
-    expect((await t.call('GET', url)).json().prompt).toBe('Write a haiku about the change.');
-
-    const conv = (await t.chat(false)).json();
-    writeFileSync(join(t.repo, 'a.txt'), 'changed\n');
-    const prompt = (await t.call('POST', `/api/conversations/${conv.id}/git/message`, {})).json().message as string;
-    expect(prompt.startsWith('Write a haiku about the change.')).toBe(true);
-    expect(prompt).not.toContain('expert at writing Git commits');
+    const url = `/api/settings/${path}`;
+    expect((await t.call('GET', url)).statusCode).toBe(404);
+    expect((await t.call('PUT', url, { prompt: 'custom' })).statusCode).toBe(404);
   });
 
   it('refuses when there is nothing to describe', async () => {
@@ -295,10 +288,11 @@ describe('Merge Request descriptions', () => {
 
   it('describes the branch against what it merges into, with the MR prompt', async () => {
     const { t, conv } = await aheadChat();
+    t.store.setKv('mr_prompt', 'Legacy MR instructions');
     const r = await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`);
     expect(r.statusCode).toBe(200);
     const prompt = r.json().description as string; // the fake Codex answers with its prompt
-    expect(prompt.startsWith('You are an expert at writing Merge Request descriptions.')).toBe(true);
+    expect(prompt.startsWith('Draft an English pull request description')).toBe(true);
     expect(prompt).toContain(`merging branch ${conv.branch} into main`);
     expect(prompt).toContain(`Commits on ${conv.branch} (oldest first):\n- feat: Add b`);
     expect(prompt).toContain('- add a b file');
@@ -312,14 +306,6 @@ describe('Merge Request descriptions', () => {
     const fresh = (await t.chat(true)).json();
     expect((await t.call('POST', `/api/conversations/${plain.id}/git/mr-description`)).statusCode).toBe(400);
     expect((await t.call('POST', `/api/conversations/${fresh.id}/git/mr-description`)).json().error).toMatch(/nothing to merge/);
-  });
-
-  it('uses the saved MR prompt', async () => {
-    const { t, conv } = await aheadChat();
-    await t.app.inject({ method: 'PUT', url: '/api/settings/mr-prompt', headers: AUTH, payload: { prompt: 'Describe it briefly.' } });
-    expect((await t.call('GET', '/api/settings/mr-prompt')).json()).toMatchObject({ prompt: 'Describe it briefly.', default: expect.stringContaining('## Summary') });
-    const prompt = (await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`)).json().description as string;
-    expect(prompt.startsWith('Describe it briefly.')).toBe(true);
   });
 
   it('turns a description into a commit message: Title as subject, the rest as body', () => {

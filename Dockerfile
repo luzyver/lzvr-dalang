@@ -76,6 +76,7 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+COPY prompts ./prompts
 COPY public ./public
 COPY skills ./skills
 COPY scripts/agent-git-hooks ./scripts/agent-git-hooks
