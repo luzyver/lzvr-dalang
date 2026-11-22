@@ -9,7 +9,7 @@ Comprehensive patterns for creating, maintaining, and validating OpenAPI 3.1 spe
 
 ## Running inside Dalang
 
-- Generate the spec from the real routes (code_search_graph finds them) and keep it next to the code the project already documents; do not invent endpoints.
+- Generate the spec from the real routes and keep it next to the code the project already documents; do not invent endpoints.
 - Use `api-design-principles` for designing the API itself; this skill writes and validates the OpenAPI document.
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
 - Paths in this skill (`references/`) are relative to this skill's folder.

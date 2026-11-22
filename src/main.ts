@@ -2,7 +2,6 @@ import { appendFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_SHARED_DIRS, linkSessions } from './accounts.js';
 import { buildApp } from './app.js';
-import { CodeMemory } from './code-memory.js';
 import { loadConfig } from './config.js';
 import { Dispatcher } from './dispatcher.js';
 import { Logins } from './login.js';
@@ -72,11 +71,9 @@ setInterval(() => void watchLogins(), 60_000).unref();
 // queues once the app is listening, so their turns find the MCP endpoint and the app's hooks (git, MCP servers) set.
 const leftover = store.resetRunning();
 
-const codeMemory = new CodeMemory(store, { cwd: cfg.stateDir });
-const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins, codeMemory });
+const app = buildApp({ cfg, store, dispatcher, push, logins, claudeLogins });
 await app.listen({ host: cfg.host, port: cfg.port });
 for (const id of leftover) dispatcher.kick(id);
-codeMemory.start();
 const scheduler = new Scheduler(store, dispatcher);
 scheduler.start();
 started = true;
@@ -92,7 +89,6 @@ function close(drainMs: number): void {
   void (async () => {
     scheduler.stop();
     await dispatcher.shutdown(drainMs);
-    await codeMemory.stop();
     await app.close().catch(() => {});
     process.exit(0);
   })();

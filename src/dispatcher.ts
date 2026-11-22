@@ -79,11 +79,6 @@ export interface DispatcherOpts {
   filesDir?: string;
   /** Dalang's own skills (see skills.ts), offered to every turn ahead of the account's own. */
   skillsDir?: string;
-  /**
-   * The longest a turn waits for its project's code graph to be reindexed (default 10 minutes): a reindex stuck past it
-   * (a hung CBM, a huge repo) must not hold the chat, so the agent starts on the graph it has and the index goes on.
-   */
-  reindexWaitMs?: number;
   /** Called after every turn (completed, failed or cancelled), e.g. to send a push notification. */
   onTurnEnd?: (e: { convId: string; project: string; status: string; lastMessage: string }) => void;
 }
@@ -151,12 +146,6 @@ export class Dispatcher {
   gitEnvFor?: (name: string, projectId: string) => Record<string, string>;
   /** The other MCP servers (Settings → MCP) a turn sent by `author` gets. Set by the app; unset, none. */
   mcpServersFor?: (author: string) => McpLaunch;
-  /** Code memory (see CodeMemory): what a turn is told about its project's graph, and the news that a turn may have changed the project folder. */
-  codeMemory?: {
-    guide(project: Project, worktree: boolean): string;
-    hooks(project: Project, backend: Backend, cwd: string): { args: string[]; env: Record<string, string> } | null;
-    refresh?(project: Project, onIndex?: () => void): Promise<'fresh' | 'ready' | 'failed'>;
-  };
   private rollouts = new Map<string, string>(); // Codex thread id -> its rollout file (the newest ROLLOUTS_KEPT)
   /** Per project, the memory extraction running last: they run one after another, each seeing what the one before kept. */
   private remembering = new Map<string, Promise<void>>();
@@ -169,7 +158,7 @@ export class Dispatcher {
   }
 
   /**
-   * Whether the Codex CLI knows `--dangerously-bypass-hook-trust` (which code memory's hooks need, see CodeMemory.hooks),
+   * Whether the Codex CLI knows `--dangerously-bypass-hook-trust`,
    * read once from `codex exec --help`: an unknown flag would fail every turn. Restart Dalang after updating Codex.
    */
   private codexTrustsHooks(): Promise<boolean> {
@@ -581,28 +570,9 @@ export class Dispatcher {
       }
       // A reviewer reads the whole change from its diff file (writeChangeFile), outside the folder.
       if (claude && reviewer) extraArgs.push(`--add-dir=${reviewDiffDir(conv.id)}`);
-      // The agent must read the graph of the code as it is now: an index the project's files changed since is redone
-      // first, and the turn waits for it (a cancel stops the wait, not the index), up to reindexWaitMs.
-      if (this.codeMemory?.refresh) {
-        let waited: NodeJS.Timeout | undefined;
-        const cancelled = new Promise<'cancelled'>((r) => {
-          if (ac.signal.aborted) r('cancelled'); else ac.signal.addEventListener('abort', () => r('cancelled'), { once: true });
-        });
-        const late = new Promise<'late'>((r) => { waited = setTimeout(() => r('late'), this.opts.reindexWaitMs ?? 600_000); });
-        const refreshed = await Promise.race([
-          // A turn cancelled before the reindex starts has ended already: nothing more goes into it.
-          this.codeMemory.refresh(project, () => { if (!ac.signal.aborted) this.emit(convId, turnId, { type: 'code_memory.indexing' }); })
-            .catch(() => 'failed' as const),
-          cancelled,
-          late,
-        ]).finally(() => clearTimeout(waited));
-        if (refreshed === 'ready') this.emit(convId, turnId, { type: 'code_memory.indexed' });
-        if (refreshed === 'failed') this.emit(convId, turnId, { type: 'code_memory.failed' });
-        if (refreshed === 'late') this.emit(convId, turnId, { type: 'code_memory.failed', reason: 'timeout' });
-      }
       const guide = [
         // A reviewer's MCP only reads (see REVIEWER_TOOLS in mcp.ts): no sub-agents, databases, servers or memory_save.
-        ...(mcpToken ? [reviewer ? '' : this.orchestratorGuide(conv, project.id), reviewer ? '' : this.databaseGuide(), reviewer ? '' : this.sshGuide(), this.codeMemory?.guide(project, !!conv.worktree)] : []),
+        ...(mcpToken ? [reviewer ? '' : this.orchestratorGuide(conv, project.id), reviewer ? '' : this.databaseGuide(), reviewer ? '' : this.sshGuide()] : []),
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
@@ -610,23 +580,16 @@ export class Dispatcher {
         makesFiles ? filesGuide(this.filesDir(convId)) : '',
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');
-      // The graph's matches next to the agent's own searches (Claude Code: Grep, Glob, Bash, Read; Codex: shell commands).
-      // An older Codex refuses the flag its hook needs (and with it the whole turn), so it gets none.
-      const offered = this.codeMemory?.hooks(project, conv.backend, cwd);
       // Impeccable's design detector after UI edits (see design-hook.ts), in turns that may write.
       const design = sandbox === 'read-only' ? null
         : designHookArgs(this.store.getDesignHook(), this.opts.skillsDir, conv.backend, [...new Set([cwd, project.path])]);
-      const trusted = claude || ((offered || design) && await this.codexTrustsHooks());
-      const hooks = offered && trusted ? offered : null;
-      if (design && trusted) {
+      if (design && (claude || await this.codexTrustsHooks())) {
         await excludeCache(cwd);
-        if (hooks) hooks.args = mergeHookArgs(hooks.args, design); else extraArgs.push(...design);
+        extraArgs.push(...design);
       }
-      if (hooks) extraArgs.push(...hooks.args);
       // An agent that may commit or push does not sign what it makes (Claude Code would; Codex is told, like Claude Code).
       if (claude && (agentGit.commit || agentGit.push)) extraArgs.splice(0, extraArgs.length, ...mergeHookArgs(extraArgs, NO_ATTRIBUTION_ARGS));
-      // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread. A turn
-      // cancelled before it started (while its code graph was reindexed) runs none.
+      // One attempt per account: a usage limit moves the SAME turn to the next account, resuming the thread.
       while (!ac.signal.aborted) {
         const home = accounts.pick();
         if (!home) {
@@ -659,7 +622,7 @@ export class Dispatcher {
         // new session is told the chat so far, else it starts knowing nothing of it.
         const attemptPrompt = threadId ? asked : withHistory(this.store.priorTurns(convId, turnId), asked,
           mcpToken ? { conversationId: convId, beforeTurn: turnId } : undefined);
-        const turnEnv = { ...this.opts.env, ...servers?.env, ...hooks?.env, ...gitEnv,
+        const turnEnv = { ...this.opts.env, ...servers?.env, ...gitEnv,
           ...(claude && compactTokens > 0 && { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactTokens) }),
           ...(mcpToken && { LZVR_MCP_TOKEN: mcpToken }) };
         const env = { ...turnEnv, ...agentGitEnv(agentGit, { ...process.env, ...turnEnv }) };

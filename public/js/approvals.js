@@ -1,11 +1,11 @@
 // Messages one chat wants to send another (via MCP), database writes agents ask for on "write with approval"
-// connections of the SQL editor, commands agents ask for on SSH hosts that need approval, ClickUp messages agents ask to send as you, and users' requests to index a project's code graph wait here until a human decides. Shown as cards in the chat concerned and all together
+// connections of the SQL editor, commands agents ask for on SSH hosts that need approval, and ClickUp actions requested on your behalf wait here until a human decides. Shown as cards in the chat concerned and all together
 // in the Approvals view.
 import { useState } from '../vendor/preact-hooks.js';
 import { html } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, Empty, Icon } from './ui.js';
-import { approvals, clickupApprovals, dbApprovals, findConv, sshApprovals, guarded, indexRequests, openChat, refreshApprovals, toast, toggleSidebar } from './store.js';
+import { approvals, clickupApprovals, dbApprovals, findConv, sshApprovals, guarded, openChat, refreshApprovals, toast, toggleSidebar } from './store.js';
 
 const size = (n) => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
 
@@ -174,30 +174,9 @@ function ClickUpMessageCard({ a, showChat }) {
   </div>`;
 }
 
-/** A user asks to index a project's code graph (code memory); Approve starts the index, which takes the cores a while. */
-export function IndexRequestCard({ r }) {
-  const decide = (verb) => guarded(async () => {
-    await api(`/api/code-memory/requests/${r.id}/${verb}`, { method: 'POST' });
-    if (verb === 'approve') toast(`Indexing ${r.projectName}`);
-    await refreshApprovals();
-  });
-  return html`<div class="card approval">
-    <div class="card-icon"><${Icon} name="brain" /></div>
-    <div class="card-body">
-      <strong>${r.who} wants to index the code graph of ${r.projectName}</strong>
-      <span class="dim small">Approve starts it now. A first index uses several cores for seconds to minutes; again, it only reads what changed.</span>
-      <div class="card-actions">
-        <${AsyncButton} class="btn primary sm" icon="check" onClick=${decide('approve')}>Approve and index<//>
-        <${AsyncButton} class="btn sm" icon="x" onClick=${decide('reject')}>Reject<//>
-      </div>
-    </div>
-  </div>`;
-}
-
 export function ApprovalsView() {
   const list = approvals.value;
   const writes = dbApprovals.value;
-  const indexes = indexRequests.value;
   const commands = sshApprovals.value;
   const clickups = clickupApprovals.value;
   return html`<main class="main">
@@ -206,7 +185,7 @@ export function ApprovalsView() {
       <div class="crumbs"><span class="crumb-title">Approvals</span></div>
     </header>
     <div class="thread"><div class="page">
-      ${(list.length > 0 || (!writes.length && !indexes.length && !commands.length && !clickups.length)) && html`<p class="dim">Chats can message each other through the MCP gateway. Messages that need a human wait here.</p>`}
+      ${(list.length > 0 || (!writes.length && !commands.length && !clickups.length)) && html`<p class="dim">Chats can message each other through the MCP gateway. Messages that need a human wait here.</p>`}
       ${list.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} showTarget />`)}
       ${writes.length > 0 && html`<p class="dim">Database writes agents asked for on connections set to "write with approval" in the SQL editor.</p>`}
       ${writes.map((a) => html`<${DbApprovalCard} key=${`db${a.id}`} a=${a} showChat />`)}
@@ -214,9 +193,7 @@ export function ApprovalsView() {
       ${commands.map((a) => html`<${SshApprovalCard} key=${`ssh${a.id}`} a=${a} showChat />`)}
       ${clickups.length > 0 && html`<p class="dim">ClickUp messages agents asked to send and changes they asked to make as you (Settings → MCP → ClickUp, "Allow sending").</p>`}
       ${clickups.map((a) => html`<${ClickUpApprovalCard} key=${`cu${a.id}`} a=${a} showChat />`)}
-      ${indexes.length > 0 && html`<p class="dim">Code graphs users asked to index (code memory).</p>`}
-      ${indexes.map((r) => html`<${IndexRequestCard} key=${`ix${r.id}`} r=${r} />`)}
-      ${!list.length && !writes.length && !indexes.length && !commands.length && !clickups.length && html`<${Empty} icon="inbox" title="Nothing waiting">New requests show up here and in the chat they are meant for.<//>`}
+      ${!list.length && !writes.length && !commands.length && !clickups.length && html`<${Empty} icon="inbox" title="Nothing waiting">New requests show up here and in the chat they are meant for.<//>`}
     </div></div>
   </main>`;
 }

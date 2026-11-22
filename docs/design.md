@@ -10,7 +10,7 @@ mapped to the current implementation. Three views separate execution, context an
 relationships remain readable. Solid arrows show the main connections; dashed arrows show conditional paths.
 
 - [Execution](#a-chat-turn), [review](#review-and-design-checks), [persistence](#persistence-and-restart)
-- [Active context](#active-chat-context), [project memory](#project-memory), [code memory](#code-memory)
+- [Active context](#active-chat-context), [project memory](#project-memory)
 - [Agent git policy](#agents-and-git), [panel workflows](#panel-workflows), [trust boundaries](#trust-boundaries)
 
 ## Gateway and execution
@@ -23,10 +23,9 @@ they are not separate services. [Open the scrollable overview](diagrams/architec
 
 ## Context and review
 
-![Memory, code graph and skills feed turn context; agent changes produce checkpoints for an optional reviewer that returns findings, while design hooks supply separate feedback](diagrams/context-review.svg)
+![Memory and skills feed turn context; agent changes produce checkpoints for an optional reviewer that returns findings, while design hooks supply separate feedback](diagrams/context-review.svg)
 
-Project and personal memory are injected into turns. Optional code memory refreshes a stale graph before execution;
-shared skills and policies provide instructions. The automatic reviewer uses checkpoint diffs and returns findings
+Project and personal memory are injected into turns. Shared skills and policies provide instructions. The automatic reviewer uses checkpoint diffs and returns findings
 for bounded corrections. Design hooks supply separate advisory feedback. Successful turns can also trigger optional
 memory extraction; that write-back is omitted from the drawing. [Open the context diagram](diagrams/context-review.html).
 
@@ -42,7 +41,7 @@ Native CLI filesystem access and configured external MCP servers remain separate
 | View | Implementation anchors |
 | --- | --- |
 | Gateway and execution | [Startup](../src/main.ts), [dispatcher](../src/dispatcher.ts), [schedules](../src/schedules.ts), [state](../src/store.ts) |
-| Context and review | [Memory](../src/memory.ts), [code memory](../src/code-memory.ts), [reviewer](../src/reviewer.ts), [design hooks](../src/design-hook.ts) |
+| Context and review | [Memory](../src/memory.ts), [reviewer](../src/reviewer.ts), [design hooks](../src/design-hook.ts) |
 | Tools and sub-agents | [Built-in MCP and connection policies](../src/mcp.ts), [external MCP configuration](../src/mcp-servers.ts), [child reporting](../src/dispatcher.ts) |
 
 ## Components
@@ -58,14 +57,14 @@ fonts are committed in `public/vendor/` and `public/fonts/`, regenerated with `n
 | Turn execution | `src/dispatcher.ts`, `src/runner.ts`, `src/codex.ts`, `src/claude.ts` | Queue dispatch, CLI selection, session resumption, events and cancellation |
 | Accounts | `src/accounts.ts`, `src/login.ts`, `src/sessions.ts` | Sign-in, account eligibility, usage-limit failover and session sharing |
 | State and context | `src/store.ts`, `src/memory.ts`, `src/chat-context.ts`, `src/context.ts`, `src/token-usage.ts` | SQLite state, durable facts, history handoff and context/usage reporting |
-| Agent integrations | `src/mcp.ts`, `src/mcp-servers.ts`, `src/code-memory.ts`, `src/code-memory-routes.ts` | Scoped MCP tools, external MCP configuration and code graph access |
+| Agent integrations | `src/mcp.ts`, `src/mcp-servers.ts` | Scoped MCP tools and external MCP configuration |
 | Review and skills | `src/reviewer.ts`, `src/design-hook.ts`, `src/skills.ts`, `skills/` | Read-only review, UI edit checks and shared skill instructions |
 | Git and files | `src/git*.ts`, `src/forge.ts`, `src/code-routes.ts`, `src/code-search.ts`, `src/terminals.ts` | Worktrees, checkpoints, diffs, forge actions, editor and terminal sockets |
 | Connections | `src/databases.ts`, `src/database-routes.ts`, `src/nosql.ts`, `src/db-export.ts`, `src/ssh*.ts`, `src/secrets.ts` | Database/SSH access, approval workflows, tunnels and encrypted credentials |
 | Background work | `src/schedules.ts`, `src/cron.ts`, `src/push.ts` | Scheduled prompts and completion/approval notifications |
 | Browser | `public/app.js`, `public/js/`, `public/css/` | Chat, inbox, Changes inspector, editors and settings, with styles split by responsibility |
 
-The graph service, connected databases, SSH hosts and external MCP servers are optional integrations. They are
+Connected databases, SSH hosts and external MCP servers are optional integrations. They are
 not required for a basic chat. The database editor's connections are separate from the gateway's own SQLite store.
 
 ## A chat turn
@@ -74,8 +73,7 @@ not required for a basic chat. The database editor's connections are separate fr
    persisted queue. The dispatcher runs queued work sequentially within that conversation; other chats can run
    concurrently. Worktrees give parallel editing chats separate working directories.
 2. The dispatcher selects the chat's backend, model, effort and working directory. For writable git projects it
-   saves a checkpoint before execution. If an existing code graph is stale, it attempts a refresh before starting
-   the agent; a refresh failure is reported and execution can continue with the old graph.
+   saves a checkpoint before execution.
 3. The turn receives applicable memory, skill instructions, git policy and context-retention guidance. With
    `MCP_INJECT=1`, it also receives a short-lived token tied to the conversation and requesting user. External MCP
    servers are configured separately according to their sharing policy.
@@ -127,8 +125,7 @@ belong to an earlier request.
 | Browser storage | Device-local preferences such as theme, pane layout and unread markers |
 
 Project memories survive deletion of their source chat. Personal memories belong to the user and follow that
-user across projects. Code graphs are maintained by the optional code-memory integration and describe the project
-folder; a worktree's unmerged changes may differ from that graph.
+user across projects.
 
 On a managed restart, the scheduler stops and the dispatcher stops starting new turns while active ones get up to
 `DRAIN_MINUTES` to finish. The panel stays available during this drain. Remaining active turns are interrupted and
@@ -237,52 +234,6 @@ has a switch for each.
   Nothing it makes is signed as an agent's: it is told to add no `Co-Authored-By` or "Generated with" line, and Claude
   Code's own attribution is set empty (`--settings` `attribution`).
 
-
-## Code memory
-
-**Settings → MCP → Code memory** (the owner only) turns on a graph of each project's code (symbols, calls, imports,
-HTTP routes) from [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (CBM), so agents answer
-"who calls this", "what does this change touch" or "how does this fit together" from the graph instead of grepping
-file by file. Give the path of the CBM binary (a release from its GitHub page; nothing to configure in the agents),
-**Test binary**, turn it on.
-
-- **Dalang runs it**: one CBM session for the whole server, started with Dalang's state dir as its folder. A project's
-  first index is made only when someone asks: the owner with **Index** / **Reindex** in the tab, anyone with the brain button in a chat's
-  header (shown only while code memory is on and the project's code changed since its graph, or it has none yet). Everyone only for projects they may open. A first index uses several cores for seconds to minutes;
-  indexing again only reads what changed and takes seconds. The tab lists each project's index, and marks it
-  **files changed since** when the project's git state (HEAD or uncommitted changes) differs from the one it indexed.
-- **A turn reads the graph of the code as it is now**: when a prompt arrives for a project whose graph exists but whose
-  files changed since, Dalang reindexes it first and the agent starts only once that is done (the chat shows a note;
-  a cancel stops the wait). A reindex that fails is noted too, and the turn goes on with the previous graph. Nothing
-  else reindexes on its own (not pulls, edits or time passing). A chat with its own worktree reads the graph of the
-  project's main folder, so only changes there count. **Reindex before each turn** in the tab turns this off: graphs
-  then stay as they are until someone clicks Reindex.
-- **Deleting an index**: the trash button next to a project in the tab (the owner), or the brain button in a chat while
-  it indexes, deletes the project's graph, drops an index of it waiting in the queue, and stops one running
-  (by restarting the CBM session, so chats keep their tools). A turn waiting for that index starts without it, and
-  turns stop reindexing the project until it is indexed again.
-- **Deleting a project** deletes its graph from CBM too (unless another project on the same folder shares it), and
-  stops its index if one still runs. One CBM cannot delete right then (code memory off) is deleted when the next CBM
-  session starts.
-- **Chats query it through `/mcp`**, as `code_search_graph`, `code_trace_path`, `code_get_code_snippet`,
-  `code_get_architecture`, `code_query_graph` and the other read tools, on their own chat's project (or another project
-  their user may open, by `project_id`). CBM itself would show every indexed repository to anyone; through the gateway
-  a chat never reaches a project its user may not open. Indexing, deleting and listing other repositories stay with
-  Dalang. Every user's chats get it, so it needs `MCP_INJECT=1` like the rest of `/mcp`.
-- **Turns are told** (next to the sub-agent and database guides) that the project has a graph and to use it before
-  grepping. A chat in its own worktree uses the project folder's graph, and is told to read files it changed itself.
-- **Hooks** (on by default, a checkbox in the tab): turns also run `scripts/code-memory-hook.mjs` next to their own
-  searches. It hands the hook event to CBM's `hook-augment` with the project folder as its folder, so the agent sees
-  the graph symbols matching its search next to the tool's own result, from its own project's graph only, worktree
-  chats included. The hook never blocks a tool: an error or a 4-second timeout just adds nothing.
-  - **Claude Code** gets `--settings` hooks before each Grep, Glob or Bash search, and after each Read (what the graph
-    could not parse in that file).
-  - **Codex** gets an inline `-c hooks.PreToolUse` hook before its shell commands (`rg`, `grep`, ...). Codex runs only
-    hooks a person trusted in `/hooks`, so the turn gets `--dangerously-bypass-hook-trust`, which runs *every* enabled
-    hook unreviewed for that turn: the account's own (`CODEX_HOME`, yours) and a repository's `.codex/` hooks if Codex
-    loads them. A turn whose folder or project folder has `.codex/hooks.json` or hooks in `.codex/config.toml` therefore
-    gets no hook from Dalang (and no bypass). Codex 0.162.1 was checked. Dalang reads `codex exec --help` once
-    (restart it after updating Codex): a Codex that does not know the flag gets no hook rather than a failed turn.
 
 ## Panel workflows
 

@@ -22,7 +22,7 @@ Senior software architect specializing in system design, design patterns, and ar
 
 - Follow the project first: use the versions, platforms, tools and layout it already has. Tools, clouds and versions named in this skill are examples and defaults, not requirements; never switch or upgrade them on your own.
 - Do not add dependencies, frameworks or services the project does not already use unless the person asks.
-- Record architecture decisions with the Dalang `code_manage_adr` tool, and in the project's ADR folder if it has one.
+- Record architecture decisions in the project's ADR folder.
 - Related skills it names that are installed here: `code-reviewer`, `devops-engineer`. Not installed here: `microservices-architect`.
 - `secure-code-guardian` is installed here for secure implementation; `security-reviewer` for scans and configuration checks, `security-audit` for auditing code.
 - Not installed here: `fullstack-guardian`; use the project's own conventions and the installed Dalang skills instead.

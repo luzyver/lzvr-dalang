@@ -109,8 +109,6 @@ The panel is then on `http://127.0.0.1:9876` of the host (loopback only). What d
 - **`python3`** (Debian bookworm's Python 3.11, also as `python`) with `pip` and `venv` is in the image, for the
   scripts agents write and for Python projects. Debian marks its Python as externally managed, so packages go in a
   virtual environment (`python -m venv .venv`), not system-wide.
-- **Not in the image**: the `codebase-memory-mcp` binary. Add it to the `Dockerfile`, or put it in a volume and name its
-  path in Settings → MCP → Code memory.
 - **Databases and SSH hosts on the Docker host itself** are not `127.0.0.1` from inside the container: use the gateway
   address (`172.31.98.1`) or the host's own address.
 
@@ -235,7 +233,7 @@ unless `HOST` is a loopback address (`127.0.0.1`, `::1`, `localhost`). Never set
 The main access token (`LZVR_TOKEN`) is the **owner**, and the break-glass login if everything else goes wrong. Open
 **Users** in the panel to create people. Users have no roles: every user may do everything in the panel (add and
 delete projects, add accounts, manage users, connections and SSH hosts, decide approvals) except what is the owner's
-alone: the server's git setup, MCP servers, the code memory settings, root terminals, and whatever a project,
+alone: the server's git setup, MCP servers, root terminals, and whatever a project,
 connection or host with **Owner only** access holds. What a user sees is set per project, database connection and SSH
 host, so create users only for people you would trust with the server.
 

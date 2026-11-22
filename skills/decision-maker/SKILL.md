@@ -31,10 +31,9 @@ confirmation step: send it, do not ask the person beforehand as well. Never send
 Go down this list and stop at the first source that answers it:
 
 1. **What the person said**, in this chat or in their remembered preferences. Their word wins.
-2. **What was decided before**: `memory_search` for the topic, and `code_manage_adr` for architecture decisions.
+2. **What was decided before**: `memory_search` for the topic, and the project's ADRs for architecture decisions.
    Do not reopen a settled decision without new facts.
-3. **What the code already does**: follow the existing convention, library, style and structure
-   (code graph first: `code_search_graph`, `code_get_architecture`).
+3. **What the code already does**: follow the existing convention, library, style and structure.
 4. **The conservative default**: the smaller change, the option that is easier to undo, no new dependency, the
    standard tool of the stack.
 5. **Weigh it**, only when 1–4 leave two or more real options: score each for risk, reversibility, effort and fit
@@ -72,4 +71,4 @@ Decisions:
 ```
 
 When a decision should hold for later chats (a convention, an architecture choice), save it: `memory_save` for a
-project fact, `code_manage_adr` for an architecture decision. Then the next agent does not ask again.
+project fact, the project's ADR folder for an architecture decision. Then the next agent does not ask again.

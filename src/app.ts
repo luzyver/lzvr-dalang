@@ -12,8 +12,6 @@ import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
 import { isDocx, TEMPLATE_NAME, templateWorkDir } from './templates.js';
 import { clickupApprovalRoutes, forgetClickUpApprovals } from './clickup-approvals.js';
 import { clickupClient, clickupRoutes, clickupSend, forgetClickUp } from './clickup-routes.js';
-import { CodeMemory } from './code-memory.js';
-import { codeIndexRoutes, codeMemoryRoutes } from './code-memory-routes.js';
 import { memoryRoutes } from './memory.js';
 import type { Config } from './config.js';
 import type { Dispatcher } from './dispatcher.js';
@@ -103,8 +101,6 @@ export function buildApp(
     gitSshCommand?: string[];
     /** The code editor's shells (tests: another shell, or a node-pty that fails to load). */
     terminals?: Terminals;
-    /** Code memory (tests: one with a fake CBM); by default one that starts the configured binary when turned on. */
-    codeMemory?: CodeMemory;
   },
 ): FastifyInstance {
   const { cfg, store, dispatcher, push, logins } = deps;
@@ -219,12 +215,8 @@ export function buildApp(
   authRoutes(app, { cfg, store });
   otpRoutes(app, { cfg, store, sendMail: deps.sendMail, noteFailure });
   const clickup = clickupClient(store, deps.clickupFetch);
-  const codeMemory = deps.codeMemory ?? new CodeMemory(store, { cwd: cfg.stateDir });
-  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupSend: () => clickupSend(store), codeMemory });
-  codeMemoryRoutes(app, { store, codeMemory });
-  codeIndexRoutes(app, { store, codeMemory, push });
+  mcpRoutes(app, { cfg, store, dispatcher, push, clickup, clickupSend: () => clickupSend(store) });
   memoryRoutes(app, { store, autoMemory: cfg.autoMemory !== false });
-  dispatcher.codeMemory = codeMemory;
   clickupRoutes(app, { store, client: clickup, origin: cfg.origin, fetch: deps.clickupFetch });
   clickupApprovalRoutes(app, { store, stateDir: cfg.stateDir, dispatcher, client: clickup });
   mcpServerRoutes(app, { store });
@@ -640,7 +632,6 @@ export function buildApp(
     store.deleteProject(project.id);
     removeChats(elsewhere);
     void dropWorktrees(dispatcher, project, convs);
-    void codeMemory.forget(project);
     return reply.code(204).send();
   });
 

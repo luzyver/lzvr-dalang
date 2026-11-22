@@ -16,8 +16,6 @@ export const route = signal({ view: 'home' });
 export const approvals = signal([]);
 /** Database writes agents asked for on "write with approval" connections of the SQL editor. */
 export const dbApprovals = signal([]);
-/** Requests to index a project's code graph left from when that took an approval. */
-export const indexRequests = signal([]);
 /** Commands agents asked to run on SSH hosts set to "every command after approval". */
 export const sshApprovals = signal([]);
 /** ClickUp messages agents ask to send as you (your own ClickUp user), waiting for you; nobody else sees them. */
@@ -205,7 +203,7 @@ export const newChat = (project, worktree = false) => guarded(async () => {
 
 /** Emptied between sessions: the next one may not see them. */
 function clearSharedApprovals() {
-  batch(() => { approvals.value = []; dbApprovals.value = []; indexRequests.value = []; sshApprovals.value = []; });
+  batch(() => { approvals.value = []; dbApprovals.value = []; sshApprovals.value = []; });
 }
 export function clearApprovals() {
   batch(() => { clearSharedApprovals(); clickupApprovals.value = []; });
@@ -223,9 +221,9 @@ export async function refreshApprovals() {
   } catch { /* retried on the next tick */ }
   if (stale()) return;
   try {
-    const [chats, dbs, indexes, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/code-memory/requests'), api('/api/ssh/approvals')]);
+    const [chats, dbs, ssh] = await Promise.all([api('/api/approvals'), api('/api/db/approvals'), api('/api/ssh/approvals')]);
     if (stale()) return;
-    batch(() => { approvals.value = chats; dbApprovals.value = dbs; indexRequests.value = indexes; sshApprovals.value = ssh; });
+    batch(() => { approvals.value = chats; dbApprovals.value = dbs; sshApprovals.value = ssh; });
   } catch { /* retried on the next tick */ }
 }
 
