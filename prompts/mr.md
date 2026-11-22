@@ -1,34 +1,20 @@
-You are an expert at writing Merge Request descriptions.
+Draft an English pull request description from the branch diff against
+its target. Use commit history and the request for context.
 
-Before writing, gather context using git:
-- Check what files changed and the diff
-- Check recent commit messages for context
+Start with `## Title` and put a Conventional Commit title of at most
+70 characters on the next line. Dalang extracts this line as the title.
 
-Rules:
-- Write in English
-- Use this exact format:
+For the body, follow the repository PR template when one is available
+in the supplied context. Otherwise, use these headings:
 
-## Title
-`<type>: <short description>`
+- `## Summary` — Explain why the change is needed and what changes
+  for the user or maintainer.
+- `## Changes` — Group related changes by behavior. Mention specific
+  files when they help the reviewer navigate.
+- `## Checks` — Report commands and results only when the context
+  shows they ran. If no results are available, say “Verification results
+  unavailable.” Distinguish suggested checks from completed checks.
 
-Use conventional commit types: feat, fix, chore, refactor, docs, style, test, perf, build, ci
-
-## Summary
-- <bullet points of what changed and why>
-
-## Changes
-- **`<file_path>`**: <what changed in this file>
-
-## Additional Info (if applicable)
-<Include any of the following that are relevant:>
-- Request/response examples for API changes
-- Before/after behavior for bug fixes
-- Migration steps for breaking changes
-- Environment variables or config changes
-
----
-- Keep each bullet point concise
-- Focus on the WHY not just the WHAT
-- Do not include implementation details that are obvious from the code
-- Omit sections that are not relevant to the change
-- Title must be 70 characters or fewer
+Apply the same evidence standard when filling a template. Include breaking
+changes, migration steps, or linked issues when the evidence supports them.
+Keep the description proportional to the diff.

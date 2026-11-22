@@ -96,8 +96,8 @@ describe('agent git policy', () => {
     const two = text().split('echo:two')[1]!;
     expect(two).not.toContain('gitcfg');
     // Allowed: written as the panel's "Generate message" and "Generate MR description" are, and signed by no agent.
-    expect(two).toContain('Use Conventional Commit format');
-    expect(two).toContain('expert at writing Merge Request descriptions');
+    expect(two).toContain('English Conventional Commit subject');
+    expect(two).toContain('Draft an English pull request description');
     expect(two).toContain('|settings:{"attribution":{"commit":"","pr":""}}');
     store.setKv('commit_prompt', 'Subject in Indonesian');
     store.enqueue(conv.id, 'three', []);
@@ -105,7 +105,7 @@ describe('agent git policy', () => {
     await until(() => turnsDone(store, conv.id, 3));
     const three = text().split('echo:three')[1]!;
     expect(three).not.toContain('Subject in Indonesian');
-    expect(three).toContain('Use Conventional Commit format');
+    expect(three).toContain('English Conventional Commit subject');
 
     const t = setupApp();
     const user = await mkUser(t, 'budi');

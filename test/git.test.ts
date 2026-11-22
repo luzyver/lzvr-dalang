@@ -227,7 +227,7 @@ describe('commit message drafts', () => {
     expect(prompt).toContain('--- M a.txt\n@@');
     expect(prompt).toContain('+two');
     expect(prompt).not.toContain('skip.txt');
-    expect(prompt.startsWith('You are an expert at writing Git commits. Write a single-sentence commit subject only.')).toBe(true);
+    expect(prompt.startsWith('Write one English Conventional Commit subject')).toBe(true);
     expect(readFileSync(join(t.repo, 'a.txt'), 'utf8')).toBe('one\ntwo\n'); // nothing was committed or changed
   });
 
@@ -292,7 +292,7 @@ describe('Merge Request descriptions', () => {
     const r = await t.call('POST', `/api/conversations/${conv.id}/git/mr-description`);
     expect(r.statusCode).toBe(200);
     const prompt = r.json().description as string; // the fake Codex answers with its prompt
-    expect(prompt.startsWith('You are an expert at writing Merge Request descriptions.')).toBe(true);
+    expect(prompt.startsWith('Draft an English pull request description')).toBe(true);
     expect(prompt).toContain(`merging branch ${conv.branch} into main`);
     expect(prompt).toContain(`Commits on ${conv.branch} (oldest first):\n- feat: Add b`);
     expect(prompt).toContain('- add a b file');
