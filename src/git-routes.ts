@@ -1,3 +1,4 @@
+import { gitWriting } from './git-writing.js';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -56,37 +57,11 @@ type Reply = FastifyReply;
 
 const MAX_PROMPT_DIFF = 60_000; // characters of diff given to the agent; the rest is only named
 
-/** The instructions for "Generate message" unless an admin saved others (setting `commit_prompt`). Shared by both agent CLIs. */
-export const DEFAULT_COMMIT_PROMPT = `You are an expert at writing Git commits. Write a single-sentence commit subject only.
-
-Rules:
-- Return only the commit subject
-- Do not include a body
-- Do not use bullet points
-- Keep it concise and clear
-- Prefer 100 characters or fewer
-- Use Conventional Commit format: <type>: <subject>
-- Use one lowercase type only, such as:
-  feat: for new features
-  fix: for bug fixes
-  chore: for maintenance tasks
-  docs: for documentation changes
-  style: for formatting-only changes
-  refactor: for code changes without feature or fix
-  test: for adding or updating tests
-  perf: for performance improvements
-  build: for build or dependency changes
-  ci: for CI/CD changes
-- Capitalize the subject after the prefix
-- Do not end with punctuation
-- Use the imperative mood
-- Summarize the most important change only`;
-
 /**
  * The instructions, then what git says about the change (the agent gets no tools): which files are in it, their diffs,
  * the recent commits, and what the chat was asked to do.
  */
-export async function commitMessagePrompt(cwd: string, files: git.GitFile[], requests: string[], instructions = DEFAULT_COMMIT_PROMPT): Promise<string> {
+export async function commitMessagePrompt(cwd: string, files: git.GitFile[], requests: string[]): Promise<string> {
   const log = await git.git(cwd, ['log', '-15', '--format=%s']).catch(() => '');
   let budget = MAX_PROMPT_DIFF;
   const diffs: string[] = [];
@@ -98,7 +73,7 @@ export async function commitMessagePrompt(cwd: string, files: git.GitFile[], req
     diffs.push(`--- ${name}\n${shown || '(diff not shown)'}${shown.length < d.length ? '\n… truncated' : ''}`);
   }
   return [
-    instructions.trim(),
+    gitWriting.commit,
     '\n=====\nContext gathered from git; everything you need is here, so do not run any tools.',
     'Only the files listed below are part of this change; ignore other uncommitted files.',
     'Reply with the commit subject only: no quotes, no code fence, no commentary.',
@@ -107,42 +82,6 @@ export async function commitMessagePrompt(cwd: string, files: git.GitFile[], req
     `\nChanged files and their diffs:\n${diffs.join('\n\n')}`,
   ].filter(Boolean).join('\n');
 }
-
-/** The instructions for "Generate MR description" unless an admin saved others (setting `mr_prompt`). */
-export const DEFAULT_MR_PROMPT = `You are an expert at writing Merge Request descriptions.
-
-Before writing, gather context using git:
-- Check what files changed and the diff
-- Check recent commit messages for context
-
-Rules:
-- Write in English
-- Use this exact format:
-
-## Title
-\`<type>: <short description>\`
-
-Use conventional commit types: feat, fix, chore, refactor, docs, style, test, perf, build, ci
-
-## Summary
-- <bullet points of what changed and why>
-
-## Changes
-- **\`<file_path>\`**: <what changed in this file>
-
-## Additional Info (if applicable)
-<Include any of the following that are relevant:>
-- Request/response examples for API changes
-- Before/after behavior for bug fixes
-- Migration steps for breaking changes
-- Environment variables or config changes
-
----
-- Keep each bullet point concise
-- Focus on the WHY not just the WHAT
-- Do not include implementation details that are obvious from the code
-- Omit sections that are not relevant to the change
-- Title must be 70 characters or fewer`;
 
 /**
  * What a chat's Merge Request would go from and into. `base.name` is null when there is no branch to open one into.
@@ -178,7 +117,7 @@ export async function mrTarget(conv: Conversation, project: Project): Promise<Mr
  * The instructions, then what the merge would bring (the agent gets no tools): the branch's commits, its changed files
  * and the diff against the merge base with the target branch, and what the chat was asked to do.
  */
-export async function mrDescriptionPrompt(repo: string, branch: string, target: MrTarget['base'], requests: string[], instructions = DEFAULT_MR_PROMPT): Promise<string> {
+export async function mrDescriptionPrompt(repo: string, branch: string, target: MrTarget['base'], requests: string[]): Promise<string> {
   const range = `${target.ref}...${branch}`;
   const [commits, stat, diff, recent] = await Promise.all([
     git.git(repo, ['log', '--reverse', '--format=- %s%n%b', `${target.ref}..${branch}`]).catch(() => ''),
@@ -188,7 +127,7 @@ export async function mrDescriptionPrompt(repo: string, branch: string, target: 
   ]);
   const shown = diff.slice(0, MAX_PROMPT_DIFF);
   return [
-    instructions.trim(),
+    gitWriting.mr,
     '\n=====\nContext gathered from git; everything you need is here, so do not run any tools.',
     `It describes merging branch ${branch} into ${target.name}.`,
     'Reply with the description only: no code fence around it, no commentary.',
@@ -446,7 +385,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!files) return;
     if (!files.length) return reply.code(400).send({ error: 'nothing to commit' });
     const requests = store.listTurns(c.conv.id).slice(-5).map((t) => t.prompt);
-    const prompt = await commitMessagePrompt(c.cwd, files, requests, store.getKv('commit_prompt') || DEFAULT_COMMIT_PROMPT);
+    const prompt = await commitMessagePrompt(c.cwd, files, requests);
     try {
       const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd }); // Settings' default model and effort, not the chat's
       const message = cleanMessage(answer);
@@ -464,8 +403,7 @@ export function gitRoutes(app: FastifyInstance, deps: { store: Store; dispatcher
     if (!t) return reply.code(400).send({ error: noTarget });
     if (!(await aheadOf(c.project.path, t))) return reply.code(400).send({ error: 'nothing to merge: commit the chat\'s changes first' });
     const requests = store.listTurns(c.conv.id).slice(-5).map((r) => r.prompt);
-    const prompt = await mrDescriptionPrompt(c.project.path, t.branch, { name: t.base.name ?? 'the current branch', ref: t.base.ref }, requests,
-      store.getKv('mr_prompt') || DEFAULT_MR_PROMPT);
+    const prompt = await mrDescriptionPrompt(c.project.path, t.branch, { name: t.base.name ?? 'the current branch', ref: t.base.ref }, requests);
     try {
       const answer = await dispatcher.ask(c.conv.backend, prompt, { cwd: c.cwd }); // Settings' default model and effort, not the chat's
       const description = cleanMessage(answer);

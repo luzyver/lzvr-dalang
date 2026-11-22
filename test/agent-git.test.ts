@@ -104,8 +104,8 @@ describe('agent git policy', () => {
     dispatcher.kick(conv.id);
     await until(() => turnsDone(store, conv.id, 3));
     const three = text().split('echo:three')[1]!;
-    expect(three).toContain('Subject in Indonesian');
-    expect(three).not.toContain('Use Conventional Commit format');
+    expect(three).not.toContain('Subject in Indonesian');
+    expect(three).toContain('Use Conventional Commit format');
 
     const t = setupApp();
     const user = await mkUser(t, 'budi');

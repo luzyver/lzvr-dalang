@@ -23,7 +23,7 @@ import { GitUsers } from './git-users.js';
 import { gitAuthRoutes } from './git-auth-routes.js';
 import { databaseRoutes } from './database-routes.js';
 import { sshRoutes } from './ssh-routes.js';
-import { createWorktreeChat, DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT, dropWorktrees, gitRoutes } from './git-routes.js';
+import { createWorktreeChat, dropWorktrees, gitRoutes } from './git-routes.js';
 import { sessionUsage } from './token-usage.js';
 import { compactPayload } from './event-view.js';
 import { insideRoot } from './paths.js';
@@ -458,17 +458,6 @@ export function buildApp(
     store.setTemplates(all.filter((x) => x !== t));
     return reply.code(204).send();
   });
-  // Instructions for "Generate message" (commit) and "Generate MR description" (merge), for Codex and Claude Code alike.
-  // Empty = the built-in prompt.
-  for (const [path, key, builtIn] of [['commit-prompt', 'commit_prompt', DEFAULT_COMMIT_PROMPT], ['mr-prompt', 'mr_prompt', DEFAULT_MR_PROMPT]] as const) {
-    app.get(`/api/settings/${path}`, () => ({ prompt: store.getKv(key) ?? '', default: builtIn }));
-    app.put<{ Body: { prompt: string } }>(`/api/settings/${path}`, {
-      schema: { body: { type: 'object', required: ['prompt'], additionalProperties: false, properties: { prompt: { type: 'string', maxLength: 20_000 } } } },
-    }, (req, reply) => {
-      store.setKv(key, req.body.prompt.trim());
-      return reply.code(204).send();
-    });
-  }
   app.post('/api/accounts/unblock', (_req, reply) => {
     dispatcher.accounts.unblockAll();
     dispatcher.claudeAccounts.unblockAll();

@@ -6,7 +6,7 @@ import { basename, dirname, extname, join } from 'node:path';
 import { Accounts, DEFAULT_LIMIT_RE, isBusy, isLimit, retryAfter, retryAfterMs, windowsResetMs } from './accounts.js';
 import { agentGitEnv, agentGitGuide, NO_ATTRIBUTION_ARGS } from './agent-git.js';
 import { contextGuide, DEFAULT_COMPACT_TOKENS } from './context.js';
-import { DEFAULT_COMMIT_PROMPT, DEFAULT_MR_PROMPT } from './git-routes.js';
+import { gitWriting } from './git-writing.js';
 import { designHookArgs, excludeCache, mergeHookArgs } from './design-hook.js';
 import { withHistory } from './chat-context.js';
 import { customInvocation, customSkillPrompt,loadSkills, skillsGuide } from './skills.js';
@@ -606,7 +606,7 @@ export class Dispatcher {
         // The person's own memories go with the turns they asked for, also those an agent or an approval queued for them.
         memoryGuide(pickFor(this.store, project.id, this.store.userKeyOf(item.author || item.on_behalf), item.prompt), !!mcpToken && !reviewer, !!this.opts.autoMemory && this.store.getMemoryPolicy().auto),
         skillsGuide(skills),
-        agentGitGuide(agentGit, { commit: this.store.getKv('commit_prompt') || DEFAULT_COMMIT_PROMPT, mr: this.store.getKv('mr_prompt') || DEFAULT_MR_PROMPT }),
+        agentGitGuide(agentGit, gitWriting),
         makesFiles ? filesGuide(this.filesDir(convId)) : '',
         ...(compactTokens > 0 ? [contextGuide(mcpToken ? convId : undefined)] : []),
       ].filter(Boolean).join('\n\n');

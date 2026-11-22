@@ -1,4 +1,4 @@
-// The Settings dialog: appearance and this device for everyone; defaults, generate prompts, project memory, accounts and users;
+// The Settings dialog: appearance and this device for everyone; defaults, project memory, accounts and users;
 // Git & forges for everyone (the owner: the server's setup) and MCP (everyone: their own ClickUp; the owner: other servers too).
 import { useEffect, useRef, useState } from '../vendor/preact-hooks.js';
 import { html, cx } from './lib.js';
@@ -110,8 +110,7 @@ function AgentGit() {
     <strong>Commits and pushes</strong>
     <span class="dim small">Off: agents leave their changes for you to commit and push from the chat's Changes tab, as they are
       told, and their own git refuses (a pre-commit hook, and push URLs that lead nowhere). Your commits and pushes from the
-      panel always work. On: agents write their commit messages and Merge Request descriptions by the instructions under
-      Settings → Generate prompts, and add no Co-Authored-By or "Generated with" line.</span>
+      panel always work. On: agents write their commit messages and Merge Request descriptions using the same rules as the Generate buttons in Changes, and add no Co-Authored-By or "Generated with" line.</span>
     <label class="row"><input type="checkbox" checked=${p.commit} onChange=${(e) => save({ ...p, commit: e.currentTarget.checked })} />
       <span>Agents may commit</span></label>
     <label class="row"><input type="checkbox" checked=${p.push} onChange=${(e) => save({ ...p, push: e.currentTarget.checked })} />
@@ -284,44 +283,10 @@ const Defaults = () => html`
   <${CustomSkills} />
   <${Templates} />`;
 
-/** The instructions the Changes tab's generate buttons give the agent, the same for Codex and Claude Code. Empty = built in. */
-function PromptFor({ path, title, help }) {
-  const [text, setText] = useState(null);
-  const [builtIn, setBuiltIn] = useState('');
-  useEffect(() => {
-    api(`/api/settings/${path}`).then((r) => { setBuiltIn(r.default); setText(r.prompt || r.default); }).catch((e) => toast(e.message, 'err'));
-  }, []);
-  // Saving the built-in text unchanged stores nothing, so later updates of the default still apply.
-  const save = guarded(async () => {
-    await api(`/api/settings/${path}`, { method: 'PUT', body: { prompt: text.trim() === builtIn.trim() ? '' : text.trim() } });
-    toast(`${title} prompt saved`);
-  });
-  if (text == null) return html`<div class="pane-loading"><${Spinner} /></div>`;
-  return html`<section class="form-card">
-    <strong>${title}</strong><span class="dim small">${help}</span>
-    <textarea class="mono prompt-edit" rows="12" value=${text} onInput=${(e) => setText(e.currentTarget.value)}></textarea>
-    <div class="row">
-      <${AsyncButton} class="btn primary sm" onClick=${save}>Save<//>
-      <button class="btn ghost sm" onClick=${() => setText(builtIn)} disabled=${text === builtIn}>Reset to default</button>
-      ${text.trim() !== builtIn.trim() && html`<span class="dim small">Customised</span>`}
-    </div>
-  </section>`;
-}
-
-const COMMIT_HELP = '"Generate" in Changes. The selected files, their diffs, recent commits and the chat\'s last requests are appended.';
-const MR_HELP = '"Generate description" in Changes, for a worktree chat or a feature branch. The branch\'s commits, its diff against the branch it merges into and the chat\'s last requests are appended. A "## Title" line becomes the Merge Request title.';
-
-const Prompts = () => html`
-  <p class="dim">Used by Codex and Claude Code alike: the chat's agent, with the default model and effort under "Model & effort" (not the chat's own).
-    Agents that may commit or push themselves ("Model & effort" → Commits and pushes) write by the same instructions.</p>
-  <${PromptFor} path="commit-prompt" title="Commit message" help=${COMMIT_HELP} />
-  <${PromptFor} path="mr-prompt" title="Merge Request description" help=${MR_HELP} />`;
-
 const SECTIONS = [
   ['appearance', 'Appearance', 'palette', Appearance, false],
   ['device', 'This device', 'monitor', Device, false],
   ['defaults', 'Model & effort', 'sliders-horizontal', Defaults, true],
-  ['prompts', 'Generate prompts', 'sparkles', Prompts, true],
   ['memory', 'Project memory', 'lightbulb', MemorySection, true],
   ['codex', 'Codex accounts', 'key-round', () => html`<${AccountsSection} backend="codex" />`, true],
   ['claude', 'Claude Code accounts', 'key-round', () => html`<${AccountsSection} backend="claude" />`, true],
