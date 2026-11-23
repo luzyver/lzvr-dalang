@@ -40,9 +40,14 @@ All notable changes to this project are documented here. The format follows
   and for Python projects
 - Docker: the image has the PHP CLI (`php-cli`), so agents working on PHP projects can check the files they change
   with `php -l`
+- Chats left alone for 2 days (no turn in them or their agents, nothing running or waiting for an approval) move to
+  the sidebar's new **Archive** tab, by project; their next turn brings them back. Conversations now carry
+  `created_at`, so a chat never started is archived by its age too
 
 ### Changed
 
+- A project's chats in the sidebar are listed newest activity first (their agents' turns count), not in the order
+  they were made
 - Users no longer have a role. The `dev` role is gone and every user may do what admins could: add and delete
   projects, manage users, accounts, database connections and SSH hosts, decide approvals, index code memory at once,
   write in read-only projects from the panel, and use every `/mcp` tool. Downloading a file outside a chat's own

@@ -1,5 +1,5 @@
-// The sidebar: new chat and search, Approvals / Scheduled, the chats by project or by status, the tools, account usage
-// and the user menu.
+// The sidebar: new chat and search, Approvals / Scheduled, the chats by project, by status or archived, the tools,
+// account usage and the user menu.
 // Also the Add project and project access dialogs.
 import { useEffect, useState } from '../vendor/preact-hooks.js';
 import { signal } from '../vendor/signals.js';
@@ -7,11 +7,11 @@ import { html, cx } from './lib.js';
 import { api } from './api.js';
 import { AsyncButton, confirmDialog, Field, Icon, Logo, Menu, MenuItem, Modal, Seg } from './ui.js';
 import {
-  approvals, clickupApprovals, convs, dbApprovals, sshApprovals, goHome, guarded, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
+  approvals, clickupApprovals, dbApprovals, sshApprovals, goHome, guarded, isOwner, loadProjects, me, newChat, openChat, openSettings, openSqlEditor, openView, projects, route,
   setGroupBy, toggleCollapsed, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
-import { ago, allChats, byStatus, isUnread, WHY } from './inbox.js';
+import { ago, byStatus, chatLists, isUnread, WHY } from './inbox.js';
 import { removeChat, rootOf } from './agent-tree.js';
 
 /** Per backend, the first account that is ready and how much of its tightest usage window is left. */
@@ -162,9 +162,14 @@ const SANDBOX_TAGS = {
 const Tag = ({ name, label, danger }) => name
   && html`<span class=${cx('project-tag', danger && 'danger')} title=${label} aria-label=${label} role="img"><${Icon} name=${name} /></span>`;
 
-function Project({ p }) {
-  const top = new Map(allChats.value.filter((x) => x.project.id === p.id).map((x) => [x.conv.id, x]));
-  const list = (convs.value.get(p.id) || []).map((c) => top.get(c.id)).filter(Boolean);
+/**
+ * A project and its chats, newest activity first: the ones in use, or with `archived` the ones left idle. In use, a
+ * project whose chats are all archived says so and leads to them.
+ */
+function Project({ p, archived = false }) {
+  const { active, archived: old } = chatLists.value;
+  const list = (archived ? old : active).filter((x) => x.project.id === p.id);
+  const away = archived ? 0 : old.filter((x) => x.project.id === p.id).length;
   const collapsed = ui.collapsed.value.has(p.id);
   const current = openTop();
   const remove = guarded(async () => {
@@ -193,6 +198,8 @@ function Project({ p }) {
     ${!collapsed && html`<div class="chats">
       ${list.length ? list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} agents=${x.agents} active=${x.conv.id === current} />`)
         : html`<button class="chat ghost" onClick=${newChat(p)}><${Icon} name="plus" class="tiny" />Start a chat</button>`}
+      ${!list.length && away > 0 && html`<button class="chat ghost" title="Chats with no activity for 2 days" onClick=${() => setGroupBy('archive')}>
+        <${Icon} name="archive" class="tiny" />${away} archived</button>`}
     </div>`}
   </div>`;
 }
@@ -210,6 +217,14 @@ function StatusList() {
     <div class="chats flat">${rows(list)}</div></div>`;
   return html`${group('Needs you', attention, 'attention')}${group('Running', running)}${group('Recent', rest.slice(0, 40))}
     ${!attention.length && !running.length && !rest.length && html`<div class="side-empty">No chats yet.</div>`}`;
+}
+
+/** The archive: chats with no activity for 2 days, by project. Their next turn brings them back to the other lists. */
+function ArchiveList() {
+  const ids = new Set(chatLists.value.archived.map((x) => x.project.id));
+  const list = projects.value.filter((p) => ids.has(p.id));
+  return html`${list.map((p) => html`<${Project} key=${p.id} p=${p} archived />`)}
+    ${!list.length && html`<div class="side-empty">No archived chats. Chats with no activity for 2 days move here.</div>`}`;
 }
 
 /** Start a chat: straight away with one project, otherwise pick the project from a menu. */
@@ -256,9 +271,9 @@ export function Sidebar() {
     </nav>
     <div class="side-section">
       <div class="section-head">
-        <${Seg} small label="Group chats by" value=${by} onChange=${setGroupBy} options=${[['project', 'Projects'], ['status', 'Status']]} />
+        <${Seg} small label="Show chats" value=${by} onChange=${setGroupBy} options=${[['project', 'Projects'], ['status', 'Status'], ['archive', 'Archive']]} />
         ${html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}</div>
-      ${by === 'status' ? html`<${StatusList} />` : html`
+      ${by === 'status' ? html`<${StatusList} />` : by === 'archive' ? html`<${ArchiveList} />` : html`
         ${projects.value.map((p) => html`<${Project} key=${p.id} p=${p} />`)}
         ${!projects.value.length && html`<div class="side-empty">No projects yet. Add a folder with the button above.</div>`}`}
     </div>

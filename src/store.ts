@@ -111,6 +111,8 @@ export interface Conversation {
   parent: string;
   /** What the chat is for: '' for a normal one, 'reviewer' for the automatic reviewer of its parent (see reviewer.ts). */
   role: string;
+  /** When the chat was made (UTC, `YYYY-MM-DD HH:MM:SS`): its age before its first turn, for the panel's archive. */
+  created_at: string | null;
 }
 /**
  * `author`: the panel user who sent the prompt (or made its schedule); empty when an agent (MCP) or an approval queued it.
@@ -250,6 +252,12 @@ export class Store {
     this.ensureColumn('conversations', 'mr_base', 'TEXT');
     this.ensureColumn('conversations', 'parent', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('conversations', 'role', "TEXT NOT NULL DEFAULT ''");
+    // ALTER TABLE takes no CURRENT_TIMESTAMP default: new chats write it, and older ones get their first turn's start
+    // (or now, without one), so a chat never started is not archived the moment this column appears.
+    if (this.ensureColumn('conversations', 'created_at', 'TEXT')) {
+      this.run(`UPDATE conversations SET created_at=COALESCE((SELECT MIN(started_at) FROM turns WHERE conversation_id=conversations.id),
+        CURRENT_TIMESTAMP) WHERE created_at IS NULL`);
+    }
     this.ensureColumn('users', 'email', 'TEXT');
     this.ensureColumn('queue', 'author', "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn('queue', 'on_behalf', "TEXT NOT NULL DEFAULT ''");
@@ -520,7 +528,7 @@ export class Store {
 
   createConversation(projectId: string, backend: Backend = 'codex', parent = ''): Conversation {
     const id = randomUUID();
-    this.run('INSERT INTO conversations (id,project_id,thread_id,backend,parent) VALUES (?,?,NULL,?,?)', id, projectId, backend, parent);
+    this.run('INSERT INTO conversations (id,project_id,thread_id,backend,parent,created_at) VALUES (?,?,NULL,?,?,CURRENT_TIMESTAMP)', id, projectId, backend, parent);
     return this.getConversation(id)!;
   }
   listConversations(projectId: string): Conversation[] {
