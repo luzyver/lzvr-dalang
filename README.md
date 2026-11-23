@@ -121,8 +121,9 @@ A shared engineering skill library and an Impeccable hook that checks UI edits a
 1. Add a project folder or clone a repository, then choose Codex or Claude Code. Start a chat in the project folder
    or in an isolated git worktree; attach files and images when the task needs them.
 2. Send prompts while watching the live transcript. Each chat keeps its own queue, model, effort and session.
-   The sidebar groups chats by project or status, and Home shows what needs attention. Unread markers are stored
-   on the current browser, not synchronized between devices.
+   The sidebar groups chats by project or status, newest activity first, and Home shows what needs attention.
+   Chats with no activity for 2 days move to the sidebar's Archive tab until their next turn. Unread markers are
+   stored on the current browser, not synchronized between devices.
 3. Review the result in the Changes inspector: inspect diffs, select hunks, restore checkpoints, commit, push or
    open a pull request. By default agents leave changes uncommitted; these actions belong to the panel user.
 4. Keep work going with scheduled prompts, optional sub-agents and project memory. Enable the automatic reviewer

@@ -8,6 +8,8 @@ export const isOwner = computed(() => me.value?.name === 'owner'); // the main t
 export const projects = signal([]);
 /** project id -> its chats */
 export const convs = signal(new Map());
+/** The time the chat lists were last loaded: what decides which chats count as archived (see inbox.js). */
+export const now = signal(Date.now());
 /**
  * What the main area shows: { view: 'home' } | { view: 'chat', id, focusEvent } | { view: 'schedules' } | { view: 'approvals' } | { view: 'ssh' },
  * or, in a tab of its own, { view: 'code', id }: the code editor on a chat's folder, or { view: 'sql' }: the SQL editor.
@@ -40,7 +42,10 @@ export const ui = {
   settings: signal(null),
   addProject: signal(false),
   collapsed: signal(new Set(pref('dalang-collapsed', []))),
-  /** How the sidebar lists chats: 'project' (each project with its chats) or 'status' (needs you, running, recent). */
+  /**
+   * How the sidebar lists chats: 'project' (each project with its chats), 'status' (needs you, running, recent) or
+   * 'archive' (the chats left idle for a while, by project).
+   */
   groupBy: signal(pref('dalang-group-by', 'project')),
 };
 
@@ -131,6 +136,7 @@ export async function loadProjects() {
   batch(() => {
     projects.value = list;
     convs.value = new Map(entries);
+    now.value = Date.now();
   });
   if (!seen.value) { seen.value = {}; markSeen(entries.flatMap(([, l]) => l)); }
   // The open chat is gone (deleted elsewhere, or its project removed); the one in view is read as it changes.

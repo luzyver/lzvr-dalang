@@ -216,6 +216,26 @@ describe('Store', () => {
     } finally { restarted.db.close(); }
   });
 
+  it('records when a chat was made, and gives older chats their first turn or the upgrade as that time', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'lzvr-created-')), 'c.db');
+    const before = new Store(file);
+    const project = before.createProject('p', '/w/p');
+    expect(before.createConversation(project.id).created_at).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+    const used = before.createConversation(project.id);
+    before.startTurn(used.id, 'first');
+    before.db.prepare("UPDATE turns SET started_at='2026-01-02 03:04:05' WHERE conversation_id=?").run(used.id);
+    const empty = before.createConversation(project.id);
+    before.db.exec('ALTER TABLE conversations DROP COLUMN created_at');
+    before.db.close();
+
+    const after = new Store(file);
+    try {
+      const at = new Map(after.listConversations(project.id).map((c) => [c.id, c.created_at]));
+      expect(at.get(used.id)).toBe('2026-01-02 03:04:05');
+      expect(at.get(empty.id)).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+    } finally { after.db.close(); }
+  });
+
   it('queues the prompt a crash cut off again, to resume in its session, once', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'lzvr-crash-')), 'c.db');
     const before = new Store(file);
