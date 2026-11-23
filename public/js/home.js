@@ -70,7 +70,7 @@ export function Home() {
         <div class="ov-col side">
           <${Section} title="Start a chat"
             action=${html`<button class="icon-btn sm" aria-label="Add project" title="Add project" onClick=${() => { ui.addProject.value = true; }}><${Icon} name="folder-plus" /></button>`}>
-            <ul class="ov-list">${list.map((p) => {
+            <ul class="ov-list ov-projects">${list.map((p) => {
               const chats = convs.value.get(p.id) || [];
               const last = chats.reduce((at, c) => ((c.last_at || '') > at ? c.last_at : at), '');
               return html`<li key=${p.id}><button class="ov-row" onClick=${newChat(p)}>
