@@ -56,16 +56,18 @@ export function Home() {
         <button class="btn ghost" onClick=${() => { ui.palette.value = true; }}><${Icon} name="search" />Search<kbd>${searchKey()}</kbd></button>
       </div>
       <div class="ov-cols">
-        <div class="ov-col">
+        <div class="ov-col ov-chats">
           <${Section} title="Needs you" count=${attention.length}
             action=${waiting > 0 && html`<button class="btn sm ghost" onClick=${() => openView('approvals')}>${plural(waiting, 'approval')}<${Icon} name="chevron-right" class="tiny" /></button>`}>
             ${attention.length ? html`<ul class="ov-list">${attention.slice(0, 8).map((x) => html`<${ChatLine} key=${x.conv.id} x=${x} why=${x.why} />`)}</ul>`
               : html`<p class="ov-empty">No failed chats, approvals or unread answers.</p>`}
           <//>
+          ${(running.length > 0 || rest.length > 0) && html`<div class="ov-col">
           ${running.length > 0 && html`<${Section} title="Running" count=${running.length}>
             <ul class="ov-list">${running.slice(0, 8).map((x) => html`<${ChatLine} key=${x.conv.id} x=${x} />`)}</ul><//>`}
           ${rest.length > 0 && html`<${Section} title="Recent">
             <ul class="ov-list">${rest.slice(0, 6).map((x) => html`<${ChatLine} key=${x.conv.id} x=${x} />`)}</ul><//>`}
+          </div>`}
         </div>
         <div class="ov-col side">
           <${Section} title="Start a chat"
