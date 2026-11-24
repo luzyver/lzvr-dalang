@@ -235,6 +235,64 @@ describe('conversations and prompts', () => {
     expect(t.store.getConversation(conv.id)!.draft).toBe('');
   });
 
+  it('persists archive and restore decisions in the project chat list', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    const put = (archived: boolean) => t.app.inject({ method: 'PUT', url: `/api/conversations/${conv.id}/archive`, headers: AUTH, payload: { archived } });
+    const list = async () => (await t.app.inject({ url: `/api/projects/${conv.project_id}/conversations`, headers: AUTH })).json();
+    expect((await put(true)).statusCode).toBe(204);
+    expect(await list()).toContainEqual(expect.objectContaining({ id: conv.id, archived_at: expect.any(String) }));
+    expect((await put(false)).statusCode).toBe(204);
+    expect(await list()).toContainEqual(expect.objectContaining({ id: conv.id, archived_at: null, restored_at: expect.any(String) }));
+  });
+
+  it('rejects a stale archive request while the chat family is running or awaiting approval', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    const child = t.store.createConversation(conv.project_id, 'codex', conv.id);
+    const leaf = t.store.createConversation(conv.project_id, 'codex', child.id);
+    const archive = () => t.app.inject({ method: 'PUT', url: `/api/conversations/${conv.id}/archive`, headers: AUTH, payload: { archived: true } });
+    for (const id of [conv.id, leaf.id]) {
+      t.store.setStatus(id, 'running');
+      expect((await archive()).statusCode).toBe(409);
+      t.store.setStatus(id, 'idle');
+    }
+    const approval = t.store.createApproval(conv.id, leaf.id, 'Continue?');
+    expect((await archive()).statusCode).toBe(409);
+    t.store.setApprovalStatus(approval, 'rejected');
+    for (const key of ['db_approvals', 'ssh_approvals']) {
+      t.store.setKv(key, JSON.stringify([{ conv: leaf.id, status: 'pending' }]));
+      expect((await archive()).statusCode).toBe(409);
+      t.store.setKv(key, '[]');
+    }
+    for (const status of ['pending', 'sending', 'unknown']) {
+      t.store.setKv('clickup_approvals', JSON.stringify([{ conv: leaf.id, status }]));
+      expect((await archive()).statusCode, status).toBe(409);
+    }
+    expect(t.store.getConversation(conv.id)?.archived_at).toBeNull();
+    t.store.setKv('clickup_approvals', JSON.stringify([{ conv: leaf.id, status: 'dismissed' }]));
+    expect((await archive()).statusCode).toBe(204);
+  });
+
+  it('reopens an archived family when a subsequent turn finishes in the same second', async () => {
+    const t = setupApp();
+    const { conv } = await makeConv(t);
+    const child = t.store.createConversation(conv.project_id, 'codex', conv.id);
+    const leaf = t.store.createConversation(conv.project_id, 'codex', child.id);
+    const other = t.store.createConversation(conv.project_id);
+    const instant = '2026-11-24 12:00:00';
+    t.store.db.function('current_timestamp', () => instant);
+    t.store.setArchived(other.id, true);
+    for (const id of [conv.id, leaf.id]) {
+      t.store.setArchived(conv.id, true);
+      expect(t.store.getConversation(conv.id)?.archived_at).toBe(instant);
+      t.store.endTurn(t.store.startTurn(id, 'Continue'), 'completed', null);
+      expect(t.store.lastAt(id)).toBe(instant);
+      expect(t.store.getConversation(conv.id)?.archived_at).toBeNull();
+    }
+    expect(t.store.getConversation(other.id)?.archived_at).toBe(instant);
+  });
+
   it('saves the draft', async () => {
     const t = setupApp();
     const { conv } = await makeConv(t);

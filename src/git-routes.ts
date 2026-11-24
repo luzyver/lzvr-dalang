@@ -37,7 +37,7 @@ export async function createWorktreeChat(store: Store, cfg: Config, project: Pro
  * Remove the worktrees and turn checkpoints of chats that are being deleted. Call after cancelling their turns: it waits
  * for each agent to exit first, since its files are still open until then. Never throws (a leftover folder is only logged).
  */
-export async function dropWorktrees(dispatcher: Dispatcher, project: Project, convs: Conversation[]): Promise<void> {
+export async function dropWorktrees(dispatcher: Dispatcher, project: Project, convs: Conversation[], policy: 'manual' | 'archive' = 'manual'): Promise<void> {
   for (const c of convs) {
     for (let i = 0; i < 200 && dispatcher.isRunning(c.id); i++) await new Promise((r) => setTimeout(r, 50));
     await git.dropCheckpoints(project.path, c.id);
@@ -45,7 +45,9 @@ export async function dropWorktrees(dispatcher: Dispatcher, project: Project, co
     rmSync(dispatcher.filesDir(c.id), { recursive: true, force: true }); // the files it made for the person
     rmSync(templateWorkDir(c.id), { recursive: true, force: true }); // and the templates it filled before that folder existed
     if (!c.worktree) continue;
-    await git.removeWorktree(project.path, c.worktree, c.branch).catch((e) => console.error(`could not remove worktree ${c.worktree}`, e));
+    const removal = policy === 'archive' ? git.removeArchivedWorktree(project.path, c.worktree)
+      : git.removeWorktree(project.path, c.worktree, c.branch);
+    await removal.catch((e) => console.error(`could not remove worktree ${c.worktree}`, e));
   }
 }
 

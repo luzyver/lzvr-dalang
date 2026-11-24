@@ -11,7 +11,7 @@ import {
   setGroupBy, toggleCollapsed, toggleInspector, toggleSidebar, ui,
 } from './store.js';
 import { scheduleCount } from './schedules.js';
-import { ago, byStatus, chatLists, isUnread, WHY } from './inbox.js';
+import { ago, byStatus, canArchive, chatLists, isUnread, WHY } from './inbox.js';
 import { removeChat, rootOf } from './agent-tree.js';
 
 /** Per backend, the first account that is ready and how much of its tightest usage window is left. */
@@ -131,9 +131,14 @@ export const AddProjectModal = () => html`<${Modal} open=${ui.addProject.value} 
  * says how many there are and whether one is running, and opens the Agents tab. The row is marked while one of them
  * is open.
  */
-function ChatRow({ c, active, agents = [], project, why }) {
+function ChatRow({ c, active, agents = [], project, why, archived = false }) {
   const title = c.title || 'New chat';
   const remove = removeChat(c, active);
+  const archiveBlocked = !archived && !canArchive(c, agents);
+  const move = guarded(async () => {
+    await api(`/api/conversations/${c.id}/archive`, { method: 'PUT', body: { archived: !archived } });
+    await loadProjects();
+  });
   const unread = isUnread(c);
   const status = why ? WHY[why].label : unread ? 'New answer' : c.status;
   const n = agents.length;
@@ -149,7 +154,12 @@ function ChatRow({ c, active, agents = [], project, why }) {
       ${c.worktree && html`<span class="chat-branch" title=${`Own worktree on ${c.branch}`}><${Icon} name="git-branch" class="tiny" /></span>`}
       ${c.status !== 'running' && c.last_at && html`<span class="chat-time">${ago(c.last_at)}</span>`}
     </a>
-    <button class="icon-btn sm row-action" aria-label=${`Delete chat ${title}`} title="Delete chat" onClick=${remove}><${Icon} name="trash-2" /></button>
+    <${Menu} label=${`Chat options for ${title}`} buttonClass="sm row-action">
+      <${MenuItem} icon=${archived ? 'undo-2' : 'archive'} disabled=${archiveBlocked}
+        title=${archiveBlocked ? 'Available when the chat and its agents finish running and approvals are resolved' : undefined}
+        onClick=${move}>${archived ? 'Restore chat' : 'Move to archive'}<//>
+      <${MenuItem} icon="trash-2" danger onClick=${remove}>Delete chat<//>
+    <//>
   </div>`;
 }
 
@@ -196,9 +206,9 @@ function Project({ p, archived = false }) {
       <//>
     </div>
     ${!collapsed && html`<div class="chats">
-      ${list.length ? list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} agents=${x.agents} active=${x.conv.id === current} />`)
+      ${list.length ? list.map((x) => html`<${ChatRow} key=${x.conv.id} c=${x.conv} archived=${archived} agents=${x.agents} active=${x.conv.id === current} />`)
         : html`<button class="chat ghost" onClick=${newChat(p)}><${Icon} name="plus" class="tiny" />Start a chat</button>`}
-      ${!list.length && away > 0 && html`<button class="chat ghost" title="Chats with no activity for 2 days" onClick=${() => setGroupBy('archive')}>
+      ${!list.length && away > 0 && html`<button class="chat ghost" title="Show archived chats" onClick=${() => setGroupBy('archive')}>
         <${Icon} name="archive" class="tiny" />${away} archived</button>`}
     </div>`}
   </div>`;
@@ -219,12 +229,12 @@ function StatusList() {
     ${!attention.length && !running.length && !rest.length && html`<div class="side-empty">No chats yet.</div>`}`;
 }
 
-/** The archive: chats with no activity for 2 days, by project. Their next turn brings them back to the other lists. */
+/** Chats archived manually or after three idle hours, grouped by project. Their next turn brings them back to the other lists. */
 function ArchiveList() {
   const ids = new Set(chatLists.value.archived.map((x) => x.project.id));
   const list = projects.value.filter((p) => ids.has(p.id));
   return html`${list.map((p) => html`<${Project} key=${p.id} p=${p} archived />`)}
-    ${!list.length && html`<div class="side-empty">No archived chats. Chats with no activity for 2 days move here.</div>`}`;
+    <div class="side-empty">${!list.length && 'No archived chats. '}Chats move here after 3 idle hours. Daily cleanup permanently deletes completed chats and chats idle for more than 10 days.</div>`;
 }
 
 /** Start a chat: straight away with one project, otherwise pick the project from a menu. */

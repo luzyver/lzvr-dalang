@@ -112,8 +112,8 @@ export function Menu({ icon = 'ellipsis', label, text, align = 'end', children, 
   </div>`;
 }
 
-export const MenuItem = ({ icon, danger, onClick, title, children }) => html`
-  <button role="menuitem" class=${cx('menu-item', danger && 'danger')} title=${title} onClick=${onClick}>
+export const MenuItem = ({ icon, danger, disabled, onClick, title, children }) => html`
+  <button role="menuitem" disabled=${disabled} class=${cx('menu-item', danger && 'danger')} title=${title} onClick=${onClick}>
     ${icon && html`<${Icon} name=${icon} />`}<span>${children}</span>
   </button>`;
 

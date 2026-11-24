@@ -88,6 +88,9 @@ export interface Conversation {
   auto_title?: string | null;
   /** In a project's list of chats: when its last turn ended, or started while it runs (null before any turn). */
   last_at?: string | null;
+  archived_at?: string | null;
+  restored_at?: string | null;
+  draft_updated_at?: string | null;
   /** In a project's list of chats: how its last turn ended (completed|cancelled|interrupted|failed, running while it runs; null before any turn). */
   last_turn?: string | null;
   status: 'idle' | 'running' | 'failed'; draft: string;
@@ -246,6 +249,13 @@ export class Store {
     this.ensureColumn('conversations', 'worktree', 'TEXT');
     this.ensureColumn('conversations', 'branch', 'TEXT');
     this.ensureColumn('conversations', 'base_branch', 'TEXT');
+    this.ensureColumn('conversations', 'archived_at', 'TEXT');
+    this.ensureColumn('conversations', 'restored_at', 'TEXT');
+    this.atomically(() => {
+      if (this.ensureColumn('conversations', 'draft_updated_at', 'TEXT')) {
+        this.run("UPDATE conversations SET draft_updated_at=CURRENT_TIMESTAMP WHERE draft<>''");
+      }
+    });
     this.ensureColumn('conversations', 'auto_title', 'TEXT');
     this.ensureColumn('conversations', 'pr_url', 'TEXT');
     this.ensureColumn('conversations', 'pr_branch', 'TEXT');
@@ -303,6 +313,14 @@ export class Store {
         WHERE c.id=turns.conversation_id AND p.started_at <= turns.started_at)
         WHERE conversation_id IN (SELECT id FROM conversations WHERE parent<>'')`);
     }
+    // Clear manual archives in the same write as the new turn, even when both actions share a timestamp.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS turns_unarchive AFTER INSERT ON turns BEGIN
+      UPDATE conversations SET archived_at=NULL WHERE archived_at IS NOT NULL AND id IN (
+        WITH RECURSIVE ancestors(id) AS (
+          SELECT NEW.conversation_id UNION SELECT c.parent FROM conversations c JOIN ancestors a ON c.id=a.id WHERE c.parent!=''
+        ) SELECT id FROM ancestors
+      );
+    END`);
     this.fts = this.memoryIndex();
   }
 
@@ -534,6 +552,19 @@ export class Store {
   listConversations(projectId: string): Conversation[] {
     return this.all(`SELECT c.*, ${TITLE} AS title, ${LAST_AT} AS last_at, ${LAST_TURN} AS last_turn FROM conversations c WHERE project_id=? ORDER BY c.rowid`, projectId);
   }
+  /** Roots visible in the archive across all projects, including chats whose parent was removed. */
+  chatRootIds(): string[] {
+    return this.all<{ id: string }>(`SELECT c.id FROM conversations c
+      WHERE c.parent='' OR NOT EXISTS (SELECT 1 FROM conversations p WHERE p.id=c.parent)`).map(c => c.id);
+  }
+  /** Current family and latest turn state, read together before a retention decision. */
+  archiveFamily(id: string): Conversation[] {
+    return this.all(`WITH RECURSIVE family(id) AS (
+      SELECT c.id FROM conversations c WHERE c.id=? AND NOT EXISTS (SELECT 1 FROM conversations p WHERE p.id=c.parent)
+      UNION SELECT c.id FROM conversations c JOIN family f ON c.parent=f.id)
+      SELECT c.*, ${LAST_AT} AS last_at, ${LAST_TURN} AS last_turn FROM conversations c JOIN family f ON c.id=f.id
+      ORDER BY c.id<>?, c.rowid`, id, id);
+  }
   /** The sub-agents a chat's agent started (that still exist); its automatic reviewer does not count. */
   countChildren(id: string): number { return this.get<{ n: number }>("SELECT count(*) AS n FROM conversations WHERE parent=? AND role=''", id)!.n; }
   setRole(id: string, role: string): void { this.run('UPDATE conversations SET role=? WHERE id=?', role, id); }
@@ -556,6 +587,11 @@ export class Store {
   getConversation(id: string): Conversation | null { return this.get(`SELECT c.*, ${TITLE} AS title FROM conversations c WHERE id=?`, id); }
   /** When the chat's last turn ended (or started, while it runs): the `last_at` its project's chat list shows. */
   lastAt(id: string): string | null { return this.get<{ last_at: string | null }>(`SELECT ${LAST_AT} AS last_at FROM conversations c WHERE id=?`, id)?.last_at ?? null; }
+  setArchived(id: string, archived: boolean): void {
+    this.run(archived
+      ? 'UPDATE conversations SET archived_at=CURRENT_TIMESTAMP, restored_at=NULL WHERE id=?'
+      : 'UPDATE conversations SET archived_at=NULL, restored_at=CURRENT_TIMESTAMP WHERE id=?', id);
+  }
   setTitle(id: string, title: string): void { this.run('UPDATE conversations SET auto_title=? WHERE id=?', title, id); }
   setWorktree(id: string, w: { dir: string; branch: string; base: string | null }): void {
     this.run('UPDATE conversations SET worktree=?, branch=?, base_branch=? WHERE id=?', w.dir, w.branch, w.base, id);
@@ -565,7 +601,9 @@ export class Store {
   setMrBase(id: string, base: string | null): void { this.run('UPDATE conversations SET mr_base=? WHERE id=?', base, id); }
   setThread(id: string, threadId: string): void { this.run('UPDATE conversations SET thread_id=? WHERE id=?', threadId, id); }
   setStatus(id: string, status: Conversation['status']): void { this.run('UPDATE conversations SET status=? WHERE id=?', status, id); }
-  setDraft(id: string, draft: string): void { this.run('UPDATE conversations SET draft=? WHERE id=?', draft, id); }
+  setDraft(id: string, draft: string): void {
+    this.run('UPDATE conversations SET draft=?, draft_updated_at=CURRENT_TIMESTAMP WHERE id=? AND draft<>?', draft, id, draft);
+  }
   setModel(id: string, model: string): void { this.run('UPDATE conversations SET model=? WHERE id=?', model, id); }
   setEffort(id: string, effort: string): void { this.run('UPDATE conversations SET effort=? WHERE id=?', effort, id); }
   /**
@@ -661,6 +699,22 @@ export class Store {
             AND json_extract(e.payload, '$.item.type') = 'agent_message' ORDER BY e.id DESC LIMIT 1) AS answer
        FROM turns t WHERE t.conversation_id=? AND t.id<? ORDER BY t.id`, convId, before)
       .map((r) => ({ id: r.id, prompt: r.prompt, answer: typeof r.answer === 'string' ? r.answer : '' }));
+  }
+
+  /** Dalang emits the first user.prompt before the CLI starts. Older events may carry only an author, or neither field. */
+  promptOrigins(convId: string) {
+    const rows = this.all<{ id: number; from_turn: number | null; author: string | null; source: string | null }>(
+      `SELECT t.id,t.from_turn,
+         CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.author') END AS author,
+         CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.source') END AS source
+       FROM turns t LEFT JOIN events e ON e.id=(SELECT MIN(p.id) FROM events p WHERE p.turn_id=t.id AND p.type='user.prompt')
+       WHERE t.conversation_id=?`, convId);
+    return new Map(rows.map(row => {
+      const author = typeof row.author === 'string' && row.author.trim() ? row.author : undefined;
+      const source = row.from_turn != null || row.source === 'agent' ? 'agent' : row.source === 'scheduled' ? 'scheduled'
+        : author && (!row.source || row.source === 'user') ? 'user' : 'unknown';
+      return [row.id, { source, author }] as const;
+    }));
   }
 
   addEvent(turnId: number, type: string, payload: string): number {

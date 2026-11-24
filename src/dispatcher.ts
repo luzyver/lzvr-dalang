@@ -516,7 +516,9 @@ export class Dispatcher {
       const previous = this.store.lastTurnSelection(convId);
       const changed = previous && (previous.backend !== current.backend || previous.model !== current.model);
       this.emit(convId, turnId, { type: 'turn.selection', current, ...(changed && { previous }) });
-      this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
+      const source = item.from_conv || item.kind === 'report' ? 'agent' : item.schedule_creator ? 'scheduled'
+        : item.author ? 'user' : 'unknown';
+      this.emit(convId, turnId, { type: 'user.prompt', text: item.prompt, source, ...(item.author && { author: item.author }), ...(item.resume && { resumed: true }),
         ...(item.attachments.length > 0 && { attachments: item.attachments }) }); // so replayed history shows what was asked
       if (this.opts.autoTitle && !conv.auto_title && this.store.listTurns(convId).length === 1) {
         void this.titleChat(conv, turnId, cwd, item.prompt); // alongside the turn: it must not hold it up

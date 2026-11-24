@@ -46,15 +46,15 @@ const KEY = 'clickup_approvals';
 /** The last id given out. */
 const SEQ = 'clickup_approvals_seq';
 const KEEP = 200;
-const unresolved = (a: ClickUpApproval) => ['pending', 'sending', 'unknown'].includes(a.status);
+export const isUnresolvedClickUpApproval = (a: ClickUpApproval) => ['pending', 'sending', 'unknown'].includes(a.status);
 
 export function readClickUpApprovals(store: Store): ClickUpApproval[] {
   try { return JSON.parse(store.getKv(KEY) ?? '[]'); } catch { return []; }
 }
 /** Keeps every unresolved one and the last 200 decided. */
 function save(store: Store, list: ClickUpApproval[]): void {
-  const decided = list.filter((a) => !unresolved(a)).slice(-KEEP);
-  store.setKv(KEY, JSON.stringify(list.filter((a) => unresolved(a) || decided.includes(a))));
+  const decided = list.filter((a) => !isUnresolvedClickUpApproval(a)).slice(-KEEP);
+  store.setKv(KEY, JSON.stringify(list.filter((a) => isUnresolvedClickUpApproval(a) || decided.includes(a))));
 }
 export function createClickUpApproval(store: Store, a: Pick<ClickUpApproval, 'user' | 'clickupUserId' | 'dest' | 'action' | 'content' | 'who' | 'conv'> & {
   files?: OutFile[]; task?: TaskRef; stateDir?: string;
@@ -124,7 +124,7 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
   const mine = (a: ClickUpApproval, u?: AuthUser) => !!u && userOf(a) === clickupUserKey(u);
 
   app.get<{ Querystring: { status?: string } }>('/api/clickup/approvals', (req) => readClickUpApprovals(store)
-    .filter((a) => mine(a, req.user) && (req.query.status ? a.status === req.query.status : unresolved(a))).reverse());
+    .filter((a) => mine(a, req.user) && (req.query.status ? a.status === req.query.status : isUnresolvedClickUpApproval(a))).reverse());
 
   const tellChat = (a: ClickUpApproval, text: string) => {
     if (!a.conv || !store.getConversation(a.conv)) return;
@@ -142,7 +142,7 @@ export function clickupApprovalRoutes(app: FastifyInstance, d: { store: Store; s
     const done = (patch: Partial<ClickUpApproval>) => {
       Object.assign(a, { decidedAt: Date.now(), ...patch });
       if (!update(store, a)) return; // gone with its user, files and all
-      if (unresolved(a)) return;
+      if (isUnresolvedClickUpApproval(a)) return;
       dropFiles(d.stateDir, a.id); // decided for good: its files are not sent again
       if (a.action) { // nor is its change made again: only its words stay, cut short (a Doc page may be long)
         const slim = { ...a.action, calls: [], details: a.action.details.map((x) => ({ ...x, value: x.value.slice(0, 2000) })) };

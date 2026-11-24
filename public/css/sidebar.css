@@ -53,7 +53,8 @@
 .chat-row { position: relative; display: flex; align-items: center; min-width: 0; border-radius: var(--r-md); }
 .chat-row:hover { background-color: var(--hover); }
 .chat-row .chat:hover { background: none; }
-.chat-row .row-action { position: absolute; right: 3px; }
+.chat-row > .menu { position: absolute; right: 3px; }
+.chat-row .row-action .i { rotate: 90deg; }
 .chat-row:hover .chat, .chat-row:focus-within .chat { padding-right: 34px; }
 .chat-row:hover .chat-branch { visibility: hidden; }
 .chat .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
