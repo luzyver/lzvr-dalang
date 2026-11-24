@@ -6,11 +6,15 @@ import { descendants, family, isTop } from './chat-family.js';
 import { toDate } from './format.js';
 
 /** How long a chat (with its agents) stays idle before it moves to the archive. */
-export const ARCHIVE_AFTER = 2 * 24 * 60 * 60 * 1000;
+export const ARCHIVE_AFTER = 3 * 60 * 60 * 1000;
 
-/** When a chat or one of its agents was last active: its last turn, or when it was made before any (SQLite UTC text). */
+/** When a chat or one of its agents was last active: its latest turn or draft edit, falling back to creation (SQLite UTC text). */
 export const lastActive = (conv, agents = []) => [conv, ...agents]
-  .reduce((at, c) => { const t = c.last_at || c.created_at || ''; return t > at ? t : at; }, '');
+  .reduce((at, c) => {
+    const turn = c.last_at || c.created_at || '';
+    const latest = c.draft_updated_at > turn ? c.draft_updated_at : turn;
+    return latest > at ? latest : at;
+  }, '');
 
 /**
  * The chats people started, each with its project, the chats under it (`agents`: sub-agents and reviewers, at any
@@ -32,7 +36,8 @@ export const waitingIn = computed(() => {
   for (const a of approvals.value) add(a.to_conv);
   for (const a of dbApprovals.value) add(a.conv);
   for (const a of sshApprovals.value) add(a.conv);
-  for (const a of clickupApprovals.value) if (a.status === 'pending') add(a.conv);
+  // The ClickUp approvals endpoint returns all unresolved requests, including interrupted sends.
+  for (const a of clickupApprovals.value) add(a.conv);
   return n;
 });
 
@@ -49,14 +54,20 @@ const waitingAll = (x) => [x.conv, ...x.agents].reduce((n, c) => n + (waitingIn.
 
 const ORDER = { approval: 0, failed: 1, unread: 2 };
 
+export const canArchive = (conv, agents) =>
+  ![conv, ...agents].some((c) => c.status === 'running' || waitingIn.value.get(c.id));
+
 /**
- * A chat left alone for ARCHIVE_AFTER: neither it nor its agents ran since, and nothing in it waits for an approval.
- * It is not changed or hidden from search, only listed apart; its next turn brings it back.
+ * New activity in the family brings an archived chat back. Restoring an idle chat restarts its three-hour window.
  */
 export function isArchived(x) {
-  if ([x.conv, ...x.agents].some((c) => c.status === 'running' || waitingIn.value.get(c.id))) return false;
-  const at = toDate(x.at);
-  return !!at && now.value - at.getTime() > ARCHIVE_AFTER;
+  if (!canArchive(x.conv, x.agents)) return false;
+  const restored = [x.conv, ...x.agents].reduce((last, c) => c.restored_at > last ? c.restored_at : last, '');
+  const restoredAt = toDate(restored);
+  if (restoredAt && now.value - restoredAt.getTime() < ARCHIVE_AFTER) return false;
+  if (x.conv.archived_at && x.conv.archived_at >= x.at) return true;
+  const at = toDate(restored > x.at ? restored : x.at);
+  return !!at && now.value - at.getTime() >= ARCHIVE_AFTER;
 }
 
 /** The chats people started, split into the ones in use and the archived ones, each newest activity first. */

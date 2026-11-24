@@ -64,6 +64,30 @@ describe('Store', () => {
     expect(store.deleteProject(project.id)).toBe(false);
   });
 
+  it('gives legacy drafts one fresh inactivity window and leaves it alone on an identical save or restart', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'dalang-drafts-')), 'state.db');
+    const old = new Store(file);
+    const project = old.createProject('p', '/w/p');
+    const chat = old.createConversation(project.id);
+    const blank = old.createConversation(project.id);
+    old.setDraft(chat.id, 'unfinished');
+    old.db.exec('ALTER TABLE conversations DROP COLUMN draft_updated_at');
+    old.db.close();
+    const migrated = new Store(file);
+    expect(migrated.getConversation(chat.id)?.draft_updated_at).toBeTruthy();
+    expect(migrated.getConversation(blank.id)?.draft_updated_at).toBeNull();
+    const previous = '2020-01-01 00:00:00';
+    migrated.db.prepare('UPDATE conversations SET draft_updated_at=? WHERE id=?').run(previous, chat.id);
+    migrated.db.close();
+    const reopened = new Store(file);
+    try {
+      reopened.setDraft(chat.id, 'unfinished');
+      expect(reopened.getConversation(chat.id)?.draft_updated_at).toBe(previous);
+      reopened.setDraft(chat.id, '');
+      expect(reopened.getConversation(chat.id)?.draft_updated_at).not.toBe(previous);
+    } finally { reopened.db.close(); }
+  });
+
   it('updates thread, status and draft', () => {
     const { store, conv } = fresh();
     store.setThread(conv.id, 't1');

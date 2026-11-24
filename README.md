@@ -122,7 +122,10 @@ A shared engineering skill library and an Impeccable hook that checks UI edits a
    or in an isolated git worktree; attach files and images when the task needs them.
 2. Send prompts while watching the live transcript. Each chat keeps its own queue, model, effort and session.
    The sidebar groups chats by project or status, newest activity first, and Home shows what needs attention.
-   Chats with no activity for 2 days move to the sidebar's Archive tab until their next turn. Unread markers are
+   Chats move to Archive after 3 hours of inactivity across the chat and its sub-agents. Restoring a chat or editing its draft restarts the idle period for the whole family.
+   Once per UTC day, Dalang permanently deletes archived chats that AI identifies as complete or explicitly cleared by a user, or that have been idle for more
+   than 10 days. Running chats, unresolved approvals, queued prompts and enabled schedules protect the whole chat family.
+   Scheduled deletion removes sub-agents, chat files and clean attached worktrees. Worktrees with local changes and all Git branches are preserved. Unread markers are
    stored on the current browser, not synchronized between devices.
 3. Review the result in the Changes inspector: inspect diffs, select hunks, restore checkpoints, commit, push or
    open a pull request. By default agents leave changes uncommitted; these actions belong to the panel user.

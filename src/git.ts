@@ -88,6 +88,13 @@ export async function addWorktree(repo: string, dir: string, branch: string): Pr
   return base;
 }
 
+/** Scheduled retention may remove a clean, attached worktree locally. Keep every branch and any unverifiable worktree. */
+export async function removeArchivedWorktree(repo: string, dir: string): Promise<void> {
+  if (!await currentBranch(dir)) return;
+  const changes = await git(dir, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none']);
+  if (!changes.trim()) await git(repo, ['worktree', 'remove', '--', dir]);
+}
+
 /**
  * Remove a chat's worktree. Its branch goes too, locally and on the remote it was pushed to, but only when everything on
  * it is in what the project folder has checked out; an unmerged branch stays in both places for a human to look at.

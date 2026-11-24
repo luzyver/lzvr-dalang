@@ -1,3 +1,4 @@
+import { ArchiveCleanup } from './archive-cleanup.js';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
@@ -10,7 +11,7 @@ import type { AgentGitPolicy } from './agent-git.js';
 import type { DesignHookPolicy } from './design-hook.js';
 import { CUSTOM_SKILL_NAME, type CustomSkill } from './skills.js';
 import { isDocx, TEMPLATE_NAME, templateWorkDir } from './templates.js';
-import { clickupApprovalRoutes, forgetClickUpApprovals } from './clickup-approvals.js';
+import { clickupApprovalRoutes, forgetClickUpApprovals, isUnresolvedClickUpApproval, readClickUpApprovals } from './clickup-approvals.js';
 import { clickupClient, clickupRoutes, clickupSend, forgetClickUp } from './clickup-routes.js';
 import { memoryRoutes } from './memory.js';
 import type { Config } from './config.js';
@@ -19,7 +20,8 @@ import { git as gitCmd, gitContext, GitError } from './git.js';
 import { GitAuth } from './git-auth.js';
 import { GitUsers } from './git-users.js';
 import { gitAuthRoutes } from './git-auth-routes.js';
-import { databaseRoutes } from './database-routes.js';
+import { databaseRoutes, readDbApprovals } from './database-routes.js';
+import { readSshApprovals } from './ssh-hosts.js';
 import { sshRoutes } from './ssh-routes.js';
 import { createWorktreeChat, dropWorktrees, gitRoutes } from './git-routes.js';
 import { sessionUsage } from './token-usage.js';
@@ -630,7 +632,7 @@ export function buildApp(
     if (!mayRemove(req.user!, elsewhere)) return reply.code(403).send({ error: HIDDEN_AGENTS });
     for (const c of convs) { dispatcher.cancel(c.id); terminals.killConv(c.id); }
     store.deleteProject(project.id);
-    removeChats(elsewhere);
+    void removeChats(elsewhere).catch(e => app.log.error(e));
     void dropWorktrees(dispatcher, project, convs);
     return reply.code(204).send();
   });
@@ -641,7 +643,7 @@ export function buildApp(
     chats.every((c) => { const p = store.getProject(c.project_id); return !p || canOpen(user, p); });
 
   /** Stop and delete these chats, with their worktrees, checkpoints and terminals, whatever projects they are in. */
-  const removeChats = (chats: Conversation[]) => {
+  const removeChats = (chats: Conversation[], policy: 'manual' | 'archive' = 'manual') => {
     const byProject = new Map<string, Conversation[]>();
     for (const c of chats) {
       dispatcher.cancel(c.id);
@@ -649,11 +651,32 @@ export function buildApp(
       store.deleteConversation(c.id);
       byProject.set(c.project_id, [...(byProject.get(c.project_id) || []), c]);
     }
-    for (const [id, list] of byProject) {
+    return Promise.all(Array.from(byProject, async ([id, list]) => {
       const project = store.getProject(id);
-      if (project) void dropWorktrees(dispatcher, project, list);
-    }
+      if (project) await dropWorktrees(dispatcher, project, list, policy);
+    }));
   };
+
+  const archiveBlocked = (family: Conversation[], includeSender = false) => {
+    const ids = new Set(family.map((c) => c.id));
+    const unresolved = (a: { conv: string | null; status: string }) =>
+      a.conv !== null && ids.has(a.conv) && ['pending', 'executing', 'unknown'].includes(a.status);
+    return family.some((c) => c.status === 'running' || dispatcher.isRunning(c.id))
+      || store.listApprovals('pending').some((a) => ids.has(a.to_conv) || (includeSender && ids.has(a.from_conv)))
+      || readDbApprovals(store).some(unresolved) || readSshApprovals(store).some(unresolved)
+      || readClickUpApprovals(store).some((a) => a.conv && ids.has(a.conv) && isUnresolvedClickUpApproval(a));
+  };
+
+  const cleanup = new ArchiveCleanup(store, family => archiveBlocked(family, true), (chat, prompt) =>
+    dispatcher.ask(chat.backend, prompt, { cwd: store.getProject(chat.project_id)!.path, model: chat.model, effort: 'low', timeoutMs: 60_000 }), async family => { await removeChats(family, 'archive'); });
+  let cleanupTimer: NodeJS.Timeout;
+  app.addHook('onListen', async () => {
+    const tick = () => void cleanup.tick().catch(e => app.log.error(e, 'Archive cleanup failed'));
+    cleanupTimer = setInterval(tick, 60_000);
+    cleanupTimer.unref();
+    tick();
+  });
+  app.addHook('onClose', async () => { clearInterval(cleanupTimer); cleanup.stop(); });
 
   // Chats only: the project and the other chats stay. Any signed-in user may, as any may create one.
   // A chat's own worktree goes with it (uncommitted work there is lost; its branch stays if not merged), and so do the
@@ -663,7 +686,7 @@ export function buildApp(
     if (!conv) return notFound(reply);
     const under = store.listDescendants(conv.id);
     if (!mayRemove(req.user!, under)) return reply.code(403).send({ error: HIDDEN_AGENTS });
-    removeChats([conv, ...under]);
+    void removeChats([conv, ...under]).catch(e => app.log.error(e));
     return reply.code(204).send();
   });
 
@@ -692,6 +715,22 @@ export function buildApp(
 
 
   app.get<{ Querystring: { backend?: string } }>('/api/models', (req) => dispatcher.models(backendOf(req.query.backend)));
+
+  app.put<{ Params: { id: string }; Body: { archived: boolean } }>('/api/conversations/:id/archive', {
+    schema: { body: { type: 'object', required: ['archived'], additionalProperties: false,
+      properties: { archived: { type: 'boolean' } } } },
+  }, (req, reply) => {
+    const conv = store.getConversation(req.params.id);
+    if (!conv) return notFound(reply);
+    if (req.body.archived) {
+      const family = [conv, ...store.listDescendants(conv.id)];
+      if (archiveBlocked(family)) {
+        return reply.code(409).send({ error: 'This chat or one of its agents is running or has an unresolved approval.' });
+      }
+    }
+    store.setArchived(conv.id, req.body.archived);
+    return reply.code(204).send();
+  });
 
   // Pattern starts with a letter/digit so the value can never be read as a CLI flag.
   app.put<{ Params: { id: string }; Body: { model: string } }>('/api/conversations/:id/model', {
